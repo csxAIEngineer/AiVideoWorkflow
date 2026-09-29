@@ -1,0 +1,10 @@
+.env
+*.env
+output/
+assets-output/
+imagegen/
+video/
+__pycache__/
+*.pyc
+*.log
+*.tmp

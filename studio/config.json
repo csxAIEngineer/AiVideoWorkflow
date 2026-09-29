@@ -1,0 +1,20 @@
+{
+  "provider": "deepseek",
+  "providers": {
+    "deepseek": {
+      "model": "deepseek-v4-pro",
+      "via": "cr"
+    },
+    "qwen": {
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen-plus",
+      "api_key_env": "DASHSCOPE_API_KEY"
+    }
+  },
+  "roles": {
+    "剧本": "short-drama-write",
+    "分镜": "short-drama-storyboard",
+    "生图": "short-drama-image-prompts",
+    "场景": "short-drama-assets"
+  }
+}

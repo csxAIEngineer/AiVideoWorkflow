@@ -1,0 +1,4 @@
+interface:
+  display_name: "Seedance Short Drama"
+  short_description: "短剧分镜、故事板与Seedance视频提示词流水线"
+  default_prompt: "Use $seedance-short-drama to turn my short-drama idea into script, reference-image prompts, segmented storyboards, and Seedance 2.0 video prompts."

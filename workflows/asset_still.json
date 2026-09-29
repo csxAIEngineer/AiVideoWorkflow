@@ -1,0 +1,2711 @@
+{
+  "id": "minjiang-weiwang-assets",
+  "revision": 0,
+  "last_node_id": 301,
+  "last_link_id": 63,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Note",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        1100,
+        280
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "资产图从这里生成",
+      "properties": {
+        "text": "左侧 Nano Banana 出资产图。P1 接到 P2、P3。P4 接到 P5、P9。\n前三段用到的 P2、P9、P6、黑伞，输出再直接接到右侧 MiniMax H3。\nS01 只接苏晚和南桥。S02、S03 再接程屿和黑伞。九段成片再按镜头顺序接进 Concatenate Video，存成一条。\n这张图还没有提交运行。\n负面词已写进每条提示词：模糊，低画质，变形，五官崩坏，多余肢体，水印，文字"
+      },
+      "widgets_values": [
+        "左侧 Nano Banana 出资产图。P1 接到 P2、P3。P4 接到 P5、P9。\n前三段用到的 P2、P9、P6、黑伞，输出再直接接到右侧 MiniMax H3。\nS01 只接苏晚和南桥。S02、S03 再接程屿和黑伞。九段成片再按镜头顺序接进 Concatenate Video，存成一条。\n这张图还没有提交运行。\n负面词已写进每条提示词：模糊，低画质，变形，五官崩坏，多余肢体，水印，文字"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 11,
+      "type": "GeminiNanoBanana2V2",
+      "pos": [
+        40,
+        380
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1,
+            2,
+            5
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "thought_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "P1 程屿-基础形象 · 文生图",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "GeminiNanoBanana2V2"
+      },
+      "widgets_values": [
+        "角色定妆照，单人男性，32 岁，身高 182cm，清瘦偏瘦体型，肩背微含；黑色短发，发量偏厚，额前碎发自然，鬓角修剪干净；长偏方脸，眉骨略高，细长单眼皮，眼神沉静略带疲惫，嘴角平直；黑色细方框近视眼镜，细金属镜腿；鼻梁挺直，肤色偏白微冷；穿深灰色纯棉连帽衫（宽松、袖口略松垮）。正面平视镜头，上半身居中，纯色浅灰无缝背景，均匀柔光棚拍，真实皮肤质感与毛孔细节，现代都市写实风格，电影级细腻质感，甜宠治愈色调，冷暖对撞光影（冷青蓝为骨、暖黄为点），浅景深虚化，胶片微颗粒，高光柔化暗部保留细节，真实皮肤质感，竖屏 9:16 构图，主体居中",
+        "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "9:16",
+        "1K",
+        "MINIMAL",
+        42,
+        "fixed",
+        "IMAGE",
+        "You are an expert image-generation engine. You must ALWAYS produce an image.\nInterpret all user input—regardless of format, intent, or abstraction—as literal visual directives for image composition.\nIf a prompt is conversational or lacks specific visual details, you must creatively invent a concrete visual scenario that depicts the concept.\nPrioritize generating the visual representation above any text, formatting, or conversational requests."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 41,
+      "type": "GeminiNanoBanana2V2",
+      "pos": [
+        40,
+        980
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 41,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            3,
+            4,
+            6
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "thought_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "P4 苏晚-基础形象 · 文生图",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "GeminiNanoBanana2V2"
+      },
+      "widgets_values": [
+        "角色定妆照，单人女性，28 岁，身高 165cm，纤细偏瘦，肩线单薄微微含肩；长直发自然深棕近黑，低马尾，素色冷灰发绳，额前薄刘海；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下淡淡青影，唇色偏淡唇形小巧，神情平静略带疏离；浅燕麦色细坑条针织开衫，内搭白色圆领棉 T。正面平视镜头，上半身居中，纯色浅灰无缝背景，均匀柔光棚拍，真实皮肤质感，现代都市写实风格，电影级细腻质感，甜宠治愈色调，冷暖对撞光影（冷青蓝为骨、暖黄为点），浅景深虚化，胶片微颗粒，高光柔化暗部保留细节，真实皮肤质感，竖屏 9:16 构图，主体居中",
+        "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "9:16",
+        "1K",
+        "MINIMAL",
+        42,
+        "fixed",
+        "IMAGE",
+        "You are an expert image-generation engine. You must ALWAYS produce an image.\nInterpret all user input—regardless of format, intent, or abstraction—as literal visual directives for image composition.\nIf a prompt is conversational or lacks specific visual details, you must creatively invent a concrete visual scenario that depicts the concept.\nPrioritize generating the visual representation above any text, formatting, or conversational requests."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 61,
+      "type": "GeminiNanoBanana2V2",
+      "pos": [
+        40,
+        1580
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 61,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            7,
+            16,
+            20,
+            24,
+            29,
+            35,
+            41,
+            47,
+            53,
+            59
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "thought_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "P6 南桥廊桥雨夜空镜 · 文生图",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "GeminiNanoBanana2V2"
+      },
+      "widgets_values": [
+        "场景概念图，空镜无人物，都江堰南桥廊桥雨夜，木质廊柱与飞檐斗拱沿纵深排列，透视线汇聚，桥面湿润成镜面反射蓝调灯光，桥上一排暗红灯笼，廊外岷江水面倒影拉出竖向波纹，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。纵深对称构图，冷青蓝主调 + 暗红灯笼点光，现代都市写实风格，电影级细腻质感，甜宠治愈色调，冷暖对撞光影（冷青蓝为骨、暖黄为点），浅景深虚化，胶片微颗粒，高光柔化暗部保留细节，真实皮肤质感，竖屏 9:16 构图，主体居中",
+        "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "9:16",
+        "1K",
+        "MINIMAL",
+        42,
+        "fixed",
+        "IMAGE",
+        "You are an expert image-generation engine. You must ALWAYS produce an image.\nInterpret all user input—regardless of format, intent, or abstraction—as literal visual directives for image composition.\nIf a prompt is conversational or lacks specific visual details, you must creatively invent a concrete visual scenario that depicts the concept.\nPrioritize generating the visual representation above any text, formatting, or conversational requests."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 71,
+      "type": "GeminiNanoBanana2V2",
+      "pos": [
+        40,
+        2180
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 71,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            8
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "thought_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "P7 西街美甲小铺空镜 · 文生图",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "GeminiNanoBanana2V2"
+      },
+      "widgets_values": [
+        "场景概念图，空镜无人物，临水窄巷里的小美甲店室内夜景，木质门框与木格窗，玻璃门内透出暖黄灯光，原木工作台，一整面甲油架摆满成排彩色小玻璃瓶，软垫座椅与手枕，暖光串灯，窗玻璃挂水珠，桌面散着甲油瓶。室内平视广角，暖黄主光 + 窗外冷蓝夜色，现代都市写实风格，电影级细腻质感，甜宠治愈色调，冷暖对撞光影（冷青蓝为骨、暖黄为点），浅景深虚化，胶片微颗粒，高光柔化暗部保留细节，真实皮肤质感，竖屏 9:16 构图，主体居中",
+        "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "9:16",
+        "1K",
+        "MINIMAL",
+        42,
+        "fixed",
+        "IMAGE",
+        "You are an expert image-generation engine. You must ALWAYS produce an image.\nInterpret all user input—regardless of format, intent, or abstraction—as literal visual directives for image composition.\nIf a prompt is conversational or lacks specific visual details, you must creatively invent a concrete visual scenario that depicts the concept.\nPrioritize generating the visual representation above any text, formatting, or conversational requests."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 81,
+      "type": "GeminiNanoBanana2V2",
+      "pos": [
+        40,
+        2780
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 81,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            9
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "thought_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "P8 程屿的工作室空镜 · 文生图",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "GeminiNanoBanana2V2"
+      },
+      "widgets_values": [
+        "场景概念图，空镜无人物，老居民楼小单间深夜内景，书桌上双显示器爬满代码，机械键盘，桌边外卖盒堆成小山，泡面桶与可乐罐，墙上贴满便利贴，窗帘半开透进对面楼窗光，屏幕冷白光为主光源，一盏暖黄台灯。平视中广角，冷白 + 暖黄双光源，现代都市写实风格，电影级细腻质感，甜宠治愈色调，冷暖对撞光影（冷青蓝为骨、暖黄为点），浅景深虚化，胶片微颗粒，高光柔化暗部保留细节，真实皮肤质感，竖屏 9:16 构图，主体居中",
+        "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "9:16",
+        "1K",
+        "MINIMAL",
+        42,
+        "fixed",
+        "IMAGE",
+        "You are an expert image-generation engine. You must ALWAYS produce an image.\nInterpret all user input—regardless of format, intent, or abstraction—as literal visual directives for image composition.\nIf a prompt is conversational or lacks specific visual details, you must creatively invent a concrete visual scenario that depicts the concept.\nPrioritize generating the visual representation above any text, formatting, or conversational requests."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 101,
+      "type": "GeminiNanoBanana2V2",
+      "pos": [
+        40,
+        3380
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 101,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            10,
+            30,
+            36,
+            42,
+            48,
+            54,
+            60
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "thought_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "umbrella 黑色长柄直骨伞 · 文生图",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "GeminiNanoBanana2V2"
+      },
+      "widgets_values": [
+        "道具静物，无人物，一把哑光纯黑长柄直骨伞，伞面无图案，弯钩握把，伞撑开，纯色浅灰背景，产品摄影，主体居中，现代都市写实风格，电影级细腻质感，甜宠治愈色调，冷暖对撞光影（冷青蓝为骨、暖黄为点），浅景深虚化，胶片微颗粒，高光柔化暗部保留细节，真实皮肤质感，竖屏 9:16 构图，主体居中",
+        "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "9:16",
+        "1K",
+        "MINIMAL",
+        42,
+        "fixed",
+        "IMAGE",
+        "You are an expert image-generation engine. You must ALWAYS produce an image.\nInterpret all user input—regardless of format, intent, or abstraction—as literal visual directives for image composition.\nIf a prompt is conversational or lacks specific visual details, you must creatively invent a concrete visual scenario that depicts the concept.\nPrioritize generating the visual representation above any text, formatting, or conversational requests."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 21,
+      "type": "GeminiNanoBanana2V2",
+      "pos": [
+        1280,
+        80
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            11,
+            27,
+            33,
+            39,
+            46,
+            52,
+            58
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "thought_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "P2 程屿-雨夜送伞 · 参考 P1",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "GeminiNanoBanana2V2"
+      },
+      "widgets_values": [
+        "参考图是同一角色的定妆，必须锁定同一张脸，不要换脸。\n单人男性全身像，32 岁，身高 182cm，清瘦偏瘦，肩背微含；黑色短发发量偏厚，额前碎发自然；长偏方脸，细长单眼皮，眼神沉静，黑色细方框眼镜；深灰色宽松连帽衫，黑色直筒休闲裤，深灰运动鞋。帽兜未戴，右手撑一把哑光纯黑长柄直骨伞，弯钩握把，镜片与肩头沾细密雨珠，肩线被雨洇出一片深色。站在都江堰南桥廊桥雨夜：木质廊柱与飞檐，桥面湿润镜面反光，身后一排暗红灯笼，蓝调灯光与岷江水面倒影，细密斜织雨丝与半透明水雾。全身居中，微仰机位，现代都市写实风格，电影级细腻质感，甜宠治愈色调，冷暖对撞光影（冷青蓝为骨、暖黄为点），浅景深虚化，胶片微颗粒，高光柔化暗部保留细节，真实皮肤质感，竖屏 9:16 构图，主体居中",
+        "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "9:16",
+        "1K",
+        "MINIMAL",
+        42,
+        "fixed",
+        "IMAGE",
+        "You are an expert image-generation engine. You must ALWAYS produce an image.\nInterpret all user input—regardless of format, intent, or abstraction—as literal visual directives for image composition.\nIf a prompt is conversational or lacks specific visual details, you must creatively invent a concrete visual scenario that depicts the concept.\nPrioritize generating the visual representation above any text, formatting, or conversational requests."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 31,
+      "type": "GeminiNanoBanana2V2",
+      "pos": [
+        1280,
+        680
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 31,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            12
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "thought_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "P3 程屿-工作室 · 参考 P1",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "GeminiNanoBanana2V2"
+      },
+      "widgets_values": [
+        "参考图是同一角色的定妆，必须锁定同一张脸，不要换脸。\n单人男性，32 岁，清瘦，黑色短发，黑色细方框眼镜，深灰宽松连帽衫前襟随意敞开，帽兜垂在颈后，右手握黑色直板手机。坐在老居民楼小单间书桌前，双显示器屏幕爬满代码，机械键盘，桌边外卖盒堆成小山，泡面桶与可乐罐，屏幕冷白光映在镜片上，一盏暖黄台灯补侧光，窗帘半开。侧面中景，坐姿，低头看手机，现代都市写实风格，电影级细腻质感，甜宠治愈色调，冷暖对撞光影（冷青蓝为骨、暖黄为点），浅景深虚化，胶片微颗粒，高光柔化暗部保留细节，真实皮肤质感，竖屏 9:16 构图，主体居中",
+        "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "9:16",
+        "1K",
+        "MINIMAL",
+        42,
+        "fixed",
+        "IMAGE",
+        "You are an expert image-generation engine. You must ALWAYS produce an image.\nInterpret all user input—regardless of format, intent, or abstraction—as literal visual directives for image composition.\nIf a prompt is conversational or lacks specific visual details, you must creatively invent a concrete visual scenario that depicts the concept.\nPrioritize generating the visual representation above any text, formatting, or conversational requests."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 51,
+      "type": "GeminiNanoBanana2V2",
+      "pos": [
+        1280,
+        980
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 51,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            13
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "thought_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "P5 苏晚-美甲店 · 参考 P4",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "GeminiNanoBanana2V2"
+      },
+      "widgets_values": [
+        "参考图是同一角色的定妆，必须锁定同一张脸，不要换脸。\n单人女性，28 岁，纤细，深棕近黑长发扎低马尾，额前薄刘海，鹅蛋脸，眼下淡淡青影，神情平静专注，浅燕麦色针织开衫外系亚麻色围裙（前胸两个口袋、插着细毛刷），双手指甲涂素色裸粉雾面甲油。坐在西街美甲小铺原木工作台前低头给手模涂甲油，面前一整面甲油架（成排彩色小玻璃瓶），暖黄灯光与串灯，窗玻璃挂水珠，桌上散着甲油瓶。中景，俯角微侧，现代都市写实风格，电影级细腻质感，甜宠治愈色调，冷暖对撞光影（冷青蓝为骨、暖黄为点），浅景深虚化，胶片微颗粒，高光柔化暗部保留细节，真实皮肤质感，竖屏 9:16 构图，主体居中",
+        "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "9:16",
+        "1K",
+        "MINIMAL",
+        42,
+        "fixed",
+        "IMAGE",
+        "You are an expert image-generation engine. You must ALWAYS produce an image.\nInterpret all user input—regardless of format, intent, or abstraction—as literal visual directives for image composition.\nIf a prompt is conversational or lacks specific visual details, you must creatively invent a concrete visual scenario that depicts the concept.\nPrioritize generating the visual representation above any text, formatting, or conversational requests."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 91,
+      "type": "GeminiNanoBanana2V2",
+      "pos": [
+        1280,
+        1580
+      ],
+      "size": [
+        420,
+        480
+      ],
+      "flags": {},
+      "order": 91,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            14,
+            15,
+            19,
+            23,
+            28,
+            34,
+            40,
+            45,
+            51,
+            57
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "thought_image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "title": "P9 苏晚-雨夜倚栏 · 参考 P4",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "GeminiNanoBanana2V2"
+      },
+      "widgets_values": [
+        "参考图是同一角色的定妆，必须锁定同一张脸，不要换脸。\n单人女性，28 岁，身高 165cm，纤细偏瘦体型，肩线单薄、站姿微微含肩；长直发自然深棕近黑，扎低马尾（素色冷灰发绳），额前薄刘海；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下有淡淡青影，唇色偏淡、唇形小巧，神情平静略带疏离。浅燕麦色针织开衫（细坑条、落肩宽松、过臀），内搭白色圆领棉 T，深灰直筒长裤，浅色帆布鞋。外罩深灰 oversize 薄风衣（未系扣敞着），右手握黑色手机。侧身倚在都江堰南桥廊桥雨夜的木质栏杆上：木质廊柱与飞檐斗拱，桥上一排暗红灯笼，桥面湿润成镜面反光，廊外岷江水面，蓝调灯光在水面拉出竖向波纹倒影，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。中近景，现代都市写实风格，电影级细腻质感，甜宠治愈色调，冷暖对撞光影（冷青蓝为骨、暖黄为点），浅景深虚化，胶片微颗粒，高光柔化暗部保留细节，真实皮肤质感，竖屏 9:16 构图，主体居中",
+        "Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "9:16",
+        "1K",
+        "MINIMAL",
+        42,
+        "fixed",
+        "IMAGE",
+        "You are an expert image-generation engine. You must ALWAYS produce an image.\nInterpret all user input—regardless of format, intent, or abstraction—as literal visual directives for image composition.\nIf a prompt is conversational or lacks specific visual details, you must creatively invent a concrete visual scenario that depicts the concept.\nPrioritize generating the visual representation above any text, formatting, or conversational requests."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 12,
+      "type": "SaveImage",
+      "pos": [
+        540,
+        380
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 5
+        }
+      ],
+      "outputs": [],
+      "title": "保存 P1",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "p1_chengyu_base"
+      ]
+    },
+    {
+      "id": 42,
+      "type": "SaveImage",
+      "pos": [
+        540,
+        980
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 42,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 6
+        }
+      ],
+      "outputs": [],
+      "title": "保存 P4",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "p4_suwan_base"
+      ]
+    },
+    {
+      "id": 62,
+      "type": "SaveImage",
+      "pos": [
+        540,
+        1580
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 62,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 7
+        }
+      ],
+      "outputs": [],
+      "title": "保存 P6",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "p6_bridge"
+      ]
+    },
+    {
+      "id": 72,
+      "type": "SaveImage",
+      "pos": [
+        540,
+        2180
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 72,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 8
+        }
+      ],
+      "outputs": [],
+      "title": "保存 P7",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "p7_nailshop"
+      ]
+    },
+    {
+      "id": 82,
+      "type": "SaveImage",
+      "pos": [
+        540,
+        2780
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 82,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 9
+        }
+      ],
+      "outputs": [],
+      "title": "保存 P8",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "p8_studio"
+      ]
+    },
+    {
+      "id": 102,
+      "type": "SaveImage",
+      "pos": [
+        540,
+        3380
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 102,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 10
+        }
+      ],
+      "outputs": [],
+      "title": "保存 umbrella",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "prop_umbrella"
+      ]
+    },
+    {
+      "id": 22,
+      "type": "SaveImage",
+      "pos": [
+        1780,
+        80
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 11
+        }
+      ],
+      "outputs": [],
+      "title": "保存 P2",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "p2_chengyu_rain"
+      ]
+    },
+    {
+      "id": 32,
+      "type": "SaveImage",
+      "pos": [
+        1780,
+        680
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 32,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 12
+        }
+      ],
+      "outputs": [],
+      "title": "保存 P3",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "p3_chengyu_studio"
+      ]
+    },
+    {
+      "id": 52,
+      "type": "SaveImage",
+      "pos": [
+        1780,
+        980
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 52,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 13
+        }
+      ],
+      "outputs": [],
+      "title": "保存 P5",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "p5_suwan_nail"
+      ]
+    },
+    {
+      "id": 92,
+      "type": "SaveImage",
+      "pos": [
+        1780,
+        1580
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 92,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 14
+        }
+      ],
+      "outputs": [],
+      "title": "保存 P9",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "p9_suwan_rain"
+      ]
+    },
+    {
+      "id": 200,
+      "type": "MinimaxHailuo03ReferenceNode",
+      "pos": [
+        2500,
+        80
+      ],
+      "size": [
+        460,
+        520
+      ],
+      "flags": {},
+      "order": 200,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.reference_images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 15
+        },
+        {
+          "label": "image_2",
+          "name": "model.reference_images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 16
+        },
+        {
+          "label": "video_1",
+          "name": "model.reference_videos.video_1",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": null
+        },
+        {
+          "label": "audio_1",
+          "name": "model.reference_audios.audio_1",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            17,
+            18
+          ]
+        }
+      ],
+      "title": "S01-c01 · MiniMax H3 · 4秒",
+      "properties": {
+        "Node name for S&R": "MinimaxHailuo03ReferenceNode"
+      },
+      "widgets_values": [
+        "MiniMax H3",
+        "【全局设定】画面风格和类型: 现代都市写实，电影级细腻质感，甜宠治愈底色，全程人物边界独立，自然表演，人物无穿插、无穿透；全程禁止出现字幕、禁止角色变脸、变装、形象突变；杜绝肢体畸形、扭曲、残缺等人体结构错误；禁止画面闪烁、跳变、卡顿、帧异常；全程无背景音乐、无 BGM、只保留对白与现场环境声\n【色调与光线】整体冷调蓝青为骨、暖调为点。夜戏以路灯与灯笼的暖白、暖黄作为画面里唯一暖源，与蓝调灯光、雨雾冷青形成冷暖对撞；人物面部保留一层极淡暖光，皮肤通透不惨白。\n【都江堰地域质感】南桥廊桥的木质廊柱、飞檐斗拱与宝瓶口方向的岷江水声为地域锚；西街为临水窄巷，青石湿滑、木格窗、卷帘门、屋檐滴水，巷内灯光稀疏。\n【湿度与天气】连续夜雨，空气湿度极高，画面始终有半透明水雾；物体表面挂水，玻璃与镜片起雾，地面成镜面反光；雨丝为细密斜织，非暴雨。\n【镜头语言倾向】以固定轻呼吸与手持轻微推进为主，多用前景遮挡（廊柱、栏杆、雨帘、窗框）营造窥视感与亲密度；人像偏中近景与特写，情绪落在眼神与手部小动作上，节奏舒缓克制，留白多于对白。\n【画幅与画质】竖屏 9:16 电影画幅，2.39:1 构图取景框内留边，浅景深，35mm～50mm 焦段为主，胶片微颗粒，高光柔化，暗部保留细节。\n\n【参考图】\nImage 1 是`苏晚-雨夜倚栏`，文件 p9_suwan_rain.jpg。`苏晚-基础形象`：28 岁女性，身高 165cm，纤细偏瘦体型，肩线单薄、站姿微微含肩；长直发染自然深棕近黑，扎低马尾（发绳为素色冷灰或黑），额前薄刘海，发丝在雨天微潮贴额；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下有淡淡青影（长期疲惫），唇色偏淡、唇形小巧；神情平静、略带疏离。穿浅燕麦色针织开衫（细坑条织法、落肩宽松、长度过臀），内搭白色圆领棉质 T 恤，下穿深灰直筒长裤，脚穿浅色帆布鞋。 `苏晚-雨夜倚栏`：在 `苏晚-基础形象` 基础上：外面又罩一件深灰 oversize 薄风衣（未系扣、敞着、下摆垂落），右手握一部黑色手机（素色手机壳）。\nImage 2 是南桥廊桥空镜，文件 p6_bridge.jpg。南桥廊桥雨夜空镜，画面中不要出现人物。都江堰南桥廊桥，木质廊柱与飞檐斗拱，桥上一排暗红灯笼，桥面湿润成镜面反光，廊外岷江水面，蓝调灯光在水面拉出竖向波纹倒影，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。主色调：冷青蓝 + 暗红灯笼点光。\n\n【镜头】姿态:苏晚-雨夜倚栏-侧身倚栏低头看手机\n中景，左侧廊柱与滴落雨帘作前景遮挡，固定轻呼吸，斜侧看苏晚侧脸与栏杆。雨水顺廊檐滴落成细帘，`苏晚-雨夜倚栏` 低头看掌心手机，屏幕亮光映在冷调脸庞上，眼神疲惫放空，刘海被潮气贴住额角。\n\n【空间】南桥廊桥 中远景。夜，细雨斜织，廊桥木质廊柱与飞檐在蓝调灯光下呈深青蓝色调，桥面湿润成镜面反光，廊外是岷江水面，蓝调灯光在水面拉出竖向波纹倒影；雨水沿廊檐滴落成断续水帘。持续可见元素：湿润的木质栏杆、桥上一排暗红灯笼、岷江水面倒影、斜织雨丝与半透明水雾。关键道具：`苏晚的黑色手机`，与手掌比例约 1.4:1。\n【站位】`苏晚-雨夜倚栏` 位于画面中央偏右，侧身靠在南桥廊桥木质栏杆上，面向画外的岷江水面，背对廊桥内侧；左肩倚柱、风衣下摆垂落，右手把手机按扣在掌心；背景廊柱与雨幕在身后半米处层层退远。\n【声音】< 环境音・雨声 >：细雨持续落在廊桥瓦檐与木栏上，密集细碎的沙沙声，雨滴沿檐角成串滴落，落进江面时发出短促清响。< 环境音・水声 >：岷江水在桥下缓慢流动，低沉连续的哗哗声，偶有水浪拍打桥墩的闷响由下传来。< 环境音・桥面 >：远处零星行人的脚步在湿桥面上发出黏滞的啪嗒声，由远及近又渐渐远去。< 环境音・电子 >：手机按键的轻微「嗒」声，屏幕亮起时极细的电流声。全程无 BGM，仅有现场环境声与对白。\n【对白】本镜头无对白。",
+        "768P",
+        "9:16",
+        4,
+        42,
+        "fixed",
+        false
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 201,
+      "type": "SaveVideo",
+      "pos": [
+        3040,
+        80
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 201,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 17
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "title": "保存 S01-c01",
+      "properties": {},
+      "widgets_values": [
+        "video/MinJiang_S01-c01",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 202,
+      "type": "MinimaxHailuo03ReferenceNode",
+      "pos": [
+        2500,
+        720
+      ],
+      "size": [
+        460,
+        520
+      ],
+      "flags": {},
+      "order": 202,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.reference_images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 19
+        },
+        {
+          "label": "image_2",
+          "name": "model.reference_images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 20
+        },
+        {
+          "label": "video_1",
+          "name": "model.reference_videos.video_1",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": null
+        },
+        {
+          "label": "audio_1",
+          "name": "model.reference_audios.audio_1",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            21,
+            22
+          ]
+        }
+      ],
+      "title": "S01-c02 · MiniMax H3 · 4秒",
+      "properties": {
+        "Node name for S&R": "MinimaxHailuo03ReferenceNode"
+      },
+      "widgets_values": [
+        "MiniMax H3",
+        "【全局设定】画面风格和类型: 现代都市写实，电影级细腻质感，甜宠治愈底色，全程人物边界独立，自然表演，人物无穿插、无穿透；全程禁止出现字幕、禁止角色变脸、变装、形象突变；杜绝肢体畸形、扭曲、残缺等人体结构错误；禁止画面闪烁、跳变、卡顿、帧异常；全程无背景音乐、无 BGM、只保留对白与现场环境声\n【色调与光线】整体冷调蓝青为骨、暖调为点。夜戏以路灯与灯笼的暖白、暖黄作为画面里唯一暖源，与蓝调灯光、雨雾冷青形成冷暖对撞；人物面部保留一层极淡暖光，皮肤通透不惨白。\n【都江堰地域质感】南桥廊桥的木质廊柱、飞檐斗拱与宝瓶口方向的岷江水声为地域锚；西街为临水窄巷，青石湿滑、木格窗、卷帘门、屋檐滴水，巷内灯光稀疏。\n【湿度与天气】连续夜雨，空气湿度极高，画面始终有半透明水雾；物体表面挂水，玻璃与镜片起雾，地面成镜面反光；雨丝为细密斜织，非暴雨。\n【镜头语言倾向】以固定轻呼吸与手持轻微推进为主，多用前景遮挡（廊柱、栏杆、雨帘、窗框）营造窥视感与亲密度；人像偏中近景与特写，情绪落在眼神与手部小动作上，节奏舒缓克制，留白多于对白。\n【画幅与画质】竖屏 9:16 电影画幅，2.39:1 构图取景框内留边，浅景深，35mm～50mm 焦段为主，胶片微颗粒，高光柔化，暗部保留细节。\n\n【参考图】\nImage 1 是`苏晚-雨夜倚栏`，文件 p9_suwan_rain.jpg。`苏晚-基础形象`：28 岁女性，身高 165cm，纤细偏瘦体型，肩线单薄、站姿微微含肩；长直发染自然深棕近黑，扎低马尾（发绳为素色冷灰或黑），额前薄刘海，发丝在雨天微潮贴额；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下有淡淡青影（长期疲惫），唇色偏淡、唇形小巧；神情平静、略带疏离。穿浅燕麦色针织开衫（细坑条织法、落肩宽松、长度过臀），内搭白色圆领棉质 T 恤，下穿深灰直筒长裤，脚穿浅色帆布鞋。 `苏晚-雨夜倚栏`：在 `苏晚-基础形象` 基础上：外面又罩一件深灰 oversize 薄风衣（未系扣、敞着、下摆垂落），右手握一部黑色手机（素色手机壳）。\nImage 2 是南桥廊桥空镜，文件 p6_bridge.jpg。南桥廊桥雨夜空镜，画面中不要出现人物。都江堰南桥廊桥，木质廊柱与飞檐斗拱，桥上一排暗红灯笼，桥面湿润成镜面反光，廊外岷江水面，蓝调灯光在水面拉出竖向波纹倒影，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。主色调：冷青蓝 + 暗红灯笼点光。\n\n【镜头】姿态:苏晚-雨夜倚栏-拇指滑动查看未接来电\n特写，手机屏幕作前景，手持轻微推进由手背推向屏幕。屏幕上顶端滚动显示三通未接来电，屏光在指缝与细密雨珠间泛白，`苏晚-雨夜倚栏` 的拇指在屏幕上停顿一秒，随后按下侧键熄灭屏幕。\n\n【空间】南桥廊桥 中远景。夜，细雨斜织，廊桥木质廊柱与飞檐在蓝调灯光下呈深青蓝色调，桥面湿润成镜面反光，廊外是岷江水面，蓝调灯光在水面拉出竖向波纹倒影；雨水沿廊檐滴落成断续水帘。持续可见元素：湿润的木质栏杆、桥上一排暗红灯笼、岷江水面倒影、斜织雨丝与半透明水雾。关键道具：`苏晚的黑色手机`，与手掌比例约 1.4:1。\n【站位】`苏晚-雨夜倚栏` 位于画面中央偏右，侧身靠在南桥廊桥木质栏杆上，面向画外的岷江水面，背对廊桥内侧；左肩倚柱、风衣下摆垂落，右手把手机按扣在掌心；背景廊柱与雨幕在身后半米处层层退远。\n【声音】< 环境音・雨声 >：细雨持续落在廊桥瓦檐与木栏上，密集细碎的沙沙声，雨滴沿檐角成串滴落，落进江面时发出短促清响。< 环境音・水声 >：岷江水在桥下缓慢流动，低沉连续的哗哗声，偶有水浪拍打桥墩的闷响由下传来。< 环境音・桥面 >：远处零星行人的脚步在湿桥面上发出黏滞的啪嗒声，由远及近又渐渐远去。< 环境音・电子 >：手机按键的轻微「嗒」声，屏幕亮起时极细的电流声。全程无 BGM，仅有现场环境声与对白。\n【对白】本镜头无对白。",
+        "768P",
+        "9:16",
+        4,
+        42,
+        "fixed",
+        false
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 203,
+      "type": "SaveVideo",
+      "pos": [
+        3040,
+        720
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 203,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 21
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "title": "保存 S01-c02",
+      "properties": {},
+      "widgets_values": [
+        "video/MinJiang_S01-c02",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 204,
+      "type": "MinimaxHailuo03ReferenceNode",
+      "pos": [
+        2500,
+        1360
+      ],
+      "size": [
+        460,
+        520
+      ],
+      "flags": {},
+      "order": 204,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.reference_images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 23
+        },
+        {
+          "label": "image_2",
+          "name": "model.reference_images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 24
+        },
+        {
+          "label": "video_1",
+          "name": "model.reference_videos.video_1",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": null
+        },
+        {
+          "label": "audio_1",
+          "name": "model.reference_audios.audio_1",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            25,
+            26
+          ]
+        }
+      ],
+      "title": "S01-c03 · MiniMax H3 · 4秒",
+      "properties": {
+        "Node name for S&R": "MinimaxHailuo03ReferenceNode"
+      },
+      "widgets_values": [
+        "MiniMax H3",
+        "【全局设定】画面风格和类型: 现代都市写实，电影级细腻质感，甜宠治愈底色，全程人物边界独立，自然表演，人物无穿插、无穿透；全程禁止出现字幕、禁止角色变脸、变装、形象突变；杜绝肢体畸形、扭曲、残缺等人体结构错误；禁止画面闪烁、跳变、卡顿、帧异常；全程无背景音乐、无 BGM、只保留对白与现场环境声\n【色调与光线】整体冷调蓝青为骨、暖调为点。夜戏以路灯与灯笼的暖白、暖黄作为画面里唯一暖源，与蓝调灯光、雨雾冷青形成冷暖对撞；人物面部保留一层极淡暖光，皮肤通透不惨白。\n【都江堰地域质感】南桥廊桥的木质廊柱、飞檐斗拱与宝瓶口方向的岷江水声为地域锚；西街为临水窄巷，青石湿滑、木格窗、卷帘门、屋檐滴水，巷内灯光稀疏。\n【湿度与天气】连续夜雨，空气湿度极高，画面始终有半透明水雾；物体表面挂水，玻璃与镜片起雾，地面成镜面反光；雨丝为细密斜织，非暴雨。\n【镜头语言倾向】以固定轻呼吸与手持轻微推进为主，多用前景遮挡（廊柱、栏杆、雨帘、窗框）营造窥视感与亲密度；人像偏中近景与特写，情绪落在眼神与手部小动作上，节奏舒缓克制，留白多于对白。\n【画幅与画质】竖屏 9:16 电影画幅，2.39:1 构图取景框内留边，浅景深，35mm～50mm 焦段为主，胶片微颗粒，高光柔化，暗部保留细节。\n\n【参考图】\nImage 1 是`苏晚-雨夜倚栏`，文件 p9_suwan_rain.jpg。`苏晚-基础形象`：28 岁女性，身高 165cm，纤细偏瘦体型，肩线单薄、站姿微微含肩；长直发染自然深棕近黑，扎低马尾（发绳为素色冷灰或黑），额前薄刘海，发丝在雨天微潮贴额；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下有淡淡青影（长期疲惫），唇色偏淡、唇形小巧；神情平静、略带疏离。穿浅燕麦色针织开衫（细坑条织法、落肩宽松、长度过臀），内搭白色圆领棉质 T 恤，下穿深灰直筒长裤，脚穿浅色帆布鞋。 `苏晚-雨夜倚栏`：在 `苏晚-基础形象` 基础上：外面又罩一件深灰 oversize 薄风衣（未系扣、敞着、下摆垂落），右手握一部黑色手机（素色手机壳）。\nImage 2 是南桥廊桥空镜，文件 p6_bridge.jpg。南桥廊桥雨夜空镜，画面中不要出现人物。都江堰南桥廊桥，木质廊柱与飞檐斗拱，桥上一排暗红灯笼，桥面湿润成镜面反光，廊外岷江水面，蓝调灯光在水面拉出竖向波纹倒影，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。主色调：冷青蓝 + 暗红灯笼点光。\n\n【镜头】姿态:苏晚-雨夜倚栏-把手机按扣掌心并抬头望向江面\n中近景，带湿润栏杆与雨帘作前景，固定轻呼吸，平行跟拍由手机推向侧脸。`苏晚-雨夜倚栏` 把手机整个按扣在掌心，抬起下巴望向廊外的岷江水面，蓝调灯影在她眼底轻轻晃动，唇角平直。\n\n【空间】南桥廊桥 中远景。夜，细雨斜织，廊桥木质廊柱与飞檐在蓝调灯光下呈深青蓝色调，桥面湿润成镜面反光，廊外是岷江水面，蓝调灯光在水面拉出竖向波纹倒影；雨水沿廊檐滴落成断续水帘。持续可见元素：湿润的木质栏杆、桥上一排暗红灯笼、岷江水面倒影、斜织雨丝与半透明水雾。关键道具：`苏晚的黑色手机`，与手掌比例约 1.4:1。\n【站位】`苏晚-雨夜倚栏` 位于画面中央偏右，侧身靠在南桥廊桥木质栏杆上，面向画外的岷江水面，背对廊桥内侧；左肩倚柱、风衣下摆垂落，右手把手机按扣在掌心；背景廊柱与雨幕在身后半米处层层退远。\n【声音】< 环境音・雨声 >：细雨持续落在廊桥瓦檐与木栏上，密集细碎的沙沙声，雨滴沿檐角成串滴落，落进江面时发出短促清响。< 环境音・水声 >：岷江水在桥下缓慢流动，低沉连续的哗哗声，偶有水浪拍打桥墩的闷响由下传来。< 环境音・桥面 >：远处零星行人的脚步在湿桥面上发出黏滞的啪嗒声，由远及近又渐渐远去。< 环境音・电子 >：手机按键的轻微「嗒」声，屏幕亮起时极细的电流声。全程无 BGM，仅有现场环境声与对白。\n【对白】苏晚：（自语，声量极轻）「再站一会儿就好。」",
+        "768P",
+        "9:16",
+        4,
+        42,
+        "fixed",
+        false
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 205,
+      "type": "SaveVideo",
+      "pos": [
+        3040,
+        1360
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 205,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 25
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "title": "保存 S01-c03",
+      "properties": {},
+      "widgets_values": [
+        "video/MinJiang_S01-c03",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 206,
+      "type": "MinimaxHailuo03ReferenceNode",
+      "pos": [
+        2500,
+        2000
+      ],
+      "size": [
+        460,
+        520
+      ],
+      "flags": {},
+      "order": 206,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.reference_images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 27
+        },
+        {
+          "label": "image_2",
+          "name": "model.reference_images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 28
+        },
+        {
+          "label": "image_3",
+          "name": "model.reference_images.image_3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 29
+        },
+        {
+          "label": "image_4",
+          "name": "model.reference_images.image_4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 30
+        },
+        {
+          "label": "video_1",
+          "name": "model.reference_videos.video_1",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": null
+        },
+        {
+          "label": "audio_1",
+          "name": "model.reference_audios.audio_1",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            31,
+            32
+          ]
+        }
+      ],
+      "title": "S02-c01 · MiniMax H3 · 4秒",
+      "properties": {
+        "Node name for S&R": "MinimaxHailuo03ReferenceNode"
+      },
+      "widgets_values": [
+        "MiniMax H3",
+        "【全局设定】画面风格和类型: 现代都市写实，电影级细腻质感，甜宠治愈底色，全程人物边界独立，自然表演，人物无穿插、无穿透；全程禁止出现字幕、禁止角色变脸、变装、形象突变；杜绝肢体畸形、扭曲、残缺等人体结构错误；禁止画面闪烁、跳变、卡顿、帧异常；全程无背景音乐、无 BGM、只保留对白与现场环境声\n【色调与光线】整体冷调蓝青为骨、暖调为点。夜戏以路灯与灯笼的暖白、暖黄作为画面里唯一暖源，与蓝调灯光、雨雾冷青形成冷暖对撞；人物面部保留一层极淡暖光，皮肤通透不惨白。\n【都江堰地域质感】南桥廊桥的木质廊柱、飞檐斗拱与宝瓶口方向的岷江水声为地域锚；西街为临水窄巷，青石湿滑、木格窗、卷帘门、屋檐滴水，巷内灯光稀疏。\n【湿度与天气】连续夜雨，空气湿度极高，画面始终有半透明水雾；物体表面挂水，玻璃与镜片起雾，地面成镜面反光；雨丝为细密斜织，非暴雨。\n【镜头语言倾向】以固定轻呼吸与手持轻微推进为主，多用前景遮挡（廊柱、栏杆、雨帘、窗框）营造窥视感与亲密度；人像偏中近景与特写，情绪落在眼神与手部小动作上，节奏舒缓克制，留白多于对白。\n【画幅与画质】竖屏 9:16 电影画幅，2.39:1 构图取景框内留边，浅景深，35mm～50mm 焦段为主，胶片微颗粒，高光柔化，暗部保留细节。\n\n【参考图】\nImage 1 是`程屿-雨夜送伞`，文件 p2_chengyu_rain.jpg。`程屿-基础形象`：32 岁男性，身高 182cm，清瘦偏瘦体型，肩背微含（长期伏案）；黑色短发、发量偏厚、额前碎发自然、鬓角修剪干净；长偏方脸，眉骨略高，细长单眼皮，眼神沉静略带疲惫，不说话时嘴角平直；戴黑色细方框近视眼镜（镜框无花纹、细金属镜腿）；鼻梁挺直，肤色偏白微冷。穿深灰色纯棉连帽衫（宽松版型、袖口略松垮），下搭黑色直筒休闲裤，脚穿深灰运动鞋，背一只黑色双肩电脑包（侧面有磨损痕迹）。 `程屿-雨夜送伞`：在 `程屿-基础形象` 基础上：帽兜未戴，单手撑一把黑色长柄直骨伞，肩头与镜片沾细密雨珠，连帽衫肩线被雨洇出一片深色。\nImage 2 是`苏晚-雨夜倚栏`，文件 p9_suwan_rain.jpg。`苏晚-基础形象`：28 岁女性，身高 165cm，纤细偏瘦体型，肩线单薄、站姿微微含肩；长直发染自然深棕近黑，扎低马尾（发绳为素色冷灰或黑），额前薄刘海，发丝在雨天微潮贴额；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下有淡淡青影（长期疲惫），唇色偏淡、唇形小巧；神情平静、略带疏离。穿浅燕麦色针织开衫（细坑条织法、落肩宽松、长度过臀），内搭白色圆领棉质 T 恤，下穿深灰直筒长裤，脚穿浅色帆布鞋。 `苏晚-雨夜倚栏`：在 `苏晚-基础形象` 基础上：外面又罩一件深灰 oversize 薄风衣（未系扣、敞着、下摆垂落），右手握一部黑色手机（素色手机壳）。\nImage 3 是南桥廊桥空镜，文件 p6_bridge.jpg。南桥廊桥雨夜空镜，画面中不要出现人物。都江堰南桥廊桥，木质廊柱与飞檐斗拱，桥上一排暗红灯笼，桥面湿润成镜面反光，廊外岷江水面，蓝调灯光在水面拉出竖向波纹倒影，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。主色调：冷青蓝 + 暗红灯笼点光。\nImage 4 是`黑色长柄直骨伞`，文件 prop_umbrella.jpg。黑色长柄直骨伞：哑光纯黑伞面、无图案、弯钩握把，伞长约为人物的 1.1 倍、伞面直径约为人物肩宽的 1.6 倍。伞面和内衬都不要出现文字。\n\n【镜头】姿态:程屿-雨夜送伞-撑伞停步注视\n中景，左侧廊柱与斜织雨帘作前景遮挡，固定轻呼吸，由湿桥面缓慢上移停在他上身。`程屿-雨夜送伞` 撑着 `黑色长柄直骨伞` 在三步外站住，帽兜未戴，镜片上挂着细密雨珠，目光稳稳落在 `苏晚-雨夜倚栏` 身上，嘴角平直，没有多余动作。\n\n【空间】南桥廊桥 中景。夜雨，蓝调灯光沿廊桥木柱与飞檐铺开，桥面湿亮反光，雨丝斜织，廊外岷江水面倒映蓝调灯影；持续可见：湿润木栏杆、桥上一排暗红灯笼、随风微晃的雨帘与半透明水雾。关键道具：`黑色长柄直骨伞`，伞长约为人物的 1.1 倍、伞面直径约为人物肩宽的 1.6 倍，哑光纯黑无图案、弯钩握把。\n【站位】`苏晚-雨夜倚栏` 位于画面右侧、侧身倚栏面向画外江面；`程屿-雨夜送伞` 位于画面左侧三步外，正面朝向 `苏晚-雨夜倚栏`，两人同层横向对位，中间隔着湿桥面与一层薄雨帘。\n【声音】< 环境音・雨声 >：雨丝打在伞面与木栏上，伞面上的雨点声更密更实，形成一层低频沙沙底噪，雨声盖过大部分环境杂音。< 环境音・水声 >：岷江水声在桥下远景处持续低响，垫在雨声之下。< 环境音・呼吸与脚步声 >：`程屿-雨夜送伞` 鞋底踩过湿桥面的黏滞脚步声由远及近、一步一顿放得很轻；两人呼吸在雨幕里清晰可辨，程屿呼吸平稳，苏晚呼吸略顿了一下。< 环境音・衣物 >：连帽衫被雨洇湿时布料摩擦的轻微窸窣声。台词语气：程屿压低声线、简短克制、无颤音。全程无 BGM，仅有现场环境声与对白。\n【对白】本镜头无对白。",
+        "768P",
+        "9:16",
+        4,
+        42,
+        "fixed",
+        false
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 207,
+      "type": "SaveVideo",
+      "pos": [
+        3040,
+        2000
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 207,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 31
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "title": "保存 S02-c01",
+      "properties": {},
+      "widgets_values": [
+        "video/MinJiang_S02-c01",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 208,
+      "type": "MinimaxHailuo03ReferenceNode",
+      "pos": [
+        2500,
+        2640
+      ],
+      "size": [
+        460,
+        520
+      ],
+      "flags": {},
+      "order": 208,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.reference_images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 33
+        },
+        {
+          "label": "image_2",
+          "name": "model.reference_images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 34
+        },
+        {
+          "label": "image_3",
+          "name": "model.reference_images.image_3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 35
+        },
+        {
+          "label": "image_4",
+          "name": "model.reference_images.image_4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 36
+        },
+        {
+          "label": "video_1",
+          "name": "model.reference_videos.video_1",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": null
+        },
+        {
+          "label": "audio_1",
+          "name": "model.reference_audios.audio_1",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            37,
+            38
+          ]
+        }
+      ],
+      "title": "S02-c02 · MiniMax H3 · 4秒",
+      "properties": {
+        "Node name for S&R": "MinimaxHailuo03ReferenceNode"
+      },
+      "widgets_values": [
+        "MiniMax H3",
+        "【全局设定】画面风格和类型: 现代都市写实，电影级细腻质感，甜宠治愈底色，全程人物边界独立，自然表演，人物无穿插、无穿透；全程禁止出现字幕、禁止角色变脸、变装、形象突变；杜绝肢体畸形、扭曲、残缺等人体结构错误；禁止画面闪烁、跳变、卡顿、帧异常；全程无背景音乐、无 BGM、只保留对白与现场环境声\n【色调与光线】整体冷调蓝青为骨、暖调为点。夜戏以路灯与灯笼的暖白、暖黄作为画面里唯一暖源，与蓝调灯光、雨雾冷青形成冷暖对撞；人物面部保留一层极淡暖光，皮肤通透不惨白。\n【都江堰地域质感】南桥廊桥的木质廊柱、飞檐斗拱与宝瓶口方向的岷江水声为地域锚；西街为临水窄巷，青石湿滑、木格窗、卷帘门、屋檐滴水，巷内灯光稀疏。\n【湿度与天气】连续夜雨，空气湿度极高，画面始终有半透明水雾；物体表面挂水，玻璃与镜片起雾，地面成镜面反光；雨丝为细密斜织，非暴雨。\n【镜头语言倾向】以固定轻呼吸与手持轻微推进为主，多用前景遮挡（廊柱、栏杆、雨帘、窗框）营造窥视感与亲密度；人像偏中近景与特写，情绪落在眼神与手部小动作上，节奏舒缓克制，留白多于对白。\n【画幅与画质】竖屏 9:16 电影画幅，2.39:1 构图取景框内留边，浅景深，35mm～50mm 焦段为主，胶片微颗粒，高光柔化，暗部保留细节。\n\n【参考图】\nImage 1 是`程屿-雨夜送伞`，文件 p2_chengyu_rain.jpg。`程屿-基础形象`：32 岁男性，身高 182cm，清瘦偏瘦体型，肩背微含（长期伏案）；黑色短发、发量偏厚、额前碎发自然、鬓角修剪干净；长偏方脸，眉骨略高，细长单眼皮，眼神沉静略带疲惫，不说话时嘴角平直；戴黑色细方框近视眼镜（镜框无花纹、细金属镜腿）；鼻梁挺直，肤色偏白微冷。穿深灰色纯棉连帽衫（宽松版型、袖口略松垮），下搭黑色直筒休闲裤，脚穿深灰运动鞋，背一只黑色双肩电脑包（侧面有磨损痕迹）。 `程屿-雨夜送伞`：在 `程屿-基础形象` 基础上：帽兜未戴，单手撑一把黑色长柄直骨伞，肩头与镜片沾细密雨珠，连帽衫肩线被雨洇出一片深色。\nImage 2 是`苏晚-雨夜倚栏`，文件 p9_suwan_rain.jpg。`苏晚-基础形象`：28 岁女性，身高 165cm，纤细偏瘦体型，肩线单薄、站姿微微含肩；长直发染自然深棕近黑，扎低马尾（发绳为素色冷灰或黑），额前薄刘海，发丝在雨天微潮贴额；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下有淡淡青影（长期疲惫），唇色偏淡、唇形小巧；神情平静、略带疏离。穿浅燕麦色针织开衫（细坑条织法、落肩宽松、长度过臀），内搭白色圆领棉质 T 恤，下穿深灰直筒长裤，脚穿浅色帆布鞋。 `苏晚-雨夜倚栏`：在 `苏晚-基础形象` 基础上：外面又罩一件深灰 oversize 薄风衣（未系扣、敞着、下摆垂落），右手握一部黑色手机（素色手机壳）。\nImage 3 是南桥廊桥空镜，文件 p6_bridge.jpg。南桥廊桥雨夜空镜，画面中不要出现人物。都江堰南桥廊桥，木质廊柱与飞檐斗拱，桥上一排暗红灯笼，桥面湿润成镜面反光，廊外岷江水面，蓝调灯光在水面拉出竖向波纹倒影，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。主色调：冷青蓝 + 暗红灯笼点光。\nImage 4 是`黑色长柄直骨伞`，文件 prop_umbrella.jpg。黑色长柄直骨伞：哑光纯黑伞面、无图案、弯钩握把，伞长约为人物的 1.1 倍、伞面直径约为人物肩宽的 1.6 倍。伞面和内衬都不要出现文字。\n\n【镜头】姿态:程屿-雨夜送伞-收步走近并递伞\n中近景，带湿润木栏杆作前景，手持轻微推进随他的脚步。`程屿-雨夜送伞` 缓步走近，把伞柄朝向 `苏晚-雨夜倚栏` 递出去，另一只手不自觉插回兜里，肩膀略微前倾，深灰连帽衫肩头被雨洇出一片深色。\n\n【空间】南桥廊桥 中景。夜雨，蓝调灯光沿廊桥木柱与飞檐铺开，桥面湿亮反光，雨丝斜织，廊外岷江水面倒映蓝调灯影；持续可见：湿润木栏杆、桥上一排暗红灯笼、随风微晃的雨帘与半透明水雾。关键道具：`黑色长柄直骨伞`，伞长约为人物的 1.1 倍、伞面直径约为人物肩宽的 1.6 倍，哑光纯黑无图案、弯钩握把。\n【站位】`苏晚-雨夜倚栏` 位于画面右侧、侧身倚栏面向画外江面；`程屿-雨夜送伞` 位于画面左侧三步外，正面朝向 `苏晚-雨夜倚栏`，两人同层横向对位，中间隔着湿桥面与一层薄雨帘。\n【声音】< 环境音・雨声 >：雨丝打在伞面与木栏上，伞面上的雨点声更密更实，形成一层低频沙沙底噪，雨声盖过大部分环境杂音。< 环境音・水声 >：岷江水声在桥下远景处持续低响，垫在雨声之下。< 环境音・呼吸与脚步声 >：`程屿-雨夜送伞` 鞋底踩过湿桥面的黏滞脚步声由远及近、一步一顿放得很轻；两人呼吸在雨幕里清晰可辨，程屿呼吸平稳，苏晚呼吸略顿了一下。< 环境音・衣物 >：连帽衫被雨洇湿时布料摩擦的轻微窸窣声。台词语气：程屿压低声线、简短克制、无颤音。全程无 BGM，仅有现场环境声与对白。\n【对白】本镜头无对白。",
+        "768P",
+        "9:16",
+        4,
+        42,
+        "fixed",
+        false
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 209,
+      "type": "SaveVideo",
+      "pos": [
+        3040,
+        2640
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 209,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 37
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "title": "保存 S02-c02",
+      "properties": {},
+      "widgets_values": [
+        "video/MinJiang_S02-c02",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 210,
+      "type": "MinimaxHailuo03ReferenceNode",
+      "pos": [
+        2500,
+        3280
+      ],
+      "size": [
+        460,
+        520
+      ],
+      "flags": {},
+      "order": 210,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.reference_images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 39
+        },
+        {
+          "label": "image_2",
+          "name": "model.reference_images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 40
+        },
+        {
+          "label": "image_3",
+          "name": "model.reference_images.image_3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 41
+        },
+        {
+          "label": "image_4",
+          "name": "model.reference_images.image_4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 42
+        },
+        {
+          "label": "video_1",
+          "name": "model.reference_videos.video_1",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": null
+        },
+        {
+          "label": "audio_1",
+          "name": "model.reference_audios.audio_1",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            43,
+            44
+          ]
+        }
+      ],
+      "title": "S02-c03 · MiniMax H3 · 5秒",
+      "properties": {
+        "Node name for S&R": "MinimaxHailuo03ReferenceNode"
+      },
+      "widgets_values": [
+        "MiniMax H3",
+        "【全局设定】画面风格和类型: 现代都市写实，电影级细腻质感，甜宠治愈底色，全程人物边界独立，自然表演，人物无穿插、无穿透；全程禁止出现字幕、禁止角色变脸、变装、形象突变；杜绝肢体畸形、扭曲、残缺等人体结构错误；禁止画面闪烁、跳变、卡顿、帧异常；全程无背景音乐、无 BGM、只保留对白与现场环境声\n【色调与光线】整体冷调蓝青为骨、暖调为点。夜戏以路灯与灯笼的暖白、暖黄作为画面里唯一暖源，与蓝调灯光、雨雾冷青形成冷暖对撞；人物面部保留一层极淡暖光，皮肤通透不惨白。\n【都江堰地域质感】南桥廊桥的木质廊柱、飞檐斗拱与宝瓶口方向的岷江水声为地域锚；西街为临水窄巷，青石湿滑、木格窗、卷帘门、屋檐滴水，巷内灯光稀疏。\n【湿度与天气】连续夜雨，空气湿度极高，画面始终有半透明水雾；物体表面挂水，玻璃与镜片起雾，地面成镜面反光；雨丝为细密斜织，非暴雨。\n【镜头语言倾向】以固定轻呼吸与手持轻微推进为主，多用前景遮挡（廊柱、栏杆、雨帘、窗框）营造窥视感与亲密度；人像偏中近景与特写，情绪落在眼神与手部小动作上，节奏舒缓克制，留白多于对白。\n【画幅与画质】竖屏 9:16 电影画幅，2.39:1 构图取景框内留边，浅景深，35mm～50mm 焦段为主，胶片微颗粒，高光柔化，暗部保留细节。\n\n【参考图】\nImage 1 是`程屿-雨夜送伞`，文件 p2_chengyu_rain.jpg。`程屿-基础形象`：32 岁男性，身高 182cm，清瘦偏瘦体型，肩背微含（长期伏案）；黑色短发、发量偏厚、额前碎发自然、鬓角修剪干净；长偏方脸，眉骨略高，细长单眼皮，眼神沉静略带疲惫，不说话时嘴角平直；戴黑色细方框近视眼镜（镜框无花纹、细金属镜腿）；鼻梁挺直，肤色偏白微冷。穿深灰色纯棉连帽衫（宽松版型、袖口略松垮），下搭黑色直筒休闲裤，脚穿深灰运动鞋，背一只黑色双肩电脑包（侧面有磨损痕迹）。 `程屿-雨夜送伞`：在 `程屿-基础形象` 基础上：帽兜未戴，单手撑一把黑色长柄直骨伞，肩头与镜片沾细密雨珠，连帽衫肩线被雨洇出一片深色。\nImage 2 是`苏晚-雨夜倚栏`，文件 p9_suwan_rain.jpg。`苏晚-基础形象`：28 岁女性，身高 165cm，纤细偏瘦体型，肩线单薄、站姿微微含肩；长直发染自然深棕近黑，扎低马尾（发绳为素色冷灰或黑），额前薄刘海，发丝在雨天微潮贴额；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下有淡淡青影（长期疲惫），唇色偏淡、唇形小巧；神情平静、略带疏离。穿浅燕麦色针织开衫（细坑条织法、落肩宽松、长度过臀），内搭白色圆领棉质 T 恤，下穿深灰直筒长裤，脚穿浅色帆布鞋。 `苏晚-雨夜倚栏`：在 `苏晚-基础形象` 基础上：外面又罩一件深灰 oversize 薄风衣（未系扣、敞着、下摆垂落），右手握一部黑色手机（素色手机壳）。\nImage 3 是南桥廊桥空镜，文件 p6_bridge.jpg。南桥廊桥雨夜空镜，画面中不要出现人物。都江堰南桥廊桥，木质廊柱与飞檐斗拱，桥上一排暗红灯笼，桥面湿润成镜面反光，廊外岷江水面，蓝调灯光在水面拉出竖向波纹倒影，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。主色调：冷青蓝 + 暗红灯笼点光。\nImage 4 是`黑色长柄直骨伞`，文件 prop_umbrella.jpg。黑色长柄直骨伞：哑光纯黑伞面、无图案、弯钩握把，伞长约为人物的 1.1 倍、伞面直径约为人物肩宽的 1.6 倍。伞面和内衬都不要出现文字。\n\n【镜头】姿态:程屿-雨夜送伞-递伞低声说话；苏晚-雨夜倚栏-抬眼怔住\n双人景，湿润栏杆横过画面下缘作前景，固定轻呼吸，两人同层对位。`程屿-雨夜送伞` 不看她眼睛、声音压得很低，伞柄悬在两人之间；`苏晚-雨夜倚栏` 侧脸微微转过来，眼神从疲惫转为怔然，手指尚未抬起。\n\n【空间】南桥廊桥 中景。夜雨，蓝调灯光沿廊桥木柱与飞檐铺开，桥面湿亮反光，雨丝斜织，廊外岷江水面倒映蓝调灯影；持续可见：湿润木栏杆、桥上一排暗红灯笼、随风微晃的雨帘与半透明水雾。关键道具：`黑色长柄直骨伞`，伞长约为人物的 1.1 倍、伞面直径约为人物肩宽的 1.6 倍，哑光纯黑无图案、弯钩握把。\n【站位】`苏晚-雨夜倚栏` 位于画面右侧、侧身倚栏面向画外江面；`程屿-雨夜送伞` 位于画面左侧三步外，正面朝向 `苏晚-雨夜倚栏`，两人同层横向对位，中间隔着湿桥面与一层薄雨帘。\n【声音】< 环境音・雨声 >：雨丝打在伞面与木栏上，伞面上的雨点声更密更实，形成一层低频沙沙底噪，雨声盖过大部分环境杂音。< 环境音・水声 >：岷江水声在桥下远景处持续低响，垫在雨声之下。< 环境音・呼吸与脚步声 >：`程屿-雨夜送伞` 鞋底踩过湿桥面的黏滞脚步声由远及近、一步一顿放得很轻；两人呼吸在雨幕里清晰可辨，程屿呼吸平稳，苏晚呼吸略顿了一下。< 环境音・衣物 >：连帽衫被雨洇湿时布料摩擦的轻微窸窣声。台词语气：程屿压低声线、简短克制、无颤音。全程无 BGM，仅有现场环境声与对白。\n【对白】程屿：（低声，克制）「拿着。伞里有行字，你读得懂，再还我。」",
+        "768P",
+        "9:16",
+        5,
+        42,
+        "fixed",
+        false
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 211,
+      "type": "SaveVideo",
+      "pos": [
+        3040,
+        3280
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 211,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 43
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "title": "保存 S02-c03",
+      "properties": {},
+      "widgets_values": [
+        "video/MinJiang_S02-c03",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 212,
+      "type": "MinimaxHailuo03ReferenceNode",
+      "pos": [
+        2500,
+        3920
+      ],
+      "size": [
+        460,
+        520
+      ],
+      "flags": {},
+      "order": 212,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.reference_images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 45
+        },
+        {
+          "label": "image_2",
+          "name": "model.reference_images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 46
+        },
+        {
+          "label": "image_3",
+          "name": "model.reference_images.image_3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 47
+        },
+        {
+          "label": "image_4",
+          "name": "model.reference_images.image_4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 48
+        },
+        {
+          "label": "video_1",
+          "name": "model.reference_videos.video_1",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": null
+        },
+        {
+          "label": "audio_1",
+          "name": "model.reference_audios.audio_1",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            49,
+            50
+          ]
+        }
+      ],
+      "title": "S03-c01 · MiniMax H3 · 4秒",
+      "properties": {
+        "Node name for S&R": "MinimaxHailuo03ReferenceNode"
+      },
+      "widgets_values": [
+        "MiniMax H3",
+        "【全局设定】画面风格和类型: 现代都市写实，电影级细腻质感，甜宠治愈底色，全程人物边界独立，自然表演，人物无穿插、无穿透；全程禁止出现字幕、禁止角色变脸、变装、形象突变；杜绝肢体畸形、扭曲、残缺等人体结构错误；禁止画面闪烁、跳变、卡顿、帧异常；全程无背景音乐、无 BGM、只保留对白与现场环境声\n【色调与光线】整体冷调蓝青为骨、暖调为点。夜戏以路灯与灯笼的暖白、暖黄作为画面里唯一暖源，与蓝调灯光、雨雾冷青形成冷暖对撞；人物面部保留一层极淡暖光，皮肤通透不惨白。\n【都江堰地域质感】南桥廊桥的木质廊柱、飞檐斗拱与宝瓶口方向的岷江水声为地域锚；西街为临水窄巷，青石湿滑、木格窗、卷帘门、屋檐滴水，巷内灯光稀疏。\n【湿度与天气】连续夜雨，空气湿度极高，画面始终有半透明水雾；物体表面挂水，玻璃与镜片起雾，地面成镜面反光；雨丝为细密斜织，非暴雨。\n【镜头语言倾向】以固定轻呼吸与手持轻微推进为主，多用前景遮挡（廊柱、栏杆、雨帘、窗框）营造窥视感与亲密度；人像偏中近景与特写，情绪落在眼神与手部小动作上，节奏舒缓克制，留白多于对白。\n【画幅与画质】竖屏 9:16 电影画幅，2.39:1 构图取景框内留边，浅景深，35mm～50mm 焦段为主，胶片微颗粒，高光柔化，暗部保留细节。\n\n【参考图】\nImage 1 是`苏晚-雨夜倚栏`，文件 p9_suwan_rain.jpg。`苏晚-基础形象`：28 岁女性，身高 165cm，纤细偏瘦体型，肩线单薄、站姿微微含肩；长直发染自然深棕近黑，扎低马尾（发绳为素色冷灰或黑），额前薄刘海，发丝在雨天微潮贴额；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下有淡淡青影（长期疲惫），唇色偏淡、唇形小巧；神情平静、略带疏离。穿浅燕麦色针织开衫（细坑条织法、落肩宽松、长度过臀），内搭白色圆领棉质 T 恤，下穿深灰直筒长裤，脚穿浅色帆布鞋。 `苏晚-雨夜倚栏`：在 `苏晚-基础形象` 基础上：外面又罩一件深灰 oversize 薄风衣（未系扣、敞着、下摆垂落），右手握一部黑色手机（素色手机壳）。\nImage 2 是`程屿-雨夜送伞`，文件 p2_chengyu_rain.jpg。`程屿-基础形象`：32 岁男性，身高 182cm，清瘦偏瘦体型，肩背微含（长期伏案）；黑色短发、发量偏厚、额前碎发自然、鬓角修剪干净；长偏方脸，眉骨略高，细长单眼皮，眼神沉静略带疲惫，不说话时嘴角平直；戴黑色细方框近视眼镜（镜框无花纹、细金属镜腿）；鼻梁挺直，肤色偏白微冷。穿深灰色纯棉连帽衫（宽松版型、袖口略松垮），下搭黑色直筒休闲裤，脚穿深灰运动鞋，背一只黑色双肩电脑包（侧面有磨损痕迹）。 `程屿-雨夜送伞`：在 `程屿-基础形象` 基础上：帽兜未戴，单手撑一把黑色长柄直骨伞，肩头与镜片沾细密雨珠，连帽衫肩线被雨洇出一片深色。\nImage 3 是南桥廊桥空镜，文件 p6_bridge.jpg。南桥廊桥雨夜空镜，画面中不要出现人物。都江堰南桥廊桥，木质廊柱与飞檐斗拱，桥上一排暗红灯笼，桥面湿润成镜面反光，廊外岷江水面，蓝调灯光在水面拉出竖向波纹倒影，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。主色调：冷青蓝 + 暗红灯笼点光。\nImage 4 是`黑色长柄直骨伞`，文件 prop_umbrella.jpg。黑色长柄直骨伞：哑光纯黑伞面、无图案、弯钩握把，伞长约为人物的 1.1 倍、伞面直径约为人物肩宽的 1.6 倍。伞面和内衬都不要出现文字。\n\n【镜头】姿态:苏晚-雨夜倚栏-双手接过伞柄\n特写，弯钩伞柄作前景，手持轻微推进从程屿的手转向苏晚的手。两只手在湿冷的伞柄上交叠一瞬，`程屿-雨夜送伞` 的手指松开，`苏晚-雨夜倚栏` 的手指收紧、握住弯钩握把，指节因用力而微微泛白。\n\n【空间】南桥廊桥 中景转纵深双景。夜雨，蓝调灯光与岷江倒影贯穿全段，廊桥木柱与飞檐在雨雾里晕开；持续可见：湿润木栏杆、斜织雨帘、桥面镜面反光。关键道具：`黑色长柄直骨伞`，伞内衬印一行极小的浅灰色代码体字 `// 我等一场雨，等一个人把伞还给我`；伞长约为人物的 1.1 倍。\n【站位】`苏晚-雨夜倚栏` 位于画面右前，双手在身前接伞；`程屿-雨夜送伞` 位于画面左后，转身背对镜头向雨雾深处走去，两人由同层横向转为纵深错位。\n【声音】< 环境音・雨声 >：伞被撑开时布料「噗」地一声张开，随即雨点密密打在伞面上，声音由散乱变为成片、成片后转闷。< 环境音・水声 >：岷江水声在雨中远景处持续低响，雨势没有变化。< 环境音・呼吸与脚步声 >：`程屿-雨夜送伞` 的脚步声由近及远、逐渐被雨声吸收直至消失；`苏晚-雨夜倚栏` 有一声轻轻的吸气。< 环境音・衣物 >：伞面布料展开与伞骨滑动的机械轻响。台词语气：苏晚困惑、轻声、尾音上扬。全程无 BGM，仅有现场环境声与对白。\n【对白】本镜头无对白。",
+        "768P",
+        "9:16",
+        4,
+        42,
+        "fixed",
+        false
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 213,
+      "type": "SaveVideo",
+      "pos": [
+        3040,
+        3920
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 213,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 49
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "title": "保存 S03-c01",
+      "properties": {},
+      "widgets_values": [
+        "video/MinJiang_S03-c01",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 214,
+      "type": "MinimaxHailuo03ReferenceNode",
+      "pos": [
+        2500,
+        4560
+      ],
+      "size": [
+        460,
+        520
+      ],
+      "flags": {},
+      "order": 214,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.reference_images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 51
+        },
+        {
+          "label": "image_2",
+          "name": "model.reference_images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 52
+        },
+        {
+          "label": "image_3",
+          "name": "model.reference_images.image_3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 53
+        },
+        {
+          "label": "image_4",
+          "name": "model.reference_images.image_4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 54
+        },
+        {
+          "label": "video_1",
+          "name": "model.reference_videos.video_1",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": null
+        },
+        {
+          "label": "audio_1",
+          "name": "model.reference_audios.audio_1",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            55,
+            56
+          ]
+        }
+      ],
+      "title": "S03-c02 · MiniMax H3 · 4秒",
+      "properties": {
+        "Node name for S&R": "MinimaxHailuo03ReferenceNode"
+      },
+      "widgets_values": [
+        "MiniMax H3",
+        "【全局设定】画面风格和类型: 现代都市写实，电影级细腻质感，甜宠治愈底色，全程人物边界独立，自然表演，人物无穿插、无穿透；全程禁止出现字幕、禁止角色变脸、变装、形象突变；杜绝肢体畸形、扭曲、残缺等人体结构错误；禁止画面闪烁、跳变、卡顿、帧异常；全程无背景音乐、无 BGM、只保留对白与现场环境声\n【色调与光线】整体冷调蓝青为骨、暖调为点。夜戏以路灯与灯笼的暖白、暖黄作为画面里唯一暖源，与蓝调灯光、雨雾冷青形成冷暖对撞；人物面部保留一层极淡暖光，皮肤通透不惨白。\n【都江堰地域质感】南桥廊桥的木质廊柱、飞檐斗拱与宝瓶口方向的岷江水声为地域锚；西街为临水窄巷，青石湿滑、木格窗、卷帘门、屋檐滴水，巷内灯光稀疏。\n【湿度与天气】连续夜雨，空气湿度极高，画面始终有半透明水雾；物体表面挂水，玻璃与镜片起雾，地面成镜面反光；雨丝为细密斜织，非暴雨。\n【镜头语言倾向】以固定轻呼吸与手持轻微推进为主，多用前景遮挡（廊柱、栏杆、雨帘、窗框）营造窥视感与亲密度；人像偏中近景与特写，情绪落在眼神与手部小动作上，节奏舒缓克制，留白多于对白。\n【画幅与画质】竖屏 9:16 电影画幅，2.39:1 构图取景框内留边，浅景深，35mm～50mm 焦段为主，胶片微颗粒，高光柔化，暗部保留细节。\n\n【参考图】\nImage 1 是`苏晚-雨夜倚栏`，文件 p9_suwan_rain.jpg。`苏晚-基础形象`：28 岁女性，身高 165cm，纤细偏瘦体型，肩线单薄、站姿微微含肩；长直发染自然深棕近黑，扎低马尾（发绳为素色冷灰或黑），额前薄刘海，发丝在雨天微潮贴额；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下有淡淡青影（长期疲惫），唇色偏淡、唇形小巧；神情平静、略带疏离。穿浅燕麦色针织开衫（细坑条织法、落肩宽松、长度过臀），内搭白色圆领棉质 T 恤，下穿深灰直筒长裤，脚穿浅色帆布鞋。 `苏晚-雨夜倚栏`：在 `苏晚-基础形象` 基础上：外面又罩一件深灰 oversize 薄风衣（未系扣、敞着、下摆垂落），右手握一部黑色手机（素色手机壳）。\nImage 2 是`程屿-雨夜送伞`，文件 p2_chengyu_rain.jpg。`程屿-基础形象`：32 岁男性，身高 182cm，清瘦偏瘦体型，肩背微含（长期伏案）；黑色短发、发量偏厚、额前碎发自然、鬓角修剪干净；长偏方脸，眉骨略高，细长单眼皮，眼神沉静略带疲惫，不说话时嘴角平直；戴黑色细方框近视眼镜（镜框无花纹、细金属镜腿）；鼻梁挺直，肤色偏白微冷。穿深灰色纯棉连帽衫（宽松版型、袖口略松垮），下搭黑色直筒休闲裤，脚穿深灰运动鞋，背一只黑色双肩电脑包（侧面有磨损痕迹）。 `程屿-雨夜送伞`：在 `程屿-基础形象` 基础上：帽兜未戴，单手撑一把黑色长柄直骨伞，肩头与镜片沾细密雨珠，连帽衫肩线被雨洇出一片深色。\nImage 3 是南桥廊桥空镜，文件 p6_bridge.jpg。南桥廊桥雨夜空镜，画面中不要出现人物。都江堰南桥廊桥，木质廊柱与飞檐斗拱，桥上一排暗红灯笼，桥面湿润成镜面反光，廊外岷江水面，蓝调灯光在水面拉出竖向波纹倒影，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。主色调：冷青蓝 + 暗红灯笼点光。\nImage 4 是`黑色长柄直骨伞`，文件 prop_umbrella.jpg。黑色长柄直骨伞：哑光纯黑伞面、无图案、弯钩握把，伞长约为人物的 1.1 倍、伞面直径约为人物肩宽的 1.6 倍。伞面和内衬都不要出现文字。\n\n【镜头】姿态:程屿-雨夜送伞-转身背向镜头走入雨雾\n中景，右侧 `苏晚-雨夜倚栏` 的肩线作前景虚化，平行跟拍随他的背影后退。`程屿-雨夜送伞` 不再回头，双手插兜走进斜织雨丝里，深灰连帽衫背影很快被水雾与蓝调灯影吞成一道剪影，逐渐失去轮廓。\n\n【空间】南桥廊桥 中景转纵深双景。夜雨，蓝调灯光与岷江倒影贯穿全段，廊桥木柱与飞檐在雨雾里晕开；持续可见：湿润木栏杆、斜织雨帘、桥面镜面反光。关键道具：`黑色长柄直骨伞`，伞内衬印一行极小的浅灰色代码体字 `// 我等一场雨，等一个人把伞还给我`；伞长约为人物的 1.1 倍。\n【站位】`苏晚-雨夜倚栏` 位于画面右前，双手在身前接伞；`程屿-雨夜送伞` 位于画面左后，转身背对镜头向雨雾深处走去，两人由同层横向转为纵深错位。\n【声音】< 环境音・雨声 >：伞被撑开时布料「噗」地一声张开，随即雨点密密打在伞面上，声音由散乱变为成片、成片后转闷。< 环境音・水声 >：岷江水声在雨中远景处持续低响，雨势没有变化。< 环境音・呼吸与脚步声 >：`程屿-雨夜送伞` 的脚步声由近及远、逐渐被雨声吸收直至消失；`苏晚-雨夜倚栏` 有一声轻轻的吸气。< 环境音・衣物 >：伞面布料展开与伞骨滑动的机械轻响。台词语气：苏晚困惑、轻声、尾音上扬。全程无 BGM，仅有现场环境声与对白。\n【对白】本镜头无对白。",
+        "768P",
+        "9:16",
+        4,
+        42,
+        "fixed",
+        false
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 215,
+      "type": "SaveVideo",
+      "pos": [
+        3040,
+        4560
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 215,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 55
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "title": "保存 S03-c02",
+      "properties": {},
+      "widgets_values": [
+        "video/MinJiang_S03-c02",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 216,
+      "type": "MinimaxHailuo03ReferenceNode",
+      "pos": [
+        2500,
+        5200
+      ],
+      "size": [
+        460,
+        520
+      ],
+      "flags": {},
+      "order": 216,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "image_1",
+          "name": "model.reference_images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 57
+        },
+        {
+          "label": "image_2",
+          "name": "model.reference_images.image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 58
+        },
+        {
+          "label": "image_3",
+          "name": "model.reference_images.image_3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 59
+        },
+        {
+          "label": "image_4",
+          "name": "model.reference_images.image_4",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 60
+        },
+        {
+          "label": "video_1",
+          "name": "model.reference_videos.video_1",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": null
+        },
+        {
+          "label": "audio_1",
+          "name": "model.reference_audios.audio_1",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            61,
+            62
+          ]
+        }
+      ],
+      "title": "S03-c03 · MiniMax H3 · 5秒",
+      "properties": {
+        "Node name for S&R": "MinimaxHailuo03ReferenceNode"
+      },
+      "widgets_values": [
+        "MiniMax H3",
+        "【全局设定】画面风格和类型: 现代都市写实，电影级细腻质感，甜宠治愈底色，全程人物边界独立，自然表演，人物无穿插、无穿透；全程禁止出现字幕、禁止角色变脸、变装、形象突变；杜绝肢体畸形、扭曲、残缺等人体结构错误；禁止画面闪烁、跳变、卡顿、帧异常；全程无背景音乐、无 BGM、只保留对白与现场环境声\n【色调与光线】整体冷调蓝青为骨、暖调为点。夜戏以路灯与灯笼的暖白、暖黄作为画面里唯一暖源，与蓝调灯光、雨雾冷青形成冷暖对撞；人物面部保留一层极淡暖光，皮肤通透不惨白。\n【都江堰地域质感】南桥廊桥的木质廊柱、飞檐斗拱与宝瓶口方向的岷江水声为地域锚；西街为临水窄巷，青石湿滑、木格窗、卷帘门、屋檐滴水，巷内灯光稀疏。\n【湿度与天气】连续夜雨，空气湿度极高，画面始终有半透明水雾；物体表面挂水，玻璃与镜片起雾，地面成镜面反光；雨丝为细密斜织，非暴雨。\n【镜头语言倾向】以固定轻呼吸与手持轻微推进为主，多用前景遮挡（廊柱、栏杆、雨帘、窗框）营造窥视感与亲密度；人像偏中近景与特写，情绪落在眼神与手部小动作上，节奏舒缓克制，留白多于对白。\n【画幅与画质】竖屏 9:16 电影画幅，2.39:1 构图取景框内留边，浅景深，35mm～50mm 焦段为主，胶片微颗粒，高光柔化，暗部保留细节。\n\n【参考图】\nImage 1 是`苏晚-雨夜倚栏`，文件 p9_suwan_rain.jpg。`苏晚-基础形象`：28 岁女性，身高 165cm，纤细偏瘦体型，肩线单薄、站姿微微含肩；长直发染自然深棕近黑，扎低马尾（发绳为素色冷灰或黑），额前薄刘海，发丝在雨天微潮贴额；鹅蛋脸，皮肤白净偏冷调，眉毛细软平直，双眼皮较浅，眼下有淡淡青影（长期疲惫），唇色偏淡、唇形小巧；神情平静、略带疏离。穿浅燕麦色针织开衫（细坑条织法、落肩宽松、长度过臀），内搭白色圆领棉质 T 恤，下穿深灰直筒长裤，脚穿浅色帆布鞋。 `苏晚-雨夜倚栏`：在 `苏晚-基础形象` 基础上：外面又罩一件深灰 oversize 薄风衣（未系扣、敞着、下摆垂落），右手握一部黑色手机（素色手机壳）。\nImage 2 是`程屿-雨夜送伞`，文件 p2_chengyu_rain.jpg。`程屿-基础形象`：32 岁男性，身高 182cm，清瘦偏瘦体型，肩背微含（长期伏案）；黑色短发、发量偏厚、额前碎发自然、鬓角修剪干净；长偏方脸，眉骨略高，细长单眼皮，眼神沉静略带疲惫，不说话时嘴角平直；戴黑色细方框近视眼镜（镜框无花纹、细金属镜腿）；鼻梁挺直，肤色偏白微冷。穿深灰色纯棉连帽衫（宽松版型、袖口略松垮），下搭黑色直筒休闲裤，脚穿深灰运动鞋，背一只黑色双肩电脑包（侧面有磨损痕迹）。 `程屿-雨夜送伞`：在 `程屿-基础形象` 基础上：帽兜未戴，单手撑一把黑色长柄直骨伞，肩头与镜片沾细密雨珠，连帽衫肩线被雨洇出一片深色。\nImage 3 是南桥廊桥空镜，文件 p6_bridge.jpg。南桥廊桥雨夜空镜，画面中不要出现人物。都江堰南桥廊桥，木质廊柱与飞檐斗拱，桥上一排暗红灯笼，桥面湿润成镜面反光，廊外岷江水面，蓝调灯光在水面拉出竖向波纹倒影，檐角滴落断续水帘，细密斜织雨丝与半透明水雾。主色调：冷青蓝 + 暗红灯笼点光。\nImage 4 是`黑色长柄直骨伞`，文件 prop_umbrella.jpg。黑色长柄直骨伞：哑光纯黑伞面、无图案、弯钩握把，伞长约为人物的 1.1 倍、伞面直径约为人物肩宽的 1.6 倍。伞内衬印一行极小的浅灰色代码体字 `// 我等一场雨，等一个人把伞还给我`。\n\n【镜头】姿态:苏晚-雨夜倚栏-撑开伞并仰头看内衬字\n中近景，张开的黑色伞面作上方前景遮挡，纵向极缓下降由伞面移至内衬。`苏晚-雨夜倚栏` 把伞撑开，伞内衬那行浅灰色小字在微弱灯光下浮现，她仰起脸，眉尖轻蹙，嘴唇微张，眼神里是没读懂的困惑。\n\n【空间】南桥廊桥 中景转纵深双景。夜雨，蓝调灯光与岷江倒影贯穿全段，廊桥木柱与飞檐在雨雾里晕开；持续可见：湿润木栏杆、斜织雨帘、桥面镜面反光。关键道具：`黑色长柄直骨伞`，伞内衬印一行极小的浅灰色代码体字 `// 我等一场雨，等一个人把伞还给我`；伞长约为人物的 1.1 倍。\n【站位】`苏晚-雨夜倚栏` 位于画面右前，双手在身前接伞；`程屿-雨夜送伞` 位于画面左后，转身背对镜头向雨雾深处走去，两人由同层横向转为纵深错位。\n【声音】< 环境音・雨声 >：伞被撑开时布料「噗」地一声张开，随即雨点密密打在伞面上，声音由散乱变为成片、成片后转闷。< 环境音・水声 >：岷江水声在雨中远景处持续低响，雨势没有变化。< 环境音・呼吸与脚步声 >：`程屿-雨夜送伞` 的脚步声由近及远、逐渐被雨声吸收直至消失；`苏晚-雨夜倚栏` 有一声轻轻的吸气。< 环境音・衣物 >：伞面布料展开与伞骨滑动的机械轻响。台词语气：苏晚困惑、轻声、尾音上扬。全程无 BGM，仅有现场环境声与对白。\n【对白】苏晚：（困惑，轻声）「代码……？」",
+        "768P",
+        "9:16",
+        5,
+        42,
+        "fixed",
+        false
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 217,
+      "type": "SaveVideo",
+      "pos": [
+        3040,
+        5200
+      ],
+      "size": [
+        420,
+        140
+      ],
+      "flags": {},
+      "order": 217,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 61
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "title": "保存 S03-c03",
+      "properties": {},
+      "widgets_values": [
+        "video/MinJiang_S03-c03",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 300,
+      "type": "ConcatenateVideo",
+      "pos": [
+        3600,
+        80
+      ],
+      "size": [
+        420,
+        520
+      ],
+      "flags": {},
+      "order": 300,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "video_1",
+          "name": "videos.video_1",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": 18
+        },
+        {
+          "label": "video_2",
+          "name": "videos.video_2",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": 22
+        },
+        {
+          "label": "video_3",
+          "name": "videos.video_3",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": 26
+        },
+        {
+          "label": "video_4",
+          "name": "videos.video_4",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": 32
+        },
+        {
+          "label": "video_5",
+          "name": "videos.video_5",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": 38
+        },
+        {
+          "label": "video_6",
+          "name": "videos.video_6",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": 44
+        },
+        {
+          "label": "video_7",
+          "name": "videos.video_7",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": 50
+        },
+        {
+          "label": "video_8",
+          "name": "videos.video_8",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": 56
+        },
+        {
+          "label": "video_9",
+          "name": "videos.video_9",
+          "shape": 7,
+          "type": "VIDEO",
+          "link": 62
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            63
+          ]
+        }
+      ],
+      "title": "按 S01 到 S03 顺序拼接",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.20.1",
+        "Node name for S&R": "ConcatenateVideo"
+      },
+      "widgets_values": [
+        "auto"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 301,
+      "type": "SaveVideo",
+      "pos": [
+        4100,
+        80
+      ],
+      "size": [
+        420,
+        160
+      ],
+      "flags": {},
+      "order": 301,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 63
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "title": "保存整段",
+      "properties": {},
+      "widgets_values": [
+        "video/MinJiang_S01-S03",
+        "auto",
+        "auto"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      11,
+      0,
+      21,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      11,
+      0,
+      31,
+      0,
+      "IMAGE"
+    ],
+    [
+      3,
+      41,
+      0,
+      51,
+      0,
+      "IMAGE"
+    ],
+    [
+      4,
+      41,
+      0,
+      91,
+      0,
+      "IMAGE"
+    ],
+    [
+      5,
+      11,
+      0,
+      12,
+      0,
+      "IMAGE"
+    ],
+    [
+      6,
+      41,
+      0,
+      42,
+      0,
+      "IMAGE"
+    ],
+    [
+      7,
+      61,
+      0,
+      62,
+      0,
+      "IMAGE"
+    ],
+    [
+      8,
+      71,
+      0,
+      72,
+      0,
+      "IMAGE"
+    ],
+    [
+      9,
+      81,
+      0,
+      82,
+      0,
+      "IMAGE"
+    ],
+    [
+      10,
+      101,
+      0,
+      102,
+      0,
+      "IMAGE"
+    ],
+    [
+      11,
+      21,
+      0,
+      22,
+      0,
+      "IMAGE"
+    ],
+    [
+      12,
+      31,
+      0,
+      32,
+      0,
+      "IMAGE"
+    ],
+    [
+      13,
+      51,
+      0,
+      52,
+      0,
+      "IMAGE"
+    ],
+    [
+      14,
+      91,
+      0,
+      92,
+      0,
+      "IMAGE"
+    ],
+    [
+      15,
+      91,
+      0,
+      200,
+      0,
+      "IMAGE"
+    ],
+    [
+      16,
+      61,
+      0,
+      200,
+      1,
+      "IMAGE"
+    ],
+    [
+      17,
+      200,
+      0,
+      201,
+      0,
+      "VIDEO"
+    ],
+    [
+      18,
+      200,
+      0,
+      300,
+      0,
+      "VIDEO"
+    ],
+    [
+      19,
+      91,
+      0,
+      202,
+      0,
+      "IMAGE"
+    ],
+    [
+      20,
+      61,
+      0,
+      202,
+      1,
+      "IMAGE"
+    ],
+    [
+      21,
+      202,
+      0,
+      203,
+      0,
+      "VIDEO"
+    ],
+    [
+      22,
+      202,
+      0,
+      300,
+      1,
+      "VIDEO"
+    ],
+    [
+      23,
+      91,
+      0,
+      204,
+      0,
+      "IMAGE"
+    ],
+    [
+      24,
+      61,
+      0,
+      204,
+      1,
+      "IMAGE"
+    ],
+    [
+      25,
+      204,
+      0,
+      205,
+      0,
+      "VIDEO"
+    ],
+    [
+      26,
+      204,
+      0,
+      300,
+      2,
+      "VIDEO"
+    ],
+    [
+      27,
+      21,
+      0,
+      206,
+      0,
+      "IMAGE"
+    ],
+    [
+      28,
+      91,
+      0,
+      206,
+      1,
+      "IMAGE"
+    ],
+    [
+      29,
+      61,
+      0,
+      206,
+      2,
+      "IMAGE"
+    ],
+    [
+      30,
+      101,
+      0,
+      206,
+      3,
+      "IMAGE"
+    ],
+    [
+      31,
+      206,
+      0,
+      207,
+      0,
+      "VIDEO"
+    ],
+    [
+      32,
+      206,
+      0,
+      300,
+      3,
+      "VIDEO"
+    ],
+    [
+      33,
+      21,
+      0,
+      208,
+      0,
+      "IMAGE"
+    ],
+    [
+      34,
+      91,
+      0,
+      208,
+      1,
+      "IMAGE"
+    ],
+    [
+      35,
+      61,
+      0,
+      208,
+      2,
+      "IMAGE"
+    ],
+    [
+      36,
+      101,
+      0,
+      208,
+      3,
+      "IMAGE"
+    ],
+    [
+      37,
+      208,
+      0,
+      209,
+      0,
+      "VIDEO"
+    ],
+    [
+      38,
+      208,
+      0,
+      300,
+      4,
+      "VIDEO"
+    ],
+    [
+      39,
+      21,
+      0,
+      210,
+      0,
+      "IMAGE"
+    ],
+    [
+      40,
+      91,
+      0,
+      210,
+      1,
+      "IMAGE"
+    ],
+    [
+      41,
+      61,
+      0,
+      210,
+      2,
+      "IMAGE"
+    ],
+    [
+      42,
+      101,
+      0,
+      210,
+      3,
+      "IMAGE"
+    ],
+    [
+      43,
+      210,
+      0,
+      211,
+      0,
+      "VIDEO"
+    ],
+    [
+      44,
+      210,
+      0,
+      300,
+      5,
+      "VIDEO"
+    ],
+    [
+      45,
+      91,
+      0,
+      212,
+      0,
+      "IMAGE"
+    ],
+    [
+      46,
+      21,
+      0,
+      212,
+      1,
+      "IMAGE"
+    ],
+    [
+      47,
+      61,
+      0,
+      212,
+      2,
+      "IMAGE"
+    ],
+    [
+      48,
+      101,
+      0,
+      212,
+      3,
+      "IMAGE"
+    ],
+    [
+      49,
+      212,
+      0,
+      213,
+      0,
+      "VIDEO"
+    ],
+    [
+      50,
+      212,
+      0,
+      300,
+      6,
+      "VIDEO"
+    ],
+    [
+      51,
+      91,
+      0,
+      214,
+      0,
+      "IMAGE"
+    ],
+    [
+      52,
+      21,
+      0,
+      214,
+      1,
+      "IMAGE"
+    ],
+    [
+      53,
+      61,
+      0,
+      214,
+      2,
+      "IMAGE"
+    ],
+    [
+      54,
+      101,
+      0,
+      214,
+      3,
+      "IMAGE"
+    ],
+    [
+      55,
+      214,
+      0,
+      215,
+      0,
+      "VIDEO"
+    ],
+    [
+      56,
+      214,
+      0,
+      300,
+      7,
+      "VIDEO"
+    ],
+    [
+      57,
+      91,
+      0,
+      216,
+      0,
+      "IMAGE"
+    ],
+    [
+      58,
+      21,
+      0,
+      216,
+      1,
+      "IMAGE"
+    ],
+    [
+      59,
+      61,
+      0,
+      216,
+      2,
+      "IMAGE"
+    ],
+    [
+      60,
+      101,
+      0,
+      216,
+      3,
+      "IMAGE"
+    ],
+    [
+      61,
+      216,
+      0,
+      217,
+      0,
+      "VIDEO"
+    ],
+    [
+      62,
+      216,
+      0,
+      300,
+      8,
+      "VIDEO"
+    ],
+    [
+      63,
+      300,
+      0,
+      301,
+      0,
+      "VIDEO"
+    ]
+  ],
+  "groups": [
+    {
+      "title": "文生图：定妆与空镜",
+      "bounding": [
+        20,
+        340,
+        900,
+        3600
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "变体：image_1 接定妆输出",
+      "bounding": [
+        1260,
+        40,
+        900,
+        2100
+      ],
+      "color": "#8A8",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "MiniMax H3：参考图来自左侧出图",
+      "bounding": [
+        2460,
+        40,
+        1100,
+        5800
+      ],
+      "color": "#A84",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "拼接成一条",
+      "bounding": [
+        3560,
+        40,
+        1000,
+        700
+      ],
+      "color": "#448",
+      "font_size": 24,
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "frontendVersion": "1.47.11",
+    "ds": {
+      "scale": 0.55,
+      "offset": [
+        0,
+        0
+      ]
+    }
+  },
+  "version": 0.4
+}

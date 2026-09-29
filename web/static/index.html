@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AiVideo</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <button id="new-chat" class="new-chat" type="button">开启新对话</button>
+    <div id="history" class="history"></div>
+    <div class="sidebar-foot">DeepSeek V4 Pro · Comfy Cloud</div>
+  </aside>
+  <main class="main">
+    <section id="empty" class="empty">
+      <div class="mark">AiVideo</div>
+      <p class="hello">今天想做一条什么样的短剧？</p>
+    </section>
+    <section id="thread" class="thread hidden"></section>
+    <form id="composer" class="composer">
+      <textarea id="brief" rows="1" placeholder="写下视频的背景或简要，例如：雨夜的都江堰，程序员把一把写了代码的伞递给美甲师"></textarea>
+      <button id="send" type="submit" aria-label="发送">↑</button>
+    </form>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
