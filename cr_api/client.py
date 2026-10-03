@@ -122,7 +122,7 @@ class CRClient(object):
             raw=data,
         )
 
-    def submit_video(self, text, model="minimax-h3-text-to-video", duration=4, aspect_ratio="9:16", images=None, idempotency_key=None, timeout=60):
+    def submit_video(self, text, model="minimax-h3-text-to-video", duration=4, aspect_ratio="9:16", images=None, idempotency_key=None, timeout=180):
         if model not in VIDEO_MODELS:
             raise CRError("未知视频模型 %s。可用：%s" % (model, "、".join(VIDEO_MODELS)))
         try:

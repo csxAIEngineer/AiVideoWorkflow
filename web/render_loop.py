@@ -372,6 +372,40 @@ def data_url(path):
     return "data:%s;base64,%s" % (mime, encoded)
 
 
+def compact_data_url(path):
+    """JPEG at the video frame size. Full PNGs time out while uploading to CR."""
+    ffmpeg = _ffmpeg_bin()
+    source = Path(path)
+    if ffmpeg and source.is_file():
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(source),
+                "-vf",
+                "scale=768:1344:force_original_aspect_ratio=decrease",
+                "-q:v",
+                "4",
+                "-frames:v",
+                "1",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "mjpeg",
+                "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            encoded = base64.b64encode(proc.stdout).decode("ascii")
+            return "data:image/jpeg;base64," + encoded
+    return data_url(source)
+
+
 LIVE_ACTION = (
     "实拍照片质感，可用光，材质有磨损和褶皱，自然皮肤纹理，不要磨皮，不要塑料皮肤，不要CG渲染。"
 )
@@ -938,7 +972,7 @@ def _reference_url(info):
     """Send the local still. iCreat's signed URL is often unreachable from CR."""
     path = (info or {}).get("path")
     if path and Path(path).is_file() and Path(path).stat().st_size > 0:
-        return data_url(path)
+        return compact_data_url(path)
     url = str((info or {}).get("url") or "")
     if url:
         return url
@@ -1089,6 +1123,7 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
                 aspect_ratio="9:16",
                 images=refs,
                 idempotency_key=key,
+                timeout=180,
             )
 
         def poll(task_id, shot_id=shot_id):
