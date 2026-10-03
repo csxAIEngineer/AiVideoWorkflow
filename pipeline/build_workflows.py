@@ -572,10 +572,11 @@ def asset_workflow():
                 "widgets_values": [f"video/MinJiang_{compiled['id']}", "auto", "auto"],
             }
         )
+        # Cloud ConcatenateVideo autogrow slots are 0-based: videos.video0, video1, …
         concat_inputs.append(
             {
-                "label": f"video_{index + 1}",
-                "name": f"videos.video_{index + 1}",
+                "label": f"video{index}",
+                "name": f"videos.video{index}",
                 "shape": 7,
                 "type": "VIDEO",
                 "link": concat_link,

@@ -100,7 +100,7 @@ class CRClient(object):
             raise CRError("缺少 CR_API_KEY。请写在项目根目录的 .env 里。")
         self.base_url = BASE_URL
 
-    def chat(self, messages, model="deepseek-v4-pro", max_tokens=None, stream=False, timeout=300):
+    def chat(self, messages, model="deepseek-v4-pro", max_tokens=None, stream=False, timeout=300, response_format=None):
         if stream and model == "minimax-m3":
             raise CRError("流式输出要用大写的 MiniMax-M3，小写的 minimax-m3 不支持。")
         if max_tokens is not None and is_thinking_model(model) and int(max_tokens) < 2000:
@@ -108,6 +108,8 @@ class CRClient(object):
         body = {"model": model, "messages": messages}
         if max_tokens is not None:
             body["max_tokens"] = int(max_tokens)
+        if response_format is not None:
+            body["response_format"] = response_format
         if stream:
             body["stream"] = True
             return self._stream(body, model, timeout)
@@ -162,14 +164,20 @@ class CRClient(object):
             updated.poll_url = task.poll_url
         return updated
 
-    def wait_video(self, task, interval=10, timeout=900):
+    def wait_video(self, task, interval=10, timeout=900, on_status=None):
         deadline = time.time() + timeout
         current = task
+        seen = None
         while current.status not in ("completed", "failed"):
+            if on_status and current.status != seen:
+                seen = current.status
+                on_status(current)
             if time.time() >= deadline:
                 raise CRError("视频任务超时，最后状态：%s" % current.status)
             time.sleep(interval)
             current = self.poll_video(current)
+        if on_status and current.status != seen:
+            on_status(current)
         if current.status == "failed":
             raise CRError(current.error or "视频任务失败")
         if not current.url:
@@ -227,6 +235,10 @@ class CRClient(object):
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
             raise CRError("CR API 返回 %s：%s" % (error.code, detail[:800]), error.code, detail)
+        except urllib.error.URLError as error:
+            raise CRError("CR API 网络错误：%s" % error.reason)
+        except TimeoutError as error:
+            raise CRError("CR API 网络错误：%s" % error)
 
 
 def _iter_sse(response):

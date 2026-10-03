@@ -83,12 +83,16 @@ def extra_text(skill, user_text):
     return "".join(chunks)
 
 
-def system_prompt(skill, user_text):
+def system_prompt(skill, user_text, locked_brief=""):
+    locked = ""
+    if locked_brief:
+        locked = "已经和用户确认的创作简报，必须原样遵守：\n%s\n\n" % locked_brief
     return (
         "你是短剧编剧室。严格按当前技能的格式写，不要另起一套模板。\n"
         "这是多轮对话：已经确认的人物外形、场景和道具必须原样沿用，不要换脸、换装或改地名。\n"
         "只产出文字。不要声称已经出图或出视频。\n"
-        "当前技能：%s\n%s\n\n%s%s"
+        + locked
+        + "当前技能：%s\n%s\n\n%s%s"
         % (skill["name"], skill["description"], skill["body"], extra_text(skill, user_text))
     )
 
@@ -146,9 +150,14 @@ def print_skills(skills):
 
 
 def repl(config, skills, provider_name):
+    from web.pipeline import drill_system_prompt, parse_drill_text
+
     current_name = config["roles"]["剧本"]
     history = []
-    print("短剧编剧室。提供者 %s。输入 /help 查看命令。" % provider_name)
+    drilling = True
+    locked_brief = ""
+    pending_options = []
+    print("短剧编剧室。先问清楚你要拍什么。提供者 %s。输入 /help 查看命令。" % provider_name)
     while True:
         try:
             line = input("\n> ").strip()
@@ -160,7 +169,7 @@ def repl(config, skills, provider_name):
         if line in ("/quit", "/exit"):
             return
         if line == "/help":
-            print("/剧本 /分镜 /生图 /场景  切换技能")
+            print("先问清楚再写。确认之后：/剧本 /分镜 /生图 /场景  切换技能")
             print("/skill 名称   /skills   /provider qwen|deepseek")
             print("/reset 清空本轮对话    /save 文件路径")
             continue
@@ -169,7 +178,10 @@ def repl(config, skills, provider_name):
             continue
         if line == "/reset":
             history = []
-            print("对话已清空。")
+            drilling = True
+            locked_brief = ""
+            pending_options = []
+            print("对话已清空。重新问你要拍什么。")
             continue
         if line.startswith("/provider "):
             provider_name = line.split(None, 1)[1].strip()
@@ -193,12 +205,51 @@ def repl(config, skills, provider_name):
             target.write_text(last, encoding="utf-8")
             print("已写入 %s" % target)
             continue
+        if drilling:
+            if pending_options and line.isdigit():
+                index = int(line) - 1
+                if 0 <= index < len(pending_options):
+                    picked = pending_options[index]
+                    if picked == "其他":
+                        try:
+                            line = input("其他：").strip()
+                        except (EOFError, KeyboardInterrupt):
+                            print()
+                            return
+                        if not line:
+                            continue
+                    else:
+                        line = picked
+                        print("（选了：%s）" % line)
+            messages = [{"role": "system", "content": drill_system_prompt()}] + history
+            messages.append({"role": "user", "content": line})
+            answer = call_llm(config, provider_name, messages)
+            try:
+                parsed = parse_drill_text(answer)
+            except ValueError:
+                history.append({"role": "user", "content": line})
+                history.append({"role": "assistant", "content": answer})
+                print("\n" + answer)
+                continue
+            history.append({"role": "user", "content": line})
+            history.append({"role": "assistant", "content": parsed["reply"]})
+            print("\n" + parsed["reply"])
+            pending_options = list(parsed.get("options") or [])
+            for index, option in enumerate(pending_options, 1):
+                mark = "  （建议）" if index == 1 and option != "其他" else ""
+                print("%s. %s%s" % (index, option, mark))
+            if parsed["phase"] == "ready":
+                drilling = False
+                locked_brief = parsed["brief"]
+                current_name = config["roles"]["剧本"]
+                print("\n已锁定，接下来按剧本技能写。\n" + locked_brief)
+            continue
         chosen = pick_role(config, line, current_name)
         if chosen != current_name:
             current_name = chosen
             print("（按这句话改用技能 %s）" % current_name)
         skill = skill_by_name(skills, current_name)
-        messages = [{"role": "system", "content": system_prompt(skill, line)}] + history
+        messages = [{"role": "system", "content": system_prompt(skill, line, locked_brief)}] + history
         messages.append({"role": "user", "content": line})
         answer = call_llm(config, provider_name, messages)
         history.append({"role": "user", "content": line})

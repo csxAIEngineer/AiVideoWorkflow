@@ -1,4 +1,4 @@
-"""Turn a DeepSeek spec into a ComfyUI graph: Nano Banana stills into MiniMax clips, then one joined video."""
+"""ComfyUI graphs for the web site: downloadable full graph, plus split cloud jobs."""
 
 import sys
 from pathlib import Path
@@ -10,10 +10,13 @@ from pipeline.build_workflows import gemini_node, save_image_node  # noqa: E402
 
 
 def _clamp_duration(value):
+    """Generator only accepts 4–15. Storyboards no longer choose a length."""
+    if value is None or value == "":
+        return 4
     try:
         seconds = int(value)
     except (TypeError, ValueError):
-        seconds = 5
+        return 4
     return max(4, min(15, seconds))
 
 
@@ -22,7 +25,8 @@ def _safe_id(value, fallback):
     return text[:40] or fallback
 
 
-def build_workflow(spec):
+def collect_steps(spec):
+    """Assets and shots that actually become nodes, in run order."""
     assets = []
     for index, item in enumerate(spec.get("assets") or []):
         assets.append(
@@ -53,10 +57,303 @@ def build_workflow(spec):
                 "id": _safe_id(item.get("id"), "S%02d" % (index + 1)),
                 "duration": _clamp_duration(item.get("duration")),
                 "prompt": prompt,
+                "dialogue": str(item.get("dialogue") or "").strip(),
                 "images": images,
             }
         )
     shots = shots[:6]
+    return assets, shots
+
+
+def ordered_assets(assets):
+    """Parents before children so depends_on can load an already finished still."""
+    remaining = list(assets)
+    done = set()
+    ordered = []
+    while remaining:
+        progress = False
+        for item in list(remaining):
+            parent = item["depends_on"]
+            if parent and parent not in done:
+                continue
+            ordered.append(item)
+            done.add(item["id"])
+            remaining.remove(item)
+            progress = True
+        if not progress:
+            ordered.extend(remaining)
+            break
+    return ordered
+
+
+def task_plan(spec):
+    """Local render rows: iCreat stills, CR MiniMax H3 clips, then ffmpeg join."""
+    assets, shots = collect_steps(spec)
+    if not assets or not shots:
+        return []
+    tasks = []
+    total = 0
+    for asset in ordered_assets(assets):
+        tasks.append(
+            {
+                "id": asset["id"],
+                "kind": "image",
+                "title": asset["title"],
+                "duration": None,
+                "state": "pending",
+                "detail": "iCreat 生图",
+            }
+        )
+    for shot in shots:
+        total += shot["duration"]
+        tasks.append(
+            {
+                "id": shot["id"],
+                "kind": "video",
+                "title": shot["id"],
+                "duration": shot["duration"],
+                "state": "pending",
+                "detail": "CR MiniMax H3",
+            }
+        )
+    tasks.append(
+        {
+            "id": "join",
+            "kind": "join",
+            "title": "按镜头顺序拼接",
+            "duration": total,
+            "state": "pending",
+            "detail": "本机拼接",
+        }
+    )
+    return tasks
+
+
+def _shell(nodes, links, graph_id="aivideo"):
+    return {
+        "id": graph_id,
+        "revision": 0,
+        "last_node_id": max((node["id"] for node in nodes), default=1),
+        "last_link_id": max((link[0] for link in links), default=0),
+        "nodes": nodes,
+        "links": links,
+        "groups": [],
+        "config": {},
+        "extra": {"frontendVersion": "1.47.11", "ds": {"scale": 0.7, "offset": [0, 0]}},
+        "version": 0.4,
+    }
+
+
+def load_image_node(nid, title, filename, x, y):
+    return {
+        "id": nid,
+        "type": "LoadImage",
+        "pos": [x, y],
+        "size": [320, 314],
+        "flags": {},
+        "order": nid,
+        "mode": 0,
+        "inputs": [],
+        "outputs": [
+            {"name": "IMAGE", "type": "IMAGE", "links": []},
+            {"name": "MASK", "type": "MASK", "links": None},
+        ],
+        "title": title,
+        "properties": {"cnr_id": "comfy-core", "ver": "0.20.1", "Node name for S&R": "LoadImage"},
+        "widgets_values": [filename, "image"],
+    }
+
+
+def build_image_workflow(asset, reference_filename=None):
+    """workflow0: exactly one Gemini still (+ optional LoadImage for depends_on)."""
+    nodes = []
+    links = []
+    link_id = 1
+    gen_id = 10
+    save_id = 11
+    y = 40
+    image_link = None
+    prompt = asset["prompt"]
+    if reference_filename:
+        load_id = 9
+        nodes.append(load_image_node(load_id, "参考 " + (asset["depends_on"] or "图"), reference_filename, 40, y))
+        image_link = link_id
+        links.append([link_id, load_id, 0, gen_id, 0, "IMAGE"])
+        nodes[0]["outputs"][0]["links"] = [link_id]
+        link_id += 1
+        prompt = "参考图是同一身份的定妆，必须锁定同一张脸和外形，不要换脸。\n" + prompt
+        gen_x = 420
+    else:
+        gen_x = 40
+    nodes.append(
+        gemini_node(
+            gen_id,
+            "%s %s · workflow0" % (asset["id"], asset["title"]),
+            prompt,
+            gen_x,
+            y,
+            image_link,
+        )
+    )
+    save_link = link_id
+    links.append([save_link, gen_id, 0, save_id, 0, "IMAGE"])
+    link_id += 1
+    gen = next(node for node in nodes if node["id"] == gen_id)
+    gen["outputs"][0]["links"] = list(gen["outputs"][0].get("links") or []) + [save_link]
+    nodes.append(save_image_node(save_id, "保存 " + asset["id"], asset["id"], gen_x + 480, y, save_link))
+    return _shell(nodes, links, "aivideo-workflow0-" + asset["id"])
+
+
+def build_shot_workflow(shot, image_files):
+    """workflow1: LoadImage refs + one MiniMax clip + SaveVideo."""
+    nodes = []
+    links = []
+    link_id = 1
+    inputs = []
+    for slot, asset_id in enumerate(shot["images"]):
+        filename = image_files.get(asset_id)
+        if not filename:
+            continue
+        load_id = 20 + slot
+        nodes.append(load_image_node(load_id, "加载 " + asset_id, filename, 40, 40 + slot * 360))
+        lid = link_id
+        links.append([lid, load_id, 0, 200, slot, "IMAGE"])
+        load = next(node for node in nodes if node["id"] == load_id)
+        load["outputs"][0]["links"] = [lid]
+        link_id += 1
+        inputs.append(
+            {
+                "label": "image_%s" % (slot + 1),
+                "name": "model.reference_images.image_%s" % (slot + 1),
+                "shape": 7,
+                "type": "IMAGE",
+                "link": lid,
+            }
+        )
+    if not inputs:
+        raise ValueError("镜头 %s 没有可用的参考图" % shot["id"])
+    inputs.append({"label": "video_1", "name": "model.reference_videos.video_1", "shape": 7, "type": "VIDEO", "link": None})
+    inputs.append({"label": "audio_1", "name": "model.reference_audios.audio_1", "shape": 7, "type": "AUDIO", "link": None})
+    video_link = link_id
+    links.append([video_link, 200, 0, 201, 0, "VIDEO"])
+    link_id += 1
+    nodes.append(
+        {
+            "id": 200,
+            "type": "MinimaxHailuo03ReferenceNode",
+            "pos": [520, 40],
+            "size": [460, 520],
+            "flags": {},
+            "order": 200,
+            "mode": 0,
+            "inputs": inputs,
+            "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [video_link]}],
+            "title": "%s · MiniMax H3 · %s秒 · workflow1" % (shot["id"], shot["duration"]),
+            "properties": {"Node name for S&R": "MinimaxHailuo03ReferenceNode"},
+            "widgets_values": ["MiniMax H3", shot["prompt"], "768P", "9:16", shot["duration"], 42, "fixed", False],
+            "color": "#432",
+            "bgcolor": "#653",
+        }
+    )
+    nodes.append(
+        {
+            "id": 201,
+            "type": "SaveVideo",
+            "pos": [1040, 40],
+            "size": [400, 140],
+            "flags": {},
+            "order": 201,
+            "mode": 0,
+            "inputs": [{"name": "video", "type": "VIDEO", "link": video_link}],
+            "outputs": [{"name": "video", "type": "VIDEO", "links": None}],
+            "title": "保存 " + shot["id"],
+            "properties": {},
+            "widgets_values": ["video/" + shot["id"], "auto", "auto"],
+        }
+    )
+    return _shell(nodes, links, "aivideo-workflow1-" + shot["id"])
+
+
+def build_join_workflow(clip_names):
+    """Cloud fallback: LoadVideo clips into ConcatenateVideo + SaveVideo."""
+    nodes = []
+    links = []
+    link_id = 1
+    concat_inputs = []
+    for index, name in enumerate(clip_names):
+        load_id = 40 + index
+        nodes.append(
+            {
+                "id": load_id,
+                "type": "LoadVideo",
+                "pos": [40, 40 + index * 220],
+                "size": [320, 180],
+                "flags": {},
+                "order": load_id,
+                "mode": 0,
+                "inputs": [],
+                "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": []}],
+                "title": "加载 " + Path(name).stem,
+                "properties": {"cnr_id": "comfy-core", "ver": "0.20.1", "Node name for S&R": "LoadVideo"},
+                "widgets_values": [name],
+            }
+        )
+        lid = link_id
+        links.append([lid, load_id, 0, 300, index, "VIDEO"])
+        nodes[-1]["outputs"][0]["links"] = [lid]
+        link_id += 1
+        concat_inputs.append(
+            {
+                "label": "video%s" % index,
+                "name": "videos.video%s" % index,
+                "shape": 7,
+                "type": "VIDEO",
+                "link": lid,
+            }
+        )
+    joined = link_id
+    links.append([joined, 300, 0, 301, 0, "VIDEO"])
+    link_id += 1
+    nodes.append(
+        {
+            "id": 300,
+            "type": "ConcatenateVideo",
+            "pos": [520, 40],
+            "size": [420, 480],
+            "flags": {},
+            "order": 300,
+            "mode": 0,
+            "inputs": concat_inputs,
+            "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [joined]}],
+            "title": "按镜头顺序拼接",
+            "properties": {"cnr_id": "comfy-core", "ver": "0.20.1", "Node name for S&R": "ConcatenateVideo"},
+            "widgets_values": ["auto"],
+            "color": "#432",
+            "bgcolor": "#653",
+        }
+    )
+    nodes.append(
+        {
+            "id": 301,
+            "type": "SaveVideo",
+            "pos": [1040, 40],
+            "size": [420, 150],
+            "flags": {},
+            "order": 301,
+            "mode": 0,
+            "inputs": [{"name": "video", "type": "VIDEO", "link": joined}],
+            "outputs": [{"name": "video", "type": "VIDEO", "links": None}],
+            "title": "保存整段",
+            "properties": {},
+            "widgets_values": ["video/joined", "auto", "auto"],
+        }
+    )
+    return _shell(nodes, links, "aivideo-join")
+
+
+def build_workflow(spec):
+    """Downloadable review graph. Cloud runner uses split workflow0 / workflow1 instead."""
+    assets, shots = collect_steps(spec)
     if not assets or not shots:
         raise ValueError("生成结果里没有可用的资产图或镜头")
 
@@ -175,8 +472,8 @@ def build_workflow(spec):
         )
         concat_inputs.append(
             {
-                "label": "video_%s" % (index + 1),
-                "name": "videos.video_%s" % (index + 1),
+                "label": "video%s" % index,
+                "name": "videos.video%s" % index,
                 "shape": 7,
                 "type": "VIDEO",
                 "link": concat_link,
@@ -218,15 +515,29 @@ def build_workflow(spec):
             "widgets_values": ["video/joined", "auto", "auto"],
         }
     )
-    return {
-        "id": "aivideo-project",
-        "revision": 0,
-        "last_node_id": max(node["id"] for node in nodes),
-        "last_link_id": link_id - 1,
-        "nodes": nodes,
-        "links": links,
-        "groups": [],
-        "config": {},
-        "extra": {"frontendVersion": "1.47.11", "ds": {"scale": 0.55, "offset": [0, 0]}},
-        "version": 0.4,
-    }
+    for node in nodes:
+        node["mode"] = 2
+        node["title"] = str(node.get("title") or "") + " · 云端分批"
+    nodes.insert(
+        0,
+        {
+            "id": 1,
+            "type": "Note",
+            "pos": [40, -220],
+            "size": [520, 180],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [],
+            "title": "云端运行方式",
+            "properties": {"cnr_id": "comfy-core", "ver": "0.20.1", "Node name for S&R": "Note"},
+            "widgets_values": [
+                "网站不会把整图一次提交。\n"
+                "workflow0：每张资产图单独上传，跑完后稍等再跑下一张。\n"
+                "workflow1：每镜视频单独上传，用已下载的图作参考。\n"
+                "最后在本机拼接成片。"
+            ],
+        },
+    )
+    return _shell(nodes, links, "aivideo-project")

@@ -1,5 +1,12 @@
 .env
 .DS_Store
+.cursor/
+.comfyui-desktop-2
 __pycache__/
 *.py[cod]
 data/web_projects/
+data/workbuddy_prompts/
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
