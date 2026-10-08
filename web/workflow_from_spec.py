@@ -8,16 +8,31 @@ sys.path.insert(0, str(ROOT))
 
 from pipeline.build_workflows import gemini_node, save_image_node  # noqa: E402
 
+import re
 
-def _clamp_duration(value):
-    """Generator only accepts 4–15. Storyboards no longer choose a length."""
-    if value is None or value == "":
-        return 4
-    try:
-        seconds = int(value)
-    except (TypeError, ValueError):
-        return 4
-    return max(4, min(15, seconds))
+MIN_SECONDS = 4
+MAX_SECONDS = 15
+# One H3 call accepts 9 reference images. The previous shot's tail frame uses one slot.
+MAX_SHOT_REFERENCES = 8
+CHARS_PER_SECOND = 4.1
+
+
+def _spoken_chars(text):
+    return len(re.sub(r"[\s，。！？、…—\-：:（）()「」\"“”]", "", text or ""))
+
+
+def _clamp_duration(value, dialogue=""):
+    """Keep a beat's own length. The generator only accepts 4–15 for one call."""
+    if value not in (None, ""):
+        try:
+            return max(MIN_SECONDS, min(MAX_SECONDS, int(value)))
+        except (TypeError, ValueError):
+            pass
+    chars = _spoken_chars(dialogue)
+    if chars:
+        needed = int(round(chars / CHARS_PER_SECOND)) + 1
+        return max(MIN_SECONDS, min(MAX_SECONDS, needed))
+    return MIN_SECONDS
 
 
 def _safe_id(value, fallback):
@@ -37,7 +52,7 @@ def collect_steps(spec):
                 "depends_on": _safe_id(item.get("depends_on"), "") if item.get("depends_on") else "",
             }
         )
-    assets = [item for item in assets if item["prompt"]][:8]
+    assets = [item for item in assets if item["prompt"]]
     known = {item["id"] for item in assets}
     for item in assets:
         if item["depends_on"] not in known or item["depends_on"] == item["id"]:
@@ -46,22 +61,22 @@ def collect_steps(spec):
     shots = []
     for index, item in enumerate(spec.get("shots") or []):
         images = [_safe_id(name, "") for name in (item.get("images") or [])]
-        images = [name for name in images if name in known][:4]
+        images = [name for name in images if name in known][:MAX_SHOT_REFERENCES]
         if not images and assets:
             images = [assets[0]["id"]]
         prompt = str(item.get("prompt") or "").strip()
         if not prompt:
             continue
+        dialogue = str(item.get("dialogue") or "").strip()
         shots.append(
             {
                 "id": _safe_id(item.get("id"), "S%02d" % (index + 1)),
-                "duration": _clamp_duration(item.get("duration")),
+                "duration": _clamp_duration(item.get("duration"), dialogue),
                 "prompt": prompt,
-                "dialogue": str(item.get("dialogue") or "").strip(),
+                "dialogue": dialogue,
                 "images": images,
             }
         )
-    shots = shots[:6]
     return assets, shots
 
 
@@ -414,7 +429,7 @@ def build_workflow(spec):
 
     concat_inputs = []
     for index, shot in enumerate(shots):
-        nid = 200 + index * 2
+        nid = 1000 + index * 2
         save_id = nid + 1
         inputs = []
         for slot, asset_id in enumerate(shot["images"]):
