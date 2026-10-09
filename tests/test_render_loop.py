@@ -1,21 +1,38 @@
 """Checkpoints, failure reset, pause, and restart for the local render loop."""
 
+import json
+import struct
 import tempfile
 import threading
 import unittest
+import zlib
 from pathlib import Path
 
 from cr_api.client import CRError, VideoTask
 from icreat_api.client import ImageTask
 from web.render_loop import (
+    _missing_subtitle_glyphs,
+    assemble_shot_media,
+    blank_step,
+    build_subtitle_ass,
+    choose_video_mode,
+    delivery_prompt,
+    display_caption,
     gate_for,
+    image_size,
     load_run_state,
     mark_user_pause,
+    nearest_aspect_ratio,
+    note_local_image,
     reset_current_step,
+    resume_paused,
     run_local_pipeline,
     save_run_state,
     should_resume_project,
+    split_caption,
+    subtitle_cues,
 )
+from web.workflow_from_spec import task_plan
 
 SPEC = {
     "title": "雨夜",
@@ -346,6 +363,481 @@ class RenderLoopTest(unittest.TestCase):
         finished = Client().wait_video(task, interval=0, on_status=lambda item: seen.append(item.status))
         self.assertEqual(seen, ["submitted", "processing", "completed"])
         self.assertEqual(finished.status, "completed")
+
+    def test_subtitle_cues_follow_the_script_line(self):
+        shown = display_caption("十几个号，粉丝加起来，没号多。")
+        self.assertEqual(shown, "十几个号　粉丝加起来　没号多")
+        self.assertEqual(split_caption(shown), ["十几个号　粉丝加起来", "没号多"])
+        self.assertEqual(display_caption("五天，一百万？"), "五天　一百万？")
+        cues = subtitle_cues(
+            [
+                {
+                    "duration": 5,
+                    "spoken": [{"speaker": "苏晚", "line": "再站一会儿就好。"}],
+                }
+            ]
+        )
+        self.assertEqual(len(cues), 1)
+        self.assertEqual(cues[0]["text"], "再站一会儿就好")
+        self.assertEqual((cues[0]["start"], cues[0]["end"]), (0, 5))
+        voiced = subtitle_cues(
+            [
+                {
+                    "duration": 4,
+                    "narration": "夜色已经很深了",
+                    "spoken": [{"speaker": "她", "line": "走吧"}],
+                }
+            ]
+        )
+        self.assertEqual(voiced[0]["text"], "夜色已经很深了")
+        prompt = delivery_prompt(
+            {"prompt": "她抬头", "narration": "夜色已经很深了"},
+            [{"speaker": "她", "line": "走吧"}],
+            0,
+            False,
+        )
+        self.assertIn("画外旁白", prompt)
+        self.assertIn("<d>[Chinese] 夜色已经很深了</d>", prompt)
+        self.assertNotIn("在画内开口", prompt)
+        ass = build_subtitle_ass(cues)
+        self.assertIn("Dialogue: 0,0:00:00.00,0:00:05.00,正片,,0,0,0,,再站一会儿就好", ass)
+        self.assertIn("PlayResX: 768", ass)
+        self.assertIn("PlayResY: 1344", ass)
+        self.assertTrue(_missing_subtitle_glyphs("fontselect: failed to find any fallback with glyph 0x65E9"))
+        self.assertFalse(_missing_subtitle_glyphs(""))
+
+    def test_task_plan_ends_with_ffmpeg_subtitles(self):
+        tasks = task_plan(SPEC)
+        self.assertEqual([task["id"] for task in tasks[-2:]], ["join", "subtitles"])
+        self.assertEqual(tasks[-1]["detail"], "ffmpeg 烧录 字幕.ass")
+
+    def test_pipeline_burns_ass_after_join(self):
+        spec = {
+            "title": "雨夜",
+            "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人站在车站"}],
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "prompt": "她转身离开",
+                    "images": ["A1"],
+                    "dialogue": "苏晚：再站一会儿就好。",
+                }
+            ],
+        }
+        burned = []
+
+        def burner(raw, ass_path, target):
+            burned.append((Path(raw).read_bytes(), Path(ass_path).read_text(encoding="utf-8")))
+            Path(target).write_bytes(b"burned-mp4")
+
+        result = run_local_pipeline(
+            spec,
+            self.work,
+            icreat=FakeICreat(),
+            cr=FakeCR(),
+            sleeper=_noop_sleep,
+            burner=burner,
+        )
+        self.assertEqual(result["video_file"], "joined.mp4")
+        self.assertEqual((self.work / "outputs" / "joined.mp4").read_bytes(), b"burned-mp4")
+        self.assertTrue((self.work / "outputs" / "concat.mp4").is_file())
+        self.assertIn("再站一会儿就好", burned[0][1])
+        state = load_run_state(self.work)
+        self.assertEqual(state["phase"], "done")
+        self.assertEqual(state["steps"]["subtitles"]["status"], "done")
+        self.assertEqual(state["steps"]["subtitles"]["output_file"], "字幕.ass")
+        self.assertTrue((self.work / "outputs" / "字幕.ass").is_file())
+
+    def test_pipeline_keeps_minimax_free_of_burned_text(self):
+        spec = {
+            "title": "雨夜",
+            "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人站在车站"}],
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "prompt": "她转身离开",
+                    "images": ["A1"],
+                    "dialogue": "苏晚：再站一会儿就好。",
+                }
+            ],
+        }
+        cr = FakeCR()
+
+        def burner(_raw, _ass_path, target):
+            Path(target).write_bytes(b"burned-mp4")
+
+        run_local_pipeline(spec, self.work, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep, burner=burner)
+        prompt = cr.submits[0]["text"]
+        self.assertIn("全程无字幕、无对白文字叠加", prompt)
+        self.assertIn("<d>[Chinese] 再站一会儿就好。</d>", prompt)
+
+    def test_submit_reads_spec_file_before_each_step(self):
+        stale = {
+            "title": "雨夜",
+            "script": "",
+            "assets": [{"id": "A1", "title": "主角", "prompt": "旧的提示词"}],
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "prompt": "旧的镜头",
+                    "images": ["A1"],
+                    "dialogue": "苏晚：旧对白。",
+                }
+            ],
+        }
+        fresh = {
+            "title": "雨夜",
+            "script": "",
+            "assets": [{"id": "A1", "title": "主角", "prompt": "新的提示词"}],
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "prompt": "新的镜头",
+                    "images": ["A1"],
+                    "dialogue": "苏晚：新的对白。",
+                }
+            ],
+        }
+        (self.work / "spec.json").write_text(json.dumps(fresh, ensure_ascii=False), encoding="utf-8")
+        burned = []
+
+        def burner(_raw, ass_path, target):
+            burned.append(Path(ass_path).read_text(encoding="utf-8"))
+            Path(target).write_bytes(b"burned-mp4")
+
+        icreat = FakeICreat()
+        cr = FakeCR()
+        run_local_pipeline(stale, self.work, icreat=icreat, cr=cr, sleeper=_noop_sleep, burner=burner)
+        self.assertIn("新的提示词", icreat.submits[0]["prompt"])
+        self.assertNotIn("旧的提示词", icreat.submits[0]["prompt"])
+        self.assertIn("新的镜头", cr.submits[0]["text"])
+        self.assertIn("新的对白", cr.submits[0]["text"])
+        self.assertNotIn("旧的镜头", cr.submits[0]["text"])
+        self.assertIn("新的对白", burned[0])
+        self.assertNotIn("旧对白", burned[0])
+
+    def test_open_task_does_not_resubmit_when_spec_changes(self):
+        changed = {
+            "title": "雨夜",
+            "assets": [{"id": "A1", "title": "主角", "prompt": "不该再提交的提示词"}],
+            "shots": [{"id": "S01", "duration": 5, "prompt": "她转身离开", "images": ["A1"]}],
+        }
+        (self.work / "spec.json").write_text(json.dumps(changed, ensure_ascii=False), encoding="utf-8")
+        save_run_state(
+            self.work,
+            {
+                "phase": "images",
+                "steps": {
+                    "A1": {
+                        "kind": "image",
+                        "status": "running",
+                        "remote_task_id": "img-keep",
+                        "poll_url": "",
+                        "idempotency_key": "keep",
+                        "attempts": 1,
+                        "epoch": 0,
+                        "output_file": "",
+                        "public_url": "",
+                        "local_override": False,
+                        "error": "",
+                    }
+                },
+            },
+        )
+        icreat = FakeICreat()
+        run_local_pipeline(ONE, self.work, icreat=icreat, sleeper=_noop_sleep, images_only=True)
+        self.assertEqual(icreat.submits, [])
+        self.assertIn("img-keep", icreat.queries)
+
+    def test_local_override_refuses_the_old_remote_image(self):
+        project_id = "local-parent"
+        image = self.work / "outputs" / "images" / "A1.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"\x89PNG-local")
+        save_run_state(
+            self.work,
+            {
+                "phase": "images",
+                "steps": {
+                    "A1": {
+                        "kind": "image",
+                        "status": "done",
+                        "remote_task_id": "img-old",
+                        "poll_url": "",
+                        "idempotency_key": "old",
+                        "attempts": 1,
+                        "epoch": 0,
+                        "output_file": "images/A1.png",
+                        "public_url": "https://cdn.example/old-A1.png",
+                        "error": "",
+                    }
+                },
+            },
+        )
+        note_local_image(self.work, project_id, "A1")
+        self.assertEqual(load_run_state(self.work)["steps"]["A1"]["public_url"], "")
+        self.assertTrue(load_run_state(self.work)["steps"]["A1"]["local_override"])
+        icreat = FakeICreat()
+        box = {}
+
+        def runner():
+            try:
+                box["result"] = run_local_pipeline(
+                    SPEC,
+                    self.work,
+                    project_id=project_id,
+                    icreat=icreat,
+                    cr=FakeCR(),
+                    sleeper=_noop_sleep,
+                )
+            except Exception as error:
+                box["error"] = error
+
+        thread = threading.Thread(target=runner)
+        thread.start()
+        self.assertTrue(gate_for(project_id).blocked.wait(5))
+        state = load_run_state(self.work)
+        self.assertIn("不能用旧的远程图", state.get("pause_reason") or "")
+        self.assertEqual(icreat.submits, [])
+        state["steps"]["A1"]["local_override"] = False
+        state["steps"]["A1"]["public_url"] = "https://cdn.example/A1.png"
+        save_run_state(self.work, state)
+        reset_current_step(self.work, project_id)
+        resume_paused(self.work, project_id)
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", box)
+        self.assertEqual(box["result"]["video_file"], "joined.mp4")
+        self.assertEqual(icreat.submits[0]["image"], ["https://cdn.example/A1.png"])
+
+    def test_replaced_still_opens_on_first_frame(self):
+        project_id = "local-shot"
+        image = self.work / "outputs" / "images" / "A1.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"\x89PNG-local")
+        note_local_image(self.work, project_id, "A1")
+        icreat = FakeICreat()
+        cr = FakeCR()
+        run_local_pipeline(ONE, self.work, project_id=project_id, icreat=icreat, cr=cr, sleeper=_noop_sleep)
+        self.assertEqual(icreat.submits, [])
+        self.assertEqual(cr.submits[0]["model"], "minimax-h3-image-to-video")
+        self.assertEqual([item["role"] for item in cr.submits[0]["images"]], ["first_frame"])
+        self.assertTrue(cr.submits[0]["images"][0]["url"].startswith("data:image/"))
+        self.assertNotIn("自然皮肤", cr.submits[0]["text"])
+
+    def test_mode_follows_the_shot_inputs(self):
+        self.assertEqual(nearest_aspect_ratio(2160, 2880), "3:4")
+        self.assertEqual(nearest_aspect_ratio(768, 1344), "9:16")
+        portrait = _png(30, 40)
+        self.assertEqual(image_size(_write_png(self.work / "portrait.png", portrait)), (30, 40))
+        self.assertEqual(
+            choose_video_mode({"images": ["U1"]}, user_image_ids=["U1"]),
+            "first_frame",
+        )
+        self.assertEqual(
+            choose_video_mode({"images": ["U1"], "end_image": "U2"}, user_image_ids=["U1"]),
+            "first_last_frame",
+        )
+        self.assertEqual(choose_video_mode({"images": ["A1"]}), "reference")
+        self.assertEqual(choose_video_mode({"images": []}), "text")
+        self.assertEqual(choose_video_mode({"images": []}, continues=True), "reference")
+        self.assertEqual(
+            choose_video_mode({"images": ["U1"], "video_mode": "reference"}, user_image_ids=["U1"]),
+            "reference",
+        )
+        with self.assertRaises(RuntimeError):
+            choose_video_mode({"video_mode": "clip", "images": []})
+
+        def url_for(_asset_id):
+            return "data:image/png;base64,QQ==", None
+
+        _aspect, continued = assemble_shot_media(
+            {"id": "S02", "images": ["A2"]},
+            "reference",
+            url_for,
+            "data:image/jpeg;base64,TAIL",
+        )
+        self.assertEqual([item["role"] for item in continued], ["reference_image", "reference_image"])
+        self.assertTrue(continued[1]["url"].startswith("data:image/jpeg"))
+        kept = delivery_prompt({"prompt": "她回头"}, [], 1, True, "reference")
+        self.assertIn("自然皮肤", kept)
+        self.assertIn("不要照抄", kept)
+        _aspect, opened = assemble_shot_media(
+            {"id": "S02", "images": ["U2"]},
+            "first_frame",
+            url_for,
+            "data:image/jpeg;base64,TAIL",
+        )
+        self.assertEqual([item["role"] for item in opened], ["first_frame"])
+        locked = delivery_prompt({"prompt": "光扫过", "narration": "旁白"}, [], 1, False, "first_frame")
+        self.assertIn("从这张首帧的可见内容开始", locked)
+        self.assertIn("画外旁白", locked)
+        self.assertNotIn("自然皮肤", locked)
+        self.assertNotIn("衣料", locked)
+        self.assertNotIn("手持", locked)
+        self.assertNotIn("不要照抄", locked)
+
+    def test_user_still_opens_on_first_frame_and_its_aspect(self):
+        spec = {
+            "title": "神行者",
+            "assets": [
+                {"id": "U1", "title": "起步", "prompt": "用户上传的起步"},
+                {"id": "U2", "title": "转弯", "prompt": "用户上传的转弯"},
+            ],
+            "shots": [
+                {
+                    "id": "S001",
+                    "duration": 5,
+                    "prompt": "光从左边扫过",
+                    "images": ["U1"],
+                    "narration": "第一句旁白",
+                },
+                {
+                    "id": "S002",
+                    "duration": 5,
+                    "prompt": "镜头轻轻前推",
+                    "images": ["U2"],
+                    "narration": "第二句旁白",
+                },
+            ],
+        }
+        _seed_still(self.work, "U1", _png(30, 40), local=True)
+        _seed_still(self.work, "U2", _png(320, 180), local=True)
+        cr = FakeCR()
+
+        def joiner(_clips, target):
+            Path(target).write_bytes(b"joined")
+            return target
+
+        def burner(_raw, _ass, target):
+            Path(target).write_bytes(b"burned")
+
+        run_local_pipeline(
+            spec,
+            self.work,
+            icreat=FakeICreat(),
+            cr=cr,
+            sleeper=_noop_sleep,
+            joiner=joiner,
+            burner=burner,
+        )
+        self.assertEqual(len(cr.submits), 2)
+        first, second = cr.submits
+        self.assertEqual(first["model"], "minimax-h3-image-to-video")
+        self.assertEqual(first["aspect_ratio"], "3:4")
+        self.assertEqual([item["role"] for item in first["images"]], ["first_frame"])
+        self.assertIn("从这张首帧的可见内容开始", first["text"])
+        self.assertIn("画外旁白", first["text"])
+        self.assertIn("第一句旁白", first["text"])
+        self.assertNotIn("自然皮肤", first["text"])
+        self.assertNotIn("不要照抄", first["text"])
+        self.assertEqual(second["model"], "minimax-h3-image-to-video")
+        self.assertEqual(second["aspect_ratio"], "16:9")
+        self.assertEqual([item["role"] for item in second["images"]], ["first_frame"])
+        self.assertNotIn("自然皮肤", second["text"])
+        self.assertNotIn("不要照抄", second["text"])
+        self.assertNotIn("reference_video", [item["role"] for item in second["images"]])
+
+    def test_text_and_end_frame_and_explicit_reference(self):
+        text_spec = {
+            "title": "海",
+            "assets": [{"id": "A1", "title": "闲置", "prompt": "一张桌子"}],
+            "shots": [{"id": "S01", "duration": 4, "prompt": "海面慢慢亮起来", "images": []}],
+        }
+        cr = FakeCR()
+        run_local_pipeline(text_spec, self.work, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep)
+        self.assertEqual(cr.submits[0]["model"], "minimax-h3-text-to-video")
+        self.assertEqual(cr.submits[0]["aspect_ratio"], "9:16")
+        self.assertFalse(cr.submits[0]["images"])
+
+        end_dir = self.work / "end"
+        end_dir.mkdir()
+        _seed_still(end_dir, "A1", _png(30, 40))
+        _seed_still(end_dir, "A2", _png(40, 40))
+        end_spec = {
+            "title": "走到门口",
+            "assets": [
+                {"id": "A1", "title": "起", "prompt": "站在门口"},
+                {"id": "A2", "title": "终", "prompt": "已经出门"},
+            ],
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "prompt": "从站姿走到门口",
+                    "images": ["A1"],
+                    "end_image": "A2",
+                }
+            ],
+        }
+        cr = FakeCR()
+        run_local_pipeline(end_spec, end_dir, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep)
+        opened = cr.submits[0]
+        self.assertEqual(opened["model"], "minimax-h3-image-to-video")
+        self.assertEqual(opened["aspect_ratio"], "3:4")
+        self.assertEqual([item["role"] for item in opened["images"]], ["first_frame", "last_frame"])
+        self.assertIn("从这张首帧的可见内容开始", opened["text"])
+        self.assertNotIn("自然皮肤", opened["text"])
+        self.assertNotIn("不要照抄", opened["text"])
+
+        explicit = self.work / "explicit"
+        explicit.mkdir()
+        _seed_still(explicit, "U1", _png(30, 40), local=True)
+        explicit_spec = {
+            "title": "指定参考",
+            "assets": [{"id": "U1", "title": "图", "prompt": "用户图"}],
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "prompt": "她转身离开",
+                    "images": ["U1"],
+                    "video_mode": "reference",
+                }
+            ],
+        }
+        cr = FakeCR()
+        run_local_pipeline(explicit_spec, explicit, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep)
+        chosen = cr.submits[0]
+        self.assertEqual(chosen["model"], "minimax-h3-reference-to-video")
+        self.assertEqual(chosen["aspect_ratio"], "9:16")
+        self.assertEqual(chosen["images"][0]["role"], "reference_image")
+        self.assertIn("自然皮肤", chosen["text"])
+
+
+def _png(width, height):
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    raw = b"".join(b"\x00" + (b"\xff\x00\x00" * width) for _index in range(height))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+
+def _write_png(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+def _seed_still(work, asset_id, data, local=False):
+    folder = Path(work) / "outputs" / "images"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / ("%s.png" % asset_id)).write_bytes(data)
+    if local:
+        note_local_image(work, "mode-seed", asset_id)
+        return
+    state = load_run_state(work)
+    step = blank_step("image")
+    step["status"] = "done"
+    step["output_file"] = "images/%s.png" % asset_id
+    state["steps"][asset_id] = step
+    save_run_state(work, state)
 
 
 if __name__ == "__main__":

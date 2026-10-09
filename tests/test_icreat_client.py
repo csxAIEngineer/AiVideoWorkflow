@@ -34,7 +34,7 @@ class ICreatClientTest(unittest.TestCase):
             if url.endswith("/openai/gpt-image-2/text-to-image"):
                 body = json.loads(request.data.decode("utf-8"))
                 self.assertEqual(body["prompt"], "a cat")
-                self.assertEqual(body["size"], "1440x2560")
+                self.assertEqual(body["size"], "1024x1024")
                 self.assertEqual(body["quality"], "high")
                 self.assertNotIn("image", body)
                 self.assertEqual(set(body), {"prompt", "size", "quality"})

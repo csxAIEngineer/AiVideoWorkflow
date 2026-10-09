@@ -10,6 +10,15 @@ const debugEl = document.querySelector("#debug-llm");
 const modelEl = document.querySelector("#model");
 const modelFoot = document.querySelector("#model-foot");
 
+const stageBar = document.querySelector("#stage-bar");
+const canvasWrap = document.querySelector("#canvas-wrap");
+const canvasEl = document.querySelector("#canvas");
+const canvasNodes = document.querySelector("#canvas-nodes");
+const canvasSvg = document.querySelector("#canvas-edges");
+const debugDock = document.querySelector("#debug-dock");
+const viewCanvasBtn = document.querySelector("#view-canvas");
+const viewChatBtn = document.querySelector("#view-chat");
+
 let projects = [];
 let current = null;
 let timer = null;
@@ -17,6 +26,15 @@ let clock = null;
 let serverDebugDefault = false;
 let otherOpen = false;
 let sending = false;
+let surface = "canvas";
+let canvasSig = "";
+let canvasEdges = [];
+let view = { x: 48, y: 48, scale: 1 };
+const canvasMinScale = 0.55;
+let pendingSaves = new Set();
+const pointer = { mode: "" };
+let draftMaterials = [];
+const MAX_MATERIALS = 8;
 
 const JOB_STEPS = ["建立项目", "写剧本", "生图", "出视频", "完成"];
 const DEBUG_FILE_LABELS = {
@@ -72,7 +90,7 @@ function jobIndex(project) {
     if (active) return active.kind === "image" ? 2 : 3;
     if (tasks.some((task) => task.kind !== "image" && task.state === "done")) return 3;
     if (tasks.some((task) => task.kind === "image" && task.state === "done")) return 2;
-    if (phase === "videos" || phase === "join") return 3;
+    if (phase === "videos" || phase === "join" || phase === "subtitles") return 3;
     if (phase === "images" || phase === "retry" || phase === "reconnect" || phase === "paused") return 2;
     if (project.script) return 1;
     return 1;
@@ -110,15 +128,18 @@ function clockTime(iso) {
 
 function durationText(task) {
   if (task.kind === "join") return "合计 " + task.duration + " 秒";
+  if (task.kind === "subtitles") return "烧录字幕";
   if (task.kind === "video") return task.duration + " 秒";
   return "生图";
 }
 
 function tickElapsed() {
-  const node = document.querySelector(".job-elapsed");
-  if (!node || !current) return;
+  if (!current) return;
   const label = elapsedLabel(current);
-  if (label) node.textContent = label;
+  const node = document.querySelector(".job-elapsed");
+  if (node && label) node.textContent = label;
+  const dock = document.querySelector("#dock-elapsed");
+  if (dock) dock.textContent = label;
 }
 
 function taskStateLabel(state) {
@@ -691,25 +712,74 @@ function syncComposer() {
   briefEl.disabled = !showInput || sending;
   send.disabled = !showInput || sending;
   form.classList.toggle("bare", !showInput);
+  const materials = document.querySelector("#materials");
+  if (materials) materials.classList.toggle("hidden", !showBrief);
+  const materialFile = document.querySelector("#material-file");
+  if (materialFile) materialFile.disabled = !showBrief || sending;
   if (showOther) briefEl.placeholder = "写下你的方向";
   else if (showBrief) briefEl.placeholder = current ? "写下另一条片子的背景" : "写下这段片子的背景";
 }
 
+function workflowMode(project) {
+  if (!project || inDrill(project)) return false;
+  if (["writing", "building", "rendering", "paused", "done", "error"].includes(project.status)) return true;
+  return !!project.script;
+}
+
+function hideWorkflow() {
+  if (stageBar) stageBar.classList.add("hidden");
+  if (canvasWrap) canvasWrap.classList.add("hidden");
+  if (debugDock) debugDock.classList.add("hidden");
+}
+
+function showWorkflow() {
+  if (stageBar) stageBar.classList.remove("hidden");
+  if (debugDock) debugDock.classList.remove("hidden");
+  const chat = surface === "chat";
+  if (canvasWrap) canvasWrap.classList.toggle("hidden", chat);
+  if (viewCanvasBtn) viewCanvasBtn.classList.toggle("on", !chat);
+  if (viewChatBtn) viewChatBtn.classList.toggle("on", chat);
+  syncControlButtons(current);
+}
+
 function renderThread(options) {
   const opts = options || {};
-  const prevScroll = thread.scrollTop;
-  thread.innerHTML = "";
   main.classList.toggle("fresh", !current);
   if (!current) {
+    surface = "canvas";
+    canvasSig = "";
+    hideWorkflow();
     empty.classList.remove("hidden");
     thread.classList.add("hidden");
+    thread.innerHTML = "";
     syncComposer();
     return;
   }
   empty.classList.add("hidden");
-  thread.classList.remove("hidden");
+  if (!workflowMode(current)) {
+    hideWorkflow();
+    thread.classList.remove("hidden");
+    paintTranscript(opts, true);
+    return;
+  }
+  showWorkflow();
+  const chat = surface === "chat";
+  thread.classList.toggle("hidden", !chat);
+  if (chat) paintTranscript(opts, false);
+  syncCanvas(current);
+  syncDock(current);
+  refreshLogs();
+  syncComposer();
+}
+
+function paintTranscript(options, full) {
+  const opts = options || {};
+  const prevScroll = thread.scrollTop;
+  thread.innerHTML = "";
   const wrap = document.createElement("div");
   wrap.className = "wrap";
+  const strip = materialStrip(current);
+  if (strip) wrap.append(strip);
   visibleMessages(current).forEach((message) => {
     wrap.append(messageBubble(message.role, message.content || ""));
   });
@@ -721,6 +791,14 @@ function renderThread(options) {
     thinking.className = "stage";
     thinking.textContent = current.stage || "正在想方向";
     wrap.append(thinking);
+  }
+  if (!full) {
+    thread.append(wrap);
+    syncComposer();
+    if (opts.scroll === "top") thread.scrollTop = 0;
+    else if (opts.scroll === "bottom") thread.scrollTop = thread.scrollHeight;
+    else thread.scrollTop = prevScroll;
+    return;
   }
   const assistant = document.createElement("div");
   assistant.className = "assistant";
@@ -806,6 +884,10 @@ async function refreshList() {
 }
 
 async function openProject(id) {
+  if (!current || current.id !== id) {
+    surface = "canvas";
+    canvasSig = "";
+  }
   const response = await fetch("/api/projects/" + id);
   if (!response.ok) return;
   current = await response.json();
@@ -839,6 +921,7 @@ function watch() {
 newChat.addEventListener("click", () => {
   current = null;
   otherOpen = false;
+  clearDraftMaterials();
   briefEl.value = "";
   const savedModel = localStorage.getItem("aivideo.model");
   if (modelEl && savedModel && [...modelEl.options].some((option) => option.value === savedModel)) {
@@ -952,26 +1035,107 @@ function adoptProject(project, isNew) {
   watch();
 }
 
+function clearDraftMaterials() {
+  draftMaterials.forEach((item) => {
+    if (item.url) URL.revokeObjectURL(item.url);
+  });
+  draftMaterials = [];
+  renderDraftMaterials();
+}
+
+function renderDraftMaterials() {
+  const list = document.querySelector("#material-list");
+  if (!list) return;
+  list.replaceChildren();
+  draftMaterials.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "material-card";
+    const img = document.createElement("img");
+    img.src = item.url;
+    img.alt = item.file.name || "图素材";
+    const field = document.createElement("textarea");
+    field.rows = 2;
+    field.placeholder = "这张图的旁白";
+    field.value = item.narration;
+    field.addEventListener("input", () => {
+      item.narration = field.value;
+    });
+    field.addEventListener("keydown", (event) => event.stopPropagation());
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "移除";
+    remove.addEventListener("click", () => {
+      URL.revokeObjectURL(item.url);
+      draftMaterials = draftMaterials.filter((other) => other !== item);
+      renderDraftMaterials();
+    });
+    card.append(img, field, remove);
+    list.append(card);
+  });
+}
+
+function materialStrip(project) {
+  const items = (project && project.materials) || [];
+  if (!items.length) return null;
+  const block = document.createElement("div");
+  block.className = "material-strip";
+  items.forEach((item) => {
+    const card = document.createElement("article");
+    if (item.url) {
+      const img = document.createElement("img");
+      img.src = item.url;
+      img.alt = item.title || item.id;
+      card.append(img);
+    }
+    const text = document.createElement("p");
+    const name = document.createElement("small");
+    name.textContent = item.title || item.id;
+    text.append(name);
+    if (item.narration) {
+      text.append(document.createElement("br"));
+      text.append(document.createTextNode(item.narration));
+    }
+    card.append(text);
+    block.append(card);
+  });
+  return block;
+}
+
 async function startBrief(text) {
   const brief = String(text || "").trim();
   if (!brief || sending) return;
+  const materials = draftMaterials.slice();
   sending = true;
   syncComposer();
   try {
-    const response = await fetch("/api/projects", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        brief,
-        debug_llm: !!(debugEl && debugEl.checked),
-        model: selectedModel(),
-      }),
-    });
+    let response;
+    if (materials.length) {
+      const data = new FormData();
+      data.append("brief", brief);
+      data.append("model", selectedModel());
+      data.append("debug_llm", debugEl && debugEl.checked ? "1" : "0");
+      materials.forEach((item) => {
+        data.append("file", item.file, item.file.name);
+        data.append("narration", item.narration || "");
+      });
+      response = await fetch("/api/projects", { method: "POST", body: data });
+    } else {
+      response = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          brief,
+          debug_llm: !!(debugEl && debugEl.checked),
+          model: selectedModel(),
+        }),
+      });
+    }
     const project = await response.json();
     if (!response.ok) {
       alert(project.error || "没有开始");
       return;
     }
+    clearDraftMaterials();
     adoptProject(project, true);
   } finally {
     sending = false;
@@ -1002,6 +1166,28 @@ async function sendText(text) {
   }
 }
 
+const materialFile = document.querySelector("#material-file");
+if (materialFile) {
+  materialFile.addEventListener("change", () => {
+    const picked = [...materialFile.files];
+    materialFile.value = "";
+    const room = MAX_MATERIALS - draftMaterials.length;
+    if (!room || picked.length > room) alert("一次最多 8 张图");
+    let skipped = false;
+    picked.slice(0, Math.max(0, room)).forEach((file) => {
+      const named = /\.(png|jpe?g|webp)$/i.test(file.name || "");
+      const typed = /^image\/(png|jpeg|webp)$/.test(file.type || "");
+      if (!named && !typed) {
+        skipped = true;
+        return;
+      }
+      draftMaterials.push({ file: file, url: URL.createObjectURL(file), narration: "" });
+    });
+    if (skipped) alert("只接受 png、jpeg、webp");
+    renderDraftMaterials();
+  });
+}
+
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   if (briefEl.disabled) return;
@@ -1010,6 +1196,776 @@ form.addEventListener("submit", (event) => {
   if (current && current.can_reply) sendText(text);
   else startBrief(text);
 });
+
+function clampScale(value) {
+  return Math.max(0.25, Math.min(2, value));
+}
+
+function loadPositions(projectId) {
+  try {
+    const data = JSON.parse(localStorage.getItem("aivideo.canvas." + projectId) || "{}");
+    return data && typeof data === "object" ? data : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function savePositions(projectId) {
+  const data = {};
+  canvasNodes.querySelectorAll(".wf-node").forEach((node) => {
+    data[node.dataset.id] = { x: Number(node.dataset.x) || 0, y: Number(node.dataset.y) || 0 };
+  });
+  localStorage.setItem("aivideo.canvas." + projectId, JSON.stringify(data));
+}
+
+function applyView() {
+  if (!canvasEl) return;
+  canvasEl.style.transform = "translate(" + view.x + "px," + view.y + "px) scale(" + view.scale + ")";
+}
+
+function nodeById(id) {
+  const nodes = canvasNodes.querySelectorAll(".wf-node");
+  for (let index = 0; index < nodes.length; index += 1) {
+    if (nodes[index].dataset.id === id) return nodes[index];
+  }
+  return null;
+}
+
+function placeNode(node, x, y) {
+  node.dataset.x = String(x);
+  node.dataset.y = String(y);
+  node.style.transform = "translate(" + x + "px," + y + "px)";
+}
+
+function taskById(project, id) {
+  return (project.tasks || []).find((task) => task.id === id) || null;
+}
+
+function nodeState(project, kind, id) {
+  const task = taskById(project, id);
+  if (task && task.state) return task.state;
+  if (kind === "script" || kind === "storyboard") {
+    const text = kind === "script" ? project.script : project.storyboard;
+    if (project.status === "writing" || project.status === "building") return "running";
+    if (project.status === "paused" && !text) return "paused";
+    if (text) return "done";
+    return "pending";
+  }
+  if (kind === "film") {
+    if (project.has_video) return "done";
+    if (project.status === "error") return "error";
+    if (project.status === "paused") return "paused";
+    if (project.status === "rendering") return "running";
+    return "pending";
+  }
+  return "pending";
+}
+
+function fieldValue(project, key) {
+  if (key === "script") return project.script || "";
+  if (key === "storyboard") return project.storyboard || "";
+  if (key.indexOf("asset:") === 0) {
+    const asset = (project.assets || []).find((item) => item.id === key.slice(6));
+    return asset ? asset.prompt || "" : "";
+  }
+  return "";
+}
+
+function imageUrlFor(project, id) {
+  const found = (project.images || []).find((image) => String(image.name || "").replace(/\.[^.]+$/, "") === id);
+  return found ? found.url : "";
+}
+
+function clipUrlFor(project, id) {
+  const found = (project.clips || []).find((clip) => clip.id === id);
+  return found ? found.url : "";
+}
+
+function readOnlyText(project, id, kind) {
+  if (kind === "shot") {
+    const shot = (project.shots || []).find((item) => item.id === id);
+    if (!shot) return "";
+    const lines = [];
+    if (shot.prompt) lines.push(shot.prompt);
+    if (shot.narration) lines.push("旁白：" + shot.narration);
+    return lines.join("\n");
+  }
+  if (kind === "join") return "按镜头顺序拼接";
+  if (kind === "subtitles") return "烧录字幕";
+  if (kind === "film") return project.has_video ? "成片可以播放" : "成片还没出来";
+  return "";
+}
+
+function nodePlan(project) {
+  const assets = project.assets || [];
+  const shots = project.shots || [];
+  const byId = {};
+  assets.forEach((asset) => {
+    byId[asset.id] = asset;
+  });
+  function rank(asset, seen) {
+    if (!asset || !asset.depends_on || seen[asset.id] || !byId[asset.depends_on]) return 0;
+    const next = Object.assign({}, seen);
+    next[asset.id] = true;
+    return 1 + rank(byId[asset.depends_on], next);
+  }
+  let maxRank = 0;
+  assets.forEach((asset) => {
+    maxRank = Math.max(maxRank, rank(asset, {}));
+  });
+  const shotCol = 2 + maxRank + 1;
+  const nodes = [
+    { id: "script", kind: "script", title: "剧本", col: 0, row: 0 },
+    { id: "storyboard", kind: "storyboard", title: "分镜", col: 1, row: 0 },
+  ];
+  const rows = {};
+  function push(node) {
+    rows[node.col] = rows[node.col] || 0;
+    node.row = rows[node.col];
+    rows[node.col] += 1;
+    nodes.push(node);
+  }
+  assets.forEach((asset) => {
+    push({
+      id: asset.id,
+      kind: "asset",
+      title: asset.title || asset.id,
+      col: 2 + rank(asset, {}),
+      asset: asset,
+    });
+  });
+  shots.forEach((shot) => {
+    push({ id: shot.id, kind: "shot", title: shot.id, col: shotCol, shot: shot });
+  });
+  push({ id: "join", kind: "join", title: "拼接", col: shotCol + 1 });
+  push({ id: "subtitles", kind: "subtitles", title: "字幕", col: shotCol + 2 });
+  push({ id: "film", kind: "film", title: "成片", col: shotCol + 3 });
+  const edges = [{ from: "script", to: "storyboard" }];
+  assets.forEach((asset) => {
+    if (asset.depends_on && byId[asset.depends_on]) edges.push({ from: asset.depends_on, to: asset.id });
+    else edges.push({ from: "storyboard", to: asset.id });
+  });
+  shots.forEach((shot) => {
+    const ids = (shot.images || []).filter((id) => byId[id]);
+    if (!ids.length) edges.push({ from: assets.length ? assets[0].id : "storyboard", to: shot.id });
+    ids.forEach((id) => edges.push({ from: id, to: shot.id }));
+    edges.push({ from: shot.id, to: "join" });
+  });
+  if (!shots.length) edges.push({ from: assets.length ? assets[assets.length - 1].id : "storyboard", to: "join" });
+  edges.push({ from: "join", to: "subtitles" }, { from: "subtitles", to: "film" });
+  return { nodes: nodes, edges: edges };
+}
+
+function layoutNodes(nodes, projectId) {
+  const saved = loadPositions(projectId);
+  const custom = nodes.some((node) => saved[node.id]);
+  nodes.forEach((node) => {
+    node.x = 48 + node.col * 320;
+    node.y = 48 + node.row * 280;
+    if (!custom) return;
+    const stored = saved[node.id];
+    if (stored && Number.isFinite(Number(stored.x)) && Number.isFinite(Number(stored.y))) {
+      node.x = Number(stored.x);
+      node.y = Number(stored.y);
+    }
+  });
+  return custom;
+}
+
+function spreadColumns() {
+  if (!canvasNodes || !canvasWrap) return false;
+  const columns = [];
+  canvasNodes.querySelectorAll(".wf-node").forEach((el) => {
+    const col = Number(el.dataset.col) || 0;
+    if (!columns[col]) columns[col] = [];
+    columns[col].push(el);
+  });
+  const measured = [];
+  columns.forEach((column) => {
+    if (!column) return;
+    column.sort((a, b) => (Number(a.dataset.row) || 0) - (Number(b.dataset.row) || 0));
+    let width = 0;
+    let contentH = 0;
+    column.forEach((el) => {
+      width = Math.max(width, el.offsetWidth);
+      contentH += el.offsetHeight;
+    });
+    if (!width || !contentH) return;
+    measured.push({ column: column, width: width, contentH: contentH, gaps: Math.max(0, column.length - 1) });
+  });
+  if (!measured.length) return false;
+  const minGapX = 56;
+  const minGapY = 36;
+  const pad = 28;
+  const viewW = Math.max(1, canvasWrap.clientWidth - pad * 2);
+  const viewH = Math.max(1, canvasWrap.clientHeight - pad * 2);
+  const contentW = measured.reduce((sum, col) => sum + col.width, 0);
+  const naturalW = contentW + minGapX * Math.max(0, measured.length - 1);
+  const naturalH = measured.reduce((max, col) => Math.max(max, col.contentH + minGapY * col.gaps), 0);
+  let gapX = minGapX;
+  let gapY = minGapY;
+  const fit = Math.min(viewW / Math.max(naturalW, 1), viewH / Math.max(naturalH, 1));
+  if (fit >= canvasMinScale && naturalH > 0 && naturalW / naturalH < viewW / viewH && measured.length > 1) {
+    gapX = Math.max(minGapX, (naturalH * (viewW / viewH) - contentW) / (measured.length - 1));
+  } else if (fit >= canvasMinScale && naturalH > 0 && naturalW / naturalH > viewW / viewH) {
+    const targetH = naturalW / (viewW / viewH);
+    const tallest = measured.reduce((best, col) => {
+      return col.contentH + minGapY * col.gaps > best.contentH + minGapY * best.gaps ? col : best;
+    });
+    if (tallest.gaps > 0) gapY = Math.max(minGapY, (targetH - tallest.contentH) / tallest.gaps);
+  }
+  let x = pad;
+  measured.forEach((col) => {
+    let y = pad;
+    col.column.forEach((el) => {
+      placeNode(el, x, y);
+      y += el.offsetHeight + gapY;
+    });
+    x += col.width + gapX;
+  });
+  return true;
+}
+
+function planSignature(plan) {
+  return plan.nodes.map((node) => node.kind + ":" + node.id).join("|")
+    + "#"
+    + plan.edges.map((edge) => edge.from + ">" + edge.to).join("|");
+}
+
+function makeField(project, key, rows) {
+  const field = document.createElement("textarea");
+  field.dataset.field = key;
+  field.rows = rows;
+  field.value = fieldValue(project, key);
+  field.addEventListener("input", () => pendingSaves.add(key));
+  field.addEventListener("blur", () => saveField(field));
+  field.addEventListener("pointerdown", (event) => event.stopPropagation());
+  return field;
+}
+
+function renderNode(project, info) {
+  const node = document.createElement("article");
+  node.className = "wf-node";
+  node.dataset.id = info.id;
+  node.dataset.kind = info.kind;
+  node.dataset.col = String(info.col);
+  node.dataset.row = String(info.row);
+  placeNode(node, info.x, info.y);
+  const head = document.createElement("header");
+  head.className = "wf-head";
+  head.setAttribute("aria-label", "拖动" + (info.title || info.id));
+  const dot = document.createElement("span");
+  dot.className = "wf-dot " + nodeState(project, info.kind, info.id);
+  const title = document.createElement("b");
+  title.textContent = info.title || info.id;
+  const meta = document.createElement("small");
+  if (info.kind === "asset") meta.textContent = info.id;
+  else if (info.kind === "shot" && info.shot) meta.textContent = (info.shot.duration || "?") + " 秒";
+  head.append(dot, title, meta);
+  node.append(head);
+  if (info.kind === "script") node.append(makeField(project, "script", 8));
+  else if (info.kind === "storyboard") node.append(makeField(project, "storyboard", 8));
+  else if (info.kind === "asset") {
+    const url = imageUrlFor(project, info.id);
+    if (url) {
+      const img = document.createElement("img");
+      img.className = "wf-still";
+      img.alt = info.title || info.id;
+      img.dataset.url = url;
+      img.src = url;
+      node.append(img);
+    }
+    node.append(makeField(project, "asset:" + info.id, 4));
+    const label = document.createElement("label");
+    label.className = "wf-upload";
+    label.append(document.createTextNode("替换图片"));
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp";
+    input.addEventListener("pointerdown", (event) => event.stopPropagation());
+    input.addEventListener("change", () => {
+      const file = input.files && input.files[0];
+      input.value = "";
+      if (file) uploadAsset(info.id, file);
+    });
+    label.append(input);
+    node.append(label);
+  } else {
+    const body = document.createElement("p");
+    body.className = "wf-read";
+    body.textContent = readOnlyText(project, info.id, info.kind);
+    node.append(body);
+    const url = info.kind === "film" ? (project.video_url || "") : info.kind === "shot" ? clipUrlFor(project, info.id) : "";
+    if (url) node.append(makeVideo(url));
+  }
+  return node;
+}
+
+function makeVideo(url) {
+  const video = document.createElement("video");
+  video.controls = true;
+  video.preload = "metadata";
+  video.dataset.url = url;
+  video.src = url;
+  video.addEventListener("pointerdown", (event) => event.stopPropagation());
+  return video;
+}
+
+function drawEdges(edges) {
+  if (!canvasSvg) return;
+  const list = edges || canvasEdges;
+  canvasSvg.replaceChildren();
+  let maxX = 40;
+  let maxY = 40;
+  list.forEach((edge) => {
+    const from = nodeById(edge.from);
+    const to = nodeById(edge.to);
+    if (!from || !to) return;
+    const x1 = (Number(from.dataset.x) || 0) + (from.offsetWidth || 240);
+    const y1 = (Number(from.dataset.y) || 0) + (from.offsetHeight || 80) / 2;
+    const x2 = Number(to.dataset.x) || 0;
+    const y2 = (Number(to.dataset.y) || 0) + (to.offsetHeight || 80) / 2;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    const mid = (x1 + x2) / 2;
+    path.setAttribute("d", "M " + x1 + " " + y1 + " C " + mid + " " + y1 + ", " + mid + " " + y2 + ", " + x2 + " " + y2);
+    canvasSvg.append(path);
+    maxX = Math.max(maxX, x1, x2);
+    maxY = Math.max(maxY, y1, y2);
+  });
+  canvasSvg.setAttribute("width", String(maxX + 80));
+  canvasSvg.setAttribute("height", String(maxY + 80));
+}
+
+function fitCanvas(minScale) {
+  if (!canvasWrap || canvasWrap.classList.contains("hidden")) return;
+  const nodes = [...canvasNodes.querySelectorAll(".wf-node")];
+  if (!nodes.length || !canvasWrap.clientWidth || !canvasWrap.clientHeight) return;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  nodes.forEach((node) => {
+    const x = Number(node.dataset.x) || 0;
+    const y = Number(node.dataset.y) || 0;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + (node.offsetWidth || 280));
+    maxY = Math.max(maxY, y + (node.offsetHeight || 160));
+  });
+  const pad = 36;
+  const boundsW = Math.max(1, maxX - minX);
+  const boundsH = Math.max(1, maxY - minY);
+  const fit = Math.min((canvasWrap.clientWidth - pad * 2) / boundsW, (canvasWrap.clientHeight - pad * 2) / boundsH);
+  const floor = minScale == null ? canvasMinScale : minScale;
+  if (fit < floor) {
+    view.scale = floor;
+    view.x = pad - minX * floor;
+    view.y = pad - minY * floor;
+    applyView();
+    return;
+  }
+  const scale = Math.min(2, fit);
+  view.scale = scale;
+  view.x = (canvasWrap.clientWidth - boundsW * scale) / 2 - minX * scale;
+  view.y = (canvasWrap.clientHeight - boundsH * scale) / 2 - minY * scale;
+  applyView();
+}
+
+function zoomAt(next, clientX, clientY) {
+  if (!canvasWrap) return;
+  const scale = clampScale(next);
+  const rect = canvasWrap.getBoundingClientRect();
+  const px = clientX == null ? rect.width / 2 : clientX - rect.left;
+  const py = clientY == null ? rect.height / 2 : clientY - rect.top;
+  const worldX = (px - view.x) / view.scale;
+  const worldY = (py - view.y) / view.scale;
+  view.scale = scale;
+  view.x = px - worldX * scale;
+  view.y = py - worldY * scale;
+  applyView();
+}
+
+let fittedSig = "";
+let resizeFrame = 0;
+
+function syncCanvas(project) {
+  if (!canvasNodes) return;
+  const plan = nodePlan(project);
+  const sig = project.id + "::" + planSignature(plan);
+  if (sig !== canvasSig) {
+    const active = document.activeElement;
+    const activeKey = active && active.dataset ? active.dataset.field : "";
+    const activeValue = activeKey ? active.value : "";
+    const caret = activeKey ? active.selectionStart : null;
+    canvasSig = sig;
+    fittedSig = "";
+    const customLayout = layoutNodes(plan.nodes, project.id);
+    canvasNodes.dataset.custom = customLayout ? "1" : "";
+    canvasNodes.replaceChildren();
+    plan.nodes.forEach((info) => canvasNodes.append(renderNode(project, info)));
+    canvasEdges = plan.edges;
+    if (activeKey) {
+      const fields = canvasNodes.querySelectorAll("[data-field]");
+      for (let index = 0; index < fields.length; index += 1) {
+        if (fields[index].dataset.field === activeKey) {
+          fields[index].value = activeValue;
+          fields[index].focus();
+          if (caret != null) fields[index].setSelectionRange(caret, caret);
+          break;
+        }
+      }
+    }
+    applyView();
+  } else {
+    patchCanvas(project);
+  }
+  if (surface !== "chat") {
+    if (fittedSig !== canvasSig) {
+      requestAnimationFrame(() => {
+        if (canvasWrap.classList.contains("hidden") || !canvasWrap.clientWidth) return;
+        if (!canvasNodes.dataset.custom) {
+          if (!spreadColumns()) return;
+        }
+        drawEdges(canvasEdges);
+        fitCanvas();
+        fittedSig = canvasSig;
+      });
+    } else {
+      drawEdges(canvasEdges);
+    }
+  }
+}
+
+function patchCanvas(project) {
+  canvasNodes.querySelectorAll(".wf-node").forEach((node) => {
+    const id = node.dataset.id;
+    const kind = node.dataset.kind;
+    const dot = node.querySelector(".wf-dot");
+    if (dot) dot.className = "wf-dot " + nodeState(project, kind, id);
+    node.querySelectorAll("[data-field]").forEach((field) => {
+      const key = field.dataset.field;
+      if (document.activeElement === field || pendingSaves.has(key)) return;
+      const value = fieldValue(project, key);
+      if (field.value !== value) field.value = value;
+    });
+    const read = node.querySelector(".wf-read");
+    if (read) {
+      const text = readOnlyText(project, id, kind);
+      if (read.textContent !== text) read.textContent = text;
+    }
+    if (kind === "asset") {
+      const url = imageUrlFor(project, id);
+      let img = node.querySelector("img.wf-still");
+      if (url) {
+        if (!img) {
+          img = document.createElement("img");
+          img.className = "wf-still";
+          img.alt = id;
+          const field = node.querySelector("[data-field]");
+          node.insertBefore(img, field);
+        }
+        if (img.dataset.url !== url) {
+          img.dataset.url = url;
+          img.src = url;
+        }
+      }
+    }
+    if (kind === "shot" || kind === "film") {
+      const url = kind === "film" ? (project.video_url || "") : clipUrlFor(project, id);
+      let video = node.querySelector("video");
+      if (url) {
+        if (!video) video = node.appendChild(makeVideo(url));
+        else if (video.dataset.url !== url) {
+          video.dataset.url = url;
+          video.src = url;
+        }
+      }
+    }
+  });
+}
+
+function setSaveState(text) {
+  const node = document.querySelector("#save-state");
+  if (node) node.textContent = text || "";
+}
+
+function adoptQuiet(project) {
+  current = project;
+  const listed = projects.find((item) => item.id === project.id);
+  if (listed) Object.assign(listed, project);
+  renderHistory();
+  renderThread();
+}
+
+async function saveField(field) {
+  if (!current || !field) return;
+  const key = field.dataset.field;
+  const value = field.value;
+  if (value === fieldValue(current, key)) {
+    pendingSaves.delete(key);
+    return;
+  }
+  pendingSaves.add(key);
+  setSaveState("保存中");
+  const body = {};
+  if (key === "script") body.script = value;
+  else if (key === "storyboard") body.storyboard = value;
+  else if (key.indexOf("asset:") === 0) body.assets = [{ id: key.slice(6), prompt: value }];
+  else return;
+  try {
+    const response = await fetch("/api/projects/" + current.id + "/content", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const project = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setSaveState(project.error || "没有保存");
+      return;
+    }
+    if (field.value === value) pendingSaves.delete(key);
+    setSaveState("已保存");
+    adoptQuiet(project);
+  } catch (_error) {
+    setSaveState("没有保存");
+  }
+}
+
+async function uploadAsset(assetId, file) {
+  if (!current || !file) return;
+  setSaveState("上传中");
+  try {
+    const response = await fetch("/api/projects/" + current.id + "/assets/" + encodeURIComponent(assetId) + "/image", {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    const project = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setSaveState(project.error || "没有换上图片");
+      return;
+    }
+    setSaveState("已换上图片");
+    adoptQuiet(project);
+  } catch (_error) {
+    setSaveState("没有换上图片");
+  }
+}
+
+function syncControlButtons(project) {
+  if (!project) return;
+  const canPause = ["writing", "building", "rendering"].includes(project.status);
+  const canResume = project.status === "paused";
+  const canReset = project.status === "paused" || project.status === "error";
+  document.querySelectorAll(".js-pause").forEach((button) => {
+    button.disabled = !canPause;
+  });
+  document.querySelectorAll(".js-resume").forEach((button) => {
+    button.disabled = !canResume;
+  });
+  document.querySelectorAll(".js-reset").forEach((button) => {
+    button.disabled = !canReset;
+  });
+}
+
+function syncDock(project) {
+  if (!debugDock) return;
+  const phase = document.querySelector("#dock-phase");
+  const percentNode = document.querySelector("#dock-percent");
+  const message = document.querySelector("#dock-message");
+  if (phase) phase.textContent = statusText(project);
+  const percent = project.status === "done" ? 100 : Math.max(0, Math.min(100, Number((project.progress || {}).percent) || 0));
+  if (percentNode) percentNode.textContent = percent + "%";
+  if (message) message.textContent = (project.progress && project.progress.message) || project.stage || "";
+  tickElapsed();
+  const tasks = project.tasks || [];
+  const taskSig = tasks.map((task) => [task.id, task.state, task.detail, task.title].join("\u0001")).join("\n");
+  const taskList = document.querySelector("#dock-tasks");
+  if (taskList && taskList.dataset.sig !== taskSig) {
+    taskList.dataset.sig = taskSig;
+    taskList.replaceChildren();
+    tasks.forEach((task) => {
+      const row = document.createElement("li");
+      row.className = "task task-" + (task.state || "pending");
+      const name = document.createElement("b");
+      name.textContent = task.id + (task.title && task.title !== task.id ? " " + task.title : "");
+      const state = document.createElement("span");
+      state.className = "task-state";
+      state.textContent = " " + taskStateLabel(task.state);
+      const detail = document.createElement("div");
+      detail.className = "task-detail";
+      detail.textContent = task.detail || "";
+      row.append(name, state, detail);
+      taskList.append(row);
+    });
+  }
+  const events = project.events || [];
+  const eventSig = events.map((event) => (event.at || "") + (event.message || "")).join("\n");
+  const eventList = document.querySelector("#dock-events");
+  if (eventList && eventList.dataset.sig !== eventSig) {
+    eventList.dataset.sig = eventSig;
+    eventList.replaceChildren();
+    events.slice(-40).forEach((event) => {
+      const row = document.createElement("li");
+      const time = document.createElement("time");
+      time.textContent = clockTime(event.at);
+      row.append(time, document.createTextNode(event.message || ""));
+      eventList.append(row);
+    });
+  }
+  const errorNode = document.querySelector("#dock-error");
+  if (errorNode && errorNode.textContent !== (project.error || "")) errorNode.textContent = project.error || "";
+  syncDockFiles(project);
+  syncControlButtons(project);
+}
+
+function syncDockFiles(project) {
+  const box = document.querySelector("#dock-files");
+  if (!box) return;
+  const keys = (project.has_spec ? ["spec"] : []).concat(project.debug_files || []);
+  const sig = project.id + ":" + keys.join(",");
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.replaceChildren();
+  if (project.has_spec) {
+    const spec = document.createElement("a");
+    spec.className = "download";
+    spec.href = "/api/projects/" + project.id + "/spec";
+    spec.textContent = "下载 spec.json";
+    box.append(spec);
+  }
+  (project.debug_files || []).forEach((key) => {
+    const link = document.createElement("a");
+    link.className = "download";
+    link.href = "/api/projects/" + project.id + "/debug/" + key;
+    link.textContent = "下载 " + (DEBUG_FILE_LABELS[key] || key);
+    box.append(link);
+  });
+}
+
+async function refreshLogs() {
+  if (!current || !workflowMode(current)) return;
+  const projectId = current.id;
+  try {
+    const response = await fetch("/api/projects/" + projectId + "/logs");
+    if (!response.ok || !current || current.id !== projectId) return;
+    const logs = await response.json();
+    const errorLog = document.querySelector("#dock-error-log");
+    const renderLog = document.querySelector("#dock-render-log");
+    const errorNode = document.querySelector("#dock-error");
+    if (errorLog && errorLog.textContent !== (logs.error_log || "")) errorLog.textContent = logs.error_log || "";
+    if (renderLog && renderLog.textContent !== (logs.render_log || "")) renderLog.textContent = logs.render_log || "";
+    if (errorNode && logs.error && errorNode.textContent !== logs.error) errorNode.textContent = logs.error;
+  } catch (_error) {
+    return;
+  }
+}
+
+function onCanvasPointerDown(event) {
+  if (!canvasWrap || event.button !== 0) return;
+  const head = event.target.closest(".wf-head");
+  if (head && canvasWrap.contains(head)) {
+    const node = head.closest(".wf-node");
+    pointer.mode = "node";
+    pointer.id = node.dataset.id;
+    pointer.x = event.clientX;
+    pointer.y = event.clientY;
+    pointer.nx = Number(node.dataset.x) || 0;
+    pointer.ny = Number(node.dataset.y) || 0;
+    node.classList.add("dragging");
+    return;
+  }
+  if (event.target.closest(".wf-node")) return;
+  pointer.mode = "pan";
+  pointer.x = event.clientX;
+  pointer.y = event.clientY;
+  pointer.vx = view.x;
+  pointer.vy = view.y;
+  canvasWrap.classList.add("panning");
+}
+
+function onPointerMove(event) {
+  if (pointer.mode === "pan") {
+    view.x = pointer.vx + (event.clientX - pointer.x);
+    view.y = pointer.vy + (event.clientY - pointer.y);
+    applyView();
+  } else if (pointer.mode === "node") {
+    const node = nodeById(pointer.id);
+    if (!node) return;
+    const scale = view.scale || 1;
+    placeNode(node, pointer.nx + (event.clientX - pointer.x) / scale, pointer.ny + (event.clientY - pointer.y) / scale);
+    drawEdges(canvasEdges);
+  }
+}
+
+function onPointerUp() {
+  if (pointer.mode === "node" && current) savePositions(current.id);
+  pointer.mode = "";
+  if (canvasWrap) canvasWrap.classList.remove("panning");
+  canvasNodes.querySelectorAll(".wf-node.dragging").forEach((node) => node.classList.remove("dragging"));
+}
+
+function onWheel(event) {
+  if (!canvasWrap || canvasWrap.classList.contains("hidden")) return;
+  event.preventDefault();
+  const factor = event.deltaY < 0 ? 1.08 : 1 / 1.08;
+  zoomAt(view.scale * factor, event.clientX, event.clientY);
+}
+
+function bindCanvas() {
+  if (!canvasWrap || canvasWrap.dataset.bound) return;
+  canvasWrap.dataset.bound = "1";
+  canvasWrap.addEventListener("pointerdown", onCanvasPointerDown);
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  canvasWrap.addEventListener("wheel", onWheel, { passive: false });
+  const zoomOut = document.querySelector("#zoom-out");
+  const zoomIn = document.querySelector("#zoom-in");
+  const zoomFit = document.querySelector("#zoom-fit");
+  if (zoomOut) zoomOut.addEventListener("click", () => zoomAt(view.scale / 1.1));
+  if (zoomIn) zoomIn.addEventListener("click", () => zoomAt(view.scale * 1.1));
+  if (zoomFit) zoomFit.addEventListener("click", () => {
+    if (!canvasNodes.dataset.custom) spreadColumns();
+    drawEdges(canvasEdges);
+    fitCanvas(0.12);
+  });
+  window.addEventListener("resize", () => {
+    if (!canvasWrap || canvasWrap.classList.contains("hidden") || canvasNodes.dataset.custom) return;
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(() => {
+      if (!spreadColumns()) return;
+      drawEdges(canvasEdges);
+      fitCanvas();
+    });
+  });
+  if (viewCanvasBtn) {
+    viewCanvasBtn.addEventListener("click", () => {
+      surface = "canvas";
+      renderThread();
+    });
+  }
+  if (viewChatBtn) {
+    viewChatBtn.addEventListener("click", () => {
+      surface = "chat";
+      renderThread();
+    });
+  }
+  document.querySelectorAll(".js-pause").forEach((button) => {
+    button.addEventListener("click", () => postControl("pause"));
+  });
+  document.querySelectorAll(".js-resume").forEach((button) => {
+    button.addEventListener("click", () => postControl("resume"));
+  });
+  document.querySelectorAll(".js-reset").forEach((button) => {
+    button.addEventListener("click", () => postControl("reset"));
+  });
+  const dockToggle = document.querySelector("#dock-toggle");
+  if (dockToggle && debugDock) {
+    dockToggle.addEventListener("click", () => debugDock.classList.toggle("open"));
+  }
+}
+
+bindCanvas();
 
 async function loadConfig() {
   try {

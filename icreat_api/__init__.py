@@ -10,7 +10,7 @@
 请求体是扁平字段。必填 prompt、size、quality。有参考图时把公网 URL 放进 image（数组），没有就不要传。
 处理中 result 为 []。SUCCEEDED 时 result 为 [{type, url, download_url}]。
 状态：SUBMITTED、IN_PROGRESS、SUCCEEDED、FAILED，查结果时也可能是 NOT_FOUND。
-默认竖屏 size=1440x2560（9:16）、quality=high，可用 ICREAT_IMAGE_SIZE / ICREAT_IMAGE_QUALITY 覆盖。尺寸必须是接口允许的值。
+默认 size=1024x1024、quality=high，可用 ICREAT_IMAGE_SIZE / ICREAT_IMAGE_QUALITY 覆盖。尺寸必须是接口允许的值。
 """
 
 from icreat_api.client import (

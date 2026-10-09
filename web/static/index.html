@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AiVideo</title>
-  <link rel="stylesheet" href="/styles.css?v=24" />
+  <link rel="stylesheet" href="/styles.css?v=28" />
 </head>
 <body>
   <aside class="sidebar">
@@ -14,9 +14,66 @@
   </aside>
   <main class="main">
     <section id="empty" class="empty" aria-hidden="true"></section>
-    <section id="thread" class="thread hidden"></section>
+    <div id="stage-bar" class="stage-bar hidden">
+      <div class="stage-switch" role="tablist">
+        <button id="view-canvas" class="seg on" type="button">画布</button>
+        <button id="view-chat" class="seg" type="button">对话</button>
+      </div>
+      <div class="stage-zoom">
+        <button id="zoom-out" type="button" aria-label="缩小">−</button>
+        <button id="zoom-in" type="button" aria-label="放大">+</button>
+        <button id="zoom-fit" type="button">适应画面</button>
+      </div>
+      <div class="stage-controls">
+        <button id="pause-run" class="js-pause" type="button">暂停</button>
+        <button id="resume-run" class="js-resume" type="button">继续</button>
+        <button id="reset-run" class="js-reset" type="button">重置当前步骤</button>
+        <span id="save-state" class="save-state"></span>
+      </div>
+      <button id="dock-toggle" class="dock-toggle" type="button">调试</button>
+    </div>
+    <div id="work-body" class="work-body">
+      <section id="thread" class="thread hidden"></section>
+      <div id="canvas-wrap" class="canvas-wrap hidden">
+        <div id="canvas" class="canvas">
+          <svg id="canvas-edges" class="canvas-edges" xmlns="http://www.w3.org/2000/svg"></svg>
+          <div id="canvas-nodes"></div>
+        </div>
+      </div>
+      <aside id="debug-dock" class="debug-dock hidden" aria-label="调试">
+        <div class="dock-head">
+          <b id="dock-phase">阶段</b>
+          <span id="dock-percent">0%</span>
+          <span id="dock-elapsed" class="dock-elapsed"></span>
+        </div>
+        <div class="dock-actions">
+          <button class="js-pause" type="button">暂停</button>
+          <button class="js-resume" type="button">继续</button>
+          <button class="js-reset" type="button">重置当前步骤</button>
+        </div>
+        <p id="dock-message" class="dock-message"></p>
+        <h4>任务</h4>
+        <ol id="dock-tasks" class="dock-tasks"></ol>
+        <h4>事件</h4>
+        <ul id="dock-events" class="dock-events"></ul>
+        <h4>错误</h4>
+        <pre id="dock-error" class="dock-log"></pre>
+        <h4>error.log</h4>
+        <pre id="dock-error-log" class="dock-log"></pre>
+        <h4>render.log</h4>
+        <pre id="dock-render-log" class="dock-log"></pre>
+        <div id="dock-files" class="dock-files"></div>
+      </aside>
+    </div>
     <form id="composer" class="composer">
       <div class="composer-main">
+        <div id="materials" class="materials hidden">
+          <div id="material-list" class="material-list"></div>
+          <label class="material-add">
+            <input id="material-file" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple />
+            <span>添加图素材</span>
+          </label>
+        </div>
         <textarea id="brief" rows="1" placeholder="写下这段片子的背景"></textarea>
         <div class="composer-tools">
           <label class="model-picker">
@@ -31,6 +88,6 @@
       <button id="send" type="submit" aria-label="发送">↑</button>
     </form>
   </main>
-  <script src="/app.js?v=24"></script>
+  <script src="/app.js?v=32"></script>
 </body>
 </html>

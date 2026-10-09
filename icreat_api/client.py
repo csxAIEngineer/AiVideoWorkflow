@@ -9,7 +9,7 @@ from pathlib import Path
 BASE_URL = "https://api.icreat.ai"
 SUBMIT_PATH = "/v1/task/submit/openai/gpt-image-2/text-to-image"
 RESULT_PATH = "/v1/task/result"
-DEFAULT_SIZE = "1440x2560"
+DEFAULT_SIZE = "1024x1024"
 DEFAULT_QUALITY = "high"
 ALLOWED_SIZES = (
     "1024x1024",
@@ -101,7 +101,7 @@ def _find_env():
 def image_size():
     size = (os.environ.get("ICREAT_IMAGE_SIZE") or "").strip() or DEFAULT_SIZE
     if size not in ALLOWED_SIZES:
-        raise ICreatError("iCreat 不接受尺寸 %s。竖屏请用 720x1280、1440x2560 或 2160x3840。" % size)
+        raise ICreatError("iCreat 不接受尺寸 %s。默认 1024x1024，竖屏可用 720x1280、1440x2560 或 2160x3840。" % size)
     return size
 
 

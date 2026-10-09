@@ -4,6 +4,9 @@
 import json
 import mimetypes
 import os
+import re
+import shutil
+import subprocess
 import sys
 import threading
 import traceback
@@ -11,23 +14,35 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from web.db import DATA, connect, delete_project, list_projects, project_dir, read_project, write_project
 from web.render_loop import (
+    _ffmpeg_bin,
     gate_for,
     is_running,
     load_run_state,
     mark_user_pause,
+    note_local_image,
     project_lock,
+    register_thread,
     reset_current_step,
     resume_paused,
     run_local_pipeline,
     should_resume_project,
     thread_alive,
+)
+from web.intake import (
+    MAX_MATERIALS,
+    enrich_brief,
+    intake_note,
+    load_intake,
+    merge_intake,
+    new_material,
+    save_intake,
 )
 from web.pipeline import (
     DEFAULT_MODEL,
@@ -38,11 +53,19 @@ from web.pipeline import (
     model_label,
     normalize_model,
 )
-from web.workflow_from_spec import collect_steps, task_plan
+from web.workflow_from_spec import _safe_id, collect_steps, task_plan
 
 STATIC = Path(__file__).resolve().parent / "static"
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8787"))
+PAUSABLE_STATUSES = ("writing", "building", "rendering")
+MAX_CONTENT_BYTES = 1_000_000
+MAX_ASSET_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_CREATE_BYTES = MAX_MATERIALS * MAX_ASSET_IMAGE_BYTES + MAX_CONTENT_BYTES
+LOG_TAIL_CHARS = 16000
+# writer: script call still in flight. render: execute_render owns the thread.
+# yielded: the writer stopped before 出片, so resume must start it.
+_PIPELINE_HANDOFF = {}
 DEBUG_FILES = {
     "skill_pack": "skill_pack.txt",
     "system_prompt": "system_prompt.txt",
@@ -102,7 +125,7 @@ def project_debug_llm(project):
 
 def remember(project, status, stage, progress=None):
     with project_lock(project["id"]):
-        if status == "rendering" and not is_running(project["id"]):
+        if status in ("rendering", "writing", "building") and not is_running(project["id"]):
             fresh = read_project(project["id"])
             if fresh:
                 project["status"] = fresh.get("status")
@@ -130,6 +153,10 @@ def remember(project, status, stage, progress=None):
                 "message": stored.get("message") or stage,
                 "debug_llm": bool(debug_flag),
             }
+            if status == "paused":
+                paused_from = stored.get("paused_from") or prev.get("paused_from") or ""
+                if paused_from:
+                    project["progress"]["paused_from"] = paused_from
             task_id = stored.get("task_id")
             task_state = stored.get("task_state")
             if task_id and task_state:
@@ -149,7 +176,7 @@ def remember(project, status, stage, progress=None):
 def load_tasks(project):
     """Fill the task list from the saved spec when older rows have none."""
     if project.get("status") == "done" and project.get("stage") == "工作流已生成，可以下载":
-        project["stage"] = "剧本已写好。出片改为 iCreat 生图 / CR MiniMax H3 / 本机拼接"
+        project["stage"] = "剧本已写好。出片改为 iCreat 生图 / CR MiniMax H3 / 本机拼接 / ffmpeg 烧字幕"
         write_project(project)
     if project.get("tasks"):
         return
@@ -218,6 +245,7 @@ def public_view(project):
         "debug_files": debug_files,
         "images": list_output_images(project["id"]),
         "clips": list_output_clips(project["id"]),
+        "materials": public_materials(project["id"]),
         "progress": project.get("progress") or {"percent": 0, "phase": "", "message": project.get("stage") or ""},
     }
 
@@ -277,7 +305,40 @@ def start_drill(project):
     threading.Thread(target=run_drill, args=(project["id"],), daemon=True).start()
 
 
+def _save_written_spec(project_id, spec):
+    """Persist the script the model just returned without touching pause state."""
+    folder = project_dir(project_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    spec = merge_intake(spec, load_intake(folder))
+    (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+    with project_lock(project_id):
+        fresh = read_project(project_id)
+        if fresh is None:
+            return None
+        fresh["title"] = str(spec.get("title") or fresh.get("title") or "")
+        fresh["script"] = str(spec.get("script") or "")
+        fresh["storyboard"] = str(spec.get("storyboard") or "")
+        fresh["image_prompts"] = str(spec.get("image_prompts") or "")
+        fresh["tasks"] = task_plan(spec)
+        fresh["updated_at"] = now()
+        write_project(fresh)
+        return fresh
+
+
+def _yield_if_paused(project_id):
+    """Stop before 出片. The writer thread will not call execute_render."""
+    with project_lock(project_id):
+        if is_running(project_id):
+            return False
+        if _PIPELINE_HANDOFF.get(project_id) != "render":
+            _PIPELINE_HANDOFF[project_id] = "yielded"
+        return True
+
+
 def run_project(project_id, debug_llm=False):
+    register_thread(project_id)
+    with project_lock(project_id):
+        _PIPELINE_HANDOFF[project_id] = "writer"
     project = read_project(project_id)
     folder = project_dir(project_id)
     debug = want_debug_llm(debug_llm or project_debug_llm(project))
@@ -298,20 +359,17 @@ def run_project(project_id, debug_llm=False):
         skill_pack = load_skill_pack()
         debug_dir = folder / "debug" if debug else None
         spec = call_deepseek(
-            project["brief"],
+            enrich_brief(project["brief"], load_intake(folder)),
             skill_pack,
             debug_dir=debug_dir,
             model=project.get("model"),
         )
-        project["title"] = str(spec.get("title") or project["title"])
-        project["script"] = str(spec.get("script") or "")
-        project["storyboard"] = str(spec.get("storyboard") or "")
-        project["image_prompts"] = str(spec.get("image_prompts") or "")
-        (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        building = "Debug：iCreat 生图" if debug else "iCreat 生图 / CR MiniMax H3 / 本机拼接"
+        fresh = _save_written_spec(project_id, spec)
+        if fresh is None or _yield_if_paused(project_id):
+            return
+        building = "Debug：iCreat 生图" if debug else "iCreat 生图 / CR MiniMax H3 / 本机拼接 / ffmpeg 烧字幕"
         remember(
-            project,
+            fresh,
             "building",
             building,
             progress={
@@ -321,11 +379,20 @@ def run_project(project_id, debug_llm=False):
                 "debug_llm": debug,
             },
         )
-        project["tasks"] = task_plan(spec)
-        write_project(project)
-        execute_render(project_id, project)
+        if _yield_if_paused(project_id):
+            return
+        with project_lock(project_id):
+            if not is_running(project_id):
+                _PIPELINE_HANDOFF[project_id] = "yielded"
+                return
+            _PIPELINE_HANDOFF[project_id] = "render"
+        execute_render(project_id, fresh)
     except Exception as error:
         fail_project(project_id, error)
+    finally:
+        with project_lock(project_id):
+            if _PIPELINE_HANDOFF.get(project_id) == "writer":
+                _PIPELINE_HANDOFF[project_id] = "yielded"
 
 
 def fail_project(project_id, error):
@@ -357,7 +424,7 @@ def list_output_images(project_id):
         images.append(
             {
                 "name": path.name,
-                "url": "/api/projects/%s/images/%s" % (project_id, path.name),
+                "url": "/api/projects/%s/images/%s?v=%s" % (project_id, path.name, int(path.stat().st_mtime)),
             }
         )
     return images
@@ -390,17 +457,17 @@ def finish_image_debug(project, result):
     project["finished_at"] = now()
     project["error"] = None
     for task in project.get("tasks") or []:
-        if task.get("kind") in ("video", "join"):
+        if task.get("kind") in ("video", "join", "subtitles"):
             task["state"] = "muted"
             task["detail"] = "Debug：暂不执行"
     remember(
         project,
         "done",
-        "Debug：已生成图片，视频和拼接暂不执行",
+        "Debug：已生成图片，视频、拼接和字幕暂不执行",
         progress={
             "percent": 100,
             "phase": "image_debug",
-            "message": "Debug：已停在生图。视频和拼接暂不执行",
+            "message": "Debug：已停在生图。视频、拼接和字幕暂不执行",
             "debug_llm": True,
         },
     )
@@ -451,13 +518,13 @@ def execute_render(project_id, project=None):
             "percent": 100,
             "phase": "done",
             "message": "成片已生成，可以下载",
-            "task_id": "join",
+            "task_id": "subtitles",
             "task_state": "done",
         },
     )
 
 
-def start_render_thread(project_id):
+def start_render_thread(project_id, replace=False):
     def target():
         try:
             execute_render(project_id)
@@ -465,27 +532,30 @@ def start_render_thread(project_id):
             fail_project(project_id, error)
 
     with project_lock(project_id):
-        if thread_alive(project_id):
+        if thread_alive(project_id) and not replace:
             return False
         thread = threading.Thread(target=target, daemon=True)
-        from web.render_loop import register_thread
-
         register_thread(project_id, thread)
         thread.start()
     return True
 
 
 def pause_render(project):
-    if project.get("status") not in ("rendering", "paused"):
-        raise RuntimeError("现在还不能暂停")
-    if project.get("status") == "paused":
+    status = project.get("status")
+    if status == "paused":
         return project
+    if status not in PAUSABLE_STATUSES:
+        raise RuntimeError("现在还不能暂停")
     state = mark_user_pause(project_dir(project["id"]), project["id"], "已暂停")
     current = state.get("current_step") or ""
+    prev = project.get("progress") or {}
     progress = {
         "phase": "paused",
         "message": "已暂停",
         "project_status": "paused",
+        "paused_from": status,
+        "percent": prev.get("percent") or 0,
+        "debug_llm": bool(prev.get("debug_llm")),
     }
     if current:
         progress["task_id"] = current
@@ -494,20 +564,60 @@ def pause_render(project):
     return project
 
 
-def resume_render(project):
-    if project.get("status") != "paused":
-        raise RuntimeError("现在没有暂停")
-    resume_paused(project_dir(project["id"]), project["id"])
+def _resume_in_place(project, paused_from):
+    """The original thread is still in the script call or blocked in the render loop."""
+    if paused_from in ("writing", "building") and _PIPELINE_HANDOFF.get(project["id"]) == "writer":
+        status = paused_from
+    else:
+        status = "rendering"
+    message = {
+        "writing": "继续写剧本",
+        "building": "继续准备出片",
+    }.get(status, "继续出片")
+    phase = status if status in ("writing", "building") else "images"
     project["error"] = None
     remember(
         project,
+        status,
+        message,
+        progress={
+            "phase": phase,
+            "message": message,
+            "project_status": status,
+            "percent": (project.get("progress") or {}).get("percent") or 0,
+        },
+    )
+    return read_project(project["id"]) or project
+
+
+def resume_render(project):
+    if project.get("status") != "paused":
+        raise RuntimeError("现在没有暂停")
+    project_id = project["id"]
+    folder = project_dir(project_id)
+    with project_lock(project_id):
+        fresh = read_project(project_id) or project
+        if fresh.get("status") != "paused":
+            raise RuntimeError("现在没有暂停")
+        paused_from = (fresh.get("progress") or {}).get("paused_from") or ""
+        handoff = _PIPELINE_HANDOFF.get(project_id)
+        alive = thread_alive(project_id)
+        resume_paused(folder, project_id)
+        if alive and handoff in ("writer", "render"):
+            return _resume_in_place(fresh, paused_from if handoff == "writer" else "rendering")
+        if not load_spec(project_id):
+            mark_user_pause(folder, project_id, "已暂停")
+            raise RuntimeError("剧本还没写完，不能继续出片")
+        _PIPELINE_HANDOFF[project_id] = "render"
+        fresh["error"] = None
+    remember(
+        fresh,
         "rendering",
         "继续出片",
         progress={"phase": "images", "message": "继续出片", "project_status": "rendering"},
     )
-    if not thread_alive(project["id"]):
-        start_render_thread(project["id"])
-    return project
+    start_render_thread(project_id, replace=True)
+    return read_project(project_id) or fresh
 
 
 def reset_render(project):
@@ -534,6 +644,239 @@ def reset_render(project):
     return project
 
 
+def _spec_asset(spec, asset_id):
+    for item in spec.get("assets") or []:
+        if not isinstance(item, dict):
+            continue
+        raw = str(item.get("id") or "")
+        if raw == asset_id or _safe_id(raw, "") == asset_id:
+            return item
+    return None
+
+
+def save_project_content(project_id, body):
+    """Write script, storyboard, and asset prompts onto the project and spec.json."""
+    if not isinstance(body, dict):
+        raise ValueError("内容格式不对")
+    with project_lock(project_id):
+        project = read_project(project_id)
+        if project is None:
+            raise KeyError("没有这个项目")
+        spec = load_spec(project_id) or {}
+        changed = False
+        if "script" in body:
+            project["script"] = "" if body.get("script") is None else str(body.get("script"))
+            spec["script"] = project["script"]
+            changed = True
+        if "storyboard" in body:
+            project["storyboard"] = "" if body.get("storyboard") is None else str(body.get("storyboard"))
+            spec["storyboard"] = project["storyboard"]
+            changed = True
+        if "assets" in body:
+            incoming = body.get("assets")
+            if not isinstance(incoming, list):
+                raise ValueError("资产格式不对")
+            if not isinstance(spec.get("assets"), list):
+                raise ValueError("还没有资产")
+            for item in incoming:
+                if not isinstance(item, dict) or "id" not in item:
+                    raise ValueError("资产格式不对")
+                target = _spec_asset(spec, str(item.get("id") or ""))
+                if target is None:
+                    raise ValueError("没有资产 " + str(item.get("id") or ""))
+                if "prompt" in item:
+                    target["prompt"] = "" if item.get("prompt") is None else str(item.get("prompt"))
+            changed = True
+        if not changed:
+            raise ValueError("没有要保存的内容")
+        folder = project_dir(project_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+        project["updated_at"] = now()
+        write_project(project)
+        return project
+
+
+def _image_kind(data):
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return ""
+
+
+def _ffmpeg_to_png(data, kind, target):
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise RuntimeError("本机没有 ffmpeg，不能把图片转成 png")
+    suffix = ".jpg" if kind == "jpeg" else ".webp"
+    source = target.parent / (target.stem + ".src" + suffix)
+    temporary = target.parent / (target.stem + ".part.png")
+    source.write_bytes(data)
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-i", str(source), str(temporary)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if proc.returncode != 0 or not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise RuntimeError("ffmpeg 转 png 失败：%s" % ((proc.stdout or "")[-300:]))
+        temporary.replace(target)
+    finally:
+        if source.is_file():
+            source.unlink()
+        if temporary.is_file():
+            temporary.unlink()
+
+
+def _write_image_png(data, target):
+    if not data:
+        raise ValueError("没有图片")
+    if len(data) > MAX_ASSET_IMAGE_BYTES:
+        raise ValueError("图片太大")
+    kind = _image_kind(data)
+    if not kind:
+        raise ValueError("只接受 png、jpeg、webp")
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "png":
+        temporary = target.with_suffix(".png.part")
+        temporary.write_bytes(data)
+        temporary.replace(target)
+        return
+    _ffmpeg_to_png(data, kind, target)
+
+
+def save_asset_image(project_id, asset_id, data):
+    """Store a replacement still as outputs/images/{id}.png and drop its remote URL."""
+    asset_id = str(asset_id or "")
+    if not asset_id or asset_id != Path(asset_id).name or not all(ch.isalnum() or ch in "-_" for ch in asset_id):
+        raise ValueError("没有这个资产")
+    with project_lock(project_id):
+        project = read_project(project_id)
+        if project is None:
+            raise KeyError("没有这个项目")
+        spec = load_spec(project_id) or {}
+        if _spec_asset(spec, asset_id) is None:
+            raise ValueError("没有这个资产")
+        state = load_run_state(project_dir(project_id))
+        step = (state.get("steps") or {}).get(asset_id) or {}
+        if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
+            raise RuntimeError("这一步已经提交，完成前不能替换图片")
+        target = project_dir(project_id) / "outputs" / "images" / (asset_id + ".png")
+        _write_image_png(data, target)
+        note_local_image(project_dir(project_id), project_id, asset_id)
+        return project
+
+
+def store_materials(project_id, files):
+    """Save the stills from the opening composer and remember each narration."""
+    if len(files) > MAX_MATERIALS:
+        raise ValueError("一次最多上传 8 张图")
+    items = []
+    folder = project_dir(project_id)
+    for index, item in enumerate(files, start=1):
+        material = new_material(index, item.get("narration"), item.get("filename"))
+        target = folder / "outputs" / "images" / (material["id"] + ".png")
+        _write_image_png(item.get("data") or b"", target)
+        note_local_image(folder, project_id, material["id"])
+        items.append(material)
+    save_intake(folder, items)
+    return items
+
+
+def public_materials(project_id):
+    items = load_intake(project_dir(project_id))
+    images = list_output_images(project_id)
+    result = []
+    for item in items:
+        image = next((info for info in images if str(info.get("name") or "").startswith(item["id"] + ".")), None)
+        result.append(
+            {
+                "id": item["id"],
+                "title": item["title"],
+                "narration": item["narration"],
+                "url": image["url"] if image else "",
+            }
+        )
+    return result
+
+
+def _disposition_param(header, key):
+    quoted = re.search(r'(?i)%s="([^"]*)"' % re.escape(key), header)
+    if quoted:
+        return quoted.group(1)
+    plain = re.search(r"(?i)%s=([^;\s]+)" % re.escape(key), header)
+    return plain.group(1) if plain else ""
+
+
+def parse_multipart(content_type, body):
+    boundary = ""
+    for piece in str(content_type or "").split(";"):
+        piece = piece.strip()
+        if piece.lower().startswith("boundary="):
+            boundary = piece.split("=", 1)[1].strip().strip('"')
+            break
+    if not boundary:
+        raise ValueError("内容格式不对")
+    marker = b"--" + boundary.encode("utf-8")
+    fields = []
+    for chunk in body.split(marker):
+        if chunk.startswith(b"--"):
+            break
+        if chunk.startswith(b"\r\n"):
+            chunk = chunk[2:]
+        if chunk.endswith(b"\r\n"):
+            chunk = chunk[:-2]
+        if not chunk:
+            continue
+        header, sep, data = chunk.partition(b"\r\n\r\n")
+        if not sep:
+            continue
+        text = header.decode("utf-8", "replace")
+        disposition = ""
+        for line in text.split("\r\n"):
+            if line.lower().startswith("content-disposition:"):
+                disposition = line
+                break
+        fields.append(
+            {
+                "name": _disposition_param(disposition, "name"),
+                "filename": _disposition_param(disposition, "filename"),
+                "data": data,
+            }
+        )
+    return fields
+
+
+def read_log_tail(path, limit=LOG_TAIL_CHARS):
+    file_path = Path(path)
+    if not file_path.is_file():
+        return ""
+    try:
+        text = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def project_logs(project_id):
+    project = read_project(project_id)
+    if project is None:
+        raise KeyError("没有这个项目")
+    folder = project_dir(project_id)
+    return {
+        "error": project.get("error") or "",
+        "error_log": read_log_tail(folder / "error.log"),
+        "render_log": read_log_tail(folder / "outputs" / "render.log"),
+    }
+
+
 def resume_rendering_projects():
     started = 0
     for project in list_projects():
@@ -545,6 +888,9 @@ def resume_rendering_projects():
                 project["video_file"] = video.name
                 project["error"] = None
                 project["finished_at"] = project.get("finished_at") or now()
+                finished_task = "join"
+                if any(task.get("id") == "subtitles" for task in project.get("tasks") or []):
+                    finished_task = "subtitles"
                 remember(
                     project,
                     "done",
@@ -553,7 +899,7 @@ def resume_rendering_projects():
                         "percent": 100,
                         "phase": "done",
                         "message": "成片已生成，可以下载",
-                        "task_id": "join",
+                        "task_id": finished_task,
                         "task_state": "done",
                     },
                 )
@@ -579,11 +925,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _read_json(self):
+    def _read_limited(self, limit):
         length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0 or length > 200_000:
+        if length > limit:
+            self.close_connection = True
+            return None
+        if length <= 0:
+            return b""
+        return self.rfile.read(length)
+
+    def _read_json(self):
+        data = self._read_limited(200_000)
+        if data is None or not data:
             return {}
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        return json.loads(data.decode("utf-8"))
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -725,6 +1080,9 @@ class Handler(BaseHTTPRequestHandler):
                 'attachment; filename="%s"' % DEBUG_FILES[key],
             )
             return
+        if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "logs":
+            self._get_logs(parts[2])
+            return
         if path.startswith("/api/projects/"):
             project_id = path.split("/")[3]
             if not valid_id(project_id):
@@ -753,20 +1111,90 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] in ("pause", "resume", "reset"):
             self._post_control(parts[2], parts[3])
             return
+        if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "content":
+            self._post_content(parts[2])
+            return
+        if (
+            len(parts) == 6
+            and parts[:2] == ["api", "projects"]
+            and parts[3] == "assets"
+            and parts[5] == "image"
+        ):
+            self._post_asset_image(parts[2], unquote(parts[4]))
+            return
         if path != "/api/projects":
             self._send(404, {"error": "没有这个接口"})
             return
-        body = self._read_json()
+        self._post_project()
+
+    def _opening_fields(self):
+        content_type = self.headers.get("Content-Type") or ""
+        if "multipart/form-data" not in content_type.lower():
+            body = self._read_json()
+            return body, []
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_CREATE_BYTES:
+            return None, None
+        raw = self._read_limited(MAX_CREATE_BYTES)
+        if raw is None:
+            return None, None
+        fields = parse_multipart(content_type, raw)
+        body = {}
+        files = []
+        narrations = []
+        for field in fields:
+            name = field["name"]
+            if name == "file":
+                files.append(field)
+            elif name == "narration":
+                narrations.append(field["data"].decode("utf-8", "replace"))
+            elif name in ("brief", "model", "debug_llm", "start"):
+                body[name] = field["data"].decode("utf-8", "replace")
+        paired = []
+        for index, field in enumerate(files):
+            narration = narrations[index] if index < len(narrations) else ""
+            paired.append(
+                {
+                    "filename": field.get("filename") or "",
+                    "narration": narration,
+                    "data": field.get("data") or b"",
+                }
+            )
+        return body, paired
+
+    def _post_project(self):
+        try:
+            body, files = self._opening_fields()
+        except ValueError as error:
+            self._send(400, {"error": str(error)})
+            return
+        if body is None:
+            self._send(413, {"error": "内容太大"})
+            return
         brief = str(body.get("brief") or "").strip()
         if not brief and not body.get("start"):
             self._send(400, {"error": "先选一个方向"})
             return
-        debug = want_debug_llm(body.get("debug_llm"))
+        flag = body.get("debug_llm")
+        if isinstance(flag, str):
+            flag = flag.strip().lower() in ("1", "true", "yes", "on")
+        debug = want_debug_llm(flag)
         created = now()
+        project_id = uuid.uuid4().hex[:12]
+        try:
+            materials = store_materials(project_id, files) if files else []
+        except (ValueError, RuntimeError) as error:
+            folder = project_dir(project_id)
+            if folder.is_dir():
+                shutil.rmtree(folder)
+            self._send(400, {"error": str(error)})
+            return
+        note = intake_note(materials)
+        content = brief if not note else brief + "\n\n" + note
         project = {
-            "id": uuid.uuid4().hex[:12],
+            "id": project_id,
             "brief": brief,
-            "messages": [{"role": "user", "content": brief}] if brief else [],
+            "messages": [{"role": "user", "content": content}] if content else [],
             "title": (brief[:24] if brief else "新的一条"),
             "status": "drilling",
             "stage": "正在想方向",
@@ -838,6 +1266,56 @@ class Handler(BaseHTTPRequestHandler):
                 reset_render(project)
         except RuntimeError as error:
             self._send(409, {"error": str(error)})
+            return
+        fresh = read_project(project_id)
+        self._send(200, public_view(fresh))
+
+    def _get_logs(self, project_id):
+        if not valid_id(project_id):
+            self._send(404, {"error": "没有这个项目"})
+            return
+        try:
+            payload = project_logs(project_id)
+        except KeyError as error:
+            self._send(404, {"error": str(error)})
+            return
+        self._send(200, payload)
+
+    def _post_content(self, project_id):
+        if not valid_id(project_id):
+            self._send(404, {"error": "没有这个项目"})
+            return
+        raw = self._read_limited(MAX_CONTENT_BYTES)
+        if raw is None:
+            self._send(413, {"error": "内容太大"})
+            return
+        try:
+            body = json.loads(raw.decode("utf-8")) if raw else {}
+            save_project_content(project_id, body)
+        except KeyError as error:
+            self._send(404, {"error": str(error)})
+            return
+        except (ValueError, json.JSONDecodeError) as error:
+            self._send(400, {"error": str(error) if isinstance(error, ValueError) else "内容格式不对"})
+            return
+        fresh = read_project(project_id)
+        self._send(200, public_view(fresh))
+
+    def _post_asset_image(self, project_id, asset_id):
+        if not valid_id(project_id):
+            self._send(404, {"error": "没有这个项目"})
+            return
+        data = self._read_limited(MAX_ASSET_IMAGE_BYTES)
+        if data is None:
+            self._send(413, {"error": "图片太大"})
+            return
+        try:
+            save_asset_image(project_id, asset_id, data)
+        except KeyError as error:
+            self._send(404, {"error": str(error)})
+            return
+        except (ValueError, RuntimeError) as error:
+            self._send(400, {"error": str(error)})
             return
         fresh = read_project(project_id)
         self._send(200, public_view(fresh))

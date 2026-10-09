@@ -60,23 +60,34 @@ def collect_steps(spec):
 
     shots = []
     for index, item in enumerate(spec.get("shots") or []):
-        images = [_safe_id(name, "") for name in (item.get("images") or [])]
-        images = [name for name in images if name in known][:MAX_SHOT_REFERENCES]
-        if not images and assets:
-            images = [assets[0]["id"]]
+        if item.get("images") is None:
+            images = [assets[0]["id"]] if assets else []
+        else:
+            images = [_safe_id(name, "") for name in (item.get("images") or [])]
+            images = [name for name in images if name in known][:MAX_SHOT_REFERENCES]
         prompt = str(item.get("prompt") or "").strip()
         if not prompt:
             continue
         dialogue = str(item.get("dialogue") or "").strip()
-        shots.append(
-            {
-                "id": _safe_id(item.get("id"), "S%02d" % (index + 1)),
-                "duration": _clamp_duration(item.get("duration"), dialogue),
-                "prompt": prompt,
-                "dialogue": dialogue,
-                "images": images,
-            }
-        )
+        narration = str(item.get("narration") or "").strip()
+        duration = _clamp_duration(item.get("duration"), dialogue)
+        if narration:
+            duration = max(duration, _clamp_duration(None, narration))
+        shot = {
+            "id": _safe_id(item.get("id"), "S%02d" % (index + 1)),
+            "duration": duration,
+            "prompt": prompt,
+            "dialogue": dialogue,
+            "narration": narration,
+            "images": images,
+        }
+        end_image = _safe_id(item.get("end_image"), "") if item.get("end_image") else ""
+        if end_image:
+            shot["end_image"] = end_image
+        video_mode = str(item.get("video_mode") or "").strip()
+        if video_mode:
+            shot["video_mode"] = video_mode
+        shots.append(shot)
     return assets, shots
 
 
@@ -102,7 +113,7 @@ def ordered_assets(assets):
 
 
 def task_plan(spec):
-    """Local render rows: iCreat stills, CR MiniMax H3 clips, then ffmpeg join."""
+    """Local render rows: iCreat stills, CR MiniMax H3 clips, ffmpeg join, then burn 字幕.ass."""
     assets, shots = collect_steps(spec)
     if not assets or not shots:
         return []
@@ -139,6 +150,16 @@ def task_plan(spec):
             "duration": total,
             "state": "pending",
             "detail": "本机拼接",
+        }
+    )
+    tasks.append(
+        {
+            "id": "subtitles",
+            "kind": "subtitles",
+            "title": "烧录字幕",
+            "duration": total,
+            "state": "pending",
+            "detail": "ffmpeg 烧录 字幕.ass",
         }
     )
     return tasks
@@ -551,7 +572,7 @@ def build_workflow(spec):
                 "网站不会把整图一次提交。\n"
                 "workflow0：每张资产图单独上传，跑完后稍等再跑下一张。\n"
                 "workflow1：每镜视频单独上传，用已下载的图作参考。\n"
-                "最后在本机拼接成片。"
+                "最后在本机拼接，再用 ffmpeg 把 字幕.ass 烧进成片。"
             ],
         },
     )

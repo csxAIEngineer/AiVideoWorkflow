@@ -1,6 +1,6 @@
 # AiVideo
 
-竖屏短剧的聊天入口。先写一段背景，再用 drill-me 把这段背景扩成 2 到 3 个方向让你选，最后一项是「其他」；选到「就按这个做」之后，才用短剧技能写出剧本、分镜和生图提示词。写完后由本机编排出片：iCreat 生图、CR MiniMax H3 出镜、ffmpeg 拼接。不再把成片提交到 Comfy Cloud。
+竖屏短剧的聊天入口。先写一段背景，再用 drill-me 把这段背景扩成 2 到 3 个方向让你选，最后一项是「其他」；选到「就按这个做」之后，才用短剧技能写出剧本、分镜和生图提示词。写完后由本机编排出片：iCreat 生图、CR MiniMax H3 出镜、ffmpeg 拼接，最后用 ffmpeg 把 `字幕.ass` 烧进成片。不再把成片提交到 Comfy Cloud。
 
 ## 运行
 
@@ -65,7 +65,9 @@ client.download_video(task, "sunset.mp4")
 另外两个视频模型：
 
 - `minimax-h3-image-to-video`：图片 `role` 用 `first_frame`，尾帧用 `last_frame`
-- `minimax-h3-reference-to-video`：`role` 用 `reference_image`
+- `minimax-h3-reference-to-video`：`role` 用 `reference_image`、`reference_video` 或 `reference_audio`
+
+同一次提交里，首尾帧和参考素材不能一起出现。
 
 图片可以是网址，也可以是 `data:image/jpeg;base64,...`。`duration` 是 4 到 15 的整数。文生视频比例可以是 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`。不要传 `resolution`，也不要传 `generate_audio: false`。每个任务用不同的 `idempotency_key`；重试同一次提交时沿用同一个值。
 
@@ -73,7 +75,7 @@ client.download_video(task, "sunset.mp4")
 
 `icreat_api/` 按 iCreat 的 GPT Image 2 两步调用写成，只用 Python 标准库。Key 从环境变量或项目根目录的 `.env` 读取，变量名是 `ICREAT_API_KEY`。
 
-提交走 `POST /v1/task/submit/openai/gpt-image-2/text-to-image`，请求体是扁平的 `prompt`、`size`、`quality`。大约每 4 秒 `POST /v1/task/result` 查同一个 `task_id`。`SUCCEEDED` 后从 `result` 里的 `url` 下载。默认竖屏 `size=1440x2560`、`quality=high`，可用 `ICREAT_IMAGE_SIZE` 和 `ICREAT_IMAGE_QUALITY` 覆盖。尺寸必须是接口允许的值，例如 9:16 的 `720x1280`、`1440x2560`、`2160x3840`。没有参考图时不要传 `image`。变体把上一张图的公网 URL 放进 `image`，用来锁定同一张脸。
+提交走 `POST /v1/task/submit/openai/gpt-image-2/text-to-image`，请求体是扁平的 `prompt`、`size`、`quality`。大约每 4 秒 `POST /v1/task/result` 查同一个 `task_id`。`SUCCEEDED` 后从 `result` 里的 `url` 下载。默认 `size=1024x1024`、`quality=high`，可用 `ICREAT_IMAGE_SIZE` 和 `ICREAT_IMAGE_QUALITY` 覆盖。尺寸必须是接口允许的值，例如 `1024x1024`，或 9:16 的 `720x1280`、`1440x2560`、`2160x3840`。没有参考图时不要传 `image`。变体把上一张图的公网 URL 放进 `image`，用来锁定同一张脸。
 
 ```python
 from icreat_api import ICreatClient

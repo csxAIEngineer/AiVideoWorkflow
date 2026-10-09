@@ -277,8 +277,9 @@ JSON_SHAPE = (
     "用 ## 分节，镜头用有序列表。人物外形锁定、场景、关键对白和镜头目的，用 ==重点== 包起来。"
     "assets 数组，每项含 id、title、prompt、depends_on。定妆和空镜的 depends_on 为空字符串。"
     "变体的 depends_on 填定妆资产的 id。资产个数按故事需要，不设上限。"
-    "shots 数组不设个数上限，每项含 id、duration、prompt、images、dialogue。duration 是这一镜做完动作和对白需要的整数秒。images 只列这一镜看得见的资产 id。"
+    "shots 数组不设个数上限，每项含 id、duration、prompt、images、dialogue、narration。duration 是这一镜做完动作、对白和旁白需要的整数秒。images 只列这一镜看得见的资产 id。"
     "dialogue 是这一镜说出口的原句，没有对白则为空字符串，必须能在 script 里逐字找到。"
+    "narration 是这一镜的画外旁白，没有则为空字符串。用户给出的图旁白必须原句写进使用该图的镜头。"
     "画幅 9:16。script、storyboard、image_prompts、title，以及 assets 和 shots 里的 title、prompt 全部用中文。提示词里禁止字幕、水印和乱码文字。"
     "人物按成年人写。不要写儿童、少年、未成年、中小学生，也不要写 18 岁以下的具体年龄。学生写成「二十岁上下」。"
 )

@@ -26,6 +26,16 @@ VIDEO_MODELS = (
 ASPECT_RATIOS = ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
 
 IMAGE_ROLES = ("first_frame", "last_frame", "reference_image")
+MEDIA_ROLES = IMAGE_ROLES + ("reference_video", "reference_audio")
+FRAME_ROLES = frozenset(("first_frame", "last_frame"))
+REFERENCE_ROLES = frozenset(("reference_image", "reference_video", "reference_audio"))
+ROLE_FIELDS = {
+    "first_frame": "image_url",
+    "last_frame": "image_url",
+    "reference_image": "image_url",
+    "reference_video": "video_url",
+    "reference_audio": "audio_url",
+}
 
 
 class CRError(RuntimeError):
@@ -134,12 +144,19 @@ class CRClient(object):
         if model == "minimax-h3-text-to-video" and aspect_ratio not in ASPECT_RATIOS:
             raise CRError("文生视频比例只能是 %s" % "、".join(ASPECT_RATIOS))
         content = [{"type": "text", "text": text}]
+        seen = []
         for image in images or []:
             role = image.get("role")
             url = image.get("url")
-            if role not in IMAGE_ROLES or not url:
-                raise CRError("图片需要 role（first_frame、last_frame、reference_image）和 url")
-            content.append({"type": "image_url", "role": role, "image_url": {"url": url}})
+            if role not in MEDIA_ROLES or not url:
+                raise CRError(
+                    "素材需要 role（first_frame、last_frame、reference_image、reference_video、reference_audio）和 url"
+                )
+            field = ROLE_FIELDS[role]
+            seen.append(role)
+            content.append({"type": field, "role": role, field: {"url": url}})
+        if FRAME_ROLES.intersection(seen) and REFERENCE_ROLES.intersection(seen):
+            raise CRError("同一次提交不能同时使用首尾帧和参考素材")
         body = {
             "model": model,
             "content": content,

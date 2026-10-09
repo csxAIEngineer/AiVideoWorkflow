@@ -1,16 +1,18 @@
-"""Local render: iCreat stills, CR MiniMax H3 clips, ffmpeg join, with checkpoints."""
+"""Local render: iCreat stills, CR MiniMax H3 clips, ffmpeg join, then burn 字幕.ass."""
 
 import base64
 import json
+import math
 import re
 import shutil
+import struct
 import subprocess
 import threading
 import time
 import uuid
 from pathlib import Path
 
-from cr_api.client import CRError
+from cr_api.client import ASPECT_RATIOS, CRError
 from icreat_api.client import ICreatError
 from web.workflow_from_spec import collect_steps, ordered_assets
 
@@ -23,6 +25,12 @@ IMAGE_SUCCESS = {"SUCCEEDED"}
 IMAGE_FAILURE = {"FAILED", "NOT_FOUND"}
 VIDEO_SUCCESS = {"completed"}
 VIDEO_FAILURE = {"failed"}
+SUBTITLE_FONT = "Noto Sans CJK SC"
+SUBTITLE_FONTS_DIR = "/usr/share/fonts/opentype/noto"
+FRAME_WIDTH = 768
+FRAME_HEIGHT = 1344
+CAPTION_LIMIT = 12
+_INNER_PUNCT = "，。、；："
 
 _GUARD = threading.Lock()
 _LOCKS = {}
@@ -117,6 +125,7 @@ def blank_step(kind):
         "epoch": 0,
         "output_file": "",
         "public_url": "",
+        "local_override": False,
         "error": "",
     }
 
@@ -220,6 +229,7 @@ def reset_current_step(work_dir, project_id=None):
         step["status"] = "pending"
         step["error"] = ""
         step["public_url"] = ""
+        step["local_override"] = False
         step["output_file"] = ""
         state["current_step"] = step_id
         state["paused"] = False
@@ -242,6 +252,30 @@ def mark_user_pause(work_dir, project_id, reason="已暂停"):
             step["status"] = "paused"
         save_run_state(work_dir, state)
         return state
+
+
+def note_local_image(work_dir, project_id, asset_id):
+    """A user-supplied still replaces the remote URL.
+
+    A step that already has a remote task keeps that request. The download may
+    overwrite the file. A step that has not been submitted is marked done so the
+    loop will not generate it again, and later assets cannot reuse the old URL.
+    """
+    with project_lock(project_id or str(Path(work_dir))):
+        state = load_run_state(work_dir)
+        steps = state.setdefault("steps", {})
+        step = steps.get(asset_id) or blank_step("image")
+        if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
+            return step
+        step["kind"] = "image"
+        step["status"] = "done"
+        step["output_file"] = "images/%s.png" % asset_id
+        step["public_url"] = ""
+        step["local_override"] = True
+        step["error"] = ""
+        steps[asset_id] = step
+        save_run_state(work_dir, state)
+        return step
 
 
 def resume_paused(work_dir, project_id):
@@ -345,6 +379,204 @@ def ffmpeg_join(clips, target):
         if proc.returncode != 0:
             raise RuntimeError("ffmpeg 拼接失败：%s" % ((proc.stdout or "")[-400:]))
     return target
+
+
+def display_caption(text):
+    """Show the script line: keep ？ and ！, turn inner pauses into a full-width space."""
+    raw = str(text or "").strip().strip("「」\"'")
+    while raw and raw[-1] in _INNER_PUNCT:
+        raw = raw[:-1].rstrip()
+    shown = "".join("\u3000" if char in _INNER_PUNCT else char for char in raw)
+    shown = re.sub(r"\u3000+", "\u3000", shown).strip("\u3000")
+    return shown.replace("\n", " ").strip()
+
+
+def split_caption(text, limit=CAPTION_LIMIT):
+    """One screen line. Longer sentences break at a pause, then by character count."""
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+    parts = [part for part in text.split("\u3000") if part]
+    if len(parts) <= 1:
+        return [text[index:index + limit] for index in range(0, len(text), limit)]
+    lines = []
+    current = ""
+    for part in parts:
+        trial = part if not current else current + "\u3000" + part
+        if current and len(trial) > limit:
+            lines.append(current)
+            current = part
+        else:
+            current = trial
+    if current:
+        lines.append(current)
+    flattened = []
+    for line in lines:
+        if len(line) <= limit:
+            flattened.append(line)
+        else:
+            flattened.extend(line[index:index + limit] for index in range(0, len(line), limit))
+    return flattened
+
+
+def subtitle_cues(shots):
+    """Time each spoken line across its shot. The words stay the script's words."""
+    cursor = 0.0
+    cues = []
+    for shot in shots or []:
+        duration = float(shot.get("duration") or 0)
+        narration = str(shot.get("narration") or "").strip()
+        pieces = []
+        if narration:
+            pieces.extend(split_caption(display_caption(narration)))
+        else:
+            for item in shot.get("spoken") or []:
+                pieces.extend(split_caption(display_caption(item.get("line") or "")))
+        if pieces and duration > 0:
+            weights = [max(1, len(piece.replace("\u3000", ""))) for piece in pieces]
+            total = float(sum(weights))
+            start = cursor
+            for index, (piece, weight) in enumerate(zip(pieces, weights)):
+                if index == len(pieces) - 1:
+                    end = cursor + duration
+                else:
+                    end = start + duration * weight / total
+                cues.append({"start": start, "end": end, "text": piece})
+                start = end
+        if duration > 0:
+            cursor += duration
+    return cues
+
+
+def _ass_time(seconds):
+    hundredths = max(0, int(round(float(seconds) * 100)))
+    hours, hundredths = divmod(hundredths, 360000)
+    minutes, hundredths = divmod(hundredths, 6000)
+    whole, hundredths = divmod(hundredths, 100)
+    return "%d:%02d:%02d.%02d" % (hours, minutes, whole, hundredths)
+
+
+def _ass_text(text):
+    return str(text).replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+
+
+def build_subtitle_ass(cues, width=FRAME_WIDTH, height=FRAME_HEIGHT):
+    """ASS in frame pixels: type 4.3% of height, baseline 24% up from the bottom."""
+    font_size = max(18, int(round(height * 0.043)))
+    outline = max(2, int(round(height * 0.0042)))
+    margin_v = max(24, int(round(height * 0.24)))
+    margin_h = max(24, int(round(width * 0.06)))
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "WrapStyle: 2\n"
+        "ScaledBorderAndShadow: yes\n"
+        "PlayResX: %s\n"
+        "PlayResY: %s\n"
+        "\n[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+        "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+        "MarginL, MarginR, MarginV, Encoding\n"
+        "Style: 正片,%s,%s,&H00FFFFFF,&H00FFFFFF,"
+        "&H00120D0B,&H80000000,-1,0,0,0,100,100,0,0,1,%s,1,2,"
+        "%s,%s,%s,1\n"
+        "\n[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+        "Effect, Text\n"
+    ) % (width, height, SUBTITLE_FONT, font_size, outline, margin_h, margin_h, margin_v)
+    lines = [
+        "Dialogue: 0,%s,%s,正片,,0,0,0,,%s"
+        % (_ass_time(cue["start"]), _ass_time(cue["end"]), _ass_text(cue["text"]))
+        for cue in cues
+    ]
+    return header + "\n".join(lines) + "\n"
+
+
+def write_subtitle_ass(cues, path, width=FRAME_WIDTH, height=FRAME_HEIGHT):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(build_subtitle_ass(cues, width, height), encoding="utf-8")
+    return path
+
+
+def _ass_filter(path):
+    escaped = Path(path).resolve().as_posix().replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'")
+    filt = "ass='%s'" % escaped
+    if Path(SUBTITLE_FONTS_DIR).is_dir():
+        filt += ":fontsdir=%s" % SUBTITLE_FONTS_DIR
+    return filt
+
+
+def _missing_subtitle_glyphs(log):
+    return "failed to find any fallback with glyph" in (log or "")
+
+
+def ffmpeg_burn_subtitles(video, ass_path, target):
+    """Burn 字幕.ass into a copy of the joined film. The source file stays intact."""
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise RuntimeError("本机没有 ffmpeg")
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    video_filter = _ass_filter(ass_path)
+    base = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-i",
+        str(video),
+        "-vf",
+        video_filter,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+    ]
+    proc = subprocess.run(
+        base + ["-c:a", "copy", str(target)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if proc.returncode != 0:
+        proc = subprocess.run(
+            base + ["-c:a", "aac", "-b:a", "192k", str(target)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    log = proc.stdout or ""
+    if proc.returncode != 0 or not target.is_file() or target.stat().st_size <= 0:
+        raise RuntimeError("ffmpeg 烧录字幕失败：%s" % log[-400:])
+    if _missing_subtitle_glyphs(log):
+        target.unlink(missing_ok=True)
+        raise RuntimeError("字幕字体没有中文字形，成片没有烧上字")
+    return target
+
+
+def burn_joined_subtitles(joined, ass_path, burner=None):
+    """Keep the unsubtitled concat, then replace the deliverable with the burned film."""
+    joined = Path(joined)
+    raw = joined.with_name("concat.mp4")
+    if not raw.is_file():
+        raw.write_bytes(joined.read_bytes())
+    burned = joined.with_name("joined.burn.mp4")
+    if burner:
+        burner(raw, ass_path, burned)
+    else:
+        ffmpeg_burn_subtitles(raw, ass_path, burned)
+    if not burned.is_file() or burned.stat().st_size <= 0:
+        raise RuntimeError("烧录字幕没有写出成片")
+    burned.replace(joined)
+    return joined
 
 
 def join_clips(clips, target, joiner=None):
@@ -518,22 +750,179 @@ def assign_dialogues(spec, shots):
     return assigned
 
 
-def delivery_prompt(shot, spoken, index, has_tail):
+VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
+VIDEO_MODE_MODELS = {
+    "text": "minimax-h3-text-to-video",
+    "first_frame": "minimax-h3-image-to-video",
+    "first_last_frame": "minimax-h3-image-to-video",
+    "reference": "minimax-h3-reference-to-video",
+}
+FRAME_OPENING = "从这张首帧的可见内容开始，主体、材质和构图保持一致，只做本镜写的光影和轻微运镜。"
+
+
+def image_size(path):
+    """Width and height from a PNG or JPEG. Unreadable files return None."""
+    if not path:
+        return None
+    try:
+        with Path(path).open("rb") as handle:
+            header = handle.read(32)
+            if header.startswith(b"\x89PNG\r\n\x1a\n") and len(header) >= 24 and header[12:16] == b"IHDR":
+                width, height = struct.unpack(">II", header[16:24])
+                if width and height:
+                    return width, height
+            if header[:2] == b"\xff\xd8":
+                found = _jpeg_size(header + handle.read())
+                if found:
+                    return found
+    except OSError:
+        return None
+    return None
+
+
+def _jpeg_size(data):
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return None
+    sof = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+    index = 2
+    while index + 1 < len(data):
+        if data[index] != 0xFF:
+            return None
+        marker = data[index + 1]
+        index += 2
+        while marker == 0xFF and index < len(data):
+            marker = data[index]
+            index += 1
+        if marker in (0xD8, 0xD9):
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            continue
+        if index + 2 > len(data):
+            return None
+        length = struct.unpack(">H", data[index : index + 2])[0]
+        if length < 2 or index + length > len(data):
+            return None
+        if marker in sof and length >= 7:
+            height, width = struct.unpack(">HH", data[index + 3 : index + 7])
+            if width and height:
+                return width, height
+        index += length
+    return None
+
+
+def nearest_aspect_ratio(width, height):
+    """Legal H3 ratio closest to width/height. 2160×2880 is 3:4."""
+    if not width or not height:
+        return "9:16"
+    ratio = float(width) / float(height)
+    best = "9:16"
+    best_gap = None
+    for label in ASPECT_RATIOS:
+        wide, tall = label.split(":")
+        target = float(wide) / float(tall)
+        gap = abs(math.log(ratio) - math.log(target))
+        if best_gap is None or gap < best_gap:
+            best = label
+            best_gap = gap
+    return best
+
+
+def aspect_for_image(path):
+    size = image_size(path)
+    if not size:
+        return "9:16"
+    return nearest_aspect_ratio(size[0], size[1])
+
+
+def choose_video_mode(shot, user_image_ids=(), continues=False):
+    """Pick text, first frame, first-and-last, or reference for one shot.
+
+    An explicit video_mode wins. Otherwise a single user still with no end
+    frame opens on that still. A start image plus end_image uses both frames.
+    Other pictured shots, and later shots that continue the previous clip,
+    stay on reference. A pictureless opening shot is text-to-video.
+    """
+    explicit = str((shot or {}).get("video_mode") or "").strip()
+    if explicit:
+        if explicit not in VIDEO_MODES:
+            raise RuntimeError("未知的 video_mode：%s" % explicit)
+        return explicit
+    images = list((shot or {}).get("images") or [])
+    end_image = str((shot or {}).get("end_image") or "").strip()
+    user_ids = {str(item) for item in user_image_ids}
+    if len(images) == 1 and images[0] in user_ids and not end_image:
+        return "first_frame"
+    if images and end_image:
+        return "first_last_frame"
+    if images or continues:
+        return "reference"
+    return "text"
+
+
+def assemble_shot_media(shot, mode, url_for, tail_url=None):
+    """Roles and aspect for one H3 request. The previous clip's mp4 is never sent."""
+    images = list((shot or {}).get("images") or [])
+    shot_id = (shot or {}).get("id") or ""
+    if mode == "text":
+        return "9:16", []
+    if mode == "first_frame":
+        if not images:
+            raise RuntimeError("首帧模式需要一张起始图")
+        url, path = url_for(images[0])
+        if not url:
+            raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, images[0]))
+        return aspect_for_image(path), [{"role": "first_frame", "url": url}]
+    if mode == "first_last_frame":
+        end_id = str((shot or {}).get("end_image") or "").strip()
+        if not images or not end_id:
+            raise RuntimeError("首尾帧模式需要起始图和结束帧")
+        start_url, start_path = url_for(images[0])
+        end_url, _end_path = url_for(end_id)
+        if not start_url:
+            raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, images[0]))
+        if not end_url:
+            raise RuntimeError("镜头 %s 缺少结束帧 %s" % (shot_id, end_id))
+        return aspect_for_image(start_path), [
+            {"role": "first_frame", "url": start_url},
+            {"role": "last_frame", "url": end_url},
+        ]
+    if mode != "reference":
+        raise RuntimeError("未知的 video_mode：%s" % mode)
+    media = []
+    for asset_id in images:
+        url, _path = url_for(asset_id)
+        if not url:
+            raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, asset_id))
+        media.append({"role": "reference_image", "url": url})
+    if tail_url:
+        media.append({"role": "reference_image", "url": tail_url})
+    if not media:
+        raise RuntimeError("参考模式没有可用的参考图")
+    return "9:16", media
+
+
+def delivery_prompt(shot, spoken, index, has_tail, mode="reference"):
     """Prompt actually sent to MiniMax: performance, dialogue tags, and the cut."""
     base = (shot.get("prompt") or "").strip()
-    parts = [
-        base,
-        "实拍短剧：自然皮肤纹理和毛孔，可用光，衣料有皱，轻微手持，把这一个主动作演完再停住，"
-        "不要定妆摆拍，不要磨皮，不要塑料皮肤，不要CG，不要慢动作漂浮。全程无字幕、无对白文字叠加。",
-    ]
-    if index > 0:
-        parts.append(
-            "这一镜是上一镜的下一刀。同一场就接上服装、光线和空间，用视线或动作交代切点；"
-            "换场也要用动作或声音动机，不要突然换脸、换光或换房间。"
-        )
-    if has_tail:
-        parts.append("最后一张参考图是上一镜的实际尾帧，只承接光线、服装和空间，不要照抄它的景别和构图。")
-    if "<d>" not in base:
+    if mode in ("first_frame", "first_last_frame"):
+        parts = [base, FRAME_OPENING, "全程无字幕、无对白文字叠加。"]
+    else:
+        parts = [
+            base,
+            "实拍短剧：自然皮肤纹理和毛孔，可用光，衣料有皱，轻微手持，把这一个主动作演完再停住，"
+            "不要定妆摆拍，不要磨皮，不要塑料皮肤，不要CG，不要慢动作漂浮。全程无字幕、无对白文字叠加。",
+        ]
+        if index > 0:
+            parts.append(
+                "这一镜是上一镜的下一刀。同一场就接上服装、光线和空间，用视线或动作交代切点；"
+                "换场也要用动作或声音动机，不要突然换脸、换光或换房间。"
+            )
+        if has_tail:
+            parts.append("最后一张参考图是上一镜的实际尾帧，只承接光线、服装和空间，不要照抄它的景别和构图。")
+    narration = str(shot.get("narration") or "").strip()
+    if narration and narration not in base:
+        parts.append("画外旁白，人物不要对口型，嘴保持自然闭合：<d>[Chinese] %s</d>" % narration)
+    elif "<d>" not in base:
         if spoken:
             for item in spoken:
                 parts.append(
@@ -572,7 +961,7 @@ def _should_skip(step, path):
 
 
 class RenderContext(object):
-    def __init__(self, work_dir, on_progress=None, project_id="", icreat=None, cr=None, sleeper=None, joiner=None):
+    def __init__(self, work_dir, on_progress=None, project_id="", icreat=None, cr=None, sleeper=None, joiner=None, burner=None):
         self.work_dir = Path(work_dir)
         self.on_progress = on_progress
         self.project_id = project_id or ""
@@ -580,6 +969,7 @@ class RenderContext(object):
         self.cr = cr
         self.sleeper = sleeper
         self.joiner = joiner
+        self.burner = burner
         self.lock = project_lock(self.project_id) if self.project_id else threading.RLock()
         self.gate = gate_for(self.project_id) if self.project_id else PauseGate()
         self.state = load_run_state(self.work_dir)
@@ -812,6 +1202,7 @@ class RenderContext(object):
             step["error"] = ""
             if public_url:
                 step["public_url"] = public_url
+                step["local_override"] = False
             self.write_locked()
             return dict(step)
 
@@ -916,7 +1307,7 @@ class RenderContext(object):
             if _should_skip(step, path):
                 self.mark_done(step_id, "join", relative, "")
                 self.done_steps += 1
-                self.emit("成片已生成，可以下载", "done", step_id, "done", percent=100)
+                self.emit("镜头已拼接", "join", step_id, "done")
                 return path
             if self._attempts(step) >= MAX_ATTEMPTS and step.get("status") == "failed":
                 self.pause_for_failure(step_id, "join", step.get("error") or "拼接失败")
@@ -959,13 +1350,148 @@ class RenderContext(object):
             self.done_steps += 1
             with self.lock:
                 state = self.load_locked()
-                state["phase"] = "done"
-                state["paused"] = False
-                state["pause_reason"] = ""
-                state["paused_by"] = ""
+                state["phase"] = "subtitles"
                 self.write_locked()
-            self.emit("成片已生成，可以下载", "done", step_id, "done", percent=100)
+            self.emit("镜头已拼接", "join", step_id, "done")
             return path
+
+    def _mark_film_done(self):
+        with self.lock:
+            state = self.load_locked()
+            state["phase"] = "done"
+            state["paused"] = False
+            state["pause_reason"] = ""
+            state["paused_by"] = ""
+            self.write_locked()
+
+    def run_subtitles(self, joined, shots, spec=None):
+        """Last step: write 字幕.ass from the script lines and burn it with ffmpeg."""
+        step_id = "subtitles"
+        ass_path = self.work_dir / "outputs" / "字幕.ass"
+        while True:
+            self.block_while_paused()
+            step = self.reload_step(step_id, "subtitles")
+            if step.get("status") == "done":
+                self.done_steps += 1
+                self._mark_film_done()
+                self.emit("成片已生成，可以下载", "done", step_id, "done", percent=100)
+                return joined
+            if self._attempts(step) >= MAX_ATTEMPTS and step.get("status") == "failed":
+                self.pause_for_failure(step_id, "subtitles", step.get("error") or "烧录字幕失败")
+                continue
+            shots = shots_for_subtitles(self.work_dir, shots, spec)
+            cues = subtitle_cues(shots)
+            if not cues:
+                self.mark_done(step_id, "subtitles", "", "")
+                self.done_steps += 1
+                self._mark_film_done()
+                self.emit("这一集没有对白，成片不烧字幕", "done", step_id, "done", percent=100)
+                return joined
+            self.emit("正在把字幕烧进成片", "subtitles", step_id, "running")
+            try:
+                with self.lock:
+                    state = self.load_locked()
+                    step = state["steps"].get(step_id) or blank_step("subtitles")
+                    state["steps"][step_id] = step
+                    step["attempts"] = self._attempts(step) + 1
+                    step["status"] = "running"
+                    step["kind"] = "subtitles"
+                    state["current_step"] = step_id
+                    state["phase"] = "subtitles"
+                    self.write_locked()
+                write_subtitle_ass(cues, ass_path)
+                burn_joined_subtitles(joined, ass_path, self.burner)
+            except (OSError, RuntimeError) as error:
+                reason = str(error)
+                with self.lock:
+                    state = self.load_locked()
+                    step = state["steps"].get(step_id) or blank_step("subtitles")
+                    state["steps"][step_id] = step
+                    step["status"] = "failed"
+                    step["error"] = reason
+                    self.write_locked()
+                    attempts = self._attempts(step)
+                if is_transient(error) and attempts < MAX_ATTEMPTS:
+                    self.emit(
+                        "重新连接：烧录字幕，第 %s/%s 次" % (attempts, MAX_ATTEMPTS),
+                        "reconnect",
+                        step_id,
+                        "retrying",
+                    )
+                    self.sleep(backoff_seconds(attempts))
+                    continue
+                self.pause_for_failure(step_id, "subtitles", reason)
+                continue
+            self.mark_done(step_id, "subtitles", "字幕.ass", "")
+            self.done_steps += 1
+            self._mark_film_done()
+            self.emit("成片已生成，可以下载", "done", step_id, "done", percent=100)
+            return joined
+
+
+def read_spec_file(work_dir, fallback=None):
+    """Prefer spec.json so edits made after the loop started are visible."""
+    path = Path(work_dir) / "spec.json"
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, dict):
+            return data
+    return fallback if isinstance(fallback, dict) else None
+
+
+def find_asset(spec, asset_id, fallback):
+    if spec:
+        assets, _shots = collect_steps(spec)
+        for item in assets:
+            if item["id"] == asset_id:
+                return item
+    return fallback
+
+
+def find_shot(spec, shot_id, fallback):
+    shots = []
+    if spec:
+        _assets, shots = collect_steps(spec)
+        for index, item in enumerate(shots):
+            if item["id"] == shot_id:
+                return item, shots, index
+    if fallback:
+        return fallback, [fallback], 0
+    return None, [], 0
+
+
+def shots_for_subtitles(work_dir, shots, spec=None):
+    """Burn the script currently on disk. Finished runs never reach this."""
+    fresh = read_spec_file(work_dir, spec)
+    if not fresh:
+        return shots
+    _assets, fresh_shots = collect_steps(fresh)
+    if not fresh_shots:
+        return shots
+    groups = assign_dialogues(fresh, fresh_shots)
+    for shot, lines in zip(fresh_shots, groups):
+        shot["spoken"] = lines
+    return fresh_shots
+
+
+def dependent_image_url(ctx, asset):
+    """Public URL for a parent still. A locally replaced still is not reusable."""
+    parent_id = (asset or {}).get("depends_on") or ""
+    if not parent_id:
+        return None
+    step = ctx.reload_step(parent_id, "image")
+    if step.get("local_override"):
+        raise RuntimeError(
+            "资产 %s 依赖的 %s 已换成本地图，没有公网地址，不能用旧的远程图"
+            % (asset["id"], parent_id)
+        )
+    url = str(step.get("public_url") or "")
+    if not url:
+        raise RuntimeError("资产 %s 依赖的 %s 没有公网地址" % (asset["id"], parent_id))
+    return url
 
 
 def _reference_url(info):
@@ -985,10 +1511,10 @@ def _video_handle(task_id, poll_url):
     return VideoTask({"id": task_id, "poll_url": poll_url or "", "status": "submitted"})
 
 
-def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat=None, cr=None, sleeper=None, joiner=None, images_only=False):
-    """Generate stills, then clips, then a local concat. Completed files are skipped.
+def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat=None, cr=None, sleeper=None, joiner=None, burner=None, images_only=False):
+    """Generate stills, then clips, join them, then burn 字幕.ass. Completed files are skipped.
 
-    images_only stops after the stills. Video and join are left for a later run.
+    images_only stops after the stills. Video, join, and subtitles are left for a later run.
     """
     assets, shots = collect_steps(spec)
     if images_only:
@@ -1013,18 +1539,19 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
         cr=cr,
         sleeper=sleeper,
         joiner=joiner,
+        burner=burner,
     )
     if project_id:
         register_thread(project_id)
     ctx.work_dir.mkdir(parents=True, exist_ok=True)
     (ctx.work_dir / "outputs" / "images").mkdir(parents=True, exist_ok=True)
     (ctx.work_dir / "outputs" / "clips").mkdir(parents=True, exist_ok=True)
-    ctx.total_steps = len(assets) if images_only else len(assets) + len(shots) + 1
+    ctx.total_steps = len(assets) if images_only else len(assets) + len(shots) + 2
     if images_only:
         ctx.emit("Debug：开始生图", "images", assets[0]["id"], "running")
     else:
         ctx.emit(
-            "开始出片：iCreat 生图 / CR MiniMax H3 / 本机拼接",
+            "开始出片：iCreat 生图 / CR MiniMax H3 / 本机拼接 / ffmpeg 烧字幕",
             "images",
             assets[0]["id"],
             "running",
@@ -1034,16 +1561,12 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
     for index, asset in enumerate(assets, start=1):
         label = "生图 %s/%s：%s %s" % (index, len(assets), asset["id"], asset["title"])
 
-        def submit(key, asset=asset):
+        def submit(key, asset_id=asset["id"], fallback=asset):
             del key
-            image = None
-            if asset.get("depends_on"):
-                parent = images.get(asset["depends_on"]) or {}
-                url = str(parent.get("url") or "")
-                if not url:
-                    raise RuntimeError("资产 %s 依赖的 %s 没有公网地址" % (asset["id"], asset["depends_on"]))
-                image = [url]
-            return icreat.submit_image(image_prompt(asset), image=image)
+            current = find_asset(read_spec_file(ctx.work_dir, spec), asset_id, fallback)
+            url = dependent_image_url(ctx, current)
+            image = [url] if url else None
+            return icreat.submit_image(image_prompt(current), image=image)
 
         def poll(task_id):
             return icreat.query_status(task_id)
@@ -1077,7 +1600,7 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
             state["paused_by"] = ""
             ctx.write_locked()
         ctx.emit(
-            "Debug：图片已生成，视频和拼接暂不执行",
+            "Debug：图片已生成，视频、拼接和字幕暂不执行",
             "image_debug",
             assets[-1]["id"],
             "done",
@@ -1099,29 +1622,47 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
         label = "视频 %s/%s：%s" % (index, len(shots), shot["id"])
         shot_id = shot["id"]
 
-        def submit(key, shot=shot, index=index):
-            refs = []
-            for asset_id in shot["images"]:
-                info = images.get(asset_id)
-                if not info:
-                    raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot["id"], asset_id))
-                refs.append({"role": "reference_image", "url": _reference_url(info)})
-            frame = None
-            if clips:
+        def submit(key, shot_id=shot["id"], fallback=shot, index=index):
+            fresh = read_spec_file(ctx.work_dir, spec)
+            current, fresh_shots, shot_index = find_shot(fresh, shot_id, fallback)
+            if fresh and fresh_shots:
+                spoken_groups = assign_dialogues(fresh, fresh_shots)
+                spoken = spoken_groups[shot_index] if shot_index < len(spoken_groups) else []
+                prompt_index = shot_index
+            else:
+                spoken = list(fallback.get("spoken") or [])
+                prompt_index = index - 1
+            asset_ids = list(current.get("images") or [])
+            user_ids = [
+                asset_id
+                for asset_id in asset_ids
+                if ctx.reload_step(asset_id, "image").get("local_override")
+            ]
+            continues = bool(clips)
+            mode = choose_video_mode(current, user_image_ids=user_ids, continues=continues)
+            tail_url = None
+            if mode == "reference" and continues:
                 frame = _tail_frame(
                     clips[-1],
                     ctx.work_dir / "outputs" / "frames" / ("%s-tail.jpg" % clips[-1].stem),
                 )
-            if frame:
-                refs.append({"role": "reference_image", "url": data_url(frame)})
-            spoken = shot.get("spoken") or []
-            text = delivery_prompt(shot, spoken, index - 1, bool(frame))
+                if frame:
+                    tail_url = data_url(frame)
+
+            def url_for(asset_id):
+                info = images.get(asset_id)
+                if not info:
+                    raise RuntimeError("镜头 %s 缺少参考图 %s" % (current["id"], asset_id))
+                return _reference_url(info), info.get("path")
+
+            aspect, media = assemble_shot_media(current, mode, url_for, tail_url)
+            text = delivery_prompt(current, spoken, prompt_index, bool(tail_url), mode)
             return cr.submit_video(
                 text,
-                model="minimax-h3-reference-to-video",
-                duration=shot["duration"],
-                aspect_ratio="9:16",
-                images=refs,
+                model=VIDEO_MODE_MODELS[mode],
+                duration=current["duration"],
+                aspect_ratio=aspect,
+                images=media or None,
                 idempotency_key=key,
                 timeout=180,
             )
@@ -1153,6 +1694,7 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
         clips.append(clip_path)
 
     joined = ctx.run_join(clips)
+    joined = ctx.run_subtitles(joined, shots, spec)
     return {
         "prompt_id": ctx.last_remote_id,
         "video_file": joined.name,
