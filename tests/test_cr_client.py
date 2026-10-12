@@ -83,6 +83,35 @@ class CRVideoRolesTest(unittest.TestCase):
         )
         roles = [item.get("role") for item in client.bodies[0]["content"][1:]]
         self.assertEqual(roles, ["first_frame", "last_frame"])
+        self.assertNotIn("aspect_ratio", client.bodies[0])
+
+    def test_only_text_to_video_sends_aspect_ratio(self):
+        client = _Client()
+        client.submit_video("海边", model="minimax-h3-text-to-video", aspect_ratio="9:16")
+        client.submit_video(
+            "海边",
+            model="minimax-h3-reference-to-video",
+            aspect_ratio="9:16",
+            images=[{"role": "reference_image", "url": "https://cdn.example/a.jpg"}],
+        )
+        self.assertEqual(client.bodies[0]["aspect_ratio"], "9:16")
+        self.assertNotIn("aspect_ratio", client.bodies[1])
+        self.assertNotIn("resolution", client.bodies[0])
+        self.assertNotIn("generate_audio", client.bodies[0])
+        self.assertNotIn("resolution", client.bodies[1])
+        self.assertNotIn("generate_audio", client.bodies[1])
+
+    def test_image_models_reject_data_urls(self):
+        client = _Client()
+        for model in ("minimax-h3-image-to-video", "minimax-h3-reference-to-video"):
+            with self.assertRaises(CRError) as raised:
+                client.submit_video(
+                    "海边",
+                    model=model,
+                    images=[{"role": "first_frame" if "image-to-video" in model else "reference_image", "url": "data:image/jpeg;base64,QQ=="}],
+                )
+            self.assertIn("HTTPS", str(raised.exception))
+        self.assertEqual(client.bodies, [])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,7 @@
-"""Drill the user until the film is clear, then write it with the short-drama rules."""
+"""Drill the user until the film is clear, then write it with the short-drama rules.
+
+Model calls go through the agent layout: LangGraph, then Agent, then LLM Model.
+"""
 
 import json
 import os
@@ -12,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from cr_api import TEXT_MODELS, is_thinking_model
+from cr_api import TEXT_MODELS
 
 DRILL_SKILL_PATH = ROOT / "skills" / "aivideo-work" / "SKILL.md"
 
@@ -45,7 +48,7 @@ SKILL_PACK = """
 
 剧本：标题写 # EP001 集名。场景写 ## EP001-SC001 内或外 · 地点 · 时间/天气。动作用现在时，写看得见的行为。对白写 角色：台词，或 角色（表演提示）：台词。不要用「短语：」开头的动作，以免和台词混在一起。标签只用 [VO]、[OS]、[SFX]、[画面文字]、[连续性]、[转场]。每场要有可见变化。对白是在争取、回避、试探或逼迫，不把已经演出来的事再解释一遍。开场第一拍就是钩子。人物外形和场景一旦写下，后面原样沿用。
 
-资产：换了就不是同一个人、地或物，才新建身份。服装、伤势、天气、光线是变体，depends_on 填定妆 id。姿势、视线、机位不是资产。识别锚点必须能画出来：年龄、发型、服装、体态、固定物件。地点要写地理：内外、入口、区域怎么连、不能移动的锚点、主要材料。氛围词不能代替门窗位置。同一空间不因昼夜或天气再建成一个地点。
+资产：换了就不是同一个人、地或物，才新建身份。服装、伤势、天气、光线是变体，depends_on 填定妆 id。用户已上传的素材不要作为新资产的 depends_on，补充图单独文生图。姿势、视线、机位不是资产。识别锚点必须能画出来：年龄、发型、服装、体态、固定物件。地点要写地理：内外、入口、区域怎么连、不能移动的锚点、主要材料。氛围词不能代替门窗位置。同一空间不因昼夜或天气再建成一个地点。
 
 生图：prompt 用中文，能直接拿去文生图。顺序是身份锚点、当前变体、构图、光线和材质、背景边界、禁止项。写成实拍照片：自然皮肤纹理，可用光，材质有磨损，不要磨皮，不要塑料皮肤，不要CG。定妆和空镜的 depends_on 留空。空镜默认没有人，写清从哪看向哪、前后景、入口，以及一到三个固定锚点。禁止字幕、水印、logo 和乱码文字。不要占位符。人物按成年人写。不要写儿童、少年、未成年、中小学生，也不要写 18 岁以下的具体年龄。学生、课堂和校服可以保留，年龄锚点写成「二十岁上下」。图像接口遇到未成年人物会直接失败，而且只返回 FAILED、不说明原因。群像里的每一个人都按这条写。
 
@@ -86,30 +89,9 @@ def model_label(model):
 
 
 def _complete(messages, model, max_tokens, timeout):
-    name = normalize_model(model)
-    common = {
-        "model": name,
-        "max_tokens": max_tokens,
-        "timeout": timeout,
-        "response_format": {"type": "json_object"},
-    }
-    if name in OFFICIAL_MODELS:
-        from deepseek_api import DeepSeekClient, DeepSeekError
+    from agent.model import LLMModel
 
-        try:
-            return DeepSeekClient().chat(
-                messages=messages,
-                thinking={"type": "disabled"},
-                **common
-            )
-        except DeepSeekError as error:
-            raise RuntimeError(str(error))
-    from cr_api import CRClient, CRError
-
-    try:
-        return CRClient().chat(messages=messages, **common)
-    except CRError as error:
-        raise RuntimeError(str(error))
+    return LLMModel().complete(messages, model, max_tokens, timeout)
 
 
 def _empty_body_error(model):
@@ -224,51 +206,9 @@ def parse_drill_text(text):
 
 def call_drill(messages, debug_dir=None, model=None):
     """One drill-me turn. messages are user/assistant text, not the JSON wrapper."""
-    name = normalize_model(model)
-    system = drill_system_prompt()
-    chat_messages = [{"role": "system", "content": system}]
-    for item in messages:
-        role = item.get("role")
-        content = str(item.get("content") or "").strip()
-        if role in ("user", "assistant") and content:
-            chat_messages.append({"role": role, "content": content})
-    drill_tokens = 8000 if is_thinking_model(name) and name not in OFFICIAL_MODELS else 4000
-    result = _complete(chat_messages, name, drill_tokens, 180)
-    if debug_dir:
-        folder = Path(debug_dir)
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / "drill_skill.txt").write_text(system, encoding="utf-8")
-        (folder / "drill_response.txt").write_text(_reply_text(result), encoding="utf-8")
-    try:
-        return parse_drill_text(result.content or result.reasoning_content)
-    except ValueError:
-        reply = _reply_text(result)
-        if not reply:
-            ready = ready_from_conversation(messages)
-            if ready:
-                return ready
-            raise RuntimeError("模型没有返回问题。")
-    repaired = _complete(
-        [
-            {"role": "system", "content": drill_system_prompt()},
-            {"role": "user", "content": "把下面这次追问收成规定的 JSON。\n" + reply[:8000]},
-        ],
-        name,
-        drill_tokens,
-        180,
-    )
-    if debug_dir:
-        (Path(debug_dir) / "drill_response_repaired.txt").write_text(
-            _reply_text(repaired), encoding="utf-8"
-        )
-    try:
-        return parse_drill_text(repaired.content or repaired.reasoning_content)
-    except ValueError:
-        ready = ready_from_conversation(messages)
-        if ready:
-            return ready
-        preview = (repaired.content or reply).strip().replace("\n", " ")[:120]
-        raise RuntimeError("追问没有返回 JSON。回复开头是：%s" % preview)
+    from agent.layout import get_layout
+
+    return get_layout().drill(messages, debug_dir=debug_dir, model=model)
 
 
 JSON_SHAPE = (
@@ -276,7 +216,7 @@ JSON_SHAPE = (
     "title 是字符串。script、storyboard、image_prompts 是 Markdown 字符串，不要 HTML。"
     "用 ## 分节，镜头用有序列表。人物外形锁定、场景、关键对白和镜头目的，用 ==重点== 包起来。"
     "assets 数组，每项含 id、title、prompt、depends_on。定妆和空镜的 depends_on 为空字符串。"
-    "变体的 depends_on 填定妆资产的 id。资产个数按故事需要，不设上限。"
+    "变体的 depends_on 填定妆资产的 id。用户已上传的素材 id 不要填进其他资产的 depends_on，补充资产的 depends_on 留空。资产个数按故事需要，不设上限。"
     "shots 数组不设个数上限，每项含 id、duration、prompt、images、dialogue、narration。duration 是这一镜做完动作、对白和旁白需要的整数秒。images 只列这一镜看得见的资产 id。"
     "dialogue 是这一镜说出口的原句，没有对白则为空字符串，必须能在 script 里逐字找到。"
     "narration 是这一镜的画外旁白，没有则为空字符串。用户给出的图旁白必须原句写进使用该图的镜头。"
@@ -345,59 +285,9 @@ def write_llm_debug(folder, brief, skill_pack, result=None, repaired=None):
 
 
 def call_deepseek(brief, skill_pack, debug_dir=None, model=None):
-    name = normalize_model(model)
-    system = build_system_prompt(skill_pack)
-    result = None
-    repaired = None
-    try:
-        result = _complete(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": brief},
-            ],
-            name,
-            16000,
-            1200,
-        )
-    except RuntimeError as error:
-        if debug_dir:
-            write_llm_debug(debug_dir, brief, skill_pack)
-        raise error
-    try:
-        spec = _spec_from_result(result)
-        if debug_dir:
-            write_llm_debug(debug_dir, brief, skill_pack, result=result)
-        return spec
-    except ValueError:
-        reply = _reply_text(result)
-        if not reply:
-            if debug_dir:
-                write_llm_debug(debug_dir, brief, skill_pack, result=result)
-            raise RuntimeError(_empty_body_error(name))
-    try:
-        repaired = _complete(
-            [
-                {"role": "system", "content": "把用户给出的短剧材料收成一个 JSON 对象。" + JSON_SHAPE},
-                {"role": "user", "content": reply[:12000]},
-            ],
-            name,
-            16000,
-            1200,
-        )
-    except RuntimeError as error:
-        if debug_dir:
-            write_llm_debug(debug_dir, brief, skill_pack, result=result)
-        raise error
-    try:
-        spec = _spec_from_result(repaired)
-        if debug_dir:
-            write_llm_debug(debug_dir, brief, skill_pack, result=result, repaired=repaired)
-        return spec
-    except ValueError:
-        if debug_dir:
-            write_llm_debug(debug_dir, brief, skill_pack, result=result, repaired=repaired)
-        preview = (repaired.content or reply).strip().replace("\n", " ")[:120]
-        raise RuntimeError("模型没有返回 JSON。回复开头是：%s" % preview)
+    from agent.layout import get_layout
+
+    return get_layout().write(brief, skill_pack, debug_dir=debug_dir, model=model)
 
 
 CLOUD_STATUS = {

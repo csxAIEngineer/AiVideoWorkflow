@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""DeepSeek-style chat site. Each message is one video project."""
+"""DeepSeek-style chat site. Each message is one video project.
 
+Model work is a task: Front -> End -> Task Queue -> Agent Layout.
+The layout is LangGraph -> Agent -> LLM Model. Rendering stays on its own thread.
+"""
+
+import base64
 import json
 import mimetypes
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -14,13 +18,13 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from web.db import DATA, connect, delete_project, list_projects, project_dir, read_project, write_project
-from web.render_loop import (
+from end.db import DATA, connect, delete_project, list_projects, project_dir, read_project, write_project
+from end.render_loop import (
     _ffmpeg_bin,
     gate_for,
     is_running,
@@ -35,7 +39,7 @@ from web.render_loop import (
     should_resume_project,
     thread_alive,
 )
-from web.intake import (
+from end.intake import (
     MAX_MATERIALS,
     enrich_brief,
     intake_note,
@@ -44,26 +48,28 @@ from web.intake import (
     new_material,
     save_intake,
 )
-from web.pipeline import (
+from agent.layout import get_layout
+from end.pipeline import (
     DEFAULT_MODEL,
-    call_deepseek,
-    call_drill,
     load_skill_pack,
     model_choices,
     model_label,
     normalize_model,
 )
-from web.workflow_from_spec import _safe_id, collect_steps, task_plan
+from end.workflow_from_spec import _safe_id, collect_steps, task_plan
+from task_queue import Task, TaskQueue
 
-STATIC = Path(__file__).resolve().parent / "static"
+STATIC = ROOT / "front"
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8787"))
 PAUSABLE_STATUSES = ("writing", "building", "rendering")
 MAX_CONTENT_BYTES = 1_000_000
 MAX_ASSET_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_CREATE_BYTES = MAX_MATERIALS * MAX_ASSET_IMAGE_BYTES + MAX_CONTENT_BYTES
+# JSON-RPC bodies carry base64, which is four characters for every three bytes.
+MAX_RPC_BYTES = ((MAX_CREATE_BYTES + 2) // 3) * 4 + 2_000_000
 LOG_TAIL_CHARS = 16000
-# writer: script call still in flight. render: execute_render owns the thread.
+# writer: a queue worker is inside the script call. render: the render thread owns 出片.
 # yielded: the writer stopped before 出片, so resume must start it.
 _PIPELINE_HANDOFF = {}
 DEBUG_FILES = {
@@ -227,13 +233,13 @@ def public_view(project):
         "has_video": bool(project.get("video_file"))
         and (folder / "outputs" / str(project.get("video_file"))).is_file(),
         "video_url": (
-            "/api/projects/%s/video" % project["id"]
+            "/media/projects/%s/video" % project["id"]
             if project.get("video_file")
             and (folder / "outputs" / str(project.get("video_file"))).is_file()
             else ""
         ),
         "video_download_url": (
-            "/api/projects/%s/video?download=1" % project["id"]
+            "/media/projects/%s/video?download=1" % project["id"]
             if project.get("video_file")
             and (folder / "outputs" / str(project.get("video_file"))).is_file()
             else ""
@@ -248,6 +254,14 @@ def public_view(project):
         "materials": public_materials(project["id"]),
         "progress": project.get("progress") or {"percent": 0, "phase": "", "message": project.get("stage") or ""},
     }
+
+
+def call_drill(messages, debug_dir=None, model=None):
+    return get_layout().drill(messages, debug_dir=debug_dir, model=model)
+
+
+def call_deepseek(brief, skill_pack, debug_dir=None, model=None):
+    return get_layout().write(brief, skill_pack, debug_dir=debug_dir, model=model)
 
 
 def run_drill(project_id):
@@ -269,9 +283,18 @@ def run_drill(project_id):
         project["messages"] = messages
         if result["phase"] == "ready":
             project["brief"] = result["brief"]
-            project["stage"] = "已经问清，开始写剧本"
-            write_project(project)
-            run_project(project_id, debug_llm=debug)
+            remember(
+                project,
+                "writing",
+                "已经问清，开始写剧本",
+                progress={
+                    "percent": 8,
+                    "phase": "writing",
+                    "message": "已经问清，开始写剧本",
+                    "debug_llm": debug,
+                },
+            )
+            submit_agent_task(Task("write", project_id, {"debug_llm": debug}))
             return
         remember(
             project,
@@ -302,7 +325,7 @@ def start_drill(project):
     project["status"] = "drilling"
     project["stage"] = "正在想方向"
     write_project(project)
-    threading.Thread(target=run_drill, args=(project["id"],), daemon=True).start()
+    submit_agent_task(Task("drill", project["id"]))
 
 
 def _save_written_spec(project_id, spec):
@@ -386,13 +409,39 @@ def run_project(project_id, debug_llm=False):
                 _PIPELINE_HANDOFF[project_id] = "yielded"
                 return
             _PIPELINE_HANDOFF[project_id] = "render"
-        execute_render(project_id, fresh)
+        start_render_thread(project_id, replace=True)
     except Exception as error:
         fail_project(project_id, error)
     finally:
         with project_lock(project_id):
             if _PIPELINE_HANDOFF.get(project_id) == "writer":
                 _PIPELINE_HANDOFF[project_id] = "yielded"
+
+
+def handle_agent_task(task):
+    if task.kind == "drill":
+        run_drill(task.project_id)
+        return
+    if task.kind == "write":
+        run_project(task.project_id, debug_llm=bool((task.payload or {}).get("debug_llm")))
+
+
+_AGENT_QUEUE = None
+
+
+def agent_queue():
+    global _AGENT_QUEUE
+    if _AGENT_QUEUE is None:
+        _AGENT_QUEUE = TaskQueue(handle_agent_task)
+    return _AGENT_QUEUE
+
+
+def submit_agent_task(task):
+    return agent_queue().submit(task)
+
+
+def start_agent_workers():
+    agent_queue().start()
 
 
 def fail_project(project_id, error):
@@ -424,7 +473,7 @@ def list_output_images(project_id):
         images.append(
             {
                 "name": path.name,
-                "url": "/api/projects/%s/images/%s?v=%s" % (project_id, path.name, int(path.stat().st_mtime)),
+                "url": "/media/projects/%s/images/%s?v=%s" % (project_id, path.name, int(path.stat().st_mtime)),
             }
         )
     return images
@@ -438,7 +487,7 @@ def list_output_clips(project_id):
     for path in sorted(folder.iterdir()):
         if not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES:
             continue
-        url = "/api/projects/%s/clips/%s" % (project_id, path.name)
+        url = "/media/projects/%s/clips/%s" % (project_id, path.name)
         clips.append(
             {
                 "id": path.stem,
@@ -474,7 +523,7 @@ def finish_image_debug(project, result):
 
 
 def execute_render(project_id, project=None):
-    from web.render_loop import register_thread
+    from end.render_loop import register_thread
 
     register_thread(project_id)
     project = project or read_project(project_id)
@@ -805,53 +854,6 @@ def public_materials(project_id):
     return result
 
 
-def _disposition_param(header, key):
-    quoted = re.search(r'(?i)%s="([^"]*)"' % re.escape(key), header)
-    if quoted:
-        return quoted.group(1)
-    plain = re.search(r"(?i)%s=([^;\s]+)" % re.escape(key), header)
-    return plain.group(1) if plain else ""
-
-
-def parse_multipart(content_type, body):
-    boundary = ""
-    for piece in str(content_type or "").split(";"):
-        piece = piece.strip()
-        if piece.lower().startswith("boundary="):
-            boundary = piece.split("=", 1)[1].strip().strip('"')
-            break
-    if not boundary:
-        raise ValueError("内容格式不对")
-    marker = b"--" + boundary.encode("utf-8")
-    fields = []
-    for chunk in body.split(marker):
-        if chunk.startswith(b"--"):
-            break
-        if chunk.startswith(b"\r\n"):
-            chunk = chunk[2:]
-        if chunk.endswith(b"\r\n"):
-            chunk = chunk[:-2]
-        if not chunk:
-            continue
-        header, sep, data = chunk.partition(b"\r\n\r\n")
-        if not sep:
-            continue
-        text = header.decode("utf-8", "replace")
-        disposition = ""
-        for line in text.split("\r\n"):
-            if line.lower().startswith("content-disposition:"):
-                disposition = line
-                break
-        fields.append(
-            {
-                "name": _disposition_param(disposition, "name"),
-                "filename": _disposition_param(disposition, "filename"),
-                "data": data,
-            }
-        )
-    return fields
-
-
 def read_log_tail(path, limit=LOG_TAIL_CHARS):
     file_path = Path(path)
     if not file_path.is_file():
@@ -875,6 +877,24 @@ def project_logs(project_id):
         "error_log": read_log_tail(folder / "error.log"),
         "render_log": read_log_tail(folder / "outputs" / "render.log"),
     }
+
+
+def resume_agent_tasks():
+    """Put interrupted drill and script calls back on the queue after a restart."""
+    started = 0
+    for project in list_projects():
+        status = project.get("status")
+        phase = (project.get("progress") or {}).get("phase") or ""
+        if status == "drilling" and phase == "drill_think":
+            if submit_agent_task(Task("drill", project["id"])):
+                started += 1
+            continue
+        if status == "writing":
+            if submit_agent_task(
+                Task("write", project["id"], {"debug_llm": project_debug_llm(project)})
+            ):
+                started += 1
+    return started
 
 
 def resume_rendering_projects():
@@ -911,6 +931,264 @@ def resume_rendering_projects():
     return started
 
 
+class RpcError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = int(code)
+        self.message = str(message)
+
+
+def _rpc_body(request_id, result=None, error=None):
+    if error is not None:
+        return {
+            "jsonrpc": "2.0",
+            "error": {"code": error.code, "message": error.message},
+            "id": request_id,
+        }
+    return {"jsonrpc": "2.0", "result": result, "id": request_id}
+
+
+def decode_image_b64(value):
+    text = str(value or "").strip()
+    if text.startswith("data:"):
+        marker = text.find(",")
+        if marker < 0:
+            raise ValueError("图片格式不对")
+        text = text[marker + 1 :].strip()
+    if not text:
+        raise ValueError("没有图片")
+    try:
+        return base64.b64decode(text, validate=True)
+    except ValueError:
+        raise ValueError("图片格式不对")
+
+
+def _request_project(params):
+    project_id = str((params or {}).get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目")
+    project = read_project(project_id)
+    if project is None:
+        raise RpcError(404, "没有这个项目")
+    return project
+
+
+def rpc_config(_params):
+    return {
+        "debug_llm": env_debug_llm(),
+        "debug_llm_env": "AIVIDEO_DEBUG_LLM",
+        "model": DEFAULT_MODEL,
+        "models": model_choices(),
+    }
+
+
+def rpc_list_projects(_params):
+    return [public_view(item) for item in list_projects()]
+
+
+def rpc_get_project(params):
+    return public_view(_request_project(params))
+
+
+def _materials_from_params(params):
+    raw = params.get("materials") or []
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        raise RpcError(400, "内容格式不对")
+    files = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise RpcError(400, "内容格式不对")
+        try:
+            data = decode_image_b64(item.get("data_base64"))
+        except ValueError as error:
+            raise RpcError(400, str(error))
+        if len(data) > MAX_ASSET_IMAGE_BYTES:
+            raise RpcError(413, "图片太大")
+        files.append(
+            {
+                "filename": str(item.get("filename") or ""),
+                "narration": "" if item.get("narration") is None else str(item.get("narration")),
+                "data": data,
+            }
+        )
+    return files
+
+
+def rpc_create_project(params):
+    brief = str(params.get("brief") or "").strip()
+    if not brief and not params.get("start"):
+        raise RpcError(400, "先选一个方向")
+    flag = params.get("debug_llm")
+    if isinstance(flag, str):
+        flag = flag.strip().lower() in ("1", "true", "yes", "on")
+    debug = want_debug_llm(flag)
+    files = _materials_from_params(params)
+    created = now()
+    project_id = uuid.uuid4().hex[:12]
+    try:
+        materials = store_materials(project_id, files) if files else []
+    except (ValueError, RuntimeError) as error:
+        folder = project_dir(project_id)
+        if folder.is_dir():
+            shutil.rmtree(folder)
+        raise RpcError(400, str(error))
+    note = intake_note(materials)
+    content = brief if not note else brief + "\n\n" + note
+    project = {
+        "id": project_id,
+        "brief": brief,
+        "messages": [{"role": "user", "content": content}] if content else [],
+        "title": (brief[:24] if brief else "新的一条"),
+        "status": "drilling",
+        "stage": "正在想方向",
+        "script": "",
+        "storyboard": "",
+        "image_prompts": "",
+        "error": None,
+        "events": [{"at": created, "message": "正在想方向"}],
+        "tasks": [],
+        "progress": {
+            "percent": 0,
+            "phase": "drill_think",
+            "message": "正在想方向",
+            "debug_llm": debug,
+        },
+        "cloud_log": "",
+        "prompt_id": "",
+        "video_file": "",
+        "model": normalize_model(params.get("model")),
+        "created_at": created,
+        "started_at": created,
+        "updated_at": created,
+        "finished_at": None,
+    }
+    start_drill(project)
+    return public_view(read_project(project["id"]))
+
+
+def rpc_delete_project(params):
+    project_id = str(params.get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目")
+    if read_project(project_id) is None and not project_dir(project_id).is_dir():
+        raise RpcError(404, "没有这个项目")
+    if not delete_project(project_id):
+        raise RpcError(404, "没有这个项目")
+    return {"ok": True, "id": project_id}
+
+
+def rpc_send_message(params):
+    project = _request_project(params)
+    if not can_reply(project):
+        raise RpcError(409, "还在想上一句，或这条片子已经开始做了")
+    text = str(params.get("text") or "").strip()
+    if not text:
+        raise RpcError(400, "先回答这一个问题")
+    messages = list(project.get("messages") or [])
+    messages.append({"role": "user", "content": text})
+    project["messages"] = messages
+    if not project.get("title") or project.get("title") == "新的一条":
+        project["title"] = text[:24]
+    if params.get("model"):
+        project["model"] = normalize_model(params.get("model"))
+    project["error"] = None
+    start_drill(project)
+    return public_view(read_project(project["id"]))
+
+
+def rpc_control(action, params):
+    project = _request_project(params)
+    try:
+        if action == "pause":
+            pause_render(project)
+        elif action == "resume":
+            resume_render(project)
+        else:
+            reset_render(project)
+    except RuntimeError as error:
+        raise RpcError(409, str(error))
+    return public_view(read_project(project["id"]))
+
+
+def rpc_save_content(params):
+    project_id = str(params.get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目")
+    body = {}
+    for key in ("script", "storyboard", "assets"):
+        if key in params:
+            body[key] = params[key]
+    encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    if len(encoded) > MAX_CONTENT_BYTES:
+        raise RpcError(413, "内容太大")
+    try:
+        save_project_content(project_id, body)
+    except KeyError as error:
+        raise RpcError(404, str(error))
+    except ValueError as error:
+        raise RpcError(400, str(error))
+    return public_view(read_project(project_id))
+
+
+def rpc_set_asset_image(params):
+    project_id = str(params.get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目")
+    try:
+        data = decode_image_b64(params.get("data_base64"))
+    except ValueError as error:
+        raise RpcError(400, str(error))
+    if len(data) > MAX_ASSET_IMAGE_BYTES:
+        raise RpcError(413, "图片太大")
+    try:
+        save_asset_image(project_id, str(params.get("asset_id") or ""), data)
+    except KeyError as error:
+        raise RpcError(404, str(error))
+    except (ValueError, RuntimeError) as error:
+        raise RpcError(400, str(error))
+    return public_view(read_project(project_id))
+
+
+def rpc_logs(params):
+    project_id = str(params.get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目")
+    try:
+        return project_logs(project_id)
+    except KeyError as error:
+        raise RpcError(404, str(error))
+
+
+def rpc_call(method, params):
+    if method == "config.get":
+        return rpc_config(params)
+    if method == "projects.list":
+        return rpc_list_projects(params)
+    if method == "projects.get":
+        return rpc_get_project(params)
+    if method == "projects.create":
+        return rpc_create_project(params)
+    if method == "projects.delete":
+        return rpc_delete_project(params)
+    if method == "projects.send_message":
+        return rpc_send_message(params)
+    if method == "projects.pause":
+        return rpc_control("pause", params)
+    if method == "projects.resume":
+        return rpc_control("resume", params)
+    if method == "projects.reset":
+        return rpc_control("reset", params)
+    if method == "projects.save_content":
+        return rpc_save_content(params)
+    if method == "projects.set_asset_image":
+        return rpc_set_asset_image(params)
+    if method == "projects.logs":
+        return rpc_logs(params)
+    raise RpcError(-32601, "没有这个接口")
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("[%s] %s" % (self.log_date_time_string(), fmt % args))
@@ -934,30 +1212,10 @@ class Handler(BaseHTTPRequestHandler):
             return b""
         return self.rfile.read(length)
 
-    def _read_json(self):
-        data = self._read_limited(200_000)
-        if data is None or not data:
-            return {}
-        return json.loads(data.decode("utf-8"))
-
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
-        if path == "/api/config":
-            self._send(
-                200,
-                {
-                    "debug_llm": env_debug_llm(),
-                    "debug_llm_env": "AIVIDEO_DEBUG_LLM",
-                    "model": DEFAULT_MODEL,
-                    "models": model_choices(),
-                },
-            )
-            return
-        if path == "/api/projects":
-            self._send(200, [public_view(item) for item in list_projects()])
-            return
-        if path.startswith("/api/projects/") and path.endswith("/video"):
+        if path.startswith("/media/projects/") and path.endswith("/video"):
             project_id = path.split("/")[3]
             if not valid_id(project_id):
                 self._send(404, {"error": "还没有成片"})
@@ -979,7 +1237,7 @@ class Handler(BaseHTTPRequestHandler):
                 disposition = 'attachment; filename="%s"' % video.name
             self._send(200, video.read_bytes(), mime, disposition)
             return
-        if path.startswith("/api/projects/") and path.endswith("/workflow"):
+        if path.startswith("/media/projects/") and path.endswith("/workflow"):
             project_id = path.split("/")[3]
             if not valid_id(project_id):
                 self._send(404, {"error": "还没有工作流"})
@@ -996,7 +1254,7 @@ class Handler(BaseHTTPRequestHandler):
                 'attachment; filename="%s"' % filename,
             )
             return
-        if path.startswith("/api/projects/") and path.endswith("/spec"):
+        if path.startswith("/media/projects/") and path.endswith("/spec"):
             project_id = path.split("/")[3]
             if not valid_id(project_id):
                 self._send(404, {"error": "还没有 spec"})
@@ -1015,7 +1273,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = [part for part in path.split("/") if part]
         if (
             len(parts) == 5
-            and parts[0] == "api"
+            and parts[0] == "media"
             and parts[1] == "projects"
             and parts[3] == "clips"
         ):
@@ -1039,7 +1297,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if (
             len(parts) == 5
-            and parts[0] == "api"
+            and parts[0] == "media"
             and parts[1] == "projects"
             and parts[3] == "images"
         ):
@@ -1060,7 +1318,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if (
             len(parts) == 5
-            and parts[0] == "api"
+            and parts[0] == "media"
             and parts[1] == "projects"
             and parts[3] == "debug"
         ):
@@ -1080,20 +1338,6 @@ class Handler(BaseHTTPRequestHandler):
                 'attachment; filename="%s"' % DEBUG_FILES[key],
             )
             return
-        if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "logs":
-            self._get_logs(parts[2])
-            return
-        if path.startswith("/api/projects/"):
-            project_id = path.split("/")[3]
-            if not valid_id(project_id):
-                self._send(404, {"error": "没有这个项目"})
-                return
-            project = read_project(project_id)
-            if project is None:
-                self._send(404, {"error": "没有这个项目"})
-                return
-            self._send(200, public_view(project))
-            return
         relative = "index.html" if path in ("/", "") else path.lstrip("/")
         file_path = (STATIC / relative).resolve()
         if not str(file_path).startswith(str(STATIC.resolve())) or not file_path.is_file():
@@ -1103,255 +1347,79 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, file_path.read_bytes(), mime)
 
     def do_POST(self):
-        path = urlparse(self.path).path
-        parts = [part for part in path.split("/") if part]
-        if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "messages":
-            self._post_message(parts[2])
+        if urlparse(self.path).path != "/rpc":
+            self._send(404, {"error": "没有这个接口"})
             return
-        if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] in ("pause", "resume", "reset"):
-            self._post_control(parts[2], parts[3])
+        self._post_rpc()
+
+    def _post_rpc(self):
+        request_id = None
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._send(200, _rpc_body(None, error=RpcError(-32700, "Parse error")))
             return
-        if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "content":
-            self._post_content(parts[2])
+        if length > MAX_RPC_BYTES:
+            self._send(200, _rpc_body(None, error=RpcError(413, "内容太大")))
+            return
+        raw = self._read_limited(MAX_RPC_BYTES)
+        if raw is None:
+            self._send(200, _rpc_body(None, error=RpcError(413, "内容太大")))
+            return
+        try:
+            payload = json.loads(raw.decode("utf-8")) if raw else None
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send(200, _rpc_body(None, error=RpcError(-32700, "Parse error")))
             return
         if (
-            len(parts) == 6
-            and parts[:2] == ["api", "projects"]
-            and parts[3] == "assets"
-            and parts[5] == "image"
+            not isinstance(payload, dict)
+            or payload.get("jsonrpc") != "2.0"
+            or not isinstance(payload.get("method"), str)
+            or "id" not in payload
         ):
-            self._post_asset_image(parts[2], unquote(parts[4]))
+            if isinstance(payload, dict) and "id" in payload:
+                request_id = payload.get("id")
+            self._send(200, _rpc_body(request_id, error=RpcError(-32600, "Invalid Request")))
             return
-        if path != "/api/projects":
-            self._send(404, {"error": "没有这个接口"})
+        request_id = payload.get("id")
+        if isinstance(request_id, bool) or not isinstance(request_id, (str, int, float, type(None))):
+            self._send(200, _rpc_body(None, error=RpcError(-32600, "Invalid Request")))
             return
-        self._post_project()
-
-    def _opening_fields(self):
-        content_type = self.headers.get("Content-Type") or ""
-        if "multipart/form-data" not in content_type.lower():
-            body = self._read_json()
-            return body, []
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_CREATE_BYTES:
-            return None, None
-        raw = self._read_limited(MAX_CREATE_BYTES)
-        if raw is None:
-            return None, None
-        fields = parse_multipart(content_type, raw)
-        body = {}
-        files = []
-        narrations = []
-        for field in fields:
-            name = field["name"]
-            if name == "file":
-                files.append(field)
-            elif name == "narration":
-                narrations.append(field["data"].decode("utf-8", "replace"))
-            elif name in ("brief", "model", "debug_llm", "start"):
-                body[name] = field["data"].decode("utf-8", "replace")
-        paired = []
-        for index, field in enumerate(files):
-            narration = narrations[index] if index < len(narrations) else ""
-            paired.append(
-                {
-                    "filename": field.get("filename") or "",
-                    "narration": narration,
-                    "data": field.get("data") or b"",
-                }
-            )
-        return body, paired
-
-    def _post_project(self):
-        try:
-            body, files = self._opening_fields()
-        except ValueError as error:
-            self._send(400, {"error": str(error)})
-            return
-        if body is None:
-            self._send(413, {"error": "内容太大"})
-            return
-        brief = str(body.get("brief") or "").strip()
-        if not brief and not body.get("start"):
-            self._send(400, {"error": "先选一个方向"})
-            return
-        flag = body.get("debug_llm")
-        if isinstance(flag, str):
-            flag = flag.strip().lower() in ("1", "true", "yes", "on")
-        debug = want_debug_llm(flag)
-        created = now()
-        project_id = uuid.uuid4().hex[:12]
-        try:
-            materials = store_materials(project_id, files) if files else []
-        except (ValueError, RuntimeError) as error:
-            folder = project_dir(project_id)
-            if folder.is_dir():
-                shutil.rmtree(folder)
-            self._send(400, {"error": str(error)})
-            return
-        note = intake_note(materials)
-        content = brief if not note else brief + "\n\n" + note
-        project = {
-            "id": project_id,
-            "brief": brief,
-            "messages": [{"role": "user", "content": content}] if content else [],
-            "title": (brief[:24] if brief else "新的一条"),
-            "status": "drilling",
-            "stage": "正在想方向",
-            "script": "",
-            "storyboard": "",
-            "image_prompts": "",
-            "error": None,
-            "events": [{"at": created, "message": "正在想方向"}],
-            "tasks": [],
-            "progress": {
-                "percent": 0,
-                "phase": "drill_think",
-                "message": "正在想方向",
-                "debug_llm": debug,
-            },
-            "cloud_log": "",
-            "prompt_id": "",
-            "video_file": "",
-            "model": normalize_model(body.get("model")),
-            "created_at": created,
-            "started_at": created,
-            "updated_at": created,
-            "finished_at": None,
-        }
-        start_drill(project)
-        self._send(201, public_view(read_project(project["id"])))
-
-    def _post_message(self, project_id):
-        if not valid_id(project_id):
-            self._send(404, {"error": "没有这个项目"})
-            return
-        project = read_project(project_id)
-        if project is None:
-            self._send(404, {"error": "没有这个项目"})
-            return
-        if not can_reply(project):
-            self._send(409, {"error": "还在想上一句，或这条片子已经开始做了"})
-            return
-        body = self._read_json()
-        text = str(body.get("text") or "").strip()
-        if not text:
-            self._send(400, {"error": "先回答这一个问题"})
-            return
-        messages = list(project.get("messages") or [])
-        messages.append({"role": "user", "content": text})
-        project["messages"] = messages
-        if not project.get("title") or project.get("title") == "新的一条":
-            project["title"] = text[:24]
-        if body.get("model"):
-            project["model"] = normalize_model(body.get("model"))
-        project["error"] = None
-        start_drill(project)
-        self._send(200, public_view(read_project(project_id)))
-
-    def _post_control(self, project_id, action):
-        if not valid_id(project_id):
-            self._send(404, {"error": "没有这个项目"})
-            return
-        project = read_project(project_id)
-        if project is None:
-            self._send(404, {"error": "没有这个项目"})
+        params = payload.get("params", {})
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            self._send(200, _rpc_body(request_id, error=RpcError(-32602, "Invalid params")))
             return
         try:
-            if action == "pause":
-                pause_render(project)
-            elif action == "resume":
-                resume_render(project)
-            else:
-                reset_render(project)
-        except RuntimeError as error:
-            self._send(409, {"error": str(error)})
+            result = rpc_call(payload["method"], params)
+        except RpcError as error:
+            self._send(200, _rpc_body(request_id, error=error))
             return
-        fresh = read_project(project_id)
-        self._send(200, public_view(fresh))
-
-    def _get_logs(self, project_id):
-        if not valid_id(project_id):
-            self._send(404, {"error": "没有这个项目"})
+        except Exception:
+            traceback.print_exc()
+            self._send(200, _rpc_body(request_id, error=RpcError(-32603, "Internal error")))
             return
-        try:
-            payload = project_logs(project_id)
-        except KeyError as error:
-            self._send(404, {"error": str(error)})
-            return
-        self._send(200, payload)
-
-    def _post_content(self, project_id):
-        if not valid_id(project_id):
-            self._send(404, {"error": "没有这个项目"})
-            return
-        raw = self._read_limited(MAX_CONTENT_BYTES)
-        if raw is None:
-            self._send(413, {"error": "内容太大"})
-            return
-        try:
-            body = json.loads(raw.decode("utf-8")) if raw else {}
-            save_project_content(project_id, body)
-        except KeyError as error:
-            self._send(404, {"error": str(error)})
-            return
-        except (ValueError, json.JSONDecodeError) as error:
-            self._send(400, {"error": str(error) if isinstance(error, ValueError) else "内容格式不对"})
-            return
-        fresh = read_project(project_id)
-        self._send(200, public_view(fresh))
-
-    def _post_asset_image(self, project_id, asset_id):
-        if not valid_id(project_id):
-            self._send(404, {"error": "没有这个项目"})
-            return
-        data = self._read_limited(MAX_ASSET_IMAGE_BYTES)
-        if data is None:
-            self._send(413, {"error": "图片太大"})
-            return
-        try:
-            save_asset_image(project_id, asset_id, data)
-        except KeyError as error:
-            self._send(404, {"error": str(error)})
-            return
-        except (ValueError, RuntimeError) as error:
-            self._send(400, {"error": str(error)})
-            return
-        fresh = read_project(project_id)
-        self._send(200, public_view(fresh))
-
-    def do_DELETE(self):
-        path = urlparse(self.path).path
-        if not path.startswith("/api/projects/"):
-            self._send(404, {"error": "没有这个接口"})
-            return
-        project_id = path.rstrip("/").split("/")[3]
-        if not valid_id(project_id):
-            self._send(404, {"error": "没有这个项目"})
-            return
-        if read_project(project_id) is None and not project_dir(project_id).is_dir():
-            self._send(404, {"error": "没有这个项目"})
-            return
-        if not delete_project(project_id):
-            self._send(404, {"error": "没有这个项目"})
-            return
-        self._send(200, {"ok": True, "id": project_id})
+        self._send(200, _rpc_body(request_id, result=result))
 
 
 def main():
     connect()
     DATA.mkdir(parents=True, exist_ok=True)
+    start_agent_workers()
     resumed = resume_rendering_projects()
+    agent_resumed = resume_agent_tasks()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
+    note = ""
+    if env_debug_llm():
+        note += "  DEBUG_LLM=on"
+    if resumed:
+        note += "  resumed=%s" % resumed
+    if agent_resumed:
+        note += "  agent_resumed=%s" % agent_resumed
     print(
-        "AiVideo http://%s:%s  (sqlite %s)%s"
-        % (
-            HOST,
-            PORT,
-            ROOT / "data" / "aivideo.db",
-            "  DEBUG_LLM=on" if env_debug_llm() else "",
-        )
-        + ("  resumed=%s" % resumed if resumed else "")
+        "AiVideo http://%s:%s  (sqlite %s)  agent_workers=%s%s"
+        % (HOST, PORT, ROOT / "data" / "aivideo.db", agent_queue().workers, note)
     )
     server.serve_forever()
 

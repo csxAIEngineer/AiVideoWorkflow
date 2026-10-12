@@ -3,4 +3,4 @@ set -eu
 
 mkdir -p /app/data/web_projects
 
-exec python -m web.server
+exec python -m end.server

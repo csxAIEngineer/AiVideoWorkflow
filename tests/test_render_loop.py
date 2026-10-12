@@ -10,7 +10,7 @@ from pathlib import Path
 
 from cr_api.client import CRError, VideoTask
 from icreat_api.client import ImageTask
-from web.render_loop import (
+from end.render_loop import (
     _missing_subtitle_glyphs,
     assemble_shot_media,
     blank_step,
@@ -22,8 +22,10 @@ from web.render_loop import (
     image_size,
     load_run_state,
     mark_user_pause,
+    _reference_url,
     nearest_aspect_ratio,
     note_local_image,
+    publish_still,
     reset_current_step,
     resume_paused,
     run_local_pipeline,
@@ -32,7 +34,7 @@ from web.render_loop import (
     split_caption,
     subtitle_cues,
 )
-from web.workflow_from_spec import task_plan
+from end.workflow_from_spec import task_plan
 
 SPEC = {
     "title": "雨夜",
@@ -192,13 +194,111 @@ class RenderLoopTest(unittest.TestCase):
         self.assertIn("锁定同一张脸", variant["prompt"])
         self.assertEqual(variant["image"], ["https://cdn.example/A1.png"])
         self.assertEqual(cr.submits[0]["model"], "minimax-h3-reference-to-video")
-        self.assertEqual(cr.submits[0]["aspect_ratio"], "9:16")
+        self.assertIsNone(cr.submits[0]["aspect_ratio"])
         self.assertEqual(cr.submits[0]["duration"], 5)
         self.assertEqual(cr.submits[0]["images"][0]["role"], "reference_image")
+        self.assertEqual(cr.submits[0]["images"][0]["url"], "https://cdn.example/img-1.png")
         self.assertTrue((self.work / "outputs" / "joined.mp4").is_file())
         state = load_run_state(self.work)
         self.assertEqual(state["phase"], "done")
         self.assertEqual(state["steps"]["A1"]["remote_task_id"], "old")
+
+    def test_public_still_url_is_sent_and_a_local_file_is_not(self):
+        image = self.work / "still.png"
+        image.write_bytes(b"\x89PNG")
+        self.assertEqual(
+            _reference_url({"path": str(image), "url": "https://cdn.example/a.png"}),
+            "https://cdn.example/a.png",
+        )
+        with self.assertRaises(RuntimeError) as raised:
+            _reference_url({"path": str(image), "url": ""})
+        self.assertIn("公网地址", str(raised.exception))
+
+        spec = {
+            "title": "雨夜",
+            "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人站在车站"}],
+            "shots": [
+                {"id": "S01", "duration": 5, "prompt": "她转身离开", "images": ["A1"]},
+                {"id": "S02", "duration": 5, "prompt": "她继续往前走", "images": ["A1"]},
+            ],
+        }
+        cr = FakeCR()
+
+        def joiner(_clips, target):
+            Path(target).write_bytes(b"joined")
+            return target
+
+        def burner(_raw, _ass, target):
+            Path(target).write_bytes(b"burned")
+
+        run_local_pipeline(
+            spec,
+            self.work / "two",
+            icreat=FakeICreat(),
+            cr=cr,
+            sleeper=_noop_sleep,
+            joiner=joiner,
+            burner=burner,
+        )
+        self.assertEqual(len(cr.submits), 2)
+        for item in cr.submits:
+            self.assertIsNone(item["aspect_ratio"])
+            for media in item["images"]:
+                self.assertTrue(media["url"].startswith("https://"))
+        self.assertEqual(len(cr.submits[1]["images"]), 1)
+        self.assertEqual(cr.submits[1]["images"][0]["url"], cr.submits[0]["images"][0]["url"])
+
+    def test_local_still_is_uploaded_before_video(self):
+        project_id = "host-still"
+        image = self.work / "outputs" / "images" / "A1.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"\x89PNG-local")
+        note_local_image(self.work, project_id, "A1")
+        hosted = []
+
+        def publish(path):
+            hosted.append(Path(path).name)
+            return "https://cdn.example/hosted.jpg"
+
+        cr = FakeCR()
+        run_local_pipeline(
+            ONE,
+            self.work,
+            project_id=project_id,
+            icreat=FakeICreat(),
+            cr=cr,
+            sleeper=_noop_sleep,
+            still_publisher=publish,
+        )
+        self.assertEqual(hosted, ["A1.png"])
+        self.assertEqual(cr.submits[0]["model"], "minimax-h3-image-to-video")
+        self.assertIsNone(cr.submits[0]["aspect_ratio"])
+        self.assertEqual(cr.submits[0]["images"][0]["url"], "https://cdn.example/hosted.jpg")
+
+        class _Body(object):
+            def __init__(self, payload):
+                self.payload = payload
+
+            def read(self):
+                return self.payload
+
+            def close(self):
+                return None
+
+        sent = []
+
+        def opener(request, timeout):
+            sent.append(request)
+            return _Body(b'{"success": true, "files": [{"url": "https://n.uguu.se/still.png"}]}')
+
+        self.assertEqual(publish_still(image, opener=opener), "https://n.uguu.se/still.png")
+        self.assertIn(b"files[]", sent[0].data)
+        def empty(_request, timeout=120):
+            del timeout
+            return _Body(b"{}")
+
+        with self.assertRaises(RuntimeError):
+            publish_still(image, opener=empty)
 
     def test_remote_failure_resets_step_then_pause_and_manual_reset(self):
         icreat = FakeICreat(fail_status=5)
@@ -287,7 +387,7 @@ class RenderLoopTest(unittest.TestCase):
         self.assertTrue(gate_for(project_id).blocked.wait(5))
         self.assertEqual(len(icreat.queries), 1)
         self.assertEqual(cr.submits, [])
-        from web.render_loop import resume_paused
+        from end.render_loop import resume_paused
 
         resume_paused(self.work, project_id)
         thread.join(5)
@@ -553,66 +653,28 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(icreat.submits, [])
         self.assertIn("img-keep", icreat.queries)
 
-    def test_local_override_refuses_the_old_remote_image(self):
+    def test_uploaded_still_is_not_a_reference_for_new_assets(self):
         project_id = "local-parent"
         image = self.work / "outputs" / "images" / "A1.png"
         image.parent.mkdir(parents=True)
         image.write_bytes(b"\x89PNG-local")
-        save_run_state(
-            self.work,
-            {
-                "phase": "images",
-                "steps": {
-                    "A1": {
-                        "kind": "image",
-                        "status": "done",
-                        "remote_task_id": "img-old",
-                        "poll_url": "",
-                        "idempotency_key": "old",
-                        "attempts": 1,
-                        "epoch": 0,
-                        "output_file": "images/A1.png",
-                        "public_url": "https://cdn.example/old-A1.png",
-                        "error": "",
-                    }
-                },
-            },
-        )
         note_local_image(self.work, project_id, "A1")
         self.assertEqual(load_run_state(self.work)["steps"]["A1"]["public_url"], "")
         self.assertTrue(load_run_state(self.work)["steps"]["A1"]["local_override"])
         icreat = FakeICreat()
-        box = {}
-
-        def runner():
-            try:
-                box["result"] = run_local_pipeline(
-                    SPEC,
-                    self.work,
-                    project_id=project_id,
-                    icreat=icreat,
-                    cr=FakeCR(),
-                    sleeper=_noop_sleep,
-                )
-            except Exception as error:
-                box["error"] = error
-
-        thread = threading.Thread(target=runner)
-        thread.start()
-        self.assertTrue(gate_for(project_id).blocked.wait(5))
-        state = load_run_state(self.work)
-        self.assertIn("不能用旧的远程图", state.get("pause_reason") or "")
-        self.assertEqual(icreat.submits, [])
-        state["steps"]["A1"]["local_override"] = False
-        state["steps"]["A1"]["public_url"] = "https://cdn.example/A1.png"
-        save_run_state(self.work, state)
-        reset_current_step(self.work, project_id)
-        resume_paused(self.work, project_id)
-        thread.join(5)
-        self.assertFalse(thread.is_alive())
-        self.assertNotIn("error", box)
-        self.assertEqual(box["result"]["video_file"], "joined.mp4")
-        self.assertEqual(icreat.submits[0]["image"], ["https://cdn.example/A1.png"])
+        result = run_local_pipeline(
+            SPEC,
+            self.work,
+            project_id=project_id,
+            icreat=icreat,
+            cr=FakeCR(),
+            sleeper=_noop_sleep,
+        )
+        self.assertEqual(result["video_file"], "joined.mp4")
+        self.assertEqual(len(icreat.submits), 1)
+        self.assertIsNone(icreat.submits[0]["image"])
+        self.assertNotIn("锁定同一张脸", icreat.submits[0]["prompt"])
+        self.assertIn("同一个人淋着雨", icreat.submits[0]["prompt"])
 
     def test_replaced_still_opens_on_first_frame(self):
         project_id = "local-shot"
@@ -620,13 +682,16 @@ class RenderLoopTest(unittest.TestCase):
         image.parent.mkdir(parents=True)
         image.write_bytes(b"\x89PNG-local")
         note_local_image(self.work, project_id, "A1")
+        state = load_run_state(self.work)
+        state["steps"]["A1"]["public_url"] = "https://cdn.example/A1.png"
+        save_run_state(self.work, state)
         icreat = FakeICreat()
         cr = FakeCR()
         run_local_pipeline(ONE, self.work, project_id=project_id, icreat=icreat, cr=cr, sleeper=_noop_sleep)
         self.assertEqual(icreat.submits, [])
         self.assertEqual(cr.submits[0]["model"], "minimax-h3-image-to-video")
         self.assertEqual([item["role"] for item in cr.submits[0]["images"]], ["first_frame"])
-        self.assertTrue(cr.submits[0]["images"][0]["url"].startswith("data:image/"))
+        self.assertEqual(cr.submits[0]["images"][0]["url"], "https://cdn.example/A1.png")
         self.assertNotIn("自然皮肤", cr.submits[0]["text"])
 
     def test_mode_follows_the_shot_inputs(self):
@@ -728,15 +793,16 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(len(cr.submits), 2)
         first, second = cr.submits
         self.assertEqual(first["model"], "minimax-h3-image-to-video")
-        self.assertEqual(first["aspect_ratio"], "3:4")
+        self.assertIsNone(first["aspect_ratio"])
         self.assertEqual([item["role"] for item in first["images"]], ["first_frame"])
+        self.assertEqual(first["images"][0]["url"], "https://cdn.example/U1.png")
         self.assertIn("从这张首帧的可见内容开始", first["text"])
         self.assertIn("画外旁白", first["text"])
         self.assertIn("第一句旁白", first["text"])
         self.assertNotIn("自然皮肤", first["text"])
         self.assertNotIn("不要照抄", first["text"])
         self.assertEqual(second["model"], "minimax-h3-image-to-video")
-        self.assertEqual(second["aspect_ratio"], "16:9")
+        self.assertIsNone(second["aspect_ratio"])
         self.assertEqual([item["role"] for item in second["images"]], ["first_frame"])
         self.assertNotIn("自然皮肤", second["text"])
         self.assertNotIn("不要照抄", second["text"])
@@ -778,7 +844,7 @@ class RenderLoopTest(unittest.TestCase):
         run_local_pipeline(end_spec, end_dir, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep)
         opened = cr.submits[0]
         self.assertEqual(opened["model"], "minimax-h3-image-to-video")
-        self.assertEqual(opened["aspect_ratio"], "3:4")
+        self.assertIsNone(opened["aspect_ratio"])
         self.assertEqual([item["role"] for item in opened["images"]], ["first_frame", "last_frame"])
         self.assertIn("从这张首帧的可见内容开始", opened["text"])
         self.assertNotIn("自然皮肤", opened["text"])
@@ -804,8 +870,9 @@ class RenderLoopTest(unittest.TestCase):
         run_local_pipeline(explicit_spec, explicit, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep)
         chosen = cr.submits[0]
         self.assertEqual(chosen["model"], "minimax-h3-reference-to-video")
-        self.assertEqual(chosen["aspect_ratio"], "9:16")
+        self.assertIsNone(chosen["aspect_ratio"])
         self.assertEqual(chosen["images"][0]["role"], "reference_image")
+        self.assertEqual(chosen["images"][0]["url"], "https://cdn.example/U1.png")
         self.assertIn("自然皮肤", chosen["text"])
 
 
@@ -831,11 +898,15 @@ def _seed_still(work, asset_id, data, local=False):
     (folder / ("%s.png" % asset_id)).write_bytes(data)
     if local:
         note_local_image(work, "mode-seed", asset_id)
+        state = load_run_state(work)
+        state["steps"][asset_id]["public_url"] = "https://cdn.example/%s.png" % asset_id
+        save_run_state(work, state)
         return
     state = load_run_state(work)
     step = blank_step("image")
     step["status"] = "done"
     step["output_file"] = "images/%s.png" % asset_id
+    step["public_url"] = "https://cdn.example/%s.png" % asset_id
     state["steps"][asset_id] = step
     save_run_state(work, state)
 

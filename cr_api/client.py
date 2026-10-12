@@ -141,8 +141,6 @@ class CRClient(object):
             raise CRError("duration 必须是 4 到 15 的整数")
         if seconds < 4 or seconds > 15:
             raise CRError("duration 必须是 4 到 15 的整数")
-        if model == "minimax-h3-text-to-video" and aspect_ratio not in ASPECT_RATIOS:
-            raise CRError("文生视频比例只能是 %s" % "、".join(ASPECT_RATIOS))
         content = [{"type": "text", "text": text}]
         seen = []
         for image in images or []:
@@ -152,6 +150,8 @@ class CRClient(object):
                 raise CRError(
                     "素材需要 role（first_frame、last_frame、reference_image、reference_video、reference_audio）和 url"
                 )
+            if str(url).lower().startswith("data:"):
+                raise CRError("视频素材必须是 HTTPS 网址，CR 不接受 data: 图片")
             field = ROLE_FIELDS[role]
             seen.append(role)
             content.append({"type": field, "role": role, field: {"url": url}})
@@ -161,8 +161,13 @@ class CRClient(object):
             "model": model,
             "content": content,
             "duration": seconds,
-            "aspect_ratio": aspect_ratio,
         }
+        # Only text-to-video accepts aspect_ratio. Image and reference models
+        # return invalid_parameter when it is present; their frame follows the input image.
+        if model == "minimax-h3-text-to-video":
+            if aspect_ratio not in ASPECT_RATIOS:
+                raise CRError("文生视频比例只能是 %s" % "、".join(ASPECT_RATIOS))
+            body["aspect_ratio"] = aspect_ratio
         data = self._request(
             "POST",
             "/unified/v1/videos/tasks",

@@ -182,18 +182,14 @@ async function postControl(action) {
   sending = true;
   syncComposer();
   try {
-    const response = await fetch("/api/projects/" + current.id + "/" + action, { method: "POST" });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      alert(body.error || "没有完成");
-      return;
-    }
-    current = body;
+    current = await rpc("projects." + action, { id: current.id });
     const listed = projects.find((item) => item.id === current.id);
     if (listed) Object.assign(listed, current);
     renderHistory();
     renderThread();
     watch();
+  } catch (error) {
+    alert(error.message || "没有完成");
   } finally {
     sending = false;
     syncComposer();
@@ -363,10 +359,10 @@ async function deleteProject(id) {
   const project = projects.find((item) => item.id === id);
   const label = (project && (project.title || project.brief)) || id;
   if (!window.confirm("删除这条历史记录？\n" + label)) return;
-  const response = await fetch("/api/projects/" + id, { method: "DELETE" });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    alert(body.error || "删除失败");
+  try {
+    await rpc("projects.delete", { id: id });
+  } catch (error) {
+    alert(error.message || "删除失败");
     return;
   }
   projects = projects.filter((item) => item.id !== id);
@@ -842,7 +838,7 @@ function paintTranscript(options, full) {
   if (current.has_spec) {
     const spec = document.createElement("a");
     spec.className = "download";
-    spec.href = "/api/projects/" + current.id + "/spec";
+    spec.href = "/media/projects/" + current.id + "/spec";
     spec.download = "spec-" + current.id + ".json";
     spec.textContent = "下载 spec.json";
     assistant.append(spec);
@@ -850,7 +846,7 @@ function paintTranscript(options, full) {
   (current.debug_files || []).forEach((key) => {
     const link = document.createElement("a");
     link.className = "download";
-    link.href = "/api/projects/" + current.id + "/debug/" + key;
+    link.href = "/media/projects/" + current.id + "/debug/" + key;
     link.download = (DEBUG_FILE_LABELS[key] || key) + ".txt";
     link.textContent = "下载 " + (DEBUG_FILE_LABELS[key] || key);
     assistant.append(link);
@@ -873,8 +869,7 @@ function paintTranscript(options, full) {
 }
 
 async function refreshList() {
-  const response = await fetch("/api/projects");
-  projects = await response.json();
+  projects = await rpc("projects.list");
   if (current) {
     const fresh = projects.find((item) => item.id === current.id);
     if (fresh) current = fresh;
@@ -888,9 +883,11 @@ async function openProject(id) {
     surface = "canvas";
     canvasSig = "";
   }
-  const response = await fetch("/api/projects/" + id);
-  if (!response.ok) return;
-  current = await response.json();
+  try {
+    current = await rpc("projects.get", { id: id });
+  } catch (_error) {
+    return;
+  }
   showProjectModel(current);
   renderHistory();
   renderThread({ scroll: current.status === "drilling" ? "bottom" : "top" });
@@ -908,8 +905,13 @@ function watch() {
   if (!keepWatching(current)) return;
   timer = setInterval(async () => {
     if (!current) return;
-    const response = await fetch("/api/projects/" + current.id);
-    current = await response.json();
+    try {
+      const project = await rpc("projects.get", { id: current.id });
+      if (!current || current.id !== project.id) return;
+      current = project;
+    } catch (_error) {
+      return;
+    }
     const listed = projects.find((item) => item.id === current.id);
     if (listed) Object.assign(listed, current);
     renderHistory();
@@ -1101,6 +1103,17 @@ function materialStrip(project) {
   return block;
 }
 
+async function fileToBase64(file) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("没有读到图片"));
+    reader.readAsDataURL(file);
+  });
+  const comma = dataUrl.indexOf(",");
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+}
+
 async function startBrief(text) {
   const brief = String(text || "").trim();
   if (!brief || sending) return;
@@ -1108,35 +1121,26 @@ async function startBrief(text) {
   sending = true;
   syncComposer();
   try {
-    let response;
+    const params = {
+      brief: brief,
+      debug_llm: !!(debugEl && debugEl.checked),
+      model: selectedModel(),
+    };
     if (materials.length) {
-      const data = new FormData();
-      data.append("brief", brief);
-      data.append("model", selectedModel());
-      data.append("debug_llm", debugEl && debugEl.checked ? "1" : "0");
-      materials.forEach((item) => {
-        data.append("file", item.file, item.file.name);
-        data.append("narration", item.narration || "");
-      });
-      response = await fetch("/api/projects", { method: "POST", body: data });
-    } else {
-      response = await fetch("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          brief,
-          debug_llm: !!(debugEl && debugEl.checked),
-          model: selectedModel(),
-        }),
-      });
+      params.materials = [];
+      for (const item of materials) {
+        params.materials.push({
+          filename: (item.file && item.file.name) || "",
+          narration: item.narration || "",
+          data_base64: await fileToBase64(item.file),
+        });
+      }
     }
-    const project = await response.json();
-    if (!response.ok) {
-      alert(project.error || "没有开始");
-      return;
-    }
+    const project = await rpc("projects.create", params);
     clearDraftMaterials();
     adoptProject(project, true);
+  } catch (error) {
+    alert(error.message || "没有开始");
   } finally {
     sending = false;
     syncComposer();
@@ -1149,17 +1153,14 @@ async function sendText(text) {
   sending = true;
   syncComposer();
   try {
-    const response = await fetch("/api/projects/" + current.id + "/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: body, model: selectedModel() }),
+    const project = await rpc("projects.send_message", {
+      id: current.id,
+      text: body,
+      model: selectedModel(),
     });
-    const project = await response.json();
-    if (!response.ok) {
-      alert(project.error || "没有发出去");
-      return;
-    }
     adoptProject(project, false);
+  } catch (error) {
+    alert(error.message || "没有发出去");
   } finally {
     sending = false;
     syncComposer();
@@ -1713,21 +1714,12 @@ async function saveField(field) {
   else if (key.indexOf("asset:") === 0) body.assets = [{ id: key.slice(6), prompt: value }];
   else return;
   try {
-    const response = await fetch("/api/projects/" + current.id + "/content", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const project = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      setSaveState(project.error || "没有保存");
-      return;
-    }
+    const project = await rpc("projects.save_content", Object.assign({ id: current.id }, body));
     if (field.value === value) pendingSaves.delete(key);
     setSaveState("已保存");
     adoptQuiet(project);
-  } catch (_error) {
-    setSaveState("没有保存");
+  } catch (error) {
+    setSaveState(error.message || "没有保存");
   }
 }
 
@@ -1735,20 +1727,15 @@ async function uploadAsset(assetId, file) {
   if (!current || !file) return;
   setSaveState("上传中");
   try {
-    const response = await fetch("/api/projects/" + current.id + "/assets/" + encodeURIComponent(assetId) + "/image", {
-      method: "POST",
-      headers: { "Content-Type": file.type || "application/octet-stream" },
-      body: file,
+    const project = await rpc("projects.set_asset_image", {
+      id: current.id,
+      asset_id: assetId,
+      data_base64: await fileToBase64(file),
     });
-    const project = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      setSaveState(project.error || "没有换上图片");
-      return;
-    }
     setSaveState("已换上图片");
     adoptQuiet(project);
-  } catch (_error) {
-    setSaveState("没有换上图片");
+  } catch (error) {
+    setSaveState(error.message || "没有换上图片");
   }
 }
 
@@ -1830,14 +1817,14 @@ function syncDockFiles(project) {
   if (project.has_spec) {
     const spec = document.createElement("a");
     spec.className = "download";
-    spec.href = "/api/projects/" + project.id + "/spec";
+    spec.href = "/media/projects/" + project.id + "/spec";
     spec.textContent = "下载 spec.json";
     box.append(spec);
   }
   (project.debug_files || []).forEach((key) => {
     const link = document.createElement("a");
     link.className = "download";
-    link.href = "/api/projects/" + project.id + "/debug/" + key;
+    link.href = "/media/projects/" + project.id + "/debug/" + key;
     link.textContent = "下载 " + (DEBUG_FILE_LABELS[key] || key);
     box.append(link);
   });
@@ -1847,9 +1834,8 @@ async function refreshLogs() {
   if (!current || !workflowMode(current)) return;
   const projectId = current.id;
   try {
-    const response = await fetch("/api/projects/" + projectId + "/logs");
-    if (!response.ok || !current || current.id !== projectId) return;
-    const logs = await response.json();
+    const logs = await rpc("projects.logs", { id: projectId });
+    if (!current || current.id !== projectId) return;
     const errorLog = document.querySelector("#dock-error-log");
     const renderLog = document.querySelector("#dock-render-log");
     const errorNode = document.querySelector("#dock-error");
@@ -1969,9 +1955,7 @@ bindCanvas();
 
 async function loadConfig() {
   try {
-    const response = await fetch("/api/config");
-    if (!response.ok) return;
-    const config = await response.json();
+    const config = await rpc("config.get");
     serverDebugDefault = !!config.debug_llm;
     fillModels(config.models || []);
   } catch (_error) {

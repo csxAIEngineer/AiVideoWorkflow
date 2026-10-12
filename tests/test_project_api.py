@@ -1,5 +1,6 @@
 """Content save, image replace, logs, and pause during writing."""
 
+import base64
 import json
 import struct
 import subprocess
@@ -12,10 +13,10 @@ import zlib
 from pathlib import Path
 from unittest.mock import patch
 
-import web.db as db
-from web.render_loop import _ffmpeg_bin, gate_for, load_run_state
-from web.intake import merge_intake
-from web.server import (
+import end.db as db
+from end.render_loop import _ffmpeg_bin, gate_for, load_run_state
+from end.intake import merge_intake
+from end.server import (
     Handler,
     pause_render,
     project_logs,
@@ -25,7 +26,7 @@ from web.server import (
     save_asset_image,
     save_project_content,
 )
-from web.db import project_dir, read_project, write_project
+from end.db import project_dir, read_project, write_project
 from http.server import ThreadingHTTPServer
 
 
@@ -124,19 +125,37 @@ class ProjectApiTest(unittest.TestCase):
                 parsed = {"error": raw.decode("utf-8", "replace")}
             return error.code, parsed
 
-    def test_content_image_logs_and_pause_while_writing(self):
-        project_id = "a11c0de00001"
-        make_project(project_id, status="writing")
+    def rpc(self, method, params=None):
         status, body = self.request(
             "POST",
-            "/api/projects/%s/content" % project_id,
+            "/rpc",
             json.dumps(
-                {"script": "新剧本", "storyboard": "新分镜", "assets": [{"id": "A1", "prompt": "新提示"}]},
+                {"jsonrpc": "2.0", "method": method, "params": params or {}, "id": 1},
                 ensure_ascii=False,
             ).encode("utf-8"),
             {"Content-Type": "application/json"},
         )
+        self.assertEqual(status, 200, body)
+        return body
+
+    def test_content_image_logs_and_pause_while_writing(self):
+        project_id = "a11c0de00001"
+        make_project(project_id, status="writing")
+        status, page = self.request("GET", "/")
         self.assertEqual(status, 200)
+        self.assertIn(b"/rpc.js", page)
+        status, script = self.request("GET", "/app.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"projects.create", script)
+        body = self.rpc(
+            "projects.save_content",
+            {
+                "id": project_id,
+                "script": "新剧本",
+                "storyboard": "新分镜",
+                "assets": [{"id": "A1", "prompt": "新提示"}],
+            },
+        )["result"]
         self.assertEqual(body["script"], "新剧本")
         self.assertEqual(body["storyboard"], "新分镜")
         saved = json.loads((project_dir(project_id) / "spec.json").read_text(encoding="utf-8"))
@@ -145,45 +164,54 @@ class ProjectApiTest(unittest.TestCase):
         self.assertEqual(saved["assets"][0]["prompt"], "新提示")
         self.assertEqual(saved["assets"][1]["prompt"], "旧雨")
         self.assertEqual(read_project(project_id)["script"], "新剧本")
+        status, spec_body = self.request("GET", "/media/projects/%s/spec" % project_id)
+        self.assertEqual(status, 200)
+        self.assertEqual(spec_body["script"], "新剧本")
 
         png = tiny_png()
-        status, body = self.request(
-            "POST",
-            "/api/projects/%s/assets/A1/image" % project_id,
-            png,
-            {"Content-Type": "image/png"},
-        )
-        self.assertEqual(status, 200)
+        body = self.rpc(
+            "projects.set_asset_image",
+            {
+                "id": project_id,
+                "asset_id": "A1",
+                "data_base64": base64.b64encode(png).decode("ascii"),
+            },
+        )["result"]
         stored = project_dir(project_id) / "outputs" / "images" / "A1.png"
         self.assertEqual(stored.read_bytes(), png)
         step = load_run_state(project_dir(project_id))["steps"]["A1"]
         self.assertTrue(step["local_override"])
         self.assertEqual(step["public_url"], "")
         self.assertEqual(step["status"], "done")
-        self.assertTrue(any(image["name"] == "A1.png" and "v=" in image["url"] for image in body["images"]))
+        image = next(item for item in body["images"] if item["name"] == "A1.png")
+        self.assertTrue(image["url"].startswith("/media/projects/%s/images/A1.png?" % project_id))
+        self.assertIn("v=", image["url"])
+        status, raw = self.request("GET", image["url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(raw, png)
 
-        status, rejected = self.request(
-            "POST",
-            "/api/projects/%s/assets/A1/image" % project_id,
-            b"GIF89a-not-an-image",
-            {"Content-Type": "image/gif"},
+        rejected = self.rpc(
+            "projects.set_asset_image",
+            {
+                "id": project_id,
+                "asset_id": "A1",
+                "data_base64": base64.b64encode(b"GIF89a-not-an-image").decode("ascii"),
+            },
         )
-        self.assertEqual(status, 400)
-        self.assertIn("png", rejected["error"])
+        self.assertEqual(rejected["error"]["code"], 400)
+        self.assertIn("png", rejected["error"]["message"])
 
         (project_dir(project_id) / "error.log").write_text(("x" * 20000) + "TRACEBACK-MARKER", encoding="utf-8")
         render_log = project_dir(project_id) / "outputs" / "render.log"
         render_log.parent.mkdir(parents=True, exist_ok=True)
         render_log.write_text("RENDER-MARKER", encoding="utf-8")
-        status, logs = self.request("GET", "/api/projects/%s/logs" % project_id)
-        self.assertEqual(status, 200)
+        logs = self.rpc("projects.logs", {"id": project_id})["result"]
         self.assertIn("TRACEBACK-MARKER", logs["error_log"])
         self.assertNotIn("x" * 20000, logs["error_log"])
         self.assertLessEqual(len(logs["error_log"]), 16000)
         self.assertEqual(logs["render_log"], "RENDER-MARKER")
 
-        status, paused = self.request("POST", "/api/projects/%s/pause" % project_id)
-        self.assertEqual(status, 200)
+        paused = self.rpc("projects.pause", {"id": project_id})["result"]
         self.assertEqual(paused["status"], "paused")
         self.assertEqual(paused["progress"]["paused_from"], "writing")
         remember(
@@ -200,21 +228,49 @@ class ProjectApiTest(unittest.TestCase):
             progress={"phase": "building", "message": "仍在准备"},
         )
         self.assertEqual(read_project(project_id)["status"], "paused")
+        debug_dir = project_dir(project_id) / "debug"
+        debug_dir.mkdir()
+        (debug_dir / "user_brief.txt").write_text("BRIEF-MARKER", encoding="utf-8")
+        status, debug_body = self.request("GET", "/media/projects/%s/debug/user_brief" % project_id)
+        self.assertEqual(status, 200)
+        self.assertEqual(debug_body, b"BRIEF-MARKER")
+        (project_dir(project_id) / "workflow.json").write_text('{"nodes":[]}', encoding="utf-8")
+        status, workflow = self.request("GET", "/media/projects/%s/workflow" % project_id)
+        self.assertEqual(status, 200)
+        self.assertEqual(workflow, {"nodes": []})
+        clip_dir = project_dir(project_id) / "outputs" / "clips"
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / "S01.mp4").write_bytes(b"clip-bytes")
+        status, clip = self.request("GET", "/media/projects/%s/clips/S01.mp4" % project_id)
+        self.assertEqual(status, 200)
+        self.assertEqual(clip, b"clip-bytes")
+        film = read_project(project_id)
+        film["video_file"] = "joined.mp4"
+        write_project(film)
+        (project_dir(project_id) / "outputs" / "joined.mp4").write_bytes(b"film-bytes")
+        view = self.rpc("projects.get", {"id": project_id})["result"]
+        self.assertEqual(view["video_url"], "/media/projects/%s/video" % project_id)
+        self.assertTrue(view["clips"][0]["url"].startswith("/media/projects/%s/clips/S01.mp4" % project_id))
+        status, film_body = self.request("GET", view["video_url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(film_body, b"film-bytes")
+        status, download = self.request("GET", view["video_download_url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(download, b"film-bytes")
         gate_for(project_id).resume()
 
     def test_building_can_pause_and_drilling_cannot(self):
         project_id = "b011d0000002"
         make_project(project_id, status="building")
-        status, body = self.request("POST", "/api/projects/%s/pause" % project_id)
-        self.assertEqual(status, 200)
+        body = self.rpc("projects.pause", {"id": project_id})["result"]
         self.assertEqual(body["status"], "paused")
         self.assertEqual(body["progress"]["paused_from"], "building")
         fresh = read_project(project_id)
         fresh["status"] = "drilling"
         write_project(fresh)
-        status, denied = self.request("POST", "/api/projects/%s/pause" % project_id)
-        self.assertEqual(status, 409)
-        self.assertIn("不能暂停", denied["error"])
+        denied = self.rpc("projects.pause", {"id": project_id})
+        self.assertEqual(denied["error"]["code"], 409)
+        self.assertIn("不能暂停", denied["error"]["message"])
         gate_for(project_id).resume()
 
     def test_paused_writing_saves_spec_and_resume_starts_render(self):
@@ -229,7 +285,7 @@ class ProjectApiTest(unittest.TestCase):
             "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人"}],
             "shots": [{"id": "S01", "duration": 5, "prompt": "离开", "images": ["A1"]}],
         }
-        with patch("web.server.call_deepseek", return_value=spec), patch("web.server.execute_render") as execute:
+        with patch("end.server.call_deepseek", return_value=spec), patch("end.server.execute_render") as execute:
             run_project(project_id)
             execute.assert_not_called()
         saved = json.loads((project_dir(project_id) / "spec.json").read_text(encoding="utf-8"))
@@ -242,7 +298,7 @@ class ProjectApiTest(unittest.TestCase):
             self.assertEqual(pid, project_id)
             started.set()
 
-        with patch("web.server.execute_render", fake_execute):
+        with patch("end.server.execute_render", fake_execute):
             resume_render(read_project(project_id))
             self.assertTrue(started.wait(3))
         self.assertEqual(read_project(project_id)["status"], "rendering")
@@ -265,13 +321,15 @@ class ProjectApiTest(unittest.TestCase):
         )
         if proc.returncode != 0 or not jpeg_path.is_file():
             self.skipTest("ffmpeg 没能写出 jpeg")
-        status, _body = self.request(
-            "POST",
-            "/api/projects/%s/assets/A2/image" % project_id,
-            jpeg_path.read_bytes(),
-            {"Content-Type": "image/jpeg"},
+        payload = self.rpc(
+            "projects.set_asset_image",
+            {
+                "id": project_id,
+                "asset_id": "A2",
+                "data_base64": base64.b64encode(jpeg_path.read_bytes()).decode("ascii"),
+            },
         )
-        self.assertEqual(status, 200, _body)
+        self.assertIn("result", payload, payload)
         stored = (project_dir(project_id) / "outputs" / "images" / "A2.png").read_bytes()
         self.assertTrue(stored.startswith(b"\x89PNG"))
 
@@ -289,32 +347,29 @@ class ProjectApiTest(unittest.TestCase):
 
     def test_opening_upload_keeps_the_still_and_narration(self):
         png = tiny_png()
-        boundary = "----aivideo"
-        body = _multipart(
-            boundary,
-            [
-                ("brief", "雨夜车站"),
-                ("debug_llm", "0"),
-                ("file", "车站.png", png),
-                ("narration", "她在等最后一班车"),
-            ],
-        )
 
         def keep(project):
             write_project(project)
 
-        with patch("web.server.start_drill", side_effect=keep):
-            status, payload = self.request(
-                "POST",
-                "/api/projects",
-                body,
-                {"Content-Type": "multipart/form-data; boundary=%s" % boundary},
-            )
-        self.assertEqual(status, 201, payload)
+        with patch("end.server.start_drill", side_effect=keep):
+            payload = self.rpc(
+                "projects.create",
+                {
+                    "brief": "雨夜车站",
+                    "debug_llm": False,
+                    "materials": [
+                        {
+                            "filename": "车站.png",
+                            "narration": "她在等最后一班车",
+                            "data_base64": base64.b64encode(png).decode("ascii"),
+                        }
+                    ],
+                },
+            )["result"]
         self.assertEqual(payload["brief"], "雨夜车站")
         self.assertEqual(payload["materials"][0]["id"], "U1")
         self.assertEqual(payload["materials"][0]["narration"], "她在等最后一班车")
-        self.assertTrue(payload["materials"][0]["url"])
+        self.assertTrue(payload["materials"][0]["url"].startswith("/media/projects/"))
         self.assertIn("她在等最后一班车", payload["messages"][0]["content"])
         folder = project_dir(payload["id"])
         self.assertEqual((folder / "outputs" / "images" / "U1.png").read_bytes(), png)
@@ -337,28 +392,6 @@ class ProjectApiTest(unittest.TestCase):
         )
         self.assertEqual(filled["shots"][0]["narration"], "她在等最后一班车")
         self.assertEqual(len(filled["shots"]), 1)
-
-
-def _multipart(boundary, parts):
-    chunks = []
-    for part in parts:
-        if len(part) == 2:
-            name, value = part
-            chunks.append(
-                (
-                    '--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n%s\r\n'
-                    % (boundary, name, value)
-                ).encode("utf-8")
-            )
-        else:
-            name, filename, data = part
-            head = (
-                '--%s\r\nContent-Disposition: form-data; name="%s"; filename="%s"\r\n'
-                "Content-Type: image/png\r\n\r\n" % (boundary, name, filename)
-            ).encode("utf-8")
-            chunks.append(head + data + b"\r\n")
-    chunks.append(("--%s--\r\n" % boundary).encode("utf-8"))
-    return b"".join(chunks)
 
 
 if __name__ == "__main__":

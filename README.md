@@ -2,6 +2,8 @@
 
 竖屏短剧的聊天入口。先写一段背景，再用 drill-me 把这段背景扩成 2 到 3 个方向让你选，最后一项是「其他」；选到「就按这个做」之后，才用短剧技能写出剧本、分镜和生图提示词。写完后由本机编排出片：iCreat 生图、CR MiniMax H3 出镜、ffmpeg 拼接，最后用 ffmpeg 把 `字幕.ass` 烧进成片。不再把成片提交到 Comfy Cloud。
 
+页面到成片的路径是 Front → End → Task Queue → Agent Layout。Agent Layout 里面是 LangGraph → Agent → LLM Model：图把这一问交给 Agent，Agent 组好请求，LLM Model 再去调 DeepSeek 或 CR。出片不进这个布局，仍由 End 在本机编排。模型工人数量用 `AIVIDEO_AGENT_WORKERS`，默认 4。进程重启时，还停在「正在想方向」或「正在写剧本」的项目会重新入队。
+
 ## 运行
 
 需要 Python 3.9。在项目根目录：
@@ -13,7 +15,7 @@ cp .env.example .env
 在 `.env` 里填写 `DEEPSEEK_API_KEY`（写剧本）、`ICREAT_API_KEY`（生图）和 `CR_API_KEY`（出镜），然后：
 
 ```bash
-python3 -m web.server
+python3 -m end.server
 ```
 
 打开 http://127.0.0.1:8787 。
@@ -69,7 +71,7 @@ client.download_video(task, "sunset.mp4")
 
 同一次提交里，首尾帧和参考素材不能一起出现。
 
-图片可以是网址，也可以是 `data:image/jpeg;base64,...`。`duration` 是 4 到 15 的整数。文生视频比例可以是 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`。不要传 `resolution`，也不要传 `generate_audio: false`。每个任务用不同的 `idempotency_key`；重试同一次提交时沿用同一个值。
+`duration` 是 4 到 15 的整数。文生视频要传比例，可以是 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`。图生视频和参考图生视频不要传 `aspect_ratio`，比例跟输入图走；图片必须是 CR 能直接打开的 HTTPS 网址，不要传 `data:` 图片，否则会返回 `invalid_parameter`。不要传 `resolution`，也不要传 `generate_audio: false`。每个任务用不同的 `idempotency_key`；重试同一次提交时沿用同一个值。
 
 ## iCreat 生图
 
@@ -89,7 +91,10 @@ client.download_image(task.url, "hero.png")
 
 ## 目录
 
-- `web/`：聊天页面、项目接口和本机出片编排
+- `front/`：聊天页面
+- `end/`：项目接口和本机出片编排。需要模型时只提交任务
+- `task_queue/`：模型任务队列，工人数量由 `AIVIDEO_AGENT_WORKERS` 决定
+- `agent/`：Agent 布局。`graph.py` 里的 LangGraph 把 Agent 接到 LLM Model，再由模型访问 DeepSeek 或 CR
 - `cr_api/`：CR 的文本和视频客户端
 - `icreat_api/`：iCreat GPT Image 2 客户端
 - `skills/`：短剧剧本、场景、生图提示词、分镜技能

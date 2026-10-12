@@ -12,11 +12,14 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Only what the web site needs at runtime.
+# Only what the site needs at runtime.
 COPY deepseek_api ./deepseek_api
 COPY icreat_api ./icreat_api
 COPY pipeline ./pipeline
-COPY web ./web
+COPY end ./end
+COPY agent ./agent
+COPY task_queue ./task_queue
+COPY front ./front
 COPY cr_api ./cr_api
 COPY skills/aivideo-work/SKILL.md ./skills/aivideo-work/SKILL.md
 COPY deploy/entrypoint.sh /entrypoint.sh

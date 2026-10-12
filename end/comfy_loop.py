@@ -6,7 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from web.pipeline import (
+from end.pipeline import (
     CLOUD_LOGIN_HINT,
     CLOUD_STATUS,
     _cloud_message,
@@ -18,7 +18,7 @@ from web.pipeline import (
     _run_comfy,
     _status_payload,
 )
-from web.workflow_from_spec import (
+from end.workflow_from_spec import (
     build_image_workflow,
     build_join_workflow,
     build_shot_workflow,

@@ -150,7 +150,7 @@ def print_skills(skills):
 
 
 def repl(config, skills, provider_name):
-    from web.pipeline import drill_system_prompt, parse_drill_text
+    from end.pipeline import drill_system_prompt, parse_drill_text
 
     current_name = config["roles"]["剧本"]
     history = []

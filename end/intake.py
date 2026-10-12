@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from web.workflow_from_spec import _clamp_duration
+from end.workflow_from_spec import _clamp_duration
 
 MAX_MATERIALS = 8
 INTAKE_NAME = "intake.json"
@@ -85,6 +85,7 @@ def enrich_brief(brief, items):
         brief,
         "",
         "用户已经上传这些图素材。出片直接使用这些图，不要再写成会换掉原图的定妆。",
+        "新的补充资产不要 depends_on 这些素材。补充图按自己的提示词单独文生图。",
         "剧本和分镜必须用到这些资产 id。每张图的旁白原句写进使用该图的镜头 narration，不要改字。",
         "没有旁白的图，对应镜头 narration 为空字符串。",
     ]
