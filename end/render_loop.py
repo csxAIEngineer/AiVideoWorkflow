@@ -9,14 +9,13 @@ import struct
 import subprocess
 import threading
 import time
-import urllib.error
-import urllib.request
 import uuid
 from pathlib import Path
 
 from cr_api.client import ASPECT_RATIOS, CRError
 from icreat_api.client import ICreatError
 from end.workflow_from_spec import collect_steps, ordered_assets
+from image_store import get_image_store
 
 MAX_ATTEMPTS = 5
 IMAGE_POLL_SEC = 4
@@ -256,12 +255,12 @@ def mark_user_pause(work_dir, project_id, reason="已暂停"):
         return state
 
 
-def note_local_image(work_dir, project_id, asset_id):
-    """A user-supplied still replaces the remote URL.
+def note_local_image(work_dir, project_id, asset_id, public_url=None):
+    """A user-supplied still replaces remote generation.
 
-    A step that already has a remote task keeps that request. The download may
-    overwrite the file. A step that has not been submitted is marked done so the
-    loop will not generate it again, and later assets cannot reuse the old URL.
+    local_override stays true so a later asset does not reuse this still as a reference.
+    public_url is an HTTP address on this service, so video submission can hand it to CR.
+    A step that already has a remote task keeps that request.
     """
     with project_lock(project_id or str(Path(work_dir))):
         state = load_run_state(work_dir)
@@ -269,10 +268,13 @@ def note_local_image(work_dir, project_id, asset_id):
         step = steps.get(asset_id) or blank_step("image")
         if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
             return step
+        hosted = str(public_url or "").strip()
+        if not _http_media_url(hosted):
+            hosted = get_image_store().url(project_id, "%s.png" % asset_id)
         step["kind"] = "image"
         step["status"] = "done"
         step["output_file"] = "images/%s.png" % asset_id
-        step["public_url"] = ""
+        step["public_url"] = hosted
         step["local_override"] = True
         step["error"] = ""
         steps[asset_id] = step
@@ -1509,80 +1511,20 @@ def _http_media_url(value):
     return ""
 
 
-def _multipart_file(field, filename, payload, mime):
-    boundary = "----aivideo%s" % uuid.uuid4().hex
-    head = (
-        "--%s\r\n"
-        'Content-Disposition: form-data; name="%s"; filename="%s"\r\n'
-        "Content-Type: %s\r\n\r\n"
-    ) % (boundary, field, filename, mime)
-    body = head.encode("utf-8") + payload + ("\r\n--%s--\r\n" % boundary).encode("utf-8")
-    return boundary, body
+def _reference_url(info, project_id=""):
+    """CR 的图生视频和参考图生视频只接受它能打开的 HTTP(S) 网址。
 
-
-def _uguu_url(raw):
-    try:
-        data = json.loads(raw)
-    except (TypeError, ValueError):
-        data = None
-    files = data.get("files") if isinstance(data, dict) else None
-    first = files[0] if isinstance(files, list) and files else None
-    url = _http_media_url(first.get("url") if isinstance(first, dict) else "")
-    if not isinstance(data, dict) or not data.get("success") or not url:
-        raise RuntimeError("临时图床没有返回地址")
-    return url
-
-
-def publish_still(path, opener=None, timeout=120):
-    """把本机静帧传到临时图床，返回 CR 能打开的 HTTPS 地址。"""
-    file_path = Path(path)
-    payload = file_path.read_bytes()
-    mime = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-    }.get(file_path.suffix.lower(), "application/octet-stream")
-    boundary, body = _multipart_file("files[]", file_path.name, payload, mime)
-    request = urllib.request.Request(
-        "https://uguu.se/upload.php",
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "multipart/form-data; boundary=" + boundary,
-            "User-Agent": "aivideo",
-        },
-    )
-    open_url = opener or urllib.request.urlopen
-    try:
-        response = open_url(request, timeout=timeout)
-        try:
-            raw = response.read().decode("utf-8", errors="replace")
-        finally:
-            close = getattr(response, "close", None)
-            if close:
-                close()
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")[:200]
-        failed = RuntimeError("上传参考图失败：%s %s" % (error.code, detail))
-        failed.status = error.code
-        raise failed
-    except urllib.error.URLError as error:
-        raise RuntimeError("上传参考图失败：%s" % error.reason)
-    return _uguu_url(raw)
-
-
-def _reference_url(info, publish=None):
-    """CR 的图生视频和参考图生视频只接受它能打开的 HTTP(S) 网址。"""
+    An existing http(s) address wins, including iCreat's own URL. An uploaded
+    still without one uses this service's public media address.
+    """
     url = _http_media_url((info or {}).get("url"))
     if url:
         return url
-    path = (info or {}).get("path")
-    if publish and path and Path(path).is_file() and Path(path).stat().st_size > 0:
-        hosted = _http_media_url(publish(path))
-        if hosted:
-            return hosted
-    raise RuntimeError("参考图没有公网地址，CR 的图生视频只接受 HTTPS 网址")
+    if (info or {}).get("local_override"):
+        filename = Path(str((info or {}).get("path") or "")).name
+        if project_id and filename:
+            return get_image_store().url(project_id, filename)
+    raise RuntimeError("参考图没有公网地址，CR 的图生视频只接受 HTTP(S) 网址")
 
 
 def _video_handle(task_id, poll_url):
@@ -1591,7 +1533,7 @@ def _video_handle(task_id, poll_url):
     return VideoTask({"id": task_id, "poll_url": poll_url or "", "status": "submitted"})
 
 
-def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat=None, cr=None, sleeper=None, joiner=None, burner=None, images_only=False, still_publisher=None):
+def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat=None, cr=None, sleeper=None, joiner=None, burner=None, images_only=False):
     """Generate stills, then clips, join them, then burn 字幕.ass. Completed files are skipped.
 
     images_only stops after the stills. Video, join, and subtitles are left for a later run.
@@ -1669,7 +1611,11 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
             len(assets),
         )
         saved_path, _relative = output_paths(ctx.work_dir, asset["id"], "image")
-        images[asset["id"]] = {"path": saved_path, "url": fresh.get("public_url") or ""}
+        images[asset["id"]] = {
+            "path": saved_path,
+            "url": fresh.get("public_url") or "",
+            "local_override": bool(fresh.get("local_override")),
+        }
 
     if images_only:
         with ctx.lock:
@@ -1698,14 +1644,6 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
         shot["spoken"] = spoken
 
     clips = []
-    hosted_stills = {}
-
-    def publish_for_video(path):
-        key = str(path)
-        if key not in hosted_stills:
-            upload = still_publisher or publish_still
-            hosted_stills[key] = upload(path)
-        return hosted_stills[key]
 
     for index, shot in enumerate(shots, start=1):
         label = "视频 %s/%s：%s" % (index, len(shots), shot["id"])
@@ -1736,9 +1674,7 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
                 info = images.get(asset_id)
                 if not info:
                     raise RuntimeError("镜头 %s 缺少参考图 %s" % (current["id"], asset_id))
-                if not _http_media_url(info.get("url")):
-                    ctx.note("参考图 %s 没有公网地址，先上传再提交视频" % asset_id)
-                return _reference_url(info, publish=publish_for_video), info.get("path")
+                return _reference_url(info, project_id=ctx.project_id), info.get("path")
 
             _aspect, media = assemble_shot_media(current, mode, url_for, tail_url)
             text = delivery_prompt(current, spoken, prompt_index, bool(tail_url), mode)

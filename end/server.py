@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 import uuid
@@ -24,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from end.db import DATA, connect, delete_project, list_projects, project_dir, read_project, write_project
+from image_store import get_image_store
 from end.render_loop import (
     _ffmpeg_bin,
     gate_for,
@@ -756,15 +758,16 @@ def _image_kind(data):
     return ""
 
 
-def _ffmpeg_to_png(data, kind, target):
+def _ffmpeg_png_bytes(data, kind):
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg:
         raise RuntimeError("本机没有 ffmpeg，不能把图片转成 png")
     suffix = ".jpg" if kind == "jpeg" else ".webp"
-    source = target.parent / (target.stem + ".src" + suffix)
-    temporary = target.parent / (target.stem + ".part.png")
-    source.write_bytes(data)
+    folder = Path(tempfile.mkdtemp(prefix="aivideo-still-"))
+    source = folder / ("source" + suffix)
+    temporary = folder / "out.png"
     try:
+        source.write_bytes(data)
         proc = subprocess.run(
             [ffmpeg, "-y", "-i", str(source), str(temporary)],
             stdout=subprocess.PIPE,
@@ -773,15 +776,12 @@ def _ffmpeg_to_png(data, kind, target):
         )
         if proc.returncode != 0 or not temporary.is_file() or temporary.stat().st_size <= 0:
             raise RuntimeError("ffmpeg 转 png 失败：%s" % ((proc.stdout or "")[-300:]))
-        temporary.replace(target)
+        return temporary.read_bytes()
     finally:
-        if source.is_file():
-            source.unlink()
-        if temporary.is_file():
-            temporary.unlink()
+        shutil.rmtree(folder, ignore_errors=True)
 
 
-def _write_image_png(data, target):
+def _png_bytes(data):
     if not data:
         raise ValueError("没有图片")
     if len(data) > MAX_ASSET_IMAGE_BYTES:
@@ -789,18 +789,16 @@ def _write_image_png(data, target):
     kind = _image_kind(data)
     if not kind:
         raise ValueError("只接受 png、jpeg、webp")
-    target = Path(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
     if kind == "png":
-        temporary = target.with_suffix(".png.part")
-        temporary.write_bytes(data)
-        temporary.replace(target)
-        return
-    _ffmpeg_to_png(data, kind, target)
+        return data
+    return _ffmpeg_png_bytes(data, kind)
 
 
 def save_asset_image(project_id, asset_id, data):
-    """Store a replacement still as outputs/images/{id}.png and drop its remote URL."""
+    """Store a replacement still and record this service's public URL.
+
+    local_override stays true so a later asset does not reuse the upload as a reference.
+    """
     asset_id = str(asset_id or "")
     if not asset_id or asset_id != Path(asset_id).name or not all(ch.isalnum() or ch in "-_" for ch in asset_id):
         raise ValueError("没有这个资产")
@@ -815,9 +813,8 @@ def save_asset_image(project_id, asset_id, data):
         step = (state.get("steps") or {}).get(asset_id) or {}
         if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
             raise RuntimeError("这一步已经提交，完成前不能替换图片")
-        target = project_dir(project_id) / "outputs" / "images" / (asset_id + ".png")
-        _write_image_png(data, target)
-        note_local_image(project_dir(project_id), project_id, asset_id)
+        public_url = get_image_store().save(project_id, asset_id, _png_bytes(data))
+        note_local_image(project_dir(project_id), project_id, asset_id, public_url)
         return project
 
 
@@ -827,11 +824,11 @@ def store_materials(project_id, files):
         raise ValueError("一次最多上传 8 张图")
     items = []
     folder = project_dir(project_id)
+    store = get_image_store()
     for index, item in enumerate(files, start=1):
         material = new_material(index, item.get("narration"), item.get("filename"))
-        target = folder / "outputs" / "images" / (material["id"] + ".png")
-        _write_image_png(item.get("data") or b"", target)
-        note_local_image(folder, project_id, material["id"])
+        public_url = store.save(project_id, material["id"], _png_bytes(item.get("data") or b""))
+        note_local_image(folder, project_id, material["id"], public_url)
         items.append(material)
     save_intake(folder, items)
     return items

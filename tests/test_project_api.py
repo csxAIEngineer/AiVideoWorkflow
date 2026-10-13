@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 import struct
 import subprocess
 import tempfile
@@ -83,6 +84,9 @@ def make_project(project_id, status="writing", **extra):
     return project
 
 
+PUBLIC_BASE = "http://203.0.113.10:8787"
+
+
 class ProjectApiTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -92,6 +96,12 @@ class ProjectApiTest(unittest.TestCase):
         db.DB_PATH = self.root / "api.db"
         db._CONN = None
         db.DATA.mkdir()
+        self._env = {
+            "AIVIDEO_PUBLIC_BASE": os.environ.get("AIVIDEO_PUBLIC_BASE"),
+            "AIVIDEO_IMAGE_STORE": os.environ.get("AIVIDEO_IMAGE_STORE"),
+        }
+        os.environ["AIVIDEO_PUBLIC_BASE"] = PUBLIC_BASE
+        os.environ["AIVIDEO_IMAGE_STORE"] = "local"
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -105,6 +115,11 @@ class ProjectApiTest(unittest.TestCase):
         db.DATA, db.DB_PATH, db._CONN = self._old
         if conn is not None and conn is not self._old[2]:
             conn.close()
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self.tmp.cleanup()
 
     def request(self, method, path, body=None, headers=None):
@@ -181,7 +196,11 @@ class ProjectApiTest(unittest.TestCase):
         self.assertEqual(stored.read_bytes(), png)
         step = load_run_state(project_dir(project_id))["steps"]["A1"]
         self.assertTrue(step["local_override"])
-        self.assertEqual(step["public_url"], "")
+        self.assertTrue(step["public_url"].startswith(PUBLIC_BASE))
+        self.assertEqual(
+            step["public_url"],
+            "%s/media/projects/%s/images/A1.png" % (PUBLIC_BASE, project_id),
+        )
         self.assertEqual(step["status"], "done")
         image = next(item for item in body["images"] if item["name"] == "A1.png")
         self.assertTrue(image["url"].startswith("/media/projects/%s/images/A1.png?" % project_id))
@@ -373,7 +392,13 @@ class ProjectApiTest(unittest.TestCase):
         self.assertIn("她在等最后一班车", payload["messages"][0]["content"])
         folder = project_dir(payload["id"])
         self.assertEqual((folder / "outputs" / "images" / "U1.png").read_bytes(), png)
-        self.assertTrue(load_run_state(folder)["steps"]["U1"]["local_override"])
+        step = load_run_state(folder)["steps"]["U1"]
+        self.assertTrue(step["local_override"])
+        self.assertTrue(step["public_url"].startswith(PUBLIC_BASE))
+        self.assertEqual(
+            step["public_url"],
+            "%s/media/projects/%s/images/U1.png" % (PUBLIC_BASE, payload["id"]),
+        )
 
     def test_merge_puts_narration_on_a_shot_for_the_uploaded_still(self):
         spec = merge_intake(

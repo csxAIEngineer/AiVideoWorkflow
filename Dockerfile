@@ -17,6 +17,7 @@ COPY deepseek_api ./deepseek_api
 COPY icreat_api ./icreat_api
 COPY pipeline ./pipeline
 COPY end ./end
+COPY image_store ./image_store
 COPY agent ./agent
 COPY task_queue ./task_queue
 COPY front ./front

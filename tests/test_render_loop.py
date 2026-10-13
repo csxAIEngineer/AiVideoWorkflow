@@ -1,6 +1,7 @@
 """Checkpoints, failure reset, pause, and restart for the local render loop."""
 
 import json
+import os
 import struct
 import tempfile
 import threading
@@ -25,7 +26,6 @@ from end.render_loop import (
     _reference_url,
     nearest_aspect_ratio,
     note_local_image,
-    publish_still,
     reset_current_step,
     resume_paused,
     run_local_pipeline,
@@ -149,13 +149,27 @@ class FakeCR(object):
         return path
 
 
+PUBLIC_BASE = "http://203.0.113.10:8787"
+
+
 class RenderLoopTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.work = Path(self.tmp.name)
+        self._env = {
+            "AIVIDEO_PUBLIC_BASE": os.environ.get("AIVIDEO_PUBLIC_BASE"),
+            "AIVIDEO_IMAGE_STORE": os.environ.get("AIVIDEO_IMAGE_STORE"),
+        }
+        os.environ["AIVIDEO_PUBLIC_BASE"] = PUBLIC_BASE
+        os.environ["AIVIDEO_IMAGE_STORE"] = "local"
 
     def tearDown(self):
         self.tmp.cleanup()
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def test_checkpoint_skips_finished_still_and_locks_face(self):
         image = self.work / "outputs" / "images" / "A1.png"
@@ -210,6 +224,32 @@ class RenderLoopTest(unittest.TestCase):
             _reference_url({"path": str(image), "url": "https://cdn.example/a.png"}),
             "https://cdn.example/a.png",
         )
+        self.assertEqual(
+            _reference_url(
+                {"path": str(image), "url": "https://cdn.example/a.png", "local_override": True},
+                project_id="fffdd6d6b188",
+            ),
+            "https://cdn.example/a.png",
+        )
+        hosted = _reference_url(
+            {
+                "path": str(self.work / "outputs" / "images" / "U1.png"),
+                "url": "",
+                "local_override": True,
+            },
+            project_id="fffdd6d6b188",
+        )
+        self.assertEqual(hosted, PUBLIC_BASE + "/media/projects/fffdd6d6b188/images/U1.png")
+        with self.assertRaises(RuntimeError) as raised:
+            _reference_url(
+                {
+                    "path": str(self.work / "outputs" / "images" / "A2.png"),
+                    "url": "",
+                    "local_override": False,
+                },
+                project_id="fffdd6d6b188",
+            )
+        self.assertIn("公网地址", str(raised.exception))
         with self.assertRaises(RuntimeError) as raised:
             _reference_url({"path": str(image), "url": ""})
         self.assertIn("公网地址", str(raised.exception))
@@ -248,17 +288,20 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(len(cr.submits[1]["images"]), 1)
         self.assertEqual(cr.submits[1]["images"][0]["url"], cr.submits[0]["images"][0]["url"])
 
-    def test_local_still_is_uploaded_before_video(self):
+    def test_local_still_uses_public_base_and_not_uguu(self):
         project_id = "host-still"
         image = self.work / "outputs" / "images" / "A1.png"
         image.parent.mkdir(parents=True)
         image.write_bytes(b"\x89PNG-local")
         note_local_image(self.work, project_id, "A1")
-        hosted = []
-
-        def publish(path):
-            hosted.append(Path(path).name)
-            return "https://cdn.example/hosted.jpg"
+        step = load_run_state(self.work)["steps"]["A1"]
+        hosted = "%s/media/projects/%s/images/A1.png" % (PUBLIC_BASE, project_id)
+        self.assertTrue(step["local_override"])
+        self.assertTrue(step["public_url"].startswith(PUBLIC_BASE))
+        self.assertEqual(step["public_url"], hosted)
+        state = load_run_state(self.work)
+        state["steps"]["A1"]["public_url"] = ""
+        save_run_state(self.work, state)
 
         cr = FakeCR()
         run_local_pipeline(
@@ -268,37 +311,12 @@ class RenderLoopTest(unittest.TestCase):
             icreat=FakeICreat(),
             cr=cr,
             sleeper=_noop_sleep,
-            still_publisher=publish,
         )
-        self.assertEqual(hosted, ["A1.png"])
+        body = json.dumps(cr.submits)
+        self.assertNotIn("uguu", body)
         self.assertEqual(cr.submits[0]["model"], "minimax-h3-image-to-video")
         self.assertIsNone(cr.submits[0]["aspect_ratio"])
-        self.assertEqual(cr.submits[0]["images"][0]["url"], "https://cdn.example/hosted.jpg")
-
-        class _Body(object):
-            def __init__(self, payload):
-                self.payload = payload
-
-            def read(self):
-                return self.payload
-
-            def close(self):
-                return None
-
-        sent = []
-
-        def opener(request, timeout):
-            sent.append(request)
-            return _Body(b'{"success": true, "files": [{"url": "https://n.uguu.se/still.png"}]}')
-
-        self.assertEqual(publish_still(image, opener=opener), "https://n.uguu.se/still.png")
-        self.assertIn(b"files[]", sent[0].data)
-        def empty(_request, timeout=120):
-            del timeout
-            return _Body(b"{}")
-
-        with self.assertRaises(RuntimeError):
-            publish_still(image, opener=empty)
+        self.assertEqual(cr.submits[0]["images"][0]["url"], hosted)
 
     def test_remote_failure_resets_step_then_pause_and_manual_reset(self):
         icreat = FakeICreat(fail_status=5)
@@ -659,15 +677,17 @@ class RenderLoopTest(unittest.TestCase):
         image.parent.mkdir(parents=True)
         image.write_bytes(b"\x89PNG-local")
         note_local_image(self.work, project_id, "A1")
-        self.assertEqual(load_run_state(self.work)["steps"]["A1"]["public_url"], "")
-        self.assertTrue(load_run_state(self.work)["steps"]["A1"]["local_override"])
+        step = load_run_state(self.work)["steps"]["A1"]
+        self.assertTrue(step["local_override"])
+        self.assertTrue(step["public_url"].startswith(PUBLIC_BASE))
         icreat = FakeICreat()
+        cr = FakeCR()
         result = run_local_pipeline(
             SPEC,
             self.work,
             project_id=project_id,
             icreat=icreat,
-            cr=FakeCR(),
+            cr=cr,
             sleeper=_noop_sleep,
         )
         self.assertEqual(result["video_file"], "joined.mp4")
@@ -675,6 +695,8 @@ class RenderLoopTest(unittest.TestCase):
         self.assertIsNone(icreat.submits[0]["image"])
         self.assertNotIn("锁定同一张脸", icreat.submits[0]["prompt"])
         self.assertIn("同一个人淋着雨", icreat.submits[0]["prompt"])
+        self.assertEqual(cr.submits[0]["images"][0]["url"], "https://cdn.example/img-1.png")
+        self.assertNotIn("uguu", json.dumps(cr.submits))
 
     def test_replaced_still_opens_on_first_frame(self):
         project_id = "local-shot"
