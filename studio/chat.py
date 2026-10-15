@@ -101,6 +101,8 @@ def pick_role(config, text, current):
     for label, name in config["roles"].items():
         if label in text:
             return name
+    if any(word in text for word in ("Image-Node", "三视图", "image-node")):
+        return "image-node"
     if any(word in text for word in ("分镜", "镜头", "storyboard")):
         return config["roles"]["分镜"]
     if any(word in text for word in ("生图", "提示词", "定妆", "空镜")):

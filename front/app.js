@@ -550,7 +550,7 @@ function promptTable(text, assets, images) {
   const fromAssets = (assets || []).filter((item) => item && item.prompt);
   const rows = fromAssets.length ? fromAssets : promptRowsFromText(text);
   if (rows.length < 2) return null;
-  const showRef = rows.some((row) => row.depends_on);
+  const showRef = rows.some((row) => assetReferenceText(row));
   const showStill = rows.some((row) => stillForRow(images, row));
   const table = document.createElement("table");
   table.className = "prompt-table";
@@ -587,7 +587,7 @@ function promptTable(text, assets, images) {
     if (showRef) {
       const ref = document.createElement("td");
       ref.className = "col-ref";
-      ref.textContent = row.depends_on || "—";
+      ref.textContent = assetReferenceText(row) || "—";
       tr.appendChild(ref);
     }
     const prompt = document.createElement("td");
@@ -1259,6 +1259,16 @@ function nodeState(project, kind, id) {
     if (project.status === "rendering") return "running";
     return "pending";
   }
+  if (kind === "image") {
+    const tasks = (project.tasks || []).filter((task) => task.kind === "image");
+    if (tasks.some((task) => task.state === "error" || task.state === "failed")) return "error";
+    if (tasks.some((task) => task.state === "running" || task.state === "retrying")) return "running";
+    if (tasks.length && tasks.every((task) => task.state === "done")) return "done";
+    if ((project.assets || []).length && (project.images || []).length >= (project.assets || []).length) return "done";
+    if (project.status === "paused") return "paused";
+    if (project.status === "building" || project.status === "rendering") return "running";
+    return "pending";
+  }
   return "pending";
 }
 
@@ -1297,63 +1307,72 @@ function readOnlyText(project, id, kind) {
   return "";
 }
 
-function nodePlan(project) {
+function columnOf(kind) {
+  const columns = { script: 0, storyboard: 1, image: 2, shot: 3, join: 4, subtitles: 5, film: 6 };
+  return Object.prototype.hasOwnProperty.call(columns, kind) ? columns[kind] : 3;
+}
+
+function sourceNodes(project) {
+  if ((project.nodes || []).some((node) => node && node.kind === "image")) return project.nodes;
   const assets = project.assets || [];
-  const shots = project.shots || [];
   const byId = {};
   assets.forEach((asset) => {
     byId[asset.id] = asset;
   });
-  function rank(asset, seen) {
-    if (!asset || !asset.depends_on || seen[asset.id] || !byId[asset.depends_on]) return 0;
-    const next = Object.assign({}, seen);
-    next[asset.id] = true;
-    return 1 + rank(byId[asset.depends_on], next);
-  }
-  let maxRank = 0;
-  assets.forEach((asset) => {
-    maxRank = Math.max(maxRank, rank(asset, {}));
-  });
-  const shotCol = 2 + maxRank + 1;
   const nodes = [
-    { id: "script", kind: "script", title: "剧本", col: 0, row: 0 },
-    { id: "storyboard", kind: "storyboard", title: "分镜", col: 1, row: 0 },
+    { id: "script", kind: "script", role: "function", title: "剧本", assets: [] },
+    { id: "storyboard", kind: "storyboard", role: "function", title: "分镜", assets: [] },
+    { id: "image", kind: "image", role: "function", title: "Image-Node", required: true, assets: assets },
   ];
+  (project.shots || []).forEach((shot) => {
+    const used = (shot.images || []).map((id) => byId[id]).filter(Boolean);
+    nodes.push({ id: shot.id, kind: "shot", role: "shot", title: shot.id, assets: used });
+  });
+  nodes.push(
+    { id: "join", kind: "join", role: "function", title: "拼接", assets: [] },
+    { id: "subtitles", kind: "subtitles", role: "function", title: "字幕", assets: [] },
+    { id: "film", kind: "film", role: "function", title: "成片", assets: [] }
+  );
+  return nodes;
+}
+
+function nodePlan(project) {
   const rows = {};
-  function push(node) {
-    rows[node.col] = rows[node.col] || 0;
-    node.row = rows[node.col];
-    rows[node.col] += 1;
-    nodes.push(node);
+  const nodes = sourceNodes(project).map((item) => {
+    const col = columnOf(item.kind);
+    const node = {
+      id: item.id,
+      kind: item.kind,
+      role: item.role || (item.kind === "shot" ? "shot" : "function"),
+      title: item.title || item.id,
+      required: !!item.required,
+      assets: item.assets || [],
+      shot: item.kind === "shot" ? (project.shots || []).find((shot) => shot.id === item.id) || null : null,
+      col: col,
+    };
+    rows[col] = rows[col] || 0;
+    node.row = rows[col];
+    rows[col] += 1;
+    return node;
+  });
+  const ids = {};
+  nodes.forEach((node) => {
+    ids[node.id] = true;
+  });
+  const edges = [];
+  function link(from, to) {
+    if (ids[from] && ids[to]) edges.push({ from: from, to: to });
   }
-  assets.forEach((asset) => {
-    push({
-      id: asset.id,
-      kind: "asset",
-      title: asset.title || asset.id,
-      col: 2 + rank(asset, {}),
-      asset: asset,
-    });
-  });
+  link("script", "storyboard");
+  link("storyboard", "image");
+  const shots = nodes.filter((node) => node.kind === "shot");
+  if (!shots.length) link("image", "join");
   shots.forEach((shot) => {
-    push({ id: shot.id, kind: "shot", title: shot.id, col: shotCol, shot: shot });
+    link("image", shot.id);
+    link(shot.id, "join");
   });
-  push({ id: "join", kind: "join", title: "拼接", col: shotCol + 1 });
-  push({ id: "subtitles", kind: "subtitles", title: "字幕", col: shotCol + 2 });
-  push({ id: "film", kind: "film", title: "成片", col: shotCol + 3 });
-  const edges = [{ from: "script", to: "storyboard" }];
-  assets.forEach((asset) => {
-    if (asset.depends_on && byId[asset.depends_on]) edges.push({ from: asset.depends_on, to: asset.id });
-    else edges.push({ from: "storyboard", to: asset.id });
-  });
-  shots.forEach((shot) => {
-    const ids = (shot.images || []).filter((id) => byId[id]);
-    if (!ids.length) edges.push({ from: assets.length ? assets[0].id : "storyboard", to: shot.id });
-    ids.forEach((id) => edges.push({ from: id, to: shot.id }));
-    edges.push({ from: shot.id, to: "join" });
-  });
-  if (!shots.length) edges.push({ from: assets.length ? assets[assets.length - 1].id : "storyboard", to: "join" });
-  edges.push({ from: "join", to: "subtitles" }, { from: "subtitles", to: "film" });
+  link("join", "subtitles");
+  link("subtitles", "film");
   return { nodes: nodes, edges: edges };
 }
 
@@ -1428,9 +1447,110 @@ function spreadColumns() {
 }
 
 function planSignature(plan) {
-  return plan.nodes.map((node) => node.kind + ":" + node.id).join("|")
+  return plan.nodes.map((node) => {
+    const ids = (node.assets || []).map((asset) => asset.id + ":" + (asset.view || "")).join(",");
+    return node.kind + ":" + node.id + ":" + ids;
+  }).join("|")
     + "#"
     + plan.edges.map((edge) => edge.from + ">" + edge.to).join("|");
+}
+
+function assetState(project, id) {
+  const task = taskById(project, id);
+  if (task && task.state) return task.state;
+  if (imageUrlFor(project, id)) return "done";
+  return "pending";
+}
+
+function viewLabel(asset) {
+  return { front: "正面", side: "侧面", back: "背面" }[asset && asset.view] || "";
+}
+
+function makeStill(project, asset) {
+  const url = imageUrlFor(project, asset.id);
+  if (url) {
+    const img = document.createElement("img");
+    img.className = "wf-still";
+    img.alt = asset.title || asset.id;
+    img.dataset.url = url;
+    img.src = url;
+    return img;
+  }
+  const hold = document.createElement("span");
+  hold.className = "wf-hold";
+  hold.textContent = viewLabel(asset) || asset.id;
+  return hold;
+}
+
+function uploadControl(assetId) {
+  const label = document.createElement("label");
+  label.className = "wf-upload";
+  label.append(document.createTextNode("替换图片"));
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp";
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("change", () => {
+    const file = input.files && input.files[0];
+    input.value = "";
+    if (file) uploadAsset(assetId, file);
+  });
+  label.append(input);
+  return label;
+}
+
+function assetReferenceText(asset) {
+  const names = [];
+  if (asset && asset.depends_on) names.push(String(asset.depends_on));
+  (asset && asset.references ? asset.references : []).forEach((item) => {
+    const text = String(item || "");
+    if (text && names.indexOf(text) < 0) names.push(text);
+  });
+  return names.join("、");
+}
+
+function renderAsset(project, asset) {
+  const card = document.createElement("div");
+  card.className = "wf-asset";
+  card.dataset.asset = asset.id;
+  const mark = document.createElement("span");
+  mark.className = "wf-dot " + assetState(project, asset.id);
+  card.append(mark);
+  card.append(makeStill(project, asset));
+  const name = document.createElement("b");
+  name.textContent = asset.title || asset.id;
+  card.append(name);
+  const label = viewLabel(asset);
+  if (label) {
+    const badge = document.createElement("span");
+    badge.className = "wf-view";
+    badge.textContent = label;
+    card.append(badge);
+  }
+  const referenceText = assetReferenceText(asset);
+  if (referenceText) {
+    const ref = document.createElement("small");
+    ref.className = "wf-ref";
+    ref.textContent = "参考 " + referenceText;
+    card.append(ref);
+  }
+  card.append(makeField(project, "asset:" + asset.id, 3));
+  card.append(uploadControl(asset.id));
+  return card;
+}
+
+function renderStrip(project, assets) {
+  const strip = document.createElement("div");
+  strip.className = "wf-strip";
+  assets.forEach((asset) => {
+    const thumb = document.createElement("div");
+    thumb.className = "wf-thumb";
+    thumb.dataset.asset = asset.id;
+    thumb.title = asset.title || asset.id;
+    thumb.append(makeStill(project, asset));
+    strip.append(thumb);
+  });
+  return strip;
 }
 
 function makeField(project, key, rows) {
@@ -1446,7 +1566,7 @@ function makeField(project, key, rows) {
 
 function renderNode(project, info) {
   const node = document.createElement("article");
-  node.className = "wf-node";
+  node.className = "wf-node " + info.kind;
   node.dataset.id = info.id;
   node.dataset.kind = info.kind;
   node.dataset.col = String(info.col);
@@ -1460,38 +1580,26 @@ function renderNode(project, info) {
   const title = document.createElement("b");
   title.textContent = info.title || info.id;
   const meta = document.createElement("small");
-  if (info.kind === "asset") meta.textContent = info.id;
+  if (info.kind === "image") meta.textContent = (info.assets || []).length + " 张 · 必须";
   else if (info.kind === "shot" && info.shot) meta.textContent = (info.shot.duration || "?") + " 秒";
+  else if (info.kind === "shot") meta.textContent = (info.assets || []).length + " 张";
   head.append(dot, title, meta);
   node.append(head);
   if (info.kind === "script") node.append(makeField(project, "script", 8));
   else if (info.kind === "storyboard") node.append(makeField(project, "storyboard", 8));
-  else if (info.kind === "asset") {
-    const url = imageUrlFor(project, info.id);
-    if (url) {
-      const img = document.createElement("img");
-      img.className = "wf-still";
-      img.alt = info.title || info.id;
-      img.dataset.url = url;
-      img.src = url;
-      node.append(img);
+  else if (info.kind === "image") {
+    const grid = document.createElement("div");
+    grid.className = "wf-assets";
+    if ((info.assets || []).length) info.assets.forEach((asset) => grid.append(renderAsset(project, asset)));
+    else {
+      const empty = document.createElement("p");
+      empty.className = "wf-read";
+      empty.textContent = "片中用到的图片都在这里生成";
+      grid.append(empty);
     }
-    node.append(makeField(project, "asset:" + info.id, 4));
-    const label = document.createElement("label");
-    label.className = "wf-upload";
-    label.append(document.createTextNode("替换图片"));
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp";
-    input.addEventListener("pointerdown", (event) => event.stopPropagation());
-    input.addEventListener("change", () => {
-      const file = input.files && input.files[0];
-      input.value = "";
-      if (file) uploadAsset(info.id, file);
-    });
-    label.append(input);
-    node.append(label);
+    node.append(grid);
   } else {
+    if ((info.assets || []).length) node.append(renderStrip(project, info.assets));
     const body = document.createElement("p");
     body.className = "wf-read";
     body.textContent = readOnlyText(project, info.id, info.kind);
@@ -1654,23 +1762,11 @@ function patchCanvas(project) {
       const text = readOnlyText(project, id, kind);
       if (read.textContent !== text) read.textContent = text;
     }
-    if (kind === "asset") {
-      const url = imageUrlFor(project, id);
-      let img = node.querySelector("img.wf-still");
-      if (url) {
-        if (!img) {
-          img = document.createElement("img");
-          img.className = "wf-still";
-          img.alt = id;
-          const field = node.querySelector("[data-field]");
-          node.insertBefore(img, field);
-        }
-        if (img.dataset.url !== url) {
-          img.dataset.url = url;
-          img.src = url;
-        }
-      }
-    }
+    node.querySelectorAll("[data-asset]").forEach((holder) => {
+      syncStill(holder, project);
+      const mark = holder.querySelector(".wf-dot");
+      if (mark) mark.className = "wf-dot " + assetState(project, holder.dataset.asset);
+    });
     if (kind === "shot" || kind === "film") {
       const url = kind === "film" ? (project.video_url || "") : clipUrlFor(project, id);
       let video = node.querySelector("video");
@@ -1891,8 +1987,28 @@ function onPointerUp() {
   canvasNodes.querySelectorAll(".wf-node.dragging").forEach((node) => node.classList.remove("dragging"));
 }
 
+function syncStill(holder, project) {
+  const url = imageUrlFor(project, holder.dataset.asset);
+  if (!url) return;
+  let img = holder.querySelector("img.wf-still");
+  if (!img) {
+    img = document.createElement("img");
+    img.className = "wf-still";
+    img.alt = holder.dataset.asset || "";
+    const hold = holder.querySelector(".wf-hold");
+    if (hold) hold.replaceWith(img);
+    else holder.insertBefore(img, holder.firstChild);
+  }
+  if (img.dataset.url !== url) {
+    img.dataset.url = url;
+    img.src = url;
+  }
+}
+
 function onWheel(event) {
   if (!canvasWrap || canvasWrap.classList.contains("hidden")) return;
+  const scroller = event.target.closest(".wf-assets, textarea, .wf-read");
+  if (scroller && scroller.scrollHeight > scroller.clientHeight + 1) return;
   event.preventDefault();
   const factor = event.deltaY < 0 ? 1.08 : 1 / 1.08;
   zoomAt(view.scale * factor, event.clientX, event.clientY);

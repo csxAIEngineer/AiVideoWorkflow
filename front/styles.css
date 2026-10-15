@@ -916,6 +916,10 @@ a.download {
   padding: 10px 12px 12px;
 }
 
+.wf-node.image {
+  width: 560px;
+}
+
 .wf-node.dragging { z-index: 3; box-shadow: 0 12px 28px rgba(20, 24, 40, 0.14); }
 
 .wf-head {
@@ -1008,6 +1012,92 @@ a.download {
 }
 
 .wf-upload input { display: none; }
+
+.wf-assets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 640px;
+  overflow: auto;
+}
+
+.wf-asset {
+  position: relative;
+  border: 1px solid #e4e4ea;
+  border-radius: 10px;
+  padding: 6px;
+  background: #fafafa;
+}
+
+.wf-asset > .wf-dot {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+}
+
+.wf-asset b {
+  display: block;
+  margin: 4px 0;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.wf-asset textarea {
+  min-height: 64px;
+}
+
+.wf-asset .wf-still,
+.wf-hold {
+  aspect-ratio: 1;
+}
+
+.wf-view {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #e8eefc;
+  color: #2a3f73;
+  font-size: 11px;
+}
+
+.wf-ref {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wf-hold {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: #f3f3f6;
+  color: #71717a;
+  font-size: 12px;
+}
+
+.wf-strip {
+  display: flex;
+  gap: 6px;
+  overflow: auto;
+  margin-bottom: 8px;
+}
+
+.wf-thumb {
+  flex: none;
+  width: 72px;
+}
+
+.wf-thumb .wf-still,
+.wf-thumb .wf-hold {
+  width: 72px;
+  height: 72px;
+  aspect-ratio: 1;
+  margin: 0;
+  border-radius: 8px;
+}
 
 .debug-dock {
   width: 320px;

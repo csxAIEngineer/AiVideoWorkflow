@@ -9,6 +9,7 @@ import struct
 import subprocess
 import threading
 import time
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -16,6 +17,48 @@ from cr_api.client import ASPECT_RATIOS, CRError
 from icreat_api.client import ICreatError
 from end.workflow_from_spec import collect_steps, ordered_assets
 from image_store import get_image_store
+
+
+def _agent_log(hypothesis_id, location, message, data):
+    # #region agent log
+    try:
+        payload = {
+            "sessionId": "caf74c",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open("/Users/shaneson/AiVideo/.cursor/debug-caf74c.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # #endregion
+
+
+def _probe_media_url(url):
+    # #region agent log
+    request = urllib.request.Request(str(url), headers={"Range": "bytes=0-15"})
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            chunk = response.read(16)
+            return {
+                "status": getattr(response, "status", 200),
+                "type": response.headers.get("Content-Type"),
+                "length": response.headers.get("Content-Length"),
+                "magic": chunk[:8].hex(),
+            }
+    except Exception as error:
+        body = ""
+        reader = getattr(error, "read", None)
+        if reader:
+            try:
+                body = reader(180).decode("utf-8", "replace")
+            except Exception:
+                body = ""
+        return {"status": getattr(error, "code", None), "error": str(error)[:180], "body": body}
+    # #endregion
 
 MAX_ATTEMPTS = 5
 IMAGE_POLL_SEC = 4
@@ -256,10 +299,11 @@ def mark_user_pause(work_dir, project_id, reason="已暂停"):
 
 
 def note_local_image(work_dir, project_id, asset_id, public_url=None):
-    """A user-supplied still replaces remote generation.
+    """Record a user-supplied still and its public URL.
 
-    local_override stays true so a later asset does not reuse this still as a reference.
-    public_url is an HTTP address on this service, so video submission can hand it to CR.
+    local_override marks a replaced generated still so a later asset does not
+    reuse it through depends_on. An opening upload uses the same flag, and
+    Image 2 still reads that public URL when an asset lists it in references.
     A step that already has a remote task keeps that request.
     """
     with project_lock(project_id or str(Path(work_dir))):
@@ -1305,6 +1349,21 @@ class RenderContext(object):
                 return self.reload_step(step_id, kind)
             if status in failure:
                 message = getattr(current, "error", "") or status
+                # #region agent log
+                raw = getattr(current, "raw", None)
+                _agent_log(
+                    "C",
+                    "render_loop.py:run_remote",
+                    "remote task failed",
+                    {
+                        "step_id": step_id,
+                        "kind": kind,
+                        "status": status,
+                        "error": str(message or "")[:500],
+                        "raw": raw if isinstance(raw, dict) else str(raw)[:800],
+                    },
+                )
+                # #endregion
                 self.on_remote_failure(step_id, kind, label, str(message or status))
                 seen = None
                 continue
@@ -1490,7 +1549,7 @@ def shots_for_subtitles(work_dir, shots, spec=None):
 
 
 def dependent_image_url(ctx, asset):
-    """Public URL for a generated parent still. An uploaded still is not a reference."""
+    """Public URL of a generated parent. A replaced still is not reused."""
     parent_id = (asset or {}).get("depends_on") or ""
     if not parent_id:
         return None
@@ -1503,6 +1562,61 @@ def dependent_image_url(ctx, asset):
     return url
 
 
+def image_input_urls(ctx, asset):
+    """Image 2 `image` urls for one generated asset.
+
+    references: the upload public URLs, even when that step is local_override.
+    depends_on, and no references: the previous generated still.
+    neither: no image is sent.
+    """
+    asset = asset or {}
+    refs = [str(ref).strip() for ref in (asset.get("references") or []) if str(ref).strip()]
+    if refs:
+        urls = []
+        for ref_id in refs:
+            step = ctx.reload_step(ref_id, "image")
+            url = _publish_step_url(ctx, ref_id, step)
+            if not _http_media_url(url):
+                raise RuntimeError("资产 %s 的参考图 %s 没有公网地址" % (asset.get("id") or "", ref_id))
+            urls.append(url)
+        return urls
+    url = dependent_image_url(ctx, asset)
+    return [url] if url else []
+
+
+def _publish_step_url(ctx, asset_id, step):
+    """Replace a URL on our own media host with the address remote workers can open."""
+    current = str((step or {}).get("public_url") or "").strip()
+    filename = "%s.png" % asset_id
+    output = str((step or {}).get("output_file") or "")
+    if output:
+        name = Path(output).name
+        if name:
+            filename = name
+    source = _output_file(ctx.work_dir, output) if output else None
+    if source is None:
+        source, _relative = output_paths(ctx.work_dir, asset_id, "image")
+    store = get_image_store()
+    if current and not store.owns_url(current):
+        return current
+    if not ctx.project_id:
+        return current
+    hosted = store.ensure_remote(ctx.project_id, filename, current, source=source)
+    if hosted and hosted != current:
+        _remember_public_url(ctx.work_dir, ctx.project_id, asset_id, hosted)
+    return hosted
+
+
+def _remember_public_url(work_dir, project_id, asset_id, url):
+    with project_lock(project_id or str(Path(work_dir))):
+        state = load_run_state(work_dir)
+        step = (state.get("steps") or {}).get(asset_id)
+        if not step or step.get("public_url") == url:
+            return
+        step["public_url"] = url
+        save_run_state(work_dir, state)
+
+
 def _http_media_url(value):
     text = str(value or "").strip()
     lowered = text.lower()
@@ -1511,19 +1625,41 @@ def _http_media_url(value):
     return ""
 
 
+def _saved_image(ctx, asset_id):
+    """A still that is already on disk but was not part of this run's image tasks."""
+    with ctx.lock:
+        state = ctx.load_locked()
+        step = dict((state.get("steps") or {}).get(asset_id) or {})
+    if not step:
+        return None
+    path, _relative = output_paths(ctx.work_dir, asset_id, "image")
+    saved = _output_file(ctx.work_dir, step.get("output_file") or "")
+    if saved is not None:
+        path = saved
+    if not path.is_file() and not _http_media_url(step.get("public_url")):
+        return None
+    return {
+        "path": path,
+        "url": step.get("public_url") or "",
+        "local_override": bool(step.get("local_override")),
+    }
+
+
 def _reference_url(info, project_id=""):
     """CR 的图生视频和参考图生视频只接受它能打开的 HTTP(S) 网址。
 
-    An existing http(s) address wins, including iCreat's own URL. An uploaded
-    still without one uses this service's public media address.
+    An existing http(s) address wins, including iCreat's own URL. A still that
+    only has this service's /media address is published to COS first.
     """
     url = _http_media_url((info or {}).get("url"))
+    filename = Path(str((info or {}).get("path") or "")).name
+    store = get_image_store()
+    if url and not store.owns_url(url):
+        return url
+    if (info or {}).get("local_override") and project_id and filename:
+        return store.ensure_remote(project_id, filename, url, source=(info or {}).get("path"))
     if url:
         return url
-    if (info or {}).get("local_override"):
-        filename = Path(str((info or {}).get("path") or "")).name
-        if project_id and filename:
-            return get_image_store().url(project_id, filename)
     raise RuntimeError("参考图没有公网地址，CR 的图生视频只接受 HTTP(S) 网址")
 
 
@@ -1586,9 +1722,9 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
         def submit(key, asset_id=asset["id"], fallback=asset):
             del key
             current = find_asset(read_spec_file(ctx.work_dir, spec), asset_id, fallback)
-            url = dependent_image_url(ctx, current)
-            image = [url] if url else None
-            return icreat.submit_image(image_prompt(current, reference=bool(url)), image=image)
+            urls = image_input_urls(ctx, current)
+            image = urls or None
+            return icreat.submit_image(image_prompt(current, reference=bool(urls)), image=image)
 
         def poll(task_id):
             return icreat.query_status(task_id)
@@ -1671,13 +1807,37 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
             tail_url = None
 
             def url_for(asset_id):
-                info = images.get(asset_id)
+                info = images.get(asset_id) or _saved_image(ctx, asset_id)
                 if not info:
                     raise RuntimeError("镜头 %s 缺少参考图 %s" % (current["id"], asset_id))
-                return _reference_url(info, project_id=ctx.project_id), info.get("path")
+                images[asset_id] = info
+                url = _reference_url(info, project_id=ctx.project_id)
+                if url and url != (info.get("url") or ""):
+                    info["url"] = url
+                    _remember_public_url(ctx.work_dir, ctx.project_id, asset_id, url)
+                return url, info.get("path")
 
             _aspect, media = assemble_shot_media(current, mode, url_for, tail_url)
             text = delivery_prompt(current, spoken, prompt_index, bool(tail_url), mode)
+            # #region agent log
+            _agent_log(
+                "A",
+                "render_loop.py:video_submit",
+                "video submit media",
+                {
+                    "shot_id": current.get("id"),
+                    "mode": mode,
+                    "duration": current.get("duration"),
+                    "images": asset_ids,
+                    "user_ids": user_ids,
+                    "media": [
+                        {"role": item.get("role"), "url": item.get("url"), "probe": _probe_media_url(item.get("url"))}
+                        for item in (media or [])
+                    ],
+                    "prompt_len": len(text or ""),
+                },
+            )
+            # #endregion
             # Only text-to-video accepts aspect_ratio. Image and reference follow the input image.
             ratio = "9:16" if mode == "text" else None
             return cr.submit_video(

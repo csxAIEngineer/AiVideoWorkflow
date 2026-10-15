@@ -40,23 +40,60 @@ def _safe_id(value, fallback):
     return text[:40] or fallback
 
 
+def _is_upload_id(value):
+    """Opening uploads are U1, U2, … They are references, not generated stills."""
+    return bool(re.fullmatch(r"U\d+", str(value or "")))
+
+
+def _reference_ids(value):
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    refs = []
+    for item in value:
+        if isinstance(item, dict):
+            item = item.get("id")
+        text = _safe_id(item, "")
+        if text and text not in refs:
+            refs.append(text)
+    return refs
+
+
 def collect_steps(spec):
     """Assets and shots that actually become nodes, in run order."""
     assets = []
+    pending_refs = []
     for index, item in enumerate(spec.get("assets") or []):
-        assets.append(
-            {
-                "id": _safe_id(item.get("id"), "A%s" % (index + 1)),
-                "title": str(item.get("title") or "资产"),
-                "prompt": str(item.get("prompt") or "").strip(),
-                "depends_on": _safe_id(item.get("depends_on"), "") if item.get("depends_on") else "",
-            }
-        )
-    assets = [item for item in assets if item["prompt"]]
+        asset = {
+            "id": _safe_id(item.get("id"), "A%s" % (index + 1)),
+            "title": str(item.get("title") or "资产"),
+            "prompt": str(item.get("prompt") or "").strip(),
+            "depends_on": _safe_id(item.get("depends_on"), "") if item.get("depends_on") else "",
+        }
+        for key in ("subject", "subject_kind", "view"):
+            text = str(item.get(key) or "").strip()
+            if text:
+                asset[key] = text
+        assets.append(asset)
+        pending_refs.append(_reference_ids(item.get("references")))
+    kept = [
+        (item, refs)
+        for item, refs in zip(assets, pending_refs)
+        if item["prompt"] and not _is_upload_id(item["id"])
+    ]
+    assets = [item for item, _refs in kept]
+    pending_refs = [refs for _item, refs in kept]
     known = {item["id"] for item in assets}
-    for item in assets:
+    for item, refs in zip(assets, pending_refs):
         if item["depends_on"] not in known or item["depends_on"] == item["id"]:
             item["depends_on"] = ""
+        cleaned = []
+        for ref in refs:
+            if ref and ref not in known and ref != item["id"] and ref not in cleaned:
+                cleaned.append(ref)
+        if cleaned:
+            item["references"] = cleaned
 
     shots = []
     for index, item in enumerate(spec.get("shots") or []):
@@ -64,7 +101,7 @@ def collect_steps(spec):
             images = [assets[0]["id"]] if assets else []
         else:
             images = [_safe_id(name, "") for name in (item.get("images") or [])]
-            images = [name for name in images if name in known][:MAX_SHOT_REFERENCES]
+            images = [name for name in images if name in known or _is_upload_id(name)][:MAX_SHOT_REFERENCES]
         prompt = str(item.get("prompt") or "").strip()
         if not prompt:
             continue

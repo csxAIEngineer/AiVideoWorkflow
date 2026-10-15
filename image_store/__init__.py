@@ -1,6 +1,7 @@
-"""上传素材的图片存储。本地实现落到 data/web_projects，并拼出 CR 能打开的地址。"""
+"""上传素材的图片存储。本地文件仍留在 data/web_projects，远程地址走腾讯云 COS。"""
 
 from image_store.store import (
+    CosImageStore,
     ImageStore,
     ImageStoreError,
     LocalImageStore,
@@ -9,6 +10,7 @@ from image_store.store import (
 )
 
 __all__ = [
+    "CosImageStore",
     "ImageStore",
     "ImageStoreError",
     "LocalImageStore",

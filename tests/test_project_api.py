@@ -400,13 +400,18 @@ class ProjectApiTest(unittest.TestCase):
             "%s/media/projects/%s/images/U1.png" % (PUBLIC_BASE, payload["id"]),
         )
 
-    def test_merge_puts_narration_on_a_shot_for_the_uploaded_still(self):
+    def test_merge_puts_narration_on_the_shot_that_uses_the_generated_asset(self):
         spec = merge_intake(
             {"title": "雨夜", "assets": [], "shots": []},
             [{"id": "U1", "title": "车站", "narration": "她在等最后一班车"}],
         )
-        self.assertEqual(spec["assets"][0]["id"], "U1")
-        self.assertEqual(spec["shots"][0]["images"], ["U1"])
+        self.assertEqual(len(spec["assets"]), 1)
+        asset = spec["assets"][0]
+        self.assertNotEqual(asset["id"], "U1")
+        self.assertEqual(asset["references"], ["U1"])
+        self.assertEqual(asset["title"], "车站")
+        self.assertEqual(spec["shots"][0]["images"], [asset["id"]])
+        self.assertNotIn("U1", spec["shots"][0]["images"])
         self.assertEqual(spec["shots"][0]["narration"], "她在等最后一班车")
         filled = merge_intake(
             {
@@ -415,8 +420,15 @@ class ProjectApiTest(unittest.TestCase):
             },
             [{"id": "U1", "title": "车站", "narration": "她在等最后一班车"}],
         )
+        self.assertEqual(filled["shots"][0]["id"], "S01")
         self.assertEqual(filled["shots"][0]["narration"], "她在等最后一班车")
         self.assertEqual(len(filled["shots"]), 1)
+        self.assertNotIn("U1", [item["id"] for item in filled["assets"]])
+        self.assertNotIn("U1", filled["shots"][0]["images"])
+        used = filled["shots"][0]["images"][0]
+        match = next(item for item in filled["assets"] if item["id"] == used)
+        self.assertEqual(match["references"], ["U1"])
+        self.assertEqual(match["prompt"], "夜站")
 
 
 if __name__ == "__main__":

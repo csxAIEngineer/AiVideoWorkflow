@@ -1,9 +1,10 @@
 """Images and narrations attached when a project is first started."""
 
 import json
+import re
 from pathlib import Path
 
-from end.workflow_from_spec import _clamp_duration
+from end.workflow_from_spec import _clamp_duration, _is_upload_id, _reference_ids
 
 MAX_MATERIALS = 8
 INTAKE_NAME = "intake.json"
@@ -78,15 +79,16 @@ def intake_note(items):
 
 
 def enrich_brief(brief, items):
-    """Tell the writer to keep the uploaded stills and the narration wording."""
+    """Tell the writer that uploads are references and narrations stay verbatim."""
     if not items:
         return brief
     lines = [
         brief,
         "",
-        "用户已经上传这些图素材。出片直接使用这些图，不要再写成会换掉原图的定妆。",
-        "新的补充资产不要 depends_on 这些素材。补充图按自己的提示词单独文生图。",
-        "剧本和分镜必须用到这些资产 id。每张图的旁白原句写进使用该图的镜头 narration，不要改字。",
+        "用户已经上传这些图。上传图只是参考，不是资产，也不要写进镜头 images。",
+        "每张上传图都要被一张要生成的资产引用：references 填上传图 id，例如 [\"U1\"]。",
+        "depends_on 只填另一张要生成的资产 id。侧面和背面依赖生成好的正面，上传图只写在直接参考它的那张资产上。",
+        "剧本和分镜只绑定生成出来的资产。每张图的旁白原句写进使用该资产的镜头 narration，不要改字。",
         "没有旁白的图，对应镜头 narration 为空字符串。",
     ]
     for item in items:
@@ -94,10 +96,28 @@ def enrich_brief(brief, items):
     return "\n".join(lines)
 
 
-def _asset_prompt(item):
+def _asset_prompt(item, dropped=None):
+    written = str((dropped or {}).get("prompt") or "").strip()
+    if written:
+        return written
     if item.get("narration"):
         return item["narration"]
     return "用户上传的素材，保持这张图里的人和场景。"
+
+
+_KIND_ALIASES = {
+    "character": "character",
+    "person": "character",
+    "人物": "character",
+    "角色": "character",
+    "prop": "prop",
+    "道具": "prop",
+    "location": "location",
+    "地点": "location",
+    "场景": "location",
+    "other": "other",
+}
+_TURNAROUND = ("character", "prop")
 
 
 def _shot_id(shots):
@@ -111,65 +131,169 @@ def _shot_id(shots):
     return "S%02d" % number
 
 
-def merge_intake(spec, items):
-    """Add uploaded stills and put each narration on a shot that uses that still."""
-    if not items:
-        return spec if isinstance(spec, dict) else {}
-    spec = spec if isinstance(spec, dict) else {}
-    assets = spec.get("assets")
-    if not isinstance(assets, list):
-        assets = []
-        spec["assets"] = assets
-    by_id = {}
+def _upload_sort(value):
+    match = re.fullmatch(r"U(\d+)", str(value or ""))
+    if match:
+        return (0, int(match.group(1)), str(value))
+    return (1, 0, str(value or ""))
+
+
+def _fresh_asset_id(used):
+    number = 1
+    while True:
+        candidate = "A%s" % number
+        if candidate not in used and not _is_upload_id(candidate):
+            used.add(candidate)
+            return candidate
+        number += 1
+
+
+def _asset_kind(value):
+    return _KIND_ALIASES.get(str(value or "").strip().lower(), "")
+
+
+def _shot_names(shot, key):
+    if not isinstance(shot, dict) or shot.get(key) is None:
+        return None
+    return [str(name) for name in (shot.get(key) or [])]
+
+
+def _collect_upload_ids(assets, shots, items, extra_ids):
+    found = set()
+    for item in items or []:
+        if isinstance(item, dict) and item.get("id"):
+            found.add(str(item["id"]))
+    for item in extra_ids or []:
+        if item:
+            found.add(str(item))
     for asset in assets:
-        if isinstance(asset, dict) and asset.get("id"):
-            by_id[str(asset.get("id"))] = asset
-    for item in items:
-        asset = by_id.get(item["id"])
-        if asset is None:
-            asset = {
-                "id": item["id"],
-                "title": item["title"],
-                "prompt": _asset_prompt(item),
-                "depends_on": "",
+        if _is_upload_id(asset.get("id")):
+            found.add(str(asset["id"]))
+        if _is_upload_id(asset.get("depends_on")):
+            found.add(str(asset["depends_on"]))
+        for ref in _reference_ids(asset.get("references")):
+            if _is_upload_id(ref) or ref in found:
+                found.add(ref)
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        for name in shot.get("images") or []:
+            if _is_upload_id(name):
+                found.add(str(name))
+        if _is_upload_id(shot.get("end_image")):
+            found.add(str(shot.get("end_image")))
+    return found
+
+
+def _upload_records(upload_ids, items, dropped):
+    provided = {}
+    for item in items or []:
+        if isinstance(item, dict) and item.get("id"):
+            provided.setdefault(str(item["id"]), item)
+    records = []
+    for upload_id in sorted(upload_ids, key=_upload_sort):
+        gone = dropped.get(upload_id) or {}
+        item = provided.get(upload_id)
+        if item is None:
+            item = {
+                "id": upload_id,
+                "title": str(gone.get("title") or upload_id),
+                "narration": "",
             }
-            assets.append(asset)
-            by_id[item["id"]] = asset
-        elif not str(asset.get("prompt") or "").strip():
-            asset["prompt"] = _asset_prompt(item)
-    shots = spec.get("shots")
-    if not isinstance(shots, list):
-        shots = []
-        spec["shots"] = shots
+        records.append((item, gone))
+    return records
+
+
+def _generated_from_upload(item, dropped, used):
+    title = str(item.get("title") or dropped.get("title") or "素材").strip() or "素材"
+    kind = _asset_kind(dropped.get("subject_kind"))
+    view = str(dropped.get("view") or "").strip().lower()
+    if kind in _TURNAROUND:
+        if view not in ("front", "side", "back"):
+            view = ""
+    elif kind:
+        view = "single"
+    else:
+        view = ""
+    subject = str(dropped.get("subject") or "").strip() or title
+    return {
+        "id": _fresh_asset_id(used),
+        "title": title,
+        "prompt": _asset_prompt(item, dropped),
+        "depends_on": "",
+        "references": [str(item["id"])],
+        "subject": subject,
+        "subject_kind": kind,
+        "view": view,
+    }
+
+
+def _direct_referencer(assets, upload_id):
+    matches = []
+    for asset in assets:
+        if upload_id in [str(ref) for ref in (asset.get("references") or [])]:
+            matches.append(asset)
+    if not matches:
+        return None
+    for asset in matches:
+        if not str(asset.get("depends_on") or ""):
+            return asset
+    return matches[0]
+
+
+def _retarget_names(names, upload_ids, owners):
+    result = []
+    for name in names:
+        if name in upload_ids:
+            target = owners.get(name)
+            if target and target not in result:
+                result.append(target)
+            continue
+        if name not in result:
+            result.append(name)
+    return result[:8]
+
+
+def _place_narration(shots, records, owners):
     used = set()
     for shot in shots:
         if not isinstance(shot, dict):
             continue
         images = [str(name) for name in (shot.get("images") or [])]
-        for image_id in images:
-            match = next((item for item in items if item["id"] == image_id and item["id"] not in used), None)
-            if match is None or not match.get("narration"):
+        for item, _dropped in records:
+            upload_id = str(item["id"])
+            if upload_id in used or not item.get("narration"):
+                continue
+            asset_id = owners.get(upload_id)
+            if asset_id not in images and upload_id not in images:
                 continue
             if not str(shot.get("narration") or "").strip():
-                shot["narration"] = match["narration"]
-            used.add(match["id"])
-    for item in items:
-        if item["id"] in used or not item.get("narration"):
+                shot["narration"] = item["narration"]
+            used.add(upload_id)
+    for item, _dropped in records:
+        upload_id = str(item["id"])
+        if upload_id in used or not item.get("narration"):
+            continue
+        asset_id = owners.get(upload_id)
+        if not asset_id:
             continue
         for shot in shots:
             if not isinstance(shot, dict) or str(shot.get("narration") or "").strip():
                 continue
             images = [str(name) for name in (shot.get("images") or [])]
-            if item["id"] not in images:
-                images.insert(0, item["id"])
+            if asset_id not in images:
+                images.insert(0, asset_id)
                 shot["images"] = images[:8]
             shot["narration"] = item["narration"]
-            used.add(item["id"])
+            used.add(upload_id)
             break
-    for item in items:
+    for item, _dropped in records:
+        asset_id = owners.get(str(item["id"]))
+        if not asset_id:
+            continue
         referenced = False
         for shot in shots:
-            if isinstance(shot, dict) and item["id"] in [str(name) for name in (shot.get("images") or [])]:
+            if isinstance(shot, dict) and asset_id in [str(name) for name in (shot.get("images") or [])]:
                 referenced = True
                 break
         if referenced:
@@ -179,10 +303,79 @@ def merge_intake(spec, items):
             {
                 "id": _shot_id(shots),
                 "duration": _clamp_duration(None, narration),
-                "prompt": narration or "按用户上传的图演这一镜",
-                "images": [item["id"]],
+                "prompt": narration or "按这张资产图演这一镜",
+                "images": [asset_id],
                 "dialogue": "",
                 "narration": narration,
             }
         )
+
+
+def bind_upload_references(spec, items=None, extra_ids=None):
+    """Uploads stay out of the asset list. A generated still references each one."""
+    spec = spec if isinstance(spec, dict) else {}
+    raw_assets = spec.get("assets")
+    assets = [item for item in (raw_assets or []) if isinstance(item, dict)] if isinstance(raw_assets, list) else []
+    shots = spec.get("shots")
+    if not isinstance(shots, list):
+        shots = []
+    upload_ids = _collect_upload_ids(assets, shots, items, extra_ids)
+    if not upload_ids:
+        spec["assets"] = assets
+        spec["shots"] = shots
+        return spec
+
+    dropped = {}
+    kept = []
+    for asset in assets:
+        asset_id = str(asset.get("id") or "")
+        if asset_id in upload_ids:
+            dropped[asset_id] = asset
+            continue
+        kept.append(asset)
+    for asset in kept:
+        refs = []
+        for ref in _reference_ids(asset.get("references")):
+            if ref in upload_ids and ref not in refs:
+                refs.append(ref)
+        parent = str(asset.get("depends_on") or "").strip()
+        if parent in upload_ids:
+            if parent not in refs:
+                refs.append(parent)
+            asset["depends_on"] = ""
+        asset["references"] = refs
+
+    used = {str(asset.get("id")) for asset in kept}
+    used.update(upload_ids)
+    for item, gone in _upload_records(upload_ids, items, dropped):
+        if _direct_referencer(kept, str(item["id"])):
+            continue
+        kept.append(_generated_from_upload(item, gone, used))
+
+    owners = {}
+    for upload_id in upload_ids:
+        asset = _direct_referencer(kept, upload_id)
+        if asset:
+            owners[upload_id] = asset["id"]
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        images = _shot_names(shot, "images")
+        if images is not None:
+            shot["images"] = _retarget_names(images, upload_ids, owners)
+        end_image = str(shot.get("end_image") or "")
+        if end_image in upload_ids:
+            target = owners.get(end_image)
+            if target:
+                shot["end_image"] = target
+            else:
+                shot.pop("end_image", None)
+    _place_narration(shots, _upload_records(upload_ids, items, dropped), owners)
+    spec["assets"] = kept
+    spec["shots"] = shots
     return spec
+
+
+def merge_intake(spec, items):
+    """Point every upload at a generated asset, and keep its narration on that shot."""
+    return bind_upload_references(spec, items)

@@ -58,6 +58,7 @@ from end.pipeline import (
     model_label,
     normalize_model,
 )
+from end.image_node import prepare_image_node, video_nodes
 from end.workflow_from_spec import _safe_id, collect_steps, task_plan
 from task_queue import Task, TaskQueue
 
@@ -251,6 +252,7 @@ def public_view(project):
         "model_label": model_label(project.get("model")),
         "debug_llm": debug,
         "debug_files": debug_files,
+        "nodes": video_nodes(spec),
         "images": list_output_images(project["id"]),
         "clips": list_output_clips(project["id"]),
         "materials": public_materials(project["id"]),
@@ -334,7 +336,9 @@ def _save_written_spec(project_id, spec):
     """Persist the script the model just returned without touching pause state."""
     folder = project_dir(project_id)
     folder.mkdir(parents=True, exist_ok=True)
-    spec = merge_intake(spec, load_intake(folder))
+    items = load_intake(folder)
+    spec = prepare_image_node(spec, locked_ids=[item["id"] for item in items], items=items)
+    spec = merge_intake(spec, items)
     (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
     with project_lock(project_id):
         fresh = read_project(project_id)

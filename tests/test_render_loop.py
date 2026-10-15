@@ -34,7 +34,7 @@ from end.render_loop import (
     split_caption,
     subtitle_cues,
 )
-from end.workflow_from_spec import task_plan
+from end.workflow_from_spec import collect_steps, task_plan
 
 SPEC = {
     "title": "雨夜",
@@ -216,6 +216,20 @@ class RenderLoopTest(unittest.TestCase):
         state = load_run_state(self.work)
         self.assertEqual(state["phase"], "done")
         self.assertEqual(state["steps"]["A1"]["remote_task_id"], "old")
+
+    def test_an_upload_still_stays_on_its_shot(self):
+        assets, shots = collect_steps(
+            {
+                "assets": [
+                    {"id": "U1", "title": "原图", "prompt": "直接用"},
+                    {"id": "A1", "title": "人", "prompt": "一个人"},
+                ],
+                "shots": [{"id": "S01", "duration": 2, "prompt": "原图开场", "images": ["U1"]}],
+            }
+        )
+        self.assertEqual([item["id"] for item in assets], ["A1"])
+        self.assertEqual(shots[0]["images"], ["U1"])
+        self.assertGreaterEqual(shots[0]["duration"], 4)
 
     def test_public_still_url_is_sent_and_a_local_file_is_not(self):
         image = self.work / "still.png"
@@ -768,32 +782,38 @@ class RenderLoopTest(unittest.TestCase):
         self.assertNotIn("手持", locked)
         self.assertNotIn("不要照抄", locked)
 
-    def test_user_still_opens_on_first_frame_and_its_aspect(self):
+    def test_upload_reference_is_sent_to_image2_and_video_uses_the_generated_still(self):
+        project_id = "upload-ref"
+        image = self.work / "outputs" / "images" / "U1.png"
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b"\x89PNG-upload")
+        note_local_image(self.work, project_id, "U1")
+        state = load_run_state(self.work)
+        self.assertTrue(state["steps"]["U1"]["local_override"])
+        state["steps"]["U1"]["public_url"] = "https://cdn.example/U1.png"
+        save_run_state(self.work, state)
         spec = {
-            "title": "神行者",
+            "title": "雨夜",
             "assets": [
-                {"id": "U1", "title": "起步", "prompt": "用户上传的起步"},
-                {"id": "U2", "title": "转弯", "prompt": "用户上传的转弯"},
+                {"id": "U1", "title": "上传", "prompt": "原图不该再生成"},
+                {"id": "A1", "title": "主角", "prompt": "一个女人站在车站", "references": ["U1"]},
+                {"id": "A2", "title": "侧面", "prompt": "同一个人的左侧面", "depends_on": "A1"},
             ],
             "shots": [
                 {
-                    "id": "S001",
+                    "id": "S01",
                     "duration": 5,
-                    "prompt": "光从左边扫过",
-                    "images": ["U1"],
-                    "narration": "第一句旁白",
-                },
-                {
-                    "id": "S002",
-                    "duration": 5,
-                    "prompt": "镜头轻轻前推",
-                    "images": ["U2"],
-                    "narration": "第二句旁白",
-                },
+                    "prompt": "她转身离开",
+                    "images": ["A1"],
+                    "narration": "她在等最后一班车",
+                }
             ],
         }
-        _seed_still(self.work, "U1", _png(30, 40), local=True)
-        _seed_still(self.work, "U2", _png(320, 180), local=True)
+        self.assertEqual(
+            [task["id"] for task in task_plan(spec) if task["kind"] == "image"],
+            ["A1", "A2"],
+        )
+        icreat = FakeICreat()
         cr = FakeCR()
 
         def joiner(_clips, target):
@@ -806,29 +826,23 @@ class RenderLoopTest(unittest.TestCase):
         run_local_pipeline(
             spec,
             self.work,
-            icreat=FakeICreat(),
+            project_id=project_id,
+            icreat=icreat,
             cr=cr,
             sleeper=_noop_sleep,
             joiner=joiner,
             burner=burner,
         )
-        self.assertEqual(len(cr.submits), 2)
-        first, second = cr.submits
-        self.assertEqual(first["model"], "minimax-h3-image-to-video")
-        self.assertIsNone(first["aspect_ratio"])
-        self.assertEqual([item["role"] for item in first["images"]], ["first_frame"])
-        self.assertEqual(first["images"][0]["url"], "https://cdn.example/U1.png")
-        self.assertIn("从这张首帧的可见内容开始", first["text"])
-        self.assertIn("画外旁白", first["text"])
-        self.assertIn("第一句旁白", first["text"])
-        self.assertNotIn("自然皮肤", first["text"])
-        self.assertNotIn("不要照抄", first["text"])
-        self.assertEqual(second["model"], "minimax-h3-image-to-video")
-        self.assertIsNone(second["aspect_ratio"])
-        self.assertEqual([item["role"] for item in second["images"]], ["first_frame"])
-        self.assertNotIn("自然皮肤", second["text"])
-        self.assertNotIn("不要照抄", second["text"])
-        self.assertNotIn("reference_video", [item["role"] for item in second["images"]])
+        self.assertEqual(len(icreat.submits), 2)
+        self.assertEqual(icreat.submits[0]["image"], ["https://cdn.example/U1.png"])
+        self.assertIn("锁定同一张脸", icreat.submits[0]["prompt"])
+        self.assertEqual(icreat.submits[1]["image"], ["https://cdn.example/img-1.png"])
+        self.assertNotIn("https://cdn.example/U1.png", icreat.submits[1]["image"])
+        video = cr.submits[0]
+        self.assertEqual(video["model"], "minimax-h3-reference-to-video")
+        self.assertEqual(video["images"][0]["url"], "https://cdn.example/img-1.png")
+        self.assertNotEqual(video["images"][0]["url"], "https://cdn.example/U1.png")
+        self.assertIn("她在等最后一班车", video["text"])
 
     def test_text_and_end_frame_and_explicit_reference(self):
         text_spec = {
@@ -877,24 +891,27 @@ class RenderLoopTest(unittest.TestCase):
         _seed_still(explicit, "U1", _png(30, 40), local=True)
         explicit_spec = {
             "title": "指定参考",
-            "assets": [{"id": "U1", "title": "图", "prompt": "用户图"}],
+            "assets": [{"id": "A1", "title": "图", "prompt": "用户图", "references": ["U1"]}],
             "shots": [
                 {
                     "id": "S01",
                     "duration": 5,
                     "prompt": "她转身离开",
-                    "images": ["U1"],
+                    "images": ["A1"],
                     "video_mode": "reference",
                 }
             ],
         }
+        icreat = FakeICreat()
         cr = FakeCR()
-        run_local_pipeline(explicit_spec, explicit, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep)
+        run_local_pipeline(explicit_spec, explicit, icreat=icreat, cr=cr, sleeper=_noop_sleep)
+        self.assertEqual(icreat.submits[0]["image"], ["https://cdn.example/U1.png"])
         chosen = cr.submits[0]
         self.assertEqual(chosen["model"], "minimax-h3-reference-to-video")
         self.assertIsNone(chosen["aspect_ratio"])
         self.assertEqual(chosen["images"][0]["role"], "reference_image")
-        self.assertEqual(chosen["images"][0]["url"], "https://cdn.example/U1.png")
+        self.assertEqual(chosen["images"][0]["url"], "https://cdn.example/img-1.png")
+        self.assertNotEqual(chosen["images"][0]["url"], "https://cdn.example/U1.png")
         self.assertIn("自然皮肤", chosen["text"])
 
 
