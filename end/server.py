@@ -186,7 +186,7 @@ def remember(project, status, stage, progress=None):
 def load_tasks(project):
     """Fill the task list from the saved spec when older rows have none."""
     if project.get("status") == "done" and project.get("stage") == "工作流已生成，可以下载":
-        project["stage"] = "剧本已写好。出片改为 iCreat 生图 / CR MiniMax H3 / 本机拼接 / ffmpeg 烧字幕"
+        project["stage"] = "提示词已写好。出片改为 iCreat 生图 / CR MiniMax H3 / 本机拼接 / ffmpeg 烧字幕"
         write_project(project)
     if project.get("tasks"):
         return
@@ -291,11 +291,11 @@ def run_drill(project_id):
             remember(
                 project,
                 "writing",
-                "已经问清，开始写剧本",
+                "已经问清，开始写提示词",
                 progress={
                     "percent": 8,
                     "phase": "writing",
-                    "message": "已经问清，开始写剧本",
+                    "message": "已经问清，开始写提示词",
                     "debug_llm": debug,
                 },
             )
@@ -377,12 +377,12 @@ def run_project(project_id, debug_llm=False):
             project,
             "writing",
             model_label(project.get("model"))
-            + " 正在写剧本、分镜和生图提示词"
+            + " 正在写提示词、分镜和生图提示词"
             + ("（Debug：仅到生图）" if debug else ""),
             progress={
                 "percent": 8,
                 "phase": "writing",
-                "message": model_label(project.get("model")) + " 正在写剧本、分镜和生图提示词",
+                "message": model_label(project.get("model")) + " 正在写提示词、分镜和生图提示词",
                 "debug_llm": debug,
             },
         )
@@ -627,7 +627,7 @@ def _resume_in_place(project, paused_from):
     else:
         status = "rendering"
     message = {
-        "writing": "继续写剧本",
+        "writing": "继续写提示词",
         "building": "继续准备出片",
     }.get(status, "继续出片")
     phase = status if status in ("writing", "building") else "images"
@@ -663,7 +663,7 @@ def resume_render(project):
             return _resume_in_place(fresh, paused_from if handoff == "writer" else "rendering")
         if not load_spec(project_id):
             mark_user_pause(folder, project_id, "已暂停")
-            raise RuntimeError("剧本还没写完，不能继续出片")
+            raise RuntimeError("提示词还没写完，不能继续出片")
         _PIPELINE_HANDOFF[project_id] = "render"
         fresh["error"] = None
     remember(

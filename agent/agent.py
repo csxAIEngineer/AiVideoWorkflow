@@ -168,7 +168,7 @@ class Agent(object):
         state["repair"] = True
         state["request"] = {
             "messages": [
-                {"role": "system", "content": "把用户给出的短剧材料收成一个 JSON 对象。" + JSON_SHAPE},
+                {"role": "system", "content": "把用户给出的汽车视频材料收成一个 JSON 对象。" + JSON_SHAPE},
                 {"role": "user", "content": reply[:12000]},
             ],
             "model": state.get("model_name"),

@@ -1,8 +1,8 @@
 # AiVideo
 
-竖屏短剧的聊天入口。先写一段背景，再用 drill-me 把这段背景扩成 2 到 3 个方向让你选，最后一项是「其他」；选到「就按这个做」之后，才用短剧技能写出剧本、分镜和生图提示词。写完后由本机编排出片：iCreat 生图、CR MiniMax H3 出镜、ffmpeg 拼接，最后用 ffmpeg 把 `字幕.ass` 烧进成片。不再把成片提交到 Comfy Cloud。
+汽车视频的聊天入口。先写一段背景，再用 drill-me 把这段背景扩成 2 到 3 个方向让你选，最后一项是「其他」；选到「就按这个做」之后，才按载具速度片技能写出提示词、分镜和生图提示词。写完后仍由本机生图出片：iCreat 生图、CR MiniMax H3 出镜、ffmpeg 拼接，最后用 ffmpeg 把 `字幕.ass` 烧进成片。不再把成片提交到 Comfy Cloud。
 
-页面到成片的路径是 Front → End → Task Queue → Agent Layout。Agent Layout 里面是 LangGraph → Agent → LLM Model：图把这一问交给 Agent，Agent 组好请求，LLM Model 再去调 DeepSeek 或 CR。出片不进这个布局，仍由 End 在本机编排。模型工人数量用 `AIVIDEO_AGENT_WORKERS`，默认 4。进程重启时，还停在「正在想方向」或「正在写剧本」的项目会重新入队。
+页面到成片的路径是 Front → End → Task Queue → Agent Layout。Agent Layout 里面是 LangGraph → Agent → LLM Model：图把这一问交给 Agent，Agent 组好请求，LLM Model 再去调 DeepSeek 或 CR。出片不进这个布局，仍由 End 在本机编排。模型工人数量用 `AIVIDEO_AGENT_WORKERS`，默认 4。进程重启时，还停在「正在想方向」或「正在写提示词」的项目会重新入队。
 
 ## 运行
 
@@ -12,7 +12,7 @@
 cp .env.example .env
 ```
 
-在 `.env` 里填写 `DEEPSEEK_API_KEY`（写剧本）、`ICREAT_API_KEY`（生图）和 `CR_API_KEY`（出镜），然后：
+在 `.env` 里填写 `DEEPSEEK_API_KEY`（写提示词）、`ICREAT_API_KEY`（生图）和 `CR_API_KEY`（出镜），然后：
 
 ```bash
 python3 -m end.server
@@ -22,7 +22,7 @@ python3 -m end.server
 
 画幅 9:16。资产和镜头按故事需要增减。单次视频生成是 4 到 15 秒。出片进度写在项目目录的 `run_state.json`。已经落盘的图和视频会跳过。页面上可以暂停、继续，或重置当前失败的那一步。网络中断时，已有远端任务号就继续查状态；还没有任务号就用同一个幂等键再提交。
 
-命令行编剧室（同一套入口：先 drill-me，确认后再切剧本 / 分镜 / 生图。DeepSeek 走 CR API）：
+命令行导演室（同一套入口：先 drill-me，确认后只用载具速度片技能写提示词。DeepSeek 走 CR API）：
 
 ```bash
 python3 studio/chat.py
@@ -97,13 +97,14 @@ client.download_image(task.url, "hero.png")
 - `agent/`：Agent 布局。`graph.py` 里的 LangGraph 把 Agent 接到 LLM Model，再由模型访问 DeepSeek 或 CR
 - `cr_api/`：CR 的文本和视频客户端
 - `icreat_api/`：iCreat GPT Image 2 客户端
-- `skills/`：短剧剧本、场景、生图提示词、分镜技能
+- `skills/`：当前网页写提示词用 `aivideo-work`（drill）、`seedance-car-vehicle`（载具速度片）和 `image-node`。短剧技能还在目录里，不再被调用
 - `pipeline/`：岷江未晚示例工作流的生成脚本
 - `workflows/`：可拖进 Comfy Desktop 的示例工作流
 - `studio/`：命令行多轮编剧室
 
 技能来源：
 
+- https://github.com/LearnPrompt/awesome-seedance （`agents/skills/seedance-car-vehicle`，写提示词时先选一个案例当锚）
 - https://github.com/worldwonderer/drama-skills
 - https://github.com/Nianan29/seedance-short-drama
 - https://github.com/kianaliang-dev/drama-director-skill

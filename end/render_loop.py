@@ -741,13 +741,13 @@ def compact_data_url(path):
 
 
 LIVE_ACTION = (
-    "实拍照片质感，可用光，材质有磨损和褶皱，自然皮肤纹理，不要磨皮，不要塑料皮肤，不要CG渲染。"
+    "实拍照片质感，可用光，漆面和金属可以有磨损，轮胎接地，不要悬浮，不要新造部件，不要特写车标文字，不要CG渲染。"
 )
 
 
 def image_prompt(asset, reference=False):
     prompt = (asset.get("prompt") or "").strip()
-    if "自然皮肤纹理" not in prompt:
+    if "不要悬浮" not in prompt:
         prompt = prompt + "\n" + LIVE_ACTION
     if reference:
         return FACE_LOCK + prompt
@@ -764,7 +764,7 @@ def spoken_lines(script):
     for match in _DIALOGUE_MARK.finditer(script or ""):
         speaker = match.group(1).strip()
         line = match.group(2).strip()
-        if speaker in ("场景", "人物外形锁定"):
+        if speaker in ("场景", "人物外形锁定", "车辆锁定", "司机锁定", "路面", "配比", "镜头机位", "风格"):
             continue
         if "岁" in line or len(line) > 40:
             continue
@@ -1004,23 +1004,22 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
 
 
 def delivery_prompt(shot, spoken, index, has_tail, mode="reference"):
-    """Prompt actually sent to MiniMax: performance, dialogue tags, and the cut."""
+    """Prompt actually sent to MiniMax: the same vehicle, spoken lines, and the cut."""
     base = (shot.get("prompt") or "").strip()
     if mode in ("first_frame", "first_last_frame"):
         parts = [base, FRAME_OPENING, "全程无字幕、无对白文字叠加。"]
     else:
         parts = [
             base,
-            "实拍短剧：自然皮肤纹理和毛孔，可用光，衣料有皱，轻微手持，把这一个主动作演完再停住，"
-            "不要定妆摆拍，不要磨皮，不要塑料皮肤，不要CG，不要慢动作漂浮。全程无字幕、无对白文字叠加。",
+            "锁同一台车：轮子在转，车不悬浮，不新造部件，不特写车标文字。全程无字幕、无对白文字叠加。",
         ]
         if index > 0:
             parts.append(
-                "这一镜是上一镜的下一刀。同一场就接上服装、光线和空间，用视线或动作交代切点；"
-                "换场也要用动作或声音动机，不要突然换脸、换光或换房间。"
+                "这一镜是上一镜的下一刀。同一台车、同一条路接着走，轮子继续转，"
+                "不要突然换成另一台车、另一种颜色或另一条路。"
             )
         if has_tail:
-            parts.append("最后一张参考图是上一镜的实际尾帧，只承接光线、服装和空间，不要照抄它的景别和构图。")
+            parts.append("最后一张参考图是上一镜的实际尾帧，只承接这台车、光线和路面，不要照抄它的景别和构图。")
     narration = str(shot.get("narration") or "").strip()
     if narration and narration not in base:
         parts.append("画外旁白，人物不要对口型，嘴保持自然闭合：<d>[Chinese] %s</d>" % narration)

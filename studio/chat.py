@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Multi-turn short-drama room. Loads downloaded SKILL.md packs and calls Qwen or DeepSeek."""
+"""Multi-turn car-video room. Drill first, then write with seedance-car-vehicle."""
 
 import json
 import os
@@ -15,11 +15,9 @@ SKILLS = ROOT / "skills"
 CONFIG_PATH = ROOT / "studio" / "config.json"
 SESSIONS = ROOT / "studio" / "sessions"
 
+CAR_SKILL = "seedance-car-vehicle"
 ROLE_EXTRA = {
-    "short-drama-write": ["references/screenplay-format.md"],
-    "short-drama-image-prompts": ["references/common-recipe.md"],
-    "short-drama-assets": ["references/location-and-view.md"],
-    "short-drama-storyboard": ["references/shot-craft.md"],
+    CAR_SKILL: ["references/cases.md"],
 }
 
 
@@ -69,14 +67,9 @@ def skill_by_name(skills, name):
     raise SystemExit("没有这个技能：%s\n可用：%s" % (name, ", ".join(item["name"] for item in skills)))
 
 
-def extra_text(skill, user_text):
+def extra_text(skill, _user_text):
     chunks = []
-    extras = list(ROLE_EXTRA.get(skill["name"], []))
-    if skill["name"] == "short-drama-image-prompts" and any(word in user_text for word in ("场景", "空镜", "地点")):
-        extras.append("references/location-plate.md")
-    if skill["name"] == "short-drama-image-prompts" and any(word in user_text for word in ("人物", "定妆", "角色")):
-        extras.append("references/character-and-look.md")
-    for relative in extras:
+    for relative in ROLE_EXTRA.get(skill["name"], []):
         path = skill["dir"] / relative
         if path.is_file():
             chunks.append("\n\n# 附件 %s\n\n%s" % (relative, path.read_text(encoding="utf-8")))
@@ -88,30 +81,15 @@ def system_prompt(skill, user_text, locked_brief=""):
     if locked_brief:
         locked = "已经和用户确认的创作简报，必须原样遵守：\n%s\n\n" % locked_brief
     return (
-        "你是短剧编剧室。严格按当前技能的格式写，不要另起一套模板。\n"
-        "这是多轮对话：已经确认的人物外形、场景和道具必须原样沿用，不要换脸、换装或改地名。\n"
+        "你是汽车视频导演。严格按当前技能的格式写，不要另起一套模板。\n"
+        "这是多轮对话：锁定这台车、这条路和选定的机位，不要换成另一台车。\n"
+        "先选 references/cases.md 里的一个案例当锚，不要把几条案例混成一条。\n"
+        "画幅固定 9:16。每镜时长写成 4 到 15 秒，一镜一个机位，不要把技能里的一秒一镜原样交给出片。\n"
         "只产出文字。不要声称已经出图或出视频。\n"
         + locked
         + "当前技能：%s\n%s\n\n%s%s"
         % (skill["name"], skill["description"], skill["body"], extra_text(skill, user_text))
     )
-
-
-def pick_role(config, text, current):
-    for label, name in config["roles"].items():
-        if label in text:
-            return name
-    if any(word in text for word in ("Image-Node", "三视图", "image-node")):
-        return "image-node"
-    if any(word in text for word in ("分镜", "镜头", "storyboard")):
-        return config["roles"]["分镜"]
-    if any(word in text for word in ("生图", "提示词", "定妆", "空镜")):
-        return config["roles"]["生图"]
-    if any(word in text for word in ("场景", "资产", "道具", "角色表")):
-        return config["roles"]["场景"]
-    if any(word in text for word in ("剧本", "对白", "场次")):
-        return config["roles"]["剧本"]
-    return current
 
 
 def call_llm(config, provider_name, messages):
@@ -154,12 +132,11 @@ def print_skills(skills):
 def repl(config, skills, provider_name):
     from end.pipeline import drill_system_prompt, parse_drill_text
 
-    current_name = config["roles"]["剧本"]
     history = []
     drilling = True
     locked_brief = ""
     pending_options = []
-    print("短剧编剧室。先问清楚你要拍什么。提供者 %s。输入 /help 查看命令。" % provider_name)
+    print("汽车视频导演室。先问清楚你要拍什么。提供者 %s。输入 /help 查看命令。" % provider_name)
     while True:
         try:
             line = input("\n> ").strip()
@@ -171,8 +148,8 @@ def repl(config, skills, provider_name):
         if line in ("/quit", "/exit"):
             return
         if line == "/help":
-            print("先问清楚再写。确认之后：/剧本 /分镜 /生图 /场景  切换技能")
-            print("/skill 名称   /skills   /provider qwen|deepseek")
+            print("先问清楚再写。确认之后只用 %s 写提示词。" % CAR_SKILL)
+            print("/skills   /provider qwen|deepseek")
             print("/reset 清空本轮对话    /save 文件路径")
             continue
         if line == "/skills":
@@ -192,14 +169,8 @@ def repl(config, skills, provider_name):
                 continue
             print("已切换到 %s。" % provider_name)
             continue
-        if line.startswith("/skill "):
-            current_name = line.split(None, 1)[1].strip()
-            skill_by_name(skills, current_name)
-            print("当前技能：%s" % current_name)
-            continue
-        if line.startswith("/") and line[1:] in config["roles"]:
-            current_name = config["roles"][line[1:]]
-            print("当前技能：%s" % current_name)
+        if line.startswith("/skill ") or (line.startswith("/") and line[1:] in config.get("roles", {})):
+            print("确认之后只用 %s，不再切换短剧技能。" % CAR_SKILL)
             continue
         if line.startswith("/save "):
             target = Path(line.split(None, 1)[1].strip())
@@ -243,14 +214,9 @@ def repl(config, skills, provider_name):
             if parsed["phase"] == "ready":
                 drilling = False
                 locked_brief = parsed["brief"]
-                current_name = config["roles"]["剧本"]
-                print("\n已锁定，接下来按剧本技能写。\n" + locked_brief)
+                print("\n已锁定，接下来按载具速度片技能写提示词。\n" + locked_brief)
             continue
-        chosen = pick_role(config, line, current_name)
-        if chosen != current_name:
-            current_name = chosen
-            print("（按这句话改用技能 %s）" % current_name)
-        skill = skill_by_name(skills, current_name)
+        skill = skill_by_name(skills, CAR_SKILL)
         messages = [{"role": "system", "content": system_prompt(skill, line, locked_brief)}] + history
         messages.append({"role": "user", "content": line})
         answer = call_llm(config, provider_name, messages)

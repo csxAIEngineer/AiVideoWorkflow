@@ -63,7 +63,7 @@ def video_nodes(spec):
     assets, shots = collect_steps(spec or {})
     by_id = {asset["id"]: asset for asset in assets}
     nodes = [
-        _function("script", "剧本"),
+        _function("script", "提示词"),
         _function("storyboard", "分镜"),
         {
             "id": IMAGE_NODE_ID,

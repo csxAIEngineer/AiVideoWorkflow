@@ -36,7 +36,7 @@ const pointer = { mode: "" };
 let draftMaterials = [];
 const MAX_MATERIALS = 8;
 
-const JOB_STEPS = ["建立项目", "写剧本", "生图", "出视频", "完成"];
+const JOB_STEPS = ["建立项目", "写提示词", "生图", "出视频", "完成"];
 const DEBUG_FILE_LABELS = {
   skill_pack: "Skill 规则",
   system_prompt: "System Prompt",
@@ -273,7 +273,7 @@ function progressPanel(project) {
   steps.className = "job-steps";
   const index = jobIndex(project);
   const stepLabels = isDebugProject(project)
-    ? ["建立项目", "写剧本", "生图", "Debug 结束"]
+    ? ["建立项目", "写提示词", "生图", "Debug 结束"]
     : JOB_STEPS;
   stepLabels.forEach((label, step) => {
     const item = document.createElement("li");
@@ -807,11 +807,11 @@ function paintTranscript(options, full) {
     note.textContent = current.status === "done"
       ? (earlyStop
         ? "Debug 模式：这次停在大模型返回，没有生图。"
-        : "Debug 模式：已停在生图。下方可检查剧本、分镜、资产和图片。视频与拼接暂不执行。")
-      : "Debug 模式：写完剧本后只生图，不出视频、不拼接。";
+        : "Debug 模式：已停在生图。下方可检查提示词、分镜、资产和图片。视频与拼接暂不执行。")
+      : "Debug 模式：写完提示词后只生图，不出视频、不拼接。";
     assistant.append(note);
   }
-  ["剧本", "分镜", "生图提示词"].forEach((name, index) => {
+  ["提示词", "分镜", "生图提示词"].forEach((name, index) => {
     const key = ["script", "storyboard", "image_prompts"][index];
     const node = name === "生图提示词"
       ? section(name, current[key], current.assets, current.images)
@@ -1320,7 +1320,7 @@ function sourceNodes(project) {
     byId[asset.id] = asset;
   });
   const nodes = [
-    { id: "script", kind: "script", role: "function", title: "剧本", assets: [] },
+    { id: "script", kind: "script", role: "function", title: "提示词", assets: [] },
     { id: "storyboard", kind: "storyboard", role: "function", title: "分镜", assets: [] },
     { id: "image", kind: "image", role: "function", title: "Image-Node", required: true, assets: assets },
   ];

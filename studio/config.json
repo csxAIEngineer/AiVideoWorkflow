@@ -12,9 +12,6 @@
     }
   },
   "roles": {
-    "剧本": "short-drama-write",
-    "分镜": "short-drama-storyboard",
-    "生图": "short-drama-image-prompts",
-    "场景": "short-drama-assets"
+    "提示词": "seedance-car-vehicle"
   }
 }

@@ -728,7 +728,7 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(cr.submits[0]["model"], "minimax-h3-image-to-video")
         self.assertEqual([item["role"] for item in cr.submits[0]["images"]], ["first_frame"])
         self.assertEqual(cr.submits[0]["images"][0]["url"], "https://cdn.example/A1.png")
-        self.assertNotIn("自然皮肤", cr.submits[0]["text"])
+        self.assertNotIn("轮子在转", cr.submits[0]["text"])
 
     def test_mode_follows_the_shot_inputs(self):
         self.assertEqual(nearest_aspect_ratio(2160, 2880), "3:4")
@@ -765,7 +765,7 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual([item["role"] for item in continued], ["reference_image", "reference_image"])
         self.assertTrue(continued[1]["url"].startswith("data:image/jpeg"))
         kept = delivery_prompt({"prompt": "她回头"}, [], 1, True, "reference")
-        self.assertIn("自然皮肤", kept)
+        self.assertIn("轮子在转", kept)
         self.assertIn("不要照抄", kept)
         _aspect, opened = assemble_shot_media(
             {"id": "S02", "images": ["U2"]},
@@ -777,7 +777,7 @@ class RenderLoopTest(unittest.TestCase):
         locked = delivery_prompt({"prompt": "光扫过", "narration": "旁白"}, [], 1, False, "first_frame")
         self.assertIn("从这张首帧的可见内容开始", locked)
         self.assertIn("画外旁白", locked)
-        self.assertNotIn("自然皮肤", locked)
+        self.assertNotIn("轮子在转", locked)
         self.assertNotIn("衣料", locked)
         self.assertNotIn("手持", locked)
         self.assertNotIn("不要照抄", locked)
@@ -883,7 +883,7 @@ class RenderLoopTest(unittest.TestCase):
         self.assertIsNone(opened["aspect_ratio"])
         self.assertEqual([item["role"] for item in opened["images"]], ["first_frame", "last_frame"])
         self.assertIn("从这张首帧的可见内容开始", opened["text"])
-        self.assertNotIn("自然皮肤", opened["text"])
+        self.assertNotIn("轮子在转", opened["text"])
         self.assertNotIn("不要照抄", opened["text"])
 
         explicit = self.work / "explicit"
@@ -912,7 +912,7 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(chosen["images"][0]["role"], "reference_image")
         self.assertEqual(chosen["images"][0]["url"], "https://cdn.example/img-1.png")
         self.assertNotEqual(chosen["images"][0]["url"], "https://cdn.example/U1.png")
-        self.assertIn("自然皮肤", chosen["text"])
+        self.assertIn("轮子在转", chosen["text"])
 
 
 def _png(width, height):

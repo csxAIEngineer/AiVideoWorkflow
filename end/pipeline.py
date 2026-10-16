@@ -1,4 +1,4 @@
-"""Drill the user until the film is clear, then write it with the short-drama rules.
+"""Drill the user until the film is clear, then write it with the car-vehicle rules.
 
 Model calls go through the agent layout: LangGraph, then Agent, then LLM Model.
 """
@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from cr_api import TEXT_MODELS
 
 DRILL_SKILL_PATH = ROOT / "skills" / "aivideo-work" / "SKILL.md"
+CAR_SKILL_DIR = ROOT / "skills" / "seedance-car-vehicle"
 
 DEFAULT_MODEL = "deepseek-v4-pro"
 TEXT_MODEL = DEFAULT_MODEL
@@ -42,17 +43,29 @@ MODEL_LABELS = {
     "glm-5.2": "GLM 5.2",
 }
 
-# 确认之后才用这套短规则填 JSON。完整技能仍在 skills/，不整篇塞进请求。
-SKILL_PACK = """
-这些规则只填进 JSON 字段。script 用剧本格式，storyboard 用分镜格式，image_prompts 和 prompt 用生图规则。整段回复不要在 JSON 外面再写正文。
+# 确认之后按载具速度片的七段结构填 JSON。技能原文和案例在 skills/seedance-car-vehicle/。
+CAR_STRUCTURE = """
+这些规则只填进 JSON 字段。script 放整段可复制的汽车视频提示词。storyboard 用编号分镜。image_prompts 和各张图的 prompt 用生图规则。整段回复不要在 JSON 外面再写正文。
 
-剧本：标题写 # EP001 集名。场景写 ## EP001-SC001 内或外 · 地点 · 时间/天气。动作用现在时，写看得见的行为。对白写 角色：台词，或 角色（表演提示）：台词。不要用「短语：」开头的动作，以免和台词混在一起。标签只用 [VO]、[OS]、[SFX]、[画面文字]、[连续性]、[转场]。每场要有可见变化。对白是在争取、回避、试探或逼迫，不把已经演出来的事再解释一遍。开场第一拍就是钩子。人物外形和场景一旦写下，后面原样沿用。
+写之前先读 seedance-car-vehicle 和 references/cases.md。选一个最接近这条片子的案例当锚，在 script 里点名它。只跟这一个案例的结构走，不要把几条案例混成一条。
 
-资产：换了就不是同一个人、地或物，才新建身份。服装、伤势、天气、光线是变体，depends_on 填定妆 id。上传图只是参考：引用它的资产把上传图 id 写进 references，不要写进 depends_on，也不要把它当成已经生成的资产。侧面和背面的 depends_on 仍填生成好的正面 id，上传图只写在直接参考它的那张资产上。姿势、视线、机位不是资产。识别锚点必须能画出来：年龄、发型、服装、体态、固定物件。地点要写地理：内外、入口、区域怎么连、不能移动的锚点、主要材料。氛围词不能代替门窗位置。同一空间不因昼夜或天气再建成一个地点。
+script 必须有这七段：
 
-生图：所有图片只放进 Image-Node，分镜不新造图片。关键人物和关键道具各写正面、侧面、背面，同一个 subject。prompt 用中文，能直接拿去文生图。顺序是身份锚点、当前变体、构图、光线和材质、背景边界、禁止项。写成实拍照片：自然皮肤纹理，可用光，材质有磨损，不要磨皮，不要塑料皮肤，不要CG。定妆正面和空镜的 depends_on 留空。定妆正面要对齐上传图时，references 填上传图 id。侧面和背面的 depends_on 填正面 id。空镜默认没有人，写清从哪看向哪、前后景、入口，以及一到三个固定锚点。禁止字幕、水印、logo 和乱码文字。不要占位符。人物按成年人写。不要写儿童、少年、未成年、中小学生，也不要写 18 岁以下的具体年龄。学生、课堂和校服可以保留，年龄锚点写成「二十岁上下」。图像接口遇到未成年人物会直接失败，而且只返回 FAILED、不说明原因。群像里的每一个人都按这条写。
+1. 开场：时长、画幅 9:16、帧率、镜头数。
+2. 车辆锁定：车型、颜色、必须动对的部件（悬挂、轮转、引擎）。按部件写，不靠车标。
+3. 司机锁定：没有司机就写没有；有司机就锁体型和装备。
+4. 路面和天气。
+5. 一句配比：多少是镜头运动，多少是风景。
+6. 编号分镜：一镜一个机位。速度写在机位和掠过的东西上。
+7. 风格，加上车辆会怎么坏的负面清单：重复部件、轮子几何、悬浮、车标特写。
 
-分镜：每镜只有一个职责、一个主要动作。镜头数量按故事节拍来，拍完钩子、变化和收束，不要停在固定个数，也不要为了凑数加空镜。写下来源场景、景别、机位、运镜和理由、起点、动作、终点、声音。duration 是这一镜把主动作和对白做完需要的整数秒，按需要写，不要为了把秒数拉长或缩短。一次生成装不下的对白拆到下一镜，不要删掉后面的故事。镜头 prompt 用中文，写这一镜要演完的动作，不要只写一张定格。有对白时 dialogue 填剧本原句，并写明谁在画内开口、口型跟这句；无对白时 dialogue 为空字符串，并写明本镜无对白。同一空间的下一镜写清切点动机，光线和服装接上一镜。images 只列这一镜画面里要保持的、已经写进 Image-Node 的生成资产 id，不列上传图。
+出片约束盖过技能里冲突的句子：画幅固定 9:16。每镜 duration 是 4 到 15 的整数秒。技能里的一秒一镜只说明案例怎么把速度写进机位，不要原样交给出片。一个镜头可以长于一秒，仍然只有一个机位。
+
+资产：主角车辆写正面、侧面、背面，subject 相同，subject_kind 用 prop。路面是单张，subject_kind 用 location，view 为 single。没有司机就不要写司机图。有司机时把体型和装备写进说明，不要为人物再写一套定妆三视图。换色、天气、伤损是变体，view 为 single，depends_on 填该车正面 id。上传图只是参考：引用它的资产把上传图 id 写进 references，不要写进 depends_on，也不要把它当成已经生成的资产。侧面和背面的 depends_on 仍填生成好的正面 id，上传图只写在直接参考它的那张资产上。姿势和机位不是资产。车辆锚点必须能画出来：车型、颜色、轮廓、必须动对的部件。路面要写铺装、路两边和光线。同一条路不因昼夜或天气再建成另一个地点。
+
+生图：所有图片只放进 Image-Node，分镜不新造图片。主角车辆写正面、侧面、背面，同一个 subject。prompt 用中文，能直接拿去文生图。顺序是车辆锚点、当前变体、角度、光线和材质、背景边界、禁止项。写成实拍：金属和漆面可以有磨损，轮胎接地，不要悬浮，不要重复部件，不要特写车标文字。车辆正面和路面的 depends_on 留空。车辆正面要对齐上传图时，references 填上传图 id。侧面和背面的 depends_on 填正面 id。路面写清从哪看向哪、前后景，以及一到三个固定锚点。禁止字幕、水印、logo 和乱码文字。不要占位符。
+
+分镜：每镜只有一个机位、一个主要运动。镜头数量按车子的节拍来，拍完出发、速度和收束，不要停在固定个数，也不要为了凑数加空镜。写清这一镜的机位、运镜、起点、车子怎么动、掠过什么、终点。duration 是 4 到 15 的整数秒。镜头 prompt 用中文，写这一镜要走完的运动，不要只写一张定格，也不要在同一镜里写第二个机位。没有对白时 dialogue 为空字符串，并写明本镜无对白。有人声时 dialogue 填这一句原话。同一条路的下一镜接上这台车的颜色、路面和光线。images 只列这一镜画面里要保持的、已经写进 Image-Node 的生成资产 id，不列上传图。
 """.strip()
 
 
@@ -66,10 +79,28 @@ def _skill_body(path):
 
 
 def load_skill_pack():
-    extra = _skill_body(ROOT / "skills" / "image-node" / "SKILL.md")
-    if not extra:
+    skill = _skill_body(CAR_SKILL_DIR / "SKILL.md")
+    cases_path = CAR_SKILL_DIR / "references" / "cases.md"
+    if not skill:
+        raise RuntimeError("缺少 skills/seedance-car-vehicle/SKILL.md")
+    if not cases_path.is_file():
+        raise RuntimeError("缺少 skills/seedance-car-vehicle/references/cases.md")
+    cases = cases_path.read_text(encoding="utf-8").strip()
+    image = _skill_body(ROOT / "skills" / "image-node" / "SKILL.md")
+    if not image:
         raise RuntimeError("缺少 skills/image-node/SKILL.md")
-    return SKILL_PACK + "\n\n" + extra
+    return (
+        CAR_STRUCTURE
+        + "\n\n# seedance-car-vehicle\n\n"
+        + skill
+        + "\n\n# references/cases.md\n\n"
+        + cases
+        + "\n\n"
+        + image
+        + "\n\n出片时以这段为准：画幅固定 9:16。script 是整段可复制提示词，"
+        "shots[].prompt 是其中一镜，一镜一个机位。每镜 duration 是 4 到 15 的整数秒。"
+        "技能里的一秒一镜不要原样交给出片。只选 cases.md 里的一个案例当锚，不要把几条案例混成一条。"
+    )
 
 
 def model_choices():
@@ -176,7 +207,7 @@ def conversation_brief(messages):
     if len(user_lines) < 2:
         return ""
     lines = [
-        "用户已经通过多轮选择把这条竖屏短剧定下来了。写的时候保持这些原话，不要改人物关系，也不要换成另一个故事。",
+        "用户已经通过多轮选择把这条汽车视频定下来了。写的时候锁定这台车、这条路和选定的机位，不要换成另一台车。",
         "背景：" + user_lines[0],
         "选定方向：",
     ]
@@ -191,7 +222,7 @@ def ready_from_conversation(messages):
         return None
     return {
         "phase": "ready",
-        "reply": "方向已经够了，开始写剧本。",
+        "reply": "方向已经够了，开始写提示词。",
         "brief": brief,
         "options": [],
     }
@@ -224,18 +255,18 @@ def call_drill(messages, debug_dir=None, model=None):
 
 
 JSON_SHAPE = (
-    "整段回复只能是一个 JSON 对象，不要 Markdown 围栏，不要在 JSON 外面写剧本。"
+    "整段回复只能是一个 JSON 对象，不要 Markdown 围栏，不要在 JSON 外面写提示词。"
     "title 是字符串。script、storyboard、image_prompts 是 Markdown 字符串，不要 HTML。"
-    "用 ## 分节，镜头用有序列表。人物外形锁定、场景、关键对白和镜头目的，用 ==重点== 包起来。"
+    "用 ## 分节，镜头用有序列表。车辆锁定、路面、配比和镜头机位，用 ==重点== 包起来。"
+    "script 是整段可复制的汽车视频提示词，按开场、车辆锁定、司机锁定、路面和天气、配比、编号分镜、风格和负面清单来写。"
     "assets 数组，每项含 id、title、prompt、depends_on、references、subject、subject_kind、view。"
     "subject_kind 只能是 character、prop、location、other。view 只能是 front、side、back、single。"
-    "全部图片都属于必须的 Image-Node。关键人物和关键道具各写 front、side、back 三张，subject 相同；侧面和背面的 depends_on 填正面 id。地点 view 为 single。变体 view 为 single，depends_on 填该身份正面的 id，不要再拆三视图。"
-    "定妆正面和空镜的 depends_on 为空字符串。上传图只是参考，不是资产。要参考上传图时，references 填上传图 id，例如 [\"U1\"]，不要把上传图 id 写进 depends_on 或镜头 images。侧面和背面依赖生成好的正面。资产个数按故事需要，不设上限。"
-    "shots 数组不设个数上限，每项含 id、duration、prompt、images、dialogue、narration。duration 是这一镜做完动作、对白和旁白需要的整数秒。images 只列这一镜看得见、且已经写在 Image-Node 里的生成资产 id。分镜不新造图片。"
-    "dialogue 是这一镜说出口的原句，没有对白则为空字符串，必须能在 script 里逐字找到。"
+    "全部图片都属于必须的 Image-Node。主角车辆写 front、side、back 三张，subject 相同，subject_kind 用 prop；侧面和背面的 depends_on 填正面 id。路面 view 为 single，subject_kind 用 location。变体 view 为 single，depends_on 填该车正面的 id，不要再拆三视图。不要为人物再写一套定妆三视图。"
+    "车辆正面和路面的 depends_on 为空字符串。上传图只是参考，不是资产。要参考上传图时，references 填上传图 id，例如 [\"U1\"]，不要把上传图 id 写进 depends_on 或镜头 images。侧面和背面依赖生成好的正面。资产个数按片子需要，不设上限。"
+    "shots 数组不设个数上限，每项含 id、duration、prompt、images、dialogue、narration。duration 是 4 到 15 的整数秒，一镜一个机位，不要写成一秒一镜。shots[].prompt 是 script 编号分镜里的一镜，写这一个机位和掠过的东西。images 只列这一镜看得见、且已经写在 Image-Node 里的生成资产 id。分镜不新造图片。"
+    "dialogue 没有对白则为空字符串。有人声时 dialogue 填这一镜要说的原句，并写明谁在画内开口。"
     "narration 是这一镜的画外旁白，没有则为空字符串。用户给出的图旁白必须原句写进使用对应生成资产的镜头。"
-    "画幅 9:16。script、storyboard、image_prompts、title，以及 assets 和 shots 里的 title、prompt 全部用中文。提示词里禁止字幕、水印和乱码文字。"
-    "人物按成年人写。不要写儿童、少年、未成年、中小学生，也不要写 18 岁以下的具体年龄。学生写成「二十岁上下」。"
+    "画幅 9:16。script、storyboard、image_prompts、title，以及 assets 和 shots 里的 title、prompt 全部用中文。提示词里禁止字幕、水印、乱码文字和车标特写。"
 )
 
 
@@ -276,7 +307,7 @@ def _reply_text(result):
 
 def build_system_prompt(skill_pack):
     return (
-        "你是竖屏短剧编剧室。只根据用户给出的背景或简要创作，人物外形和场景一旦写下就不要改。\n"
+        "你是汽车视频导演。只根据用户给出的背景或简要创作，锁定这台车、这条路和选定的机位，不要换成另一台车。\n"
         + JSON_SHAPE
         + "\n"
         + skill_pack
