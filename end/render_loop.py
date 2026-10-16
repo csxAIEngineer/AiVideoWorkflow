@@ -383,6 +383,22 @@ def _ffmpeg_bin():
     return None
 
 
+def _clip_geometry(ffmpeg, path):
+    proc = subprocess.run(
+        [ffmpeg, "-hide_banner", "-i", str(path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    text = proc.stdout or ""
+    duration = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", text)
+    seconds = None
+    if duration:
+        hours, minutes, secs = duration.groups()
+        seconds = int(hours) * 3600 + int(minutes) * 60 + float(secs)
+    return {"duration": seconds, "has_audio": "Audio:" in text}
+
+
 def ffmpeg_join(clips, target):
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg:
@@ -391,42 +407,80 @@ def ffmpeg_join(clips, target):
     target.parent.mkdir(parents=True, exist_ok=True)
     list_path = target.parent / "concat_list.txt"
     lines = []
+    geometries = []
     for clip in clips:
-        path = Path(clip).resolve().as_posix().replace("'", "'\\''")
-        lines.append("file '%s'" % path)
+        path = Path(clip).resolve()
+        geometries.append(_clip_geometry(ffmpeg, path))
+        lines.append("file '%s'" % path.as_posix().replace("'", "'\\''"))
     list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     proc = subprocess.run(
-        [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(target)],
+        _normalize_join_command(ffmpeg, clips, geometries, target),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     )
-    if proc.returncode != 0:
-        proc = subprocess.run(
-            [
-                ffmpeg,
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(list_path),
-                "-c:v",
-                "libx264",
-                "-c:a",
-                "aac",
-                "-pix_fmt",
-                "yuv420p",
-                str(target),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError("ffmpeg 拼接失败：%s" % ((proc.stdout or "")[-400:]))
+    if proc.returncode != 0 or not target.is_file() or target.stat().st_size <= 0:
+        raise RuntimeError("ffmpeg 拼接失败：%s" % ((proc.stdout or "")[-400:]))
     return target
+
+
+def _normalize_join_command(ffmpeg, clips, geometries, target):
+    """Fit every clip into the 9:16 frame, then concat with fresh timestamps.
+
+    Stream copy keeps each clip's own size and repeats an audio timestamp at
+    every cut. Players hold the picture there and replay that sound.
+    """
+    filters = []
+    labels = []
+    for index, item in enumerate(geometries):
+        filters.append(
+            "[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,"
+            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p[v%d]"
+            % (index, FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH, FRAME_HEIGHT, index)
+        )
+        if item.get("has_audio"):
+            filters.append(
+                "[%d:a]aformat=sample_rates=32000:channel_layouts=stereo,"
+                "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS[a%d]"
+                % (index, index)
+            )
+        else:
+            duration = item.get("duration") or 5
+            filters.append(
+                "anullsrc=r=32000:cl=stereo,atrim=0:%s,asetpts=PTS-STARTPTS[a%d]"
+                % (duration, index)
+            )
+        labels.append("[v%d][a%d]" % (index, index))
+    filters.append("%sconcat=n=%d:v=1:a=1[v][a]" % ("".join(labels), len(clips)))
+    command = [ffmpeg, "-y"]
+    for clip in clips:
+        command.extend(["-i", str(Path(clip).resolve())])
+    command.extend(
+        [
+            "-filter_complex",
+            ";".join(filters),
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            str(target),
+        ]
+    )
+    return command
 
 
 def display_caption(text):

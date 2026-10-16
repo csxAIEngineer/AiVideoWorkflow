@@ -50,6 +50,7 @@ from end.intake import (
     new_material,
     save_intake,
 )
+from end.qwen_vision import read_upload
 from agent.layout import get_layout
 from end.pipeline import (
     DEFAULT_MODEL,
@@ -833,6 +834,8 @@ def store_materials(project_id, files):
         material = new_material(index, item.get("narration"), item.get("filename"))
         public_url = store.save(project_id, material["id"], _png_bytes(item.get("data") or b""))
         note_local_image(folder, project_id, material["id"], public_url)
+        image_path = folder / "outputs" / "images" / (material["id"] + ".png")
+        material["reading"] = read_upload(image_path)
         items.append(material)
     save_intake(folder, items)
     return items

@@ -713,7 +713,7 @@ function syncComposer() {
   const materialFile = document.querySelector("#material-file");
   if (materialFile) materialFile.disabled = !showBrief || sending;
   if (showOther) briefEl.placeholder = "写下你的方向";
-  else if (showBrief) briefEl.placeholder = current ? "写下另一条片子的背景" : "写下这段片子的背景";
+  else if (showBrief) briefEl.placeholder = "文字决定要拍成什么样：时长、广告、感觉、情节和结尾。用户没写的部分，用读图补上身份和场景。";
 }
 
 function workflowMode(project) {

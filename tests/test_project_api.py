@@ -16,7 +16,8 @@ from unittest.mock import patch
 
 import end.db as db
 from end.render_loop import _ffmpeg_bin, gate_for, load_run_state
-from end.intake import merge_intake
+from end.intake import enrich_brief, load_intake, merge_intake
+from end.qwen_vision import QwenVisionError
 from end.server import (
     Handler,
     pause_render,
@@ -370,7 +371,9 @@ class ProjectApiTest(unittest.TestCase):
         def keep(project):
             write_project(project)
 
-        with patch("end.server.start_drill", side_effect=keep):
+        with patch("end.server.start_drill", side_effect=keep), patch(
+            "end.server.read_upload", return_value="尚未读图"
+        ) as read:
             payload = self.rpc(
                 "projects.create",
                 {
@@ -385,11 +388,14 @@ class ProjectApiTest(unittest.TestCase):
                     ],
                 },
             )["result"]
+        read.assert_called_once()
         self.assertEqual(payload["brief"], "雨夜车站")
         self.assertEqual(payload["materials"][0]["id"], "U1")
         self.assertEqual(payload["materials"][0]["narration"], "她在等最后一班车")
         self.assertTrue(payload["materials"][0]["url"].startswith("/media/projects/"))
         self.assertIn("她在等最后一班车", payload["messages"][0]["content"])
+        self.assertIn("素材读图", payload["messages"][0]["content"])
+        self.assertIn("尚未读图", payload["messages"][0]["content"])
         folder = project_dir(payload["id"])
         self.assertEqual((folder / "outputs" / "images" / "U1.png").read_bytes(), png)
         step = load_run_state(folder)["steps"]["U1"]
@@ -399,6 +405,65 @@ class ProjectApiTest(unittest.TestCase):
             step["public_url"],
             "%s/media/projects/%s/images/U1.png" % (PUBLIC_BASE, payload["id"]),
         )
+
+    def test_opening_upload_stores_the_reading_for_the_writer(self):
+        png = tiny_png()
+
+        def keep(project):
+            write_project(project)
+
+        with patch("end.server.read_upload", return_value="主体是海边的银色SUV") as read, patch(
+            "end.server.start_drill", side_effect=keep
+        ):
+            payload = self.rpc(
+                "projects.create",
+                {
+                    "brief": "基于这些素材做广告",
+                    "materials": [
+                        {
+                            "filename": "海边.png",
+                            "narration": "上路吧",
+                            "data_base64": base64.b64encode(png).decode("ascii"),
+                        }
+                    ],
+                },
+            )["result"]
+        read.assert_called_once()
+        folder = project_dir(payload["id"])
+        saved = json.loads((folder / "intake.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved[0]["reading"], "主体是海边的银色SUV")
+        self.assertEqual(saved[0]["id"], "U1")
+        loaded = load_intake(folder)
+        self.assertEqual(loaded[0]["reading"], "主体是海边的银色SUV")
+        self.assertIn("素材读图", payload["messages"][0]["content"])
+        self.assertIn("银色SUV", payload["messages"][0]["content"])
+        brief = enrich_brief(payload["brief"], loaded)
+        self.assertIn("银色SUV", brief)
+        self.assertIn("身份跟图", brief)
+        self.assertIn("海边的汽车不能被说成两轮车", brief)
+        self.assertIn('["U1"]', brief)
+
+    def test_vision_failure_stops_before_drill(self):
+        png = tiny_png()
+        with patch("end.server.read_upload", side_effect=QwenVisionError("读图失败")), patch(
+            "end.server.start_drill"
+        ) as drill:
+            payload = self.rpc(
+                "projects.create",
+                {
+                    "brief": "雨夜车站",
+                    "materials": [
+                        {
+                            "filename": "车站.png",
+                            "narration": "她在等",
+                            "data_base64": base64.b64encode(png).decode("ascii"),
+                        }
+                    ],
+                },
+            )
+        self.assertEqual(payload["error"]["code"], 400)
+        self.assertIn("读图失败", payload["error"]["message"])
+        drill.assert_not_called()
 
     def test_merge_puts_narration_on_the_shot_that_uses_the_generated_asset(self):
         spec = merge_intake(

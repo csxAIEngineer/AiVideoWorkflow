@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+from end.qwen_vision import UNREAD
 from end.workflow_from_spec import _clamp_duration, _is_upload_id, _reference_ids
 
 MAX_MATERIALS = 8
@@ -23,6 +24,19 @@ def material_title(filename, index):
 
 def clean_narration(text):
     return " ".join(str(text or "").split())[:800]
+
+
+def clean_reading(text):
+    lines = []
+    for raw in str(text or "").splitlines():
+        line = " ".join(raw.split())
+        if line:
+            lines.append(line)
+    return "\n".join(lines)[:4000]
+
+
+def material_reading(item):
+    return clean_reading((item or {}).get("reading")) or UNREAD
 
 
 def new_material(index, narration, filename):
@@ -48,13 +62,15 @@ def load_intake(folder):
         if not isinstance(item, dict):
             continue
         material_id = str(item.get("id") or "").strip() or ("U%s" % index)
-        items.append(
-            {
-                "id": material_id,
-                "title": str(item.get("title") or material_id),
-                "narration": clean_narration(item.get("narration")),
-            }
-        )
+        entry = {
+            "id": material_id,
+            "title": str(item.get("title") or material_id),
+            "narration": clean_narration(item.get("narration")),
+        }
+        reading = clean_reading(item.get("reading"))
+        if reading:
+            entry["reading"] = reading
+        items.append(entry)
     return items
 
 
@@ -74,12 +90,16 @@ def intake_note(items):
         line = "- %s %s" % (item["id"], item["title"])
         if item.get("narration"):
             line += "。旁白：" + item["narration"]
+        line += "\n  素材读图：" + material_reading(item)
         lines.append(line)
     return "\n".join(lines)
 
 
 def enrich_brief(brief, items):
-    """Tell the writer that uploads are references and narrations stay verbatim."""
+    """Tell the writer that uploads are references and narrations stay verbatim.
+
+    Identity follows the still reading. Story follows the user's own words.
+    """
     if not items:
         return brief
     lines = [
@@ -90,9 +110,21 @@ def enrich_brief(brief, items):
         "depends_on 只填另一张要生成的资产 id。侧面和背面依赖生成好的正面，上传图只写在直接参考它的那张资产上。",
         "剧本和分镜只绑定生成出来的资产。每张图的旁白原句写进使用该资产的镜头 narration，不要改字。",
         "没有旁白的图，对应镜头 narration 为空字符串。",
+        "",
+        "文字决定要拍成什么样：时长、广告、感觉、情节和结尾。用户没写的部分，用读图补上身份和场景。",
+        "读图已定的身份不要再问，也不要给出和读图相反的选项。用户原文里的感觉和故事照旧问。",
+        "身份跟图。产品种类、外观、画面里的人和实际拍摄的地点，以素材读图为准。海边的汽车不能被说成两轮车，选项里不能出现骑行者、摘头盔这类画面里没有的事。",
+        "故事跟用户自己写下的话。时长、广告、感觉、谁在做什么、结尾，以用户原文为准。用户原文里的感觉和故事照旧问。原文没写的，用读图补上身份和场景，不另编一套职业或城市。",
+        "「基于这些素材做广告」只是把意图指到图上，不是授权改掉图里的东西。",
+        "追问给出的选项是模型的话，不是用户意图。选项不得和读图冲突。用户点选这样的选项，不能当成他把汽车改成了摩托车。只有用户自己打出来的话，写明换掉载具或地点，才算改口。点选模型编的选项不算。",
+        "用户明确改口之后，故事世界跟文字，产品外观仍跟图。例如用户写「不要海边，改到清晨的城市」，地点改成城市，车上路的仍是读图里的那辆 SUV，不是另一类车。上传图继续做 references。",
+        "图上的旁白只做原句旁白，不负责给主体改名。",
+        "读图里的「这张图在建议什么广告」只用来起草第一问，不单独锁死剧情。",
+        "素材读图写着「尚未读图」时，不要假装看见了画面里的职业、载具或城市。",
     ]
     for item in items:
         lines.append("- %s %s。旁白：%s" % (item["id"], item["title"], item.get("narration") or "（无）"))
+        lines.append("  素材读图：%s" % material_reading(item))
     return "\n".join(lines)
 
 
