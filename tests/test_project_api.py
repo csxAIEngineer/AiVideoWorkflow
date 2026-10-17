@@ -495,6 +495,57 @@ class ProjectApiTest(unittest.TestCase):
         self.assertEqual(match["references"], ["U1"])
         self.assertEqual(match["prompt"], "夜站")
 
+    def test_create_remembers_soundtrack_after_progress_updates(self):
+        def keep(project):
+            write_project(project)
+
+        for mode, stored in (("off", "off"), ("music", "off"), ("narration", "narration"), ("music_narration", "narration")):
+            with patch("end.server.start_drill", side_effect=keep):
+                payload = self.rpc(
+                    "projects.create",
+                    {"brief": "雨夜的车", "debug_llm": False, "soundtrack": mode},
+                )["result"]
+            self.assertEqual(payload["progress"]["soundtrack"], stored)
+            project = read_project(payload["id"])
+            remember(
+                project,
+                "writing",
+                "正在写",
+                progress={"phase": "writing", "message": "正在写", "percent": 8, "debug_llm": False},
+            )
+            saved = read_project(payload["id"])["progress"]
+            self.assertEqual(saved["soundtrack"], stored)
+            self.assertEqual(saved["phase"], "writing")
+        with patch("end.server.start_drill", side_effect=keep):
+            payload = self.rpc(
+                "projects.create",
+                {"brief": "只有音乐", "soundtrack": "music"},
+            )["result"]
+        self.assertEqual(payload["progress"]["soundtrack"], "off")
+        noted = read_project(payload["id"])
+        noted["progress"]["soundtrack"] = "music_narration"
+        write_project(noted)
+        remember(
+            read_project(payload["id"]),
+            "rendering",
+            "没有旁白，保留镜头原声",
+            progress={
+                "phase": "audio",
+                "message": "没有旁白，保留镜头原声",
+                "soundtrack_note": "没有旁白",
+            },
+        )
+        remember(
+            read_project(payload["id"]),
+            "rendering",
+            "正在烧字幕",
+            progress={"phase": "subtitles", "message": "正在烧字幕", "percent": 90},
+        )
+        progress = read_project(payload["id"])["progress"]
+        self.assertEqual(progress["soundtrack"], "narration")
+        self.assertEqual(progress["soundtrack_note"], "没有旁白")
+        self.assertEqual(progress["phase"], "subtitles")
+
 
 if __name__ == "__main__":
     unittest.main()

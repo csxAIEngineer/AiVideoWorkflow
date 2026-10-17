@@ -60,6 +60,7 @@ from end.pipeline import (
     normalize_model,
 )
 from end.image_node import prepare_image_node, video_nodes
+from end.soundtrack import normalize_soundtrack, project_soundtrack, soundtrack_enabled
 from end.workflow_from_spec import _safe_id, collect_steps, task_plan
 from task_queue import Task, TaskQueue
 
@@ -155,6 +156,7 @@ def remember(project, status, stage, progress=None):
             stored.pop("project_status", None)
             prev = project.get("progress") or {}
             debug_flag = stored["debug_llm"] if "debug_llm" in stored else prev.get("debug_llm")
+            soundtrack = stored["soundtrack"] if "soundtrack" in stored else prev.get("soundtrack")
             project["progress"] = {
                 "percent": int(stored.get("percent") or prev.get("percent") or 0),
                 "phase": stored.get("phase") or prev.get("phase") or "",
@@ -162,7 +164,14 @@ def remember(project, status, stage, progress=None):
                 "total": stored["total"] if "total" in stored else prev.get("total"),
                 "message": stored.get("message") or stage,
                 "debug_llm": bool(debug_flag),
+                "soundtrack": normalize_soundtrack(soundtrack),
             }
+            if "soundtrack_note" in stored:
+                note = str(stored.get("soundtrack_note") or "").strip()
+                if note:
+                    project["progress"]["soundtrack_note"] = note
+            elif prev.get("soundtrack_note"):
+                project["progress"]["soundtrack_note"] = prev.get("soundtrack_note")
             if status == "paused":
                 paused_from = stored.get("paused_from") or prev.get("paused_from") or ""
                 if paused_from:
@@ -193,7 +202,7 @@ def load_tasks(project):
     spec = load_spec(project["id"])
     if not spec:
         return
-    tasks = task_plan(spec)
+    tasks = task_plan(spec, soundtrack=project_soundtrack(project))
     if not tasks:
         return
     project["tasks"] = tasks
@@ -253,7 +262,7 @@ def public_view(project):
         "model_label": model_label(project.get("model")),
         "debug_llm": debug,
         "debug_files": debug_files,
-        "nodes": video_nodes(spec),
+        "nodes": video_nodes(spec, soundtrack=project_soundtrack(project)),
         "images": list_output_images(project["id"]),
         "clips": list_output_clips(project["id"]),
         "materials": public_materials(project["id"]),
@@ -349,7 +358,7 @@ def _save_written_spec(project_id, spec):
         fresh["script"] = str(spec.get("script") or "")
         fresh["storyboard"] = str(spec.get("storyboard") or "")
         fresh["image_prompts"] = str(spec.get("image_prompts") or "")
-        fresh["tasks"] = task_plan(spec)
+        fresh["tasks"] = task_plan(spec, soundtrack=project_soundtrack(fresh))
         fresh["updated_at"] = now()
         write_project(fresh)
         return fresh
@@ -397,7 +406,13 @@ def run_project(project_id, debug_llm=False):
         fresh = _save_written_spec(project_id, spec)
         if fresh is None or _yield_if_paused(project_id):
             return
-        building = "Debug：iCreat 生图" if debug else "iCreat 生图 / CR MiniMax H3 / 本机拼接 / ffmpeg 烧字幕"
+        if debug:
+            building = "Debug：iCreat 生图"
+        else:
+            building = "iCreat 生图 / CR MiniMax H3 / 本机拼接"
+            if soundtrack_enabled(project_soundtrack(fresh)):
+                building += " / MiniMax 声轨"
+            building += " / ffmpeg 烧字幕"
         remember(
             fresh,
             "building",
@@ -513,7 +528,7 @@ def finish_image_debug(project, result):
     project["finished_at"] = now()
     project["error"] = None
     for task in project.get("tasks") or []:
-        if task.get("kind") in ("video", "join", "subtitles"):
+        if task.get("kind") in ("video", "join", "audio", "subtitles"):
             task["state"] = "muted"
             task["detail"] = "Debug：暂不执行"
     remember(
@@ -540,7 +555,7 @@ def execute_render(project_id, project=None):
         raise RuntimeError("没有 spec，不能出片")
     images_only = project_debug_llm(project)
     if not project.get("tasks"):
-        project["tasks"] = task_plan(spec)
+        project["tasks"] = task_plan(spec, soundtrack=project_soundtrack(project))
         write_project(project)
 
     def on_progress(payload):
@@ -557,6 +572,8 @@ def execute_render(project_id, project=None):
         on_progress=on_progress,
         project_id=project_id,
         images_only=images_only,
+        soundtrack=project_soundtrack(project),
+        brief=project.get("brief") or "",
     )
     if result.get("stopped_after") == "images":
         finish_image_debug(project, result)
@@ -1028,6 +1045,7 @@ def rpc_create_project(params):
     if isinstance(flag, str):
         flag = flag.strip().lower() in ("1", "true", "yes", "on")
     debug = want_debug_llm(flag)
+    soundtrack = normalize_soundtrack(params.get("soundtrack"))
     files = _materials_from_params(params)
     created = now()
     project_id = uuid.uuid4().hex[:12]
@@ -1058,6 +1076,7 @@ def rpc_create_project(params):
             "phase": "drill_think",
             "message": "正在想方向",
             "debug_llm": debug,
+            "soundtrack": soundtrack,
         },
         "cloud_log": "",
         "prompt_id": "",

@@ -686,12 +686,14 @@ a.download,
   margin: 0 0 4px;
 }
 
-.model-picker {
+.model-picker,
+.soundtrack-picker {
   display: inline-flex;
   align-items: center;
 }
 
-.model-picker select {
+.model-picker select,
+.soundtrack-picker select {
   border: 1px solid #e3e3e8;
   border-radius: 999px;
   background: #f6f6f8;

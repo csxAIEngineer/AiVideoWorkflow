@@ -1,6 +1,7 @@
 """Agent layout, task queue, and the End handoff onto that queue."""
 
 import json
+import os
 import tempfile
 import threading
 import time
@@ -190,6 +191,154 @@ class LayoutTest(unittest.TestCase):
             get_layout.return_value.drill.return_value = {"phase": "ask", "reply": "问", "options": []}
             self.assertEqual(pipeline_drill([{"role": "user", "content": "雨"}])["phase"], "ask")
         get_layout.return_value.drill.assert_called_once()
+
+
+class AudioModel(object):
+    def __init__(self):
+        self.speech_calls = []
+        self.music_calls = []
+
+    def speech(self, body, timeout):
+        self.speech_calls.append((body, timeout))
+        return b"ID3speech"
+
+    def music(self, body, timeout):
+        self.music_calls.append((body, timeout))
+        return b"ID3music"
+
+    def complete(self, messages, model, max_tokens, timeout):
+        raise AssertionError("speech and music do not call complete")
+
+
+class AudioLayoutTest(unittest.TestCase):
+    def test_speech_is_one_pass_and_uses_the_official_body(self):
+        model = AudioModel()
+        dest = Path(tempfile.mkdtemp()) / "outputs" / "voice" / "S01.mp3"
+        layout = AgentLayout(model=model)
+        path = layout.speak("夜色已经很深了", dest)
+        state = layout.graph.invoke(
+            {
+                "kind": "speech",
+                "model": None,
+                "messages": [],
+                "brief": "",
+                "skill_pack": "",
+                "debug_dir": None,
+                "request": None,
+                "result": None,
+                "output": None,
+                "repair": False,
+                "text": "再来一句",
+                "dest": str(dest.with_name("S02.mp3")),
+            }
+        )
+        self.assertEqual(Path(path).read_bytes(), b"ID3speech")
+        self.assertEqual(state["trail"], ["agent", "llm", "agent"])
+        self.assertEqual(len(model.speech_calls), 2)
+        self.assertEqual(model.music_calls, [])
+        body, timeout = model.speech_calls[0]
+        self.assertEqual(timeout, 60)
+        self.assertEqual(body["model"], "speech-2.8-hd")
+        self.assertEqual(body["text"], "夜色已经很深了")
+        self.assertFalse(body["stream"])
+        self.assertEqual(body["output_format"], "hex")
+        self.assertFalse(body["subtitle_enable"])
+        self.assertEqual(
+            body["voice_setting"],
+            {"voice_id": "male-qn-qingse", "speed": 1, "vol": 1, "pitch": 0},
+        )
+        self.assertEqual(
+            body["audio_setting"],
+            {"sample_rate": 32000, "bitrate": 128000, "format": "mp3", "channel": 1},
+        )
+        self.assertEqual(body["pronunciation_dict"], {"tone": []})
+
+    def test_music_is_instrumental_and_times_out_at_ninety_seconds(self):
+        model = AudioModel()
+        dest = Path(tempfile.mkdtemp()) / "music.mp3"
+        AgentLayout(model=model).compose("汽车配乐，" + ("雨" * 3000), dest)
+        body, timeout = model.music_calls[0]
+        self.assertEqual(timeout, 90)
+        self.assertEqual(body["model"], "music-3.0")
+        self.assertTrue(body["is_instrumental"])
+        self.assertFalse(body["stream"])
+        self.assertEqual(body["output_format"], "hex")
+        self.assertEqual(body["audio_setting"]["sample_rate"], 44100)
+        self.assertEqual(body["audio_setting"]["bitrate"], 256000)
+        self.assertEqual(body["audio_setting"]["format"], "mp3")
+        self.assertLessEqual(len(body["prompt"]), 2000)
+        self.assertNotIn("lyrics", body)
+        self.assertNotIn("seed", body)
+        self.assertEqual(Path(dest).read_bytes(), b"ID3music")
+
+    def test_model_posts_minimax_audio_with_the_existing_key(self):
+        captured = []
+
+        class Response(object):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "data": {"audio": b"hello-audio".hex(), "status": 2},
+                        "base_resp": {"status_code": 0, "status_msg": "success"},
+                    }
+                ).encode("utf-8")
+
+        def urlopen(request, timeout):
+            captured.append(
+                {
+                    "url": request.full_url,
+                    "timeout": timeout,
+                    "auth": request.get_header("Authorization"),
+                    "body": json.loads(request.data.decode("utf-8")),
+                }
+            )
+            return Response()
+
+        previous = os.environ.get("MINIMAX_API_KEY")
+        os.environ["MINIMAX_API_KEY"] = "test-key"
+        try:
+            with patch("urllib.request.urlopen", side_effect=urlopen):
+                speech = LLMModel().speech({"model": "speech-2.8-hd", "text": "你好"}, timeout=60)
+                music = LLMModel().music({"model": "music-3.0", "prompt": "汽车配乐"}, timeout=90)
+        finally:
+            if previous is None:
+                os.environ.pop("MINIMAX_API_KEY", None)
+            else:
+                os.environ["MINIMAX_API_KEY"] = previous
+        self.assertEqual(speech, b"hello-audio")
+        self.assertEqual(music, b"hello-audio")
+        self.assertEqual(captured[0]["url"], "https://api.minimaxi.com/v1/t2a_v2")
+        self.assertEqual(captured[0]["timeout"], 60)
+        self.assertEqual(captured[0]["body"]["text"], "你好")
+        self.assertEqual(captured[1]["url"], "https://api.minimaxi.com/v1/music_generation")
+        self.assertEqual(captured[1]["timeout"], 90)
+        self.assertEqual(captured[1]["auth"], "Bearer test-key")
+        self.assertEqual(captured[1]["body"]["prompt"], "汽车配乐")
+
+    def test_layout_audio_enters_the_graph(self):
+        from end.render_loop import LayoutAudio
+
+        class Layout(object):
+            def speak(self, text, dest):
+                self.spoken = (text, str(dest))
+                return dest
+
+            def compose(self, prompt, dest):
+                self.score = (prompt, str(dest))
+                return dest
+
+        layout = Layout()
+        audio = LayoutAudio(layout)
+        audio.synthesize("夜色已经很深了", "outputs/voice/S01.mp3", voice_id="other")
+        audio.generate_music("汽车配乐，雨夜", "outputs/voice/music.mp3")
+        self.assertEqual(layout.spoken, ("夜色已经很深了", "outputs/voice/S01.mp3"))
+        self.assertEqual(layout.score, ("汽车配乐，雨夜", "outputs/voice/music.mp3"))
 
 
 class QueueTest(unittest.TestCase):

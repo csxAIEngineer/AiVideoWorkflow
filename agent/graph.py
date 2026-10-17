@@ -34,12 +34,18 @@ class LangGraph(object):
 
     def _call_model(self, state):
         request = state.get("request") or {}
-        result = self.model.complete(
-            request.get("messages") or [],
-            model=request.get("model"),
-            max_tokens=request.get("max_tokens"),
-            timeout=request.get("timeout"),
-        )
+        kind = request.get("kind") or ""
+        if kind == "speech":
+            result = self.model.speech(request.get("body") or {}, timeout=request.get("timeout"))
+        elif kind == "music":
+            result = self.model.music(request.get("body") or {}, timeout=request.get("timeout"))
+        else:
+            result = self.model.complete(
+                request.get("messages") or [],
+                model=request.get("model"),
+                max_tokens=request.get("max_tokens"),
+                timeout=request.get("timeout"),
+            )
         state = dict(state)
         state["result"] = result
         state["request"] = None

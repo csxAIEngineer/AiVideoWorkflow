@@ -1,6 +1,7 @@
 """Image-Node owns every still in a video. Shots only reuse those stills."""
 
 from end.intake import bind_upload_references
+from end.soundtrack import soundtrack_enabled
 from end.workflow_from_spec import _is_upload_id, _reference_ids, _safe_id, collect_steps
 
 IMAGE_NODE_ID = "image"
@@ -58,7 +59,7 @@ def prepare_image_node(spec, locked_ids=None, items=None):
     return spec
 
 
-def video_nodes(spec):
+def video_nodes(spec, soundtrack="off"):
     """One required Image-Node, then one node per shot, plus the other functions."""
     assets, shots = collect_steps(spec or {})
     by_id = {asset["id"]: asset for asset in assets}
@@ -86,13 +87,11 @@ def video_nodes(spec):
                 "images": [asset["id"] for asset in used],
             }
         )
-    nodes.extend(
-        [
-            _function("join", "拼接"),
-            _function("subtitles", "字幕"),
-            _function("film", "成片"),
-        ]
-    )
+    tail = [_function("join", "拼接")]
+    if soundtrack_enabled(soundtrack):
+        tail.append(_function("audio", "声轨"))
+    tail.extend([_function("subtitles", "字幕"), _function("film", "成片")])
+    nodes.extend(tail)
     return nodes
 
 

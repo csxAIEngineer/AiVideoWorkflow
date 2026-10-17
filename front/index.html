@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AiVideo</title>
-  <link rel="stylesheet" href="/styles.css?v=30" />
+  <link rel="stylesheet" href="/styles.css?v=31" />
 </head>
 <body>
   <aside class="sidebar">
@@ -79,6 +79,12 @@
           <label class="model-picker">
             <select id="model" aria-label="模型"></select>
           </label>
+          <label class="soundtrack-picker" title="拼接之后按每镜旁白合成声音">
+            <select id="soundtrack" aria-label="声轨">
+              <option value="off">声轨：关闭</option>
+              <option value="narration">声轨：旁白</option>
+            </select>
+          </label>
           <label class="debug-toggle" title="写完提示词后只生成图片，不出视频、不拼接">
             <input id="debug-llm" type="checkbox" />
             <span>Debug：仅到生图</span>
@@ -89,6 +95,6 @@
     </form>
   </main>
   <script src="/rpc.js?v=1"></script>
-  <script src="/app.js?v=37"></script>
+  <script src="/app.js?v=40"></script>
 </body>
 </html>

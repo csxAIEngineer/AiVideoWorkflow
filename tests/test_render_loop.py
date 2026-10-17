@@ -914,6 +914,101 @@ class RenderLoopTest(unittest.TestCase):
         self.assertNotEqual(chosen["images"][0]["url"], "https://cdn.example/U1.png")
         self.assertIn("轮子在转", chosen["text"])
 
+    def test_soundtrack_keeps_narration_out_of_the_h3_prompt(self):
+        spec = {
+            "title": "雨夜",
+            "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人站在车站"}],
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "prompt": "她抬头",
+                    "images": ["A1"],
+                    "narration": "夜色已经很深了",
+                    "dialogue": "她：走吧。",
+                }
+            ],
+        }
+        recorded = []
+        mixed_from = []
+
+        class Mini(object):
+            def synthesize(self, text, dest, voice_id=None):
+                recorded.append(text)
+                Path(dest).parent.mkdir(parents=True, exist_ok=True)
+                Path(dest).write_bytes(b"voice")
+
+            def generate_music(self, prompt, dest):
+                Path(dest).parent.mkdir(parents=True, exist_ok=True)
+                Path(dest).write_bytes(b"music")
+
+        def duration_of(path):
+            if Path(path).suffix == ".mp3" and Path(path).name != "music.mp3":
+                return 9.0
+            return 2.5
+
+        def mixer(_video, _music, cues, _voice_dir, target, film_end):
+            if cues:
+                mixed_from.append((cues[0]["end"], film_end))
+            Path(target).write_bytes(b"mixed-film")
+
+        def burner(raw, _ass, target):
+            self.assertEqual(Path(raw).name, "mixed.mp4")
+            Path(target).write_bytes(b"burned")
+
+        cr = FakeCR()
+        run_local_pipeline(
+            spec,
+            self.work,
+            icreat=FakeICreat(),
+            cr=cr,
+            sleeper=_noop_sleep,
+            burner=burner,
+            soundtrack="music_narration",
+            brief="雨夜的车",
+            minimax=Mini(),
+            mixer=mixer,
+            duration_of=duration_of,
+        )
+        prompt = cr.submits[0]["text"]
+        self.assertNotIn("画外旁白", prompt)
+        self.assertNotIn("在画内开口", prompt)
+        self.assertIn("保留环境声", prompt)
+        self.assertEqual(recorded, ["夜色已经很深了"])
+        self.assertAlmostEqual(mixed_from[0][0], 2.5)
+        self.assertAlmostEqual(mixed_from[0][1], 2.5)
+        self.assertEqual((self.work / "outputs" / "concat.mp4").read_bytes(), b"mp4")
+        self.assertEqual((self.work / "outputs" / "joined.mp4").read_bytes(), b"burned")
+        cues = json.loads((self.work / "outputs" / "voice" / "cues.json").read_text(encoding="utf-8"))
+        self.assertAlmostEqual(cues["timeline"][0]["end"], 2.5)
+
+        quiet = []
+
+        def on_progress(payload):
+            if payload.get("soundtrack_note"):
+                quiet.append(payload)
+
+        run_local_pipeline(
+            {
+                "title": "雨夜",
+                "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人站在车站"}],
+                "shots": [{"id": "S01", "duration": 5, "prompt": "她抬头", "images": ["A1"]}],
+            },
+            self.work / "quiet",
+            on_progress=on_progress,
+            icreat=FakeICreat(),
+            cr=FakeCR(),
+            sleeper=_noop_sleep,
+            burner=burner,
+            soundtrack="music_narration",
+            brief="雨夜的车",
+            minimax=Mini(),
+            mixer=mixer,
+            duration_of=duration_of,
+        )
+        self.assertTrue(any(item.get("message") == "没有旁白，保留镜头原声" for item in quiet))
+        self.assertTrue(all(item.get("soundtrack_note") == "没有旁白" for item in quiet))
+
 
 def _png(width, height):
     def chunk(tag, data):

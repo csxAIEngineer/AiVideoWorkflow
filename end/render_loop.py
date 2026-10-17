@@ -1,4 +1,4 @@
-"""Local render: iCreat stills, CR MiniMax H3 clips, ffmpeg join, then burn 字幕.ass."""
+"""Local render: iCreat stills, CR MiniMax H3 clips, ffmpeg join, optional MiniMax soundtrack, then burn 字幕.ass."""
 
 import base64
 import json
@@ -15,6 +15,7 @@ from pathlib import Path
 
 from cr_api.client import ASPECT_RATIOS, CRError
 from icreat_api.client import ICreatError
+from end.soundtrack import lay_soundtrack, normalize_soundtrack, soundtrack_enabled
 from end.workflow_from_spec import collect_steps, ordered_assets
 from image_store import get_image_store
 
@@ -206,6 +207,8 @@ def output_paths(work_dir, step_id, kind):
         relative = "images/%s.png" % step_id
     elif kind == "video":
         relative = "clips/%s.mp4" % step_id
+    elif kind == "audio":
+        relative = "mixed.mp4"
     else:
         relative = "joined.mp4"
     return root / relative, relative
@@ -664,12 +667,21 @@ def ffmpeg_burn_subtitles(video, ass_path, target):
     return target
 
 
-def burn_joined_subtitles(joined, ass_path, burner=None):
-    """Keep the unsubtitled concat, then replace the deliverable with the burned film."""
+def burn_joined_subtitles(joined, ass_path, burner=None, source=None):
+    """Keep the unsubtitled concat, then replace the deliverable with the burned film.
+
+    source is the mixed master when a soundtrack is on, so a later burn does not
+    replace that mix with the quiet concat.
+    """
     joined = Path(joined)
-    raw = joined.with_name("concat.mp4")
-    if not raw.is_file():
-        raw.write_bytes(joined.read_bytes())
+    if source:
+        raw = Path(source)
+        if not raw.is_file():
+            raise RuntimeError("混音母带不存在，不能烧字幕")
+    else:
+        raw = joined.with_name("concat.mp4")
+        if not raw.is_file():
+            raw.write_bytes(joined.read_bytes())
     burned = joined.with_name("joined.burn.mp4")
     if burner:
         burner(raw, ass_path, burned)
@@ -1003,8 +1015,11 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
     return "9:16", media
 
 
-def delivery_prompt(shot, spoken, index, has_tail, mode="reference"):
-    """Prompt actually sent to MiniMax: the same vehicle, spoken lines, and the cut."""
+def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack="off"):
+    """Prompt actually sent to MiniMax: the same vehicle, spoken lines, and the cut.
+
+    Music or narration is mixed after the join, so those shots keep only room tone.
+    """
     base = (shot.get("prompt") or "").strip()
     if mode in ("first_frame", "first_last_frame"):
         parts = [base, FRAME_OPENING, "全程无字幕、无对白文字叠加。"]
@@ -1020,11 +1035,12 @@ def delivery_prompt(shot, spoken, index, has_tail, mode="reference"):
             )
         if has_tail:
             parts.append("最后一张参考图是上一镜的实际尾帧，只承接这台车、光线和路面，不要照抄它的景别和构图。")
+    post = soundtrack_enabled(soundtrack)
     narration = str(shot.get("narration") or "").strip()
-    if narration and narration not in base:
+    if narration and narration not in base and not post:
         parts.append("画外旁白，人物不要对口型，嘴保持自然闭合：<d>[Chinese] %s</d>" % narration)
     elif "<d>" not in base:
-        if spoken:
+        if spoken and not post:
             for item in spoken:
                 parts.append(
                     "%s在画内开口，口型只跟这一句，其他人嘴唇保持闭合，不要额外人声，不要外语开场：<d>[Chinese] %s</d>"
@@ -1063,7 +1079,22 @@ def _should_skip(step, path):
 
 
 class RenderContext(object):
-    def __init__(self, work_dir, on_progress=None, project_id="", icreat=None, cr=None, sleeper=None, joiner=None, burner=None):
+    def __init__(
+        self,
+        work_dir,
+        on_progress=None,
+        project_id="",
+        icreat=None,
+        cr=None,
+        sleeper=None,
+        joiner=None,
+        burner=None,
+        soundtrack="off",
+        brief="",
+        minimax=None,
+        mixer=None,
+        duration_of=None,
+    ):
         self.work_dir = Path(work_dir)
         self.on_progress = on_progress
         self.project_id = project_id or ""
@@ -1072,6 +1103,12 @@ class RenderContext(object):
         self.sleeper = sleeper
         self.joiner = joiner
         self.burner = burner
+        self.soundtrack = normalize_soundtrack(soundtrack)
+        self.brief = brief or ""
+        self.minimax = minimax
+        self.mixer = mixer
+        self.duration_of = duration_of
+        self.soundtrack_note = None
         self.lock = project_lock(self.project_id) if self.project_id else threading.RLock()
         self.gate = gate_for(self.project_id) if self.project_id else PauseGate()
         self.state = load_run_state(self.work_dir)
@@ -1108,6 +1145,10 @@ class RenderContext(object):
             payload["current"] = current
         if total is not None:
             payload["total"] = total
+        if soundtrack_enabled(self.soundtrack):
+            payload["soundtrack"] = self.soundtrack
+        if self.soundtrack_note is not None:
+            payload["soundtrack_note"] = self.soundtrack_note
         self.on_progress(payload)
 
     def load_locked(self):
@@ -1474,9 +1515,120 @@ class RenderContext(object):
             self.done_steps += 1
             with self.lock:
                 state = self.load_locked()
-                state["phase"] = "subtitles"
+                state["phase"] = "audio" if soundtrack_enabled(self.soundtrack) else "subtitles"
                 self.write_locked()
             self.emit("镜头已拼接", "join", step_id, "done")
+            return path
+
+    def _media_seconds(self, path):
+        if self.duration_of:
+            return float(self.duration_of(path))
+        ffmpeg = _ffmpeg_bin()
+        if not ffmpeg:
+            raise RuntimeError("本机没有 ffmpeg")
+        seconds = (_clip_geometry(ffmpeg, path) or {}).get("duration")
+        if not seconds or seconds <= 0:
+            raise RuntimeError("读不到镜头时长：%s" % path)
+        return float(seconds)
+
+    def _invalidate_subtitles(self):
+        """A fresh mix has to be burned again, or the deliverable keeps the old sound."""
+        with self.lock:
+            state = self.load_locked()
+            step = (state.get("steps") or {}).get("subtitles")
+            if not step or step.get("status") != "done":
+                return
+            step["status"] = "pending"
+            step["output_file"] = ""
+            self.write_locked()
+
+    def run_audio(self, joined, clips, shots, spec=None):
+        """After the join: music, and narration when that option is on. concat.mp4 stays unmixed."""
+        step_id = "audio"
+        path, relative = output_paths(self.work_dir, step_id, "audio")
+        while True:
+            self.block_while_paused()
+            step = self.reload_step(step_id, "audio")
+            if _should_skip(step, path):
+                self.mark_done(step_id, "audio", relative, "")
+                self.done_steps += 1
+                self.emit("声轨已铺好", "audio", step_id, "done")
+                return path
+            if self._attempts(step) >= MAX_ATTEMPTS and step.get("status") == "failed":
+                self.pause_for_failure(step_id, "audio", step.get("error") or "声轨失败")
+                continue
+            self.emit("正在铺声轨", "audio", step_id, "running")
+            try:
+                with self.lock:
+                    state = self.load_locked()
+                    step = state["steps"].get(step_id) or blank_step("audio")
+                    state["steps"][step_id] = step
+                    step["attempts"] = self._attempts(step) + 1
+                    step["status"] = "running"
+                    step["kind"] = "audio"
+                    step["output_file"] = relative
+                    state["current_step"] = step_id
+                    state["phase"] = "audio"
+                    self.write_locked()
+                concat = Path(joined).with_name("concat.mp4")
+                if not concat.is_file() or concat.stat().st_size <= 0:
+                    concat.write_bytes(Path(joined).read_bytes())
+                fresh = read_spec_file(self.work_dir, spec)
+                by_id = {}
+                title = ""
+                if fresh:
+                    _assets, fresh_shots = collect_steps(fresh)
+                    by_id = {shot["id"]: shot for shot in fresh_shots}
+                    title = str(fresh.get("title") or "")
+                current_shots = [by_id.get(shot["id"], shot) for shot in shots]
+                durations = [self._media_seconds(clip) for clip in clips]
+                result = lay_soundtrack(
+                    self.work_dir,
+                    current_shots,
+                    durations,
+                    self.soundtrack,
+                    concat,
+                    brief=self.brief,
+                    client=self.minimax,
+                    mixer=self.mixer,
+                    duration_of=self.duration_of,
+                    title=title,
+                    target=path,
+                )
+                self.soundtrack_note = result.get("note") or ""
+            except (OSError, RuntimeError) as error:
+                reason = str(error)
+                with self.lock:
+                    state = self.load_locked()
+                    step = state["steps"].get(step_id) or blank_step("audio")
+                    state["steps"][step_id] = step
+                    step["status"] = "failed"
+                    step["error"] = reason
+                    self.write_locked()
+                    attempts = self._attempts(step)
+                if is_transient(error) and attempts < MAX_ATTEMPTS:
+                    self.emit(
+                        "重新连接：铺声轨，第 %s/%s 次" % (attempts, MAX_ATTEMPTS),
+                        "reconnect",
+                        step_id,
+                        "retrying",
+                    )
+                    self.sleep(backoff_seconds(attempts))
+                    continue
+                self.pause_for_failure(step_id, "audio", reason)
+                continue
+            self._invalidate_subtitles()
+            self.mark_done(step_id, "audio", relative, "")
+            self.done_steps += 1
+            with self.lock:
+                state = self.load_locked()
+                state["phase"] = "subtitles"
+                self.write_locked()
+            if self.soundtrack_note:
+                message = "没有旁白，保留镜头原声"
+            else:
+                message = "声轨已铺好"
+            self.emit(message, "audio", step_id, "done")
             return path
 
     def _mark_film_done(self):
@@ -1504,8 +1656,17 @@ class RenderContext(object):
                 self.pause_for_failure(step_id, "subtitles", step.get("error") or "烧录字幕失败")
                 continue
             shots = shots_for_subtitles(self.work_dir, shots, spec)
+            for shot in shots:
+                clip, _relative = output_paths(self.work_dir, shot["id"], "video")
+                if clip.is_file() and clip.stat().st_size > 0:
+                    shot["duration"] = self._media_seconds(clip)
             cues = subtitle_cues(shots)
+            mixed = None
+            if soundtrack_enabled(self.soundtrack):
+                mixed, _relative = output_paths(self.work_dir, "audio", "audio")
             if not cues:
+                if mixed is not None and mixed.is_file() and mixed.resolve() != Path(joined).resolve():
+                    Path(joined).write_bytes(mixed.read_bytes())
                 self.mark_done(step_id, "subtitles", "", "")
                 self.done_steps += 1
                 self._mark_film_done()
@@ -1524,7 +1685,7 @@ class RenderContext(object):
                     state["phase"] = "subtitles"
                     self.write_locked()
                 write_subtitle_ass(cues, ass_path)
-                burn_joined_subtitles(joined, ass_path, self.burner)
+                burn_joined_subtitles(joined, ass_path, self.burner, source=mixed)
             except (OSError, RuntimeError) as error:
                 reason = str(error)
                 with self.lock:
@@ -1722,10 +1883,47 @@ def _video_handle(task_id, poll_url):
     return VideoTask({"id": task_id, "poll_url": poll_url or "", "status": "submitted"})
 
 
-def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat=None, cr=None, sleeper=None, joiner=None, burner=None, images_only=False):
-    """Generate stills, then clips, join them, then burn 字幕.ass. Completed files are skipped.
+class LayoutAudio(object):
+    """Speech and music enter the existing LangGraph. There is no separate client."""
 
-    images_only stops after the stills. Video, join, and subtitles are left for a later run.
+    def __init__(self, layout=None):
+        self.layout = layout
+
+    def _layout(self):
+        if self.layout is None:
+            from agent.layout import get_layout
+
+            self.layout = get_layout()
+        return self.layout
+
+    def synthesize(self, text, dest, voice_id=None):
+        del voice_id
+        return self._layout().speak(text, dest)
+
+    def generate_music(self, prompt, dest):
+        return self._layout().compose(prompt, dest)
+
+
+def run_local_pipeline(
+    spec,
+    work_dir,
+    on_progress=None,
+    project_id=None,
+    icreat=None,
+    cr=None,
+    sleeper=None,
+    joiner=None,
+    burner=None,
+    images_only=False,
+    soundtrack="off",
+    brief="",
+    minimax=None,
+    mixer=None,
+    duration_of=None,
+):
+    """Generate stills, then clips, join them, optionally mix a soundtrack, then burn 字幕.ass.
+
+    images_only stops after the stills. Video, join, soundtrack, and subtitles are left for a later run.
     """
     assets, shots = collect_steps(spec)
     if images_only:
@@ -1742,6 +1940,11 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
         from cr_api import CRClient
 
         cr = CRClient()
+    mode = normalize_soundtrack(soundtrack)
+    if soundtrack_enabled(mode) and not images_only and minimax is None:
+        from minimax_api import MiniMaxClient
+
+        minimax = MiniMaxClient()
     ctx = RenderContext(
         work_dir,
         on_progress=on_progress,
@@ -1751,18 +1954,28 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
         sleeper=sleeper,
         joiner=joiner,
         burner=burner,
+        soundtrack=mode,
+        brief=brief or "",
+        minimax=minimax,
+        mixer=mixer,
+        duration_of=duration_of,
     )
     if project_id:
         register_thread(project_id)
     ctx.work_dir.mkdir(parents=True, exist_ok=True)
     (ctx.work_dir / "outputs" / "images").mkdir(parents=True, exist_ok=True)
     (ctx.work_dir / "outputs" / "clips").mkdir(parents=True, exist_ok=True)
-    ctx.total_steps = len(assets) if images_only else len(assets) + len(shots) + 2
+    tail_steps = 3 if soundtrack_enabled(mode) else 2
+    ctx.total_steps = len(assets) if images_only else len(assets) + len(shots) + tail_steps
     if images_only:
         ctx.emit("Debug：开始生图", "images", assets[0]["id"], "running")
     else:
+        steps = "iCreat 生图 / CR MiniMax H3 / 本机拼接"
+        if soundtrack_enabled(mode):
+            steps += " / MiniMax 声轨"
+        steps += " / ffmpeg 烧字幕"
         ctx.emit(
-            "开始出片：iCreat 生图 / CR MiniMax H3 / 本机拼接 / ffmpeg 烧字幕",
+            "开始出片：" + steps,
             "images",
             assets[0]["id"],
             "running",
@@ -1871,7 +2084,14 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
                 return url, info.get("path")
 
             _aspect, media = assemble_shot_media(current, mode, url_for, tail_url)
-            text = delivery_prompt(current, spoken, prompt_index, bool(tail_url), mode)
+            text = delivery_prompt(
+                current,
+                spoken,
+                prompt_index,
+                bool(tail_url),
+                mode,
+                soundtrack=ctx.soundtrack,
+            )
             # #region agent log
             _agent_log(
                 "A",
@@ -1930,6 +2150,8 @@ def run_local_pipeline(spec, work_dir, on_progress=None, project_id=None, icreat
         clips.append(clip_path)
 
     joined = ctx.run_join(clips)
+    if soundtrack_enabled(ctx.soundtrack):
+        ctx.run_audio(joined, clips, shots, spec)
     joined = ctx.run_subtitles(joined, shots, spec)
     return {
         "prompt_id": ctx.last_remote_id,

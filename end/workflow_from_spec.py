@@ -10,6 +10,8 @@ from pipeline.build_workflows import gemini_node, save_image_node  # noqa: E402
 
 import re
 
+from end.soundtrack import normalize_soundtrack
+
 MIN_SECONDS = 4
 MAX_SECONDS = 15
 # One H3 call accepts 9 reference images. The previous shot's tail frame uses one slot.
@@ -149,8 +151,8 @@ def ordered_assets(assets):
     return ordered
 
 
-def task_plan(spec):
-    """Local render rows: iCreat stills, CR MiniMax H3 clips, ffmpeg join, then burn 字幕.ass."""
+def task_plan(spec, soundtrack="off"):
+    """Local render rows: iCreat stills, CR MiniMax H3 clips, ffmpeg join, optional soundtrack, then burn 字幕.ass."""
     assets, shots = collect_steps(spec)
     if not assets or not shots:
         return []
@@ -189,6 +191,18 @@ def task_plan(spec):
             "detail": "本机拼接",
         }
     )
+    mode = normalize_soundtrack(soundtrack)
+    if mode != "off":
+        tasks.append(
+            {
+                "id": "audio",
+                "kind": "audio",
+                "title": "声轨",
+                "duration": total,
+                "state": "pending",
+                "detail": "MiniMax 旁白",
+            }
+        )
     tasks.append(
         {
             "id": "subtitles",

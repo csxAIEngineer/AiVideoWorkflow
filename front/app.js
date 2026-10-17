@@ -7,6 +7,7 @@ const history = document.querySelector("#history");
 const newChat = document.querySelector("#new-chat");
 const main = document.querySelector(".main");
 const debugEl = document.querySelector("#debug-llm");
+const soundtrackEl = document.querySelector("#soundtrack");
 const modelEl = document.querySelector("#model");
 const modelFoot = document.querySelector("#model-foot");
 
@@ -90,7 +91,7 @@ function jobIndex(project) {
     if (active) return active.kind === "image" ? 2 : 3;
     if (tasks.some((task) => task.kind !== "image" && task.state === "done")) return 3;
     if (tasks.some((task) => task.kind === "image" && task.state === "done")) return 2;
-    if (phase === "videos" || phase === "join" || phase === "subtitles") return 3;
+    if (phase === "videos" || phase === "join" || phase === "audio" || phase === "subtitles") return 3;
     if (phase === "images" || phase === "retry" || phase === "reconnect" || phase === "paused") return 2;
     if (project.script) return 1;
     return 1;
@@ -128,6 +129,7 @@ function clockTime(iso) {
 
 function durationText(task) {
   if (task.kind === "join") return "合计 " + task.duration + " 秒";
+  if (task.kind === "audio") return "声轨";
   if (task.kind === "subtitles") return "烧录字幕";
   if (task.kind === "video") return task.duration + " 秒";
   return "生图";
@@ -1014,6 +1016,19 @@ if (debugEl) {
   });
 }
 
+function savedSoundtrack() {
+  const saved = localStorage.getItem("aivideo.soundtrack");
+  if (saved === "narration" || saved === "music_narration") return "narration";
+  return "off";
+}
+
+if (soundtrackEl) {
+  soundtrackEl.value = savedSoundtrack();
+  soundtrackEl.addEventListener("change", () => {
+    localStorage.setItem("aivideo.soundtrack", soundtrackEl.value);
+  });
+}
+
 if (modelEl) {
   modelEl.addEventListener("change", () => {
     localStorage.setItem("aivideo.model", modelEl.value);
@@ -1124,6 +1139,7 @@ async function startBrief(text) {
     const params = {
       brief: brief,
       debug_llm: !!(debugEl && debugEl.checked),
+      soundtrack: soundtrackEl ? soundtrackEl.value : "off",
       model: selectedModel(),
     };
     if (materials.length) {
@@ -1302,14 +1318,40 @@ function readOnlyText(project, id, kind) {
     return lines.join("\n");
   }
   if (kind === "join") return "按镜头顺序拼接";
+  if (kind === "audio") {
+    const note = (project.progress && project.progress.soundtrack_note) || "";
+    if (note === "没有旁白") return "没有旁白，保留镜头原声";
+    return "按每镜旁白合成";
+  }
   if (kind === "subtitles") return "烧录字幕";
   if (kind === "film") return project.has_video ? "成片可以播放" : "成片还没出来";
   return "";
 }
 
-function columnOf(kind) {
+function soundtrackMode(project) {
+  const value = project && project.progress && project.progress.soundtrack;
+  if (value === "narration" || value === "music_narration") return "narration";
+  return "off";
+}
+
+function withSoundtrack(nodes, project) {
+  const list = (nodes || []).filter((node) => node && node.kind !== "audio");
+  if (soundtrackMode(project) === "off") return list;
+  const audio = { id: "audio", kind: "audio", role: "function", title: "声轨", assets: [] };
+  const joinAt = list.findIndex((node) => node.kind === "join");
+  if (joinAt >= 0) list.splice(joinAt + 1, 0, audio);
+  else list.push(audio);
+  return list;
+}
+
+function columnMap(hasAudio) {
   const columns = { script: 0, storyboard: 1, image: 2, shot: 3, join: 4, subtitles: 5, film: 6 };
-  return Object.prototype.hasOwnProperty.call(columns, kind) ? columns[kind] : 3;
+  if (hasAudio) {
+    columns.audio = 5;
+    columns.subtitles = 6;
+    columns.film = 7;
+  }
+  return columns;
 }
 
 function sourceNodes(project) {
@@ -1338,8 +1380,10 @@ function sourceNodes(project) {
 
 function nodePlan(project) {
   const rows = {};
-  const nodes = sourceNodes(project).map((item) => {
-    const col = columnOf(item.kind);
+  const source = withSoundtrack(sourceNodes(project), project);
+  const columns = columnMap(source.some((item) => item.kind === "audio"));
+  const nodes = source.map((item) => {
+    const col = Object.prototype.hasOwnProperty.call(columns, item.kind) ? columns[item.kind] : 3;
     const node = {
       id: item.id,
       kind: item.kind,
@@ -1371,7 +1415,12 @@ function nodePlan(project) {
     link("image", shot.id);
     link(shot.id, "join");
   });
-  link("join", "subtitles");
+  if (ids.audio) {
+    link("join", "audio");
+    link("audio", "subtitles");
+  } else {
+    link("join", "subtitles");
+  }
   link("subtitles", "film");
   return { nodes: nodes, edges: edges };
 }

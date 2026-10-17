@@ -1,4 +1,7 @@
-"""Agent. Turns a drill or a script task into one model request, then reads the reply."""
+"""Agent. Turns a drill or a script task into one model request, then reads the reply.
+
+Speech and music each make one MiniMax request. The reply is audio bytes, not JSON.
+"""
 
 from pathlib import Path
 
@@ -18,14 +21,70 @@ from end.pipeline import (
 )
 
 
+SPEECH_TIMEOUT = 60
+MUSIC_TIMEOUT = 90
+MUSIC_PROMPT_LIMIT = 2000
+
+
+def speech_request(text):
+    """Official MiniMax speech-2.8-hd body. POST /v1/t2a_v2."""
+    return {
+        "model": "speech-2.8-hd",
+        "text": text,
+        "stream": False,
+        "output_format": "hex",
+        "subtitle_enable": False,
+        "voice_setting": {
+            "voice_id": "male-qn-qingse",
+            "speed": 1,
+            "vol": 1,
+            "pitch": 0,
+        },
+        "audio_setting": {
+            "sample_rate": 32000,
+            "bitrate": 128000,
+            "format": "mp3",
+            "channel": 1,
+        },
+        "pronunciation_dict": {"tone": []},
+    }
+
+
+def music_request(prompt):
+    """Official MiniMax music-3.0 body. Instrumental: no lyrics and no seed."""
+    text = str(prompt or "").strip()
+    if len(text) > MUSIC_PROMPT_LIMIT:
+        text = text[:MUSIC_PROMPT_LIMIT]
+    return {
+        "model": "music-3.0",
+        "prompt": text,
+        "is_instrumental": True,
+        "stream": False,
+        "output_format": "hex",
+        "audio_setting": {
+            "sample_rate": 44100,
+            "bitrate": 256000,
+            "format": "mp3",
+        },
+    }
+
+
 class Agent(object):
     def prepare(self, state):
-        if state.get("kind") == "write":
+        kind = state.get("kind")
+        if kind == "write":
             return self._prepare_write(state)
+        if kind == "speech":
+            return self._prepare_speech(state)
+        if kind == "music":
+            return self._prepare_music(state)
         return self._prepare_drill(state)
 
     def read(self, state):
-        if state.get("kind") == "write":
+        kind = state.get("kind")
+        if kind in ("speech", "music"):
+            return self._read_audio(state)
+        if kind == "write":
             return self._read_write(state)
         return self._read_drill(state)
 
@@ -195,5 +254,49 @@ class Agent(object):
         if debug_dir:
             write_llm_debug(debug_dir, brief, skill_pack, result=first, repaired=repaired)
         state["output"] = spec
+        state["request"] = None
+        return state
+
+    def _prepare_speech(self, state):
+        text = str(state.get("text") or "").strip()
+        if not text:
+            raise RuntimeError("没有旁白")
+        if not str(state.get("dest") or "").strip():
+            raise RuntimeError("没有音频文件")
+        state = dict(state)
+        state["text"] = text
+        state["repair"] = False
+        state["request"] = {
+            "kind": "speech",
+            "body": speech_request(text),
+            "timeout": SPEECH_TIMEOUT,
+        }
+        return state
+
+    def _prepare_music(self, state):
+        prompt = str(state.get("text") or "").strip()
+        if not prompt:
+            raise RuntimeError("没有配乐描述")
+        if not str(state.get("dest") or "").strip():
+            raise RuntimeError("没有音频文件")
+        state = dict(state)
+        state["text"] = prompt
+        state["repair"] = False
+        state["request"] = {
+            "kind": "music",
+            "body": music_request(prompt),
+            "timeout": MUSIC_TIMEOUT,
+        }
+        return state
+
+    def _read_audio(self, state):
+        state = dict(state)
+        audio = state.get("result")
+        if not isinstance(audio, (bytes, bytearray)) or not audio:
+            raise RuntimeError("没有返回音频")
+        dest = Path(state.get("dest"))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(bytes(audio))
+        state["output"] = str(dest)
         state["request"] = None
         return state
