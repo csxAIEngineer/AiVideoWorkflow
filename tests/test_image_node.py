@@ -263,9 +263,9 @@ class ImageNodeTests(unittest.TestCase):
         self.assertEqual(product["hero"]["depends_on"], "")
         self.assertEqual(product["macro"]["depends_on"], "H")
         self.assertEqual(product["three_quarter"]["depends_on"], "")
-        self.assertIn("U1", product["hero"]["references"])
-        self.assertEqual(product["macro"]["references"], [])
-        self.assertEqual(product["three_quarter"]["references"], [])
+        self.assertEqual(product["hero"]["references"], ["U1"])
+        self.assertEqual(product["macro"]["references"], ["U1"])
+        self.assertEqual(product["three_quarter"]["references"], ["U1"])
         self.assertNotIn("U1", [asset["id"] for asset in spec["assets"]])
         self.assertEqual(spec["shots"][0]["images"], ["H"])
         card = [asset for asset in spec["assets"] if asset["subject"] == "说明书"]

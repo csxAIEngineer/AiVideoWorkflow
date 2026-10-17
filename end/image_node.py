@@ -217,7 +217,7 @@ def _expand_product(assets):
     macro = slots.get("macro")
     if macro is not None and macro is not hero:
         macro["depends_on"] = hero["id"]
-    _keep_references_on_anchor(assets, hero, kind, subject, ("three_quarter", "macro"))
+    _share_product_references(assets, kind, subject)
     _fill_blank_views(assets)
     return assets
 
@@ -272,6 +272,26 @@ def _fill_blank_views(assets):
     for asset in assets:
         if asset["view"] == "":
             asset["view"] = "single"
+
+
+def _share_product_references(assets, kind, subject):
+    """Hero, three-quarter, and macro are all generated from the same uploads."""
+    members = [
+        asset
+        for asset in assets
+        if asset["subject_kind"] == kind
+        and asset["subject"] == subject
+        and asset["view"] in PRODUCT_VIEWS
+    ]
+    held = []
+    for asset in members:
+        for ref in asset.get("references") or []:
+            if ref not in held:
+                held.append(ref)
+    if not held:
+        return
+    for asset in members:
+        asset["references"] = list(held)
 
 
 def _keep_references_on_anchor(assets, anchor, kind, subject, dependent_views):
