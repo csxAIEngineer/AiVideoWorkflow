@@ -13,11 +13,12 @@ class AgentLayout(object):
         self.agent = agent or Agent()
         self.graph = LangGraph(self.agent, self.model)
 
-    def drill(self, messages, debug_dir=None, model=None):
+    def drill(self, messages, debug_dir=None, model=None, template=None):
         state = self.graph.invoke(
             {
                 "kind": "drill",
                 "model": model,
+                "template": template,
                 "messages": messages or [],
                 "brief": "",
                 "skill_pack": "",
@@ -32,11 +33,12 @@ class AgentLayout(object):
             raise RuntimeError("模型没有返回问题。")
         return state["output"]
 
-    def write(self, brief, skill_pack, debug_dir=None, model=None):
+    def write(self, brief, skill_pack, debug_dir=None, model=None, template=None):
         state = self.graph.invoke(
             {
                 "kind": "write",
                 "model": model,
+                "template": template,
                 "messages": [],
                 "brief": brief or "",
                 "skill_pack": skill_pack or "",

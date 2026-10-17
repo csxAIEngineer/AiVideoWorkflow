@@ -21,7 +21,7 @@ def views_of(spec, subject):
 
 class ImageNodeTests(unittest.TestCase):
     def test_skill_requires_the_image_node(self):
-        text = (ROOT / "skills" / "image-node" / "SKILL.md").read_text(encoding="utf-8")
+        text = (ROOT / "skills" / "image-node" / "luxury-suv" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn(REQUIRED, text)
         self.assertIn("上传图只是参考", text)
         self.assertIn("references", text)
@@ -188,6 +188,124 @@ class ImageNodeTests(unittest.TestCase):
         self.assertEqual([node["id"] for node in nodes if node["role"] == "function"], ["script", "storyboard", "image", "join", "subtitles", "film"])
         back = next(asset for asset in spec["assets"] if asset["view"] == "back")
         self.assertIn(back["id"], shot_nodes[1]["images"])
+
+    def test_vehicle_policy_still_fills_front_side_and_back(self):
+        spec = prepare_image_node(
+            {
+                "assets": [
+                    {"id": "Car", "title": "SUV", "prompt": "银色 SUV", "subject": "SUV", "subject_kind": "prop"},
+                    {"id": "Road", "title": "山路", "prompt": "湿沥青", "subject": "山路", "subject_kind": "location"},
+                ],
+                "shots": [],
+            },
+            policy="vehicle_turnaround",
+        )
+        self.assertEqual(set(views_of(spec, "SUV")), {"front", "side", "back"})
+        road = next(asset for asset in spec["assets"] if asset["id"] == "Road")
+        self.assertEqual(road["view"], "single")
+        self.assertEqual(road["subject_kind"], "location")
+
+    def test_product_hero_fills_one_product_and_leaves_other_props(self):
+        spec = prepare_image_node(
+            {
+                "assets": [
+                    {
+                        "id": "H",
+                        "title": "耳机",
+                        "prompt": "银色耳机",
+                        "subject": "耳机",
+                        "subject_kind": "prop",
+                        "view": "hero",
+                        "references": ["U1"],
+                    },
+                    {
+                        "id": "M",
+                        "title": "耳机微距",
+                        "prompt": "网罩细节",
+                        "subject": "耳机",
+                        "subject_kind": "prop",
+                        "view": "macro",
+                        "references": ["U1"],
+                    },
+                    {
+                        "id": "Card",
+                        "title": "说明书",
+                        "prompt": "一张说明书",
+                        "subject": "说明书",
+                        "subject_kind": "prop",
+                    },
+                    {
+                        "id": "Desk",
+                        "title": "桌面",
+                        "prompt": "浅灰桌面",
+                        "subject": "桌面",
+                        "subject_kind": "location",
+                    },
+                    {
+                        "id": "Hand",
+                        "title": "手",
+                        "prompt": "一只手",
+                        "subject": "手",
+                        "subject_kind": "character",
+                    },
+                ],
+                "shots": [{"id": "S01", "prompt": "停在微距", "images": ["H", "U1"]}],
+            },
+            locked_ids=["U1"],
+            policy="product_hero",
+        )
+        product = {}
+        for asset in spec["assets"]:
+            if asset.get("subject") == "耳机":
+                product[asset["view"]] = asset
+        self.assertEqual(set(product), {"hero", "three_quarter", "macro"})
+        self.assertEqual(product["hero"]["id"], "H")
+        self.assertEqual(product["hero"]["depends_on"], "")
+        self.assertEqual(product["macro"]["depends_on"], "H")
+        self.assertEqual(product["three_quarter"]["depends_on"], "")
+        self.assertIn("U1", product["hero"]["references"])
+        self.assertEqual(product["macro"]["references"], [])
+        self.assertEqual(product["three_quarter"]["references"], [])
+        self.assertNotIn("U1", [asset["id"] for asset in spec["assets"]])
+        self.assertEqual(spec["shots"][0]["images"], ["H"])
+        card = [asset for asset in spec["assets"] if asset["subject"] == "说明书"]
+        self.assertEqual(len(card), 1)
+        self.assertEqual(card[0]["view"], "single")
+        self.assertEqual(views_of(spec, "说明书"), {})
+        self.assertEqual(views_of(spec, "手"), {})
+        desk = next(asset for asset in spec["assets"] if asset["id"] == "Desk")
+        self.assertEqual(desk["view"], "single")
+        self.assertEqual(desk["subject_kind"], "location")
+        again = prepare_image_node(spec, policy="product_hero")
+        self.assertEqual(
+            [asset["id"] for asset in again["assets"]],
+            [asset["id"] for asset in spec["assets"]],
+        )
+
+    def test_product_hero_accepts_a_macro_alias_and_builds_the_hero(self):
+        spec = prepare_image_node(
+            {
+                "assets": [
+                    {
+                        "id": "D1",
+                        "title": "耳机",
+                        "prompt": "银色网罩",
+                        "subject": "耳机",
+                        "subject_kind": "prop",
+                        "view": "微距",
+                    }
+                ],
+                "shots": [],
+            },
+            policy="product_hero",
+        )
+        views = {asset["view"] for asset in spec["assets"]}
+        self.assertEqual(views, {"hero", "three_quarter", "macro"})
+        hero = next(asset for asset in spec["assets"] if asset["view"] == "hero")
+        macro = next(asset for asset in spec["assets"] if asset["view"] == "macro")
+        self.assertEqual(macro["id"], "D1")
+        self.assertEqual(macro["depends_on"], hero["id"])
+        self.assertEqual(hero["depends_on"], "")
 
 
 if __name__ == "__main__":

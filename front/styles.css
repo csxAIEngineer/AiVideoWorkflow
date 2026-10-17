@@ -687,12 +687,14 @@ a.download,
 }
 
 .model-picker,
+.template-picker,
 .soundtrack-picker {
   display: inline-flex;
   align-items: center;
 }
 
 .model-picker select,
+.template-picker select,
 .soundtrack-picker select {
   border: 1px solid #e3e3e8;
   border-radius: 999px;
@@ -705,7 +707,12 @@ a.download,
   max-width: 220px;
 }
 
-.model-picker select:disabled {
+.template-picker select {
+  max-width: 180px;
+}
+
+.model-picker select:disabled,
+.template-picker select:disabled {
   opacity: 0.6;
 }
 

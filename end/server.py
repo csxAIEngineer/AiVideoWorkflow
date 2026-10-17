@@ -59,6 +59,12 @@ from end.pipeline import (
     model_label,
     normalize_model,
 )
+from skills.registry import (
+    normalize_template,
+    template_choices,
+    template_label,
+    template_policy,
+)
 from end.image_node import prepare_image_node, video_nodes
 from end.soundtrack import normalize_soundtrack, project_soundtrack, soundtrack_enabled
 from end.workflow_from_spec import _safe_id, collect_steps, task_plan
@@ -260,6 +266,8 @@ def public_view(project):
         "prompt_id": project.get("prompt_id") or "",
         "model": normalize_model(project.get("model")),
         "model_label": model_label(project.get("model")),
+        "template": normalize_template(project.get("template")),
+        "template_label": template_label(project.get("template")),
         "debug_llm": debug,
         "debug_files": debug_files,
         "nodes": video_nodes(spec, soundtrack=project_soundtrack(project)),
@@ -270,12 +278,18 @@ def public_view(project):
     }
 
 
-def call_drill(messages, debug_dir=None, model=None):
-    return get_layout().drill(messages, debug_dir=debug_dir, model=model)
+def call_drill(messages, debug_dir=None, model=None, template=None):
+    return get_layout().drill(messages, debug_dir=debug_dir, model=model, template=template)
 
 
-def call_deepseek(brief, skill_pack, debug_dir=None, model=None):
-    return get_layout().write(brief, skill_pack, debug_dir=debug_dir, model=model)
+def call_deepseek(brief, skill_pack, debug_dir=None, model=None, template=None):
+    return get_layout().write(
+        brief,
+        skill_pack,
+        debug_dir=debug_dir,
+        model=model,
+        template=template,
+    )
 
 
 def run_drill(project_id):
@@ -287,6 +301,7 @@ def run_drill(project_id):
             project.get("messages") or [],
             debug_dir=folder / "debug" if debug else None,
             model=project.get("model"),
+            template=project.get("template"),
         )
         project = read_project(project_id) or project
         messages = list(project.get("messages") or [])
@@ -347,7 +362,14 @@ def _save_written_spec(project_id, spec):
     folder = project_dir(project_id)
     folder.mkdir(parents=True, exist_ok=True)
     items = load_intake(folder)
-    spec = prepare_image_node(spec, locked_ids=[item["id"] for item in items], items=items)
+    stored = read_project(project_id)
+    policy = template_policy((stored or {}).get("template"))
+    spec = prepare_image_node(
+        spec,
+        locked_ids=[item["id"] for item in items],
+        items=items,
+        policy=policy,
+    )
     spec = merge_intake(spec, items)
     (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
     with project_lock(project_id):
@@ -395,13 +417,15 @@ def run_project(project_id, debug_llm=False):
                 "debug_llm": debug,
             },
         )
-        skill_pack = load_skill_pack()
+        template = project.get("template")
+        skill_pack = load_skill_pack(template)
         debug_dir = folder / "debug" if debug else None
         spec = call_deepseek(
             enrich_brief(project["brief"], load_intake(folder)),
             skill_pack,
             debug_dir=debug_dir,
             model=project.get("model"),
+            template=template,
         )
         fresh = _save_written_spec(project_id, spec)
         if fresh is None or _yield_if_paused(project_id):
@@ -574,6 +598,7 @@ def execute_render(project_id, project=None):
         images_only=images_only,
         soundtrack=project_soundtrack(project),
         brief=project.get("brief") or "",
+        template=project.get("template"),
     )
     if result.get("stopped_after") == "images":
         finish_image_debug(project, result)
@@ -1000,6 +1025,8 @@ def rpc_config(_params):
         "debug_llm_env": "AIVIDEO_DEBUG_LLM",
         "model": DEFAULT_MODEL,
         "models": model_choices(),
+        "template": normalize_template(None),
+        "templates": template_choices(),
     }
 
 
@@ -1082,6 +1109,7 @@ def rpc_create_project(params):
         "prompt_id": "",
         "video_file": "",
         "model": normalize_model(params.get("model")),
+        "template": normalize_template(params.get("template")),
         "created_at": created,
         "started_at": created,
         "updated_at": created,

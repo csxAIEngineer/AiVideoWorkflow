@@ -441,7 +441,7 @@ class EndHandoffTest(unittest.TestCase):
         make_project(project_id, status="drilling")
         done = threading.Event()
 
-        def fake(messages, debug_dir=None, model=None):
+        def fake(messages, debug_dir=None, model=None, template=None):
             done.set()
             return {"phase": "ask", "reply": "选一个", "options": ["甲", "其他"]}
 
@@ -462,7 +462,7 @@ class EndHandoffTest(unittest.TestCase):
         make_project(project_id, status="drilling")
         submitted = []
 
-        def fake(messages, debug_dir=None, model=None):
+        def fake(messages, debug_dir=None, model=None, template=None):
             return {"phase": "ready", "reply": "开始写", "brief": "锁定的简报", "options": []}
 
         with patch("end.server.call_drill", side_effect=fake), patch(

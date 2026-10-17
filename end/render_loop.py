@@ -752,17 +752,15 @@ def compact_data_url(path):
     return data_url(source)
 
 
-LIVE_ACTION = (
-    "实拍照片质感，可用光，漆面和金属可以有磨损，轮胎接地，不要悬浮，不要新造部件，不要特写车标文字，不要CG渲染。"
-)
+def image_prompt(asset, reference=False, template=None):
+    from skills.registry import template_render
 
-
-def image_prompt(asset, reference=False):
     prompt = (asset.get("prompt") or "").strip()
-    if "不要悬浮" not in prompt:
-        prompt = prompt + "\n" + LIVE_ACTION
+    suffix = template_render(template)["image"]
+    if suffix and suffix not in prompt:
+        prompt = prompt + "\n" + suffix
     if reference:
-        return FACE_LOCK + prompt
+        prompt = FACE_LOCK + prompt
     return prompt
 
 
@@ -1015,26 +1013,27 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
     return "9:16", media
 
 
-def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack="off"):
-    """Prompt actually sent to MiniMax: the same vehicle, spoken lines, and the cut.
+def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack="off", template=None):
+    """Prompt sent to MiniMax. Vehicle lines come only from the active template's skills.
 
     Music or narration is mixed after the join, so those shots keep only room tone.
     """
+    from skills.registry import template_render
+
     base = (shot.get("prompt") or "").strip()
+    render = template_render(template)
     if mode in ("first_frame", "first_last_frame"):
         parts = [base, FRAME_OPENING, "全程无字幕、无对白文字叠加。"]
     else:
-        parts = [
-            base,
-            "锁同一台车：轮子在转，车不悬浮，不新造部件，不特写车标文字。全程无字幕、无对白文字叠加。",
-        ]
-        if index > 0:
-            parts.append(
-                "这一镜是上一镜的下一刀。同一台车、同一条路接着走，轮子继续转，"
-                "不要突然换成另一台车、另一种颜色或另一条路。"
-            )
-        if has_tail:
-            parts.append("最后一张参考图是上一镜的实际尾帧，只承接这台车、光线和路面，不要照抄它的景别和构图。")
+        parts = [base]
+        if render["video_lock"]:
+            parts.append(render["video_lock"])
+        else:
+            parts.append("全程无字幕、无对白文字叠加。")
+        if index > 0 and render["video_next"]:
+            parts.append(render["video_next"])
+        if has_tail and render["video_tail"]:
+            parts.append(render["video_tail"])
     post = soundtrack_enabled(soundtrack)
     narration = str(shot.get("narration") or "").strip()
     if narration and narration not in base and not post:
@@ -1094,8 +1093,10 @@ class RenderContext(object):
         minimax=None,
         mixer=None,
         duration_of=None,
+        template=None,
     ):
         self.work_dir = Path(work_dir)
+        self.template = template
         self.on_progress = on_progress
         self.project_id = project_id or ""
         self.icreat = icreat
@@ -1920,6 +1921,7 @@ def run_local_pipeline(
     minimax=None,
     mixer=None,
     duration_of=None,
+    template=None,
 ):
     """Generate stills, then clips, join them, optionally mix a soundtrack, then burn 字幕.ass.
 
@@ -1959,6 +1961,7 @@ def run_local_pipeline(
         minimax=minimax,
         mixer=mixer,
         duration_of=duration_of,
+        template=template,
     )
     if project_id:
         register_thread(project_id)
@@ -1990,7 +1993,10 @@ def run_local_pipeline(
             current = find_asset(read_spec_file(ctx.work_dir, spec), asset_id, fallback)
             urls = image_input_urls(ctx, current)
             image = urls or None
-            return icreat.submit_image(image_prompt(current, reference=bool(urls)), image=image)
+            return icreat.submit_image(
+                image_prompt(current, reference=bool(urls), template=ctx.template),
+                image=image,
+            )
 
         def poll(task_id):
             return icreat.query_status(task_id)
@@ -2091,6 +2097,7 @@ def run_local_pipeline(
                 bool(tail_url),
                 mode,
                 soundtrack=ctx.soundtrack,
+                template=ctx.template,
             )
             # #region agent log
             _agent_log(

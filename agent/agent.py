@@ -7,7 +7,6 @@ from pathlib import Path
 
 from cr_api import is_thinking_model
 from end.pipeline import (
-    JSON_SHAPE,
     OFFICIAL_MODELS,
     _empty_body_error,
     _reply_text,
@@ -19,6 +18,7 @@ from end.pipeline import (
     ready_from_conversation,
     write_llm_debug,
 )
+from skills.registry import json_shape, repair_lead
 
 
 SPEECH_TIMEOUT = 60
@@ -101,11 +101,15 @@ class Agent(object):
             state.get("brief") or "",
             state.get("skill_pack") or "",
             result=state.get("first_result") if state.get("repair") else None,
+            template=state.get("template"),
         )
+
+    def _template(self, state):
+        return state.get("template")
 
     def _prepare_drill(self, state):
         name = normalize_model(state.get("model"))
-        system = drill_system_prompt()
+        system = drill_system_prompt(self._template(state))
         chat_messages = [{"role": "system", "content": system}]
         for item in state.get("messages") or []:
             role = item.get("role")
@@ -143,7 +147,7 @@ class Agent(object):
             reply = _reply_text(result)
             state["reply"] = reply
             if not reply:
-                ready = ready_from_conversation(state.get("messages"))
+                ready = ready_from_conversation(state.get("messages"), self._template(state))
                 if ready:
                     state["output"] = ready
                     state["request"] = None
@@ -152,7 +156,7 @@ class Agent(object):
         state["repair"] = True
         state["request"] = {
             "messages": [
-                {"role": "system", "content": drill_system_prompt()},
+                {"role": "system", "content": drill_system_prompt(self._template(state))},
                 {"role": "user", "content": "把下面这次追问收成规定的 JSON。\n" + reply[:8000]},
             ],
             "model": state.get("model_name"),
@@ -174,7 +178,7 @@ class Agent(object):
             state["request"] = None
             return state
         except ValueError:
-            ready = ready_from_conversation(state.get("messages"))
+            ready = ready_from_conversation(state.get("messages"), self._template(state))
             if ready:
                 state["output"] = ready
                 state["request"] = None
@@ -185,7 +189,7 @@ class Agent(object):
 
     def _prepare_write(self, state):
         name = normalize_model(state.get("model"))
-        system = build_system_prompt(state.get("skill_pack") or "")
+        system = build_system_prompt(state.get("skill_pack") or "", self._template(state))
         state = dict(state)
         state["model_name"] = name
         state["repair"] = False
@@ -213,21 +217,22 @@ class Agent(object):
             spec = None
         if spec is not None:
             if debug_dir:
-                write_llm_debug(debug_dir, brief, skill_pack, result=result)
+                write_llm_debug(debug_dir, brief, skill_pack, result=result, template=state.get("template"))
             state["output"] = spec
             state["request"] = None
             return state
         reply = _reply_text(result)
         if not reply:
             if debug_dir:
-                write_llm_debug(debug_dir, brief, skill_pack, result=result)
+                write_llm_debug(debug_dir, brief, skill_pack, result=result, template=state.get("template"))
             raise RuntimeError(_empty_body_error(state.get("model_name")))
+        template = self._template(state)
         state["first_result"] = result
         state["reply"] = reply
         state["repair"] = True
         state["request"] = {
             "messages": [
-                {"role": "system", "content": "把用户给出的汽车视频材料收成一个 JSON 对象。" + JSON_SHAPE},
+                {"role": "system", "content": repair_lead(template) + json_shape(template)},
                 {"role": "user", "content": reply[:12000]},
             ],
             "model": state.get("model_name"),
@@ -247,12 +252,26 @@ class Agent(object):
             spec = _spec_from_result(repaired)
         except ValueError:
             if debug_dir:
-                write_llm_debug(debug_dir, brief, skill_pack, result=first, repaired=repaired)
+                write_llm_debug(
+                    debug_dir,
+                    brief,
+                    skill_pack,
+                    result=first,
+                    repaired=repaired,
+                    template=state.get("template"),
+                )
             reply = state.get("reply") or ""
             preview = ((repaired.content if repaired else "") or reply).strip().replace("\n", " ")[:120]
             raise RuntimeError("模型没有返回 JSON。回复开头是：%s" % preview)
         if debug_dir:
-            write_llm_debug(debug_dir, brief, skill_pack, result=first, repaired=repaired)
+            write_llm_debug(
+                debug_dir,
+                brief,
+                skill_pack,
+                result=first,
+                repaired=repaired,
+                template=state.get("template"),
+            )
         state["output"] = spec
         state["request"] = None
         return state

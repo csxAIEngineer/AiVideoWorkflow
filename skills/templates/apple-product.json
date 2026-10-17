@@ -1,0 +1,14 @@
+{
+  "id": "apple-product",
+  "label": "Apple 风产品特写",
+  "director": "directors/apple-product/SKILL.md",
+  "decision": "templates/apple-product.decision.md",
+  "output": "templates/apple-product.output.md",
+  "skills": [
+    "apple-product-closeup/SKILL.md",
+    "image-node/apple-product/SKILL.md"
+  ],
+  "policy": "product_hero",
+  "brief_lead": "用户已经通过多轮选择把这条产品特写定下来了。写的时候锁定这一件产品、它的材质、光线和要看清的细节，不要换成另一件产品。",
+  "repair_lead": "把用户给出的产品特写材料收成一个 JSON 对象。"
+}

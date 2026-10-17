@@ -90,3 +90,19 @@ For users who would rather paste into a chat model than run this Skill, hand the
 - `references/cases.md` is generated from `data/` in [LearnPrompt/awesome-seedance](https://github.com/LearnPrompt/awesome-seedance) and refreshed daily; do not hand-edit an installed copy.
 - Prompts in the reference file belong to their creators (linked on every card). Transfer the structure; do not present a close copy as original work.
 - For the full library across every model, install the `goodcase` Skill from [LearnPrompt/goodcase-lite](https://github.com/LearnPrompt/goodcase-lite).
+
+## 出镜时接上
+
+本技能只属于高奢感 SUV。参考图出镜时接下面的句子。其他模版没有本技能，不得接这些句子。
+
+```render-video-lock
+锁同一台车：轮子在转，车不悬浮，不新造部件，不特写车标文字。全程无字幕、无对白文字叠加。
+```
+
+```render-video-next
+这一镜是上一镜的下一刀。同一台车、同一条路接着走，轮子继续转，不要突然换成另一台车、另一种颜色或另一条路。
+```
+
+```render-video-tail
+最后一张参考图是上一镜的实际尾帧，只承接这台车、光线和路面，不要照抄它的景别和构图。
+```

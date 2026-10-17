@@ -204,7 +204,7 @@ class QwenVisionTests(unittest.TestCase):
                 self.assertEqual(line.split("=", 1)[1].strip(), "")
 
     def test_skill_keeps_identity_on_the_picture(self):
-        text = (ROOT / "skills" / "aivideo-work" / "SKILL.md").read_text(encoding="utf-8")
+        text = (ROOT / "skills" / "drill-me" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("身份跟图", text)
         self.assertIn("故事跟用户自己写下的话", text)
         self.assertIn("读图已定的身份不要再问", text)

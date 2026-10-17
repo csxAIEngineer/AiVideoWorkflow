@@ -18,6 +18,7 @@ from end.render_loop import (
     build_subtitle_ass,
     choose_video_mode,
     delivery_prompt,
+    image_prompt,
     display_caption,
     gate_for,
     image_size,
@@ -767,6 +768,30 @@ class RenderLoopTest(unittest.TestCase):
         kept = delivery_prompt({"prompt": "她回头"}, [], 1, True, "reference")
         self.assertIn("轮子在转", kept)
         self.assertIn("不要照抄", kept)
+        apple = delivery_prompt(
+            {"prompt": "她回头"},
+            [],
+            1,
+            True,
+            "reference",
+            template="apple-product",
+        )
+        self.assertNotIn("轮子在转", apple)
+        self.assertNotIn("轮胎", apple)
+        self.assertNotIn("同一台车", apple)
+        self.assertNotIn("不要照抄", apple)
+        product = image_prompt(
+            {"id": "A04", "prompt": "纯白无缝影棚台面"},
+            template="apple-product",
+        )
+        self.assertNotIn("轮胎", product)
+        self.assertNotIn("车标", product)
+        studio = image_prompt(
+            {"id": "A04", "prompt": "纯白无缝影棚台面"},
+            template="luxury-suv",
+        )
+        self.assertIn("轮胎接地", studio)
+        self.assertIn("不要特写车标文字", studio)
         _aspect, opened = assemble_shot_media(
             {"id": "S02", "images": ["U2"]},
             "first_frame",

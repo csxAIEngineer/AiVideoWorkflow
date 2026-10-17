@@ -9,6 +9,7 @@ const main = document.querySelector(".main");
 const debugEl = document.querySelector("#debug-llm");
 const soundtrackEl = document.querySelector("#soundtrack");
 const modelEl = document.querySelector("#model");
+const templateEl = document.querySelector("#template");
 const modelFoot = document.querySelector("#model-foot");
 
 const stageBar = document.querySelector("#stage-bar");
@@ -700,6 +701,7 @@ function syncComposer() {
   const thinking = current && current.status === "drilling" && !current.can_reply;
   const busy = current && !["drilling", "done", "error"].includes(current.status);
   if (modelEl) modelEl.disabled = sending || thinking || busy;
+  if (templateEl) templateEl.disabled = sending || !!current;
   const options = current ? latestOptions(current) : [];
   const choosing = !!(current && current.can_reply && options.length);
   const showOther = (choosing && otherOpen) || !!(current && current.can_reply && !options.length);
@@ -891,6 +893,7 @@ async function openProject(id) {
     return;
   }
   showProjectModel(current);
+  showProjectTemplate(current);
   renderHistory();
   renderThread({ scroll: current.status === "drilling" ? "bottom" : "top" });
   watch();
@@ -932,6 +935,7 @@ newChat.addEventListener("click", () => {
     modelEl.value = savedModel;
     syncModelFoot();
   }
+  restoreTemplate();
   clearInterval(timer);
   clearInterval(clock);
   renderHistory();
@@ -990,6 +994,43 @@ function showProjectModel(project) {
   }
 }
 
+function fillTemplates(templates) {
+  if (!templateEl || !templates || !templates.length) return;
+  const saved = localStorage.getItem("aivideo.template") || "luxury-suv";
+  const preferred = (current && current.template) || saved;
+  templateEl.innerHTML = "";
+  templates.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.label;
+    templateEl.appendChild(option);
+  });
+  const pick = [...templateEl.options].some((option) => option.value === preferred) ? preferred : "luxury-suv";
+  if ([...templateEl.options].some((option) => option.value === pick)) {
+    templateEl.value = pick;
+  }
+}
+
+function restoreTemplate() {
+  if (!templateEl) return;
+  const saved = localStorage.getItem("aivideo.template") || "luxury-suv";
+  if ([...templateEl.options].some((option) => option.value === saved)) {
+    templateEl.value = saved;
+  }
+}
+
+function showProjectTemplate(project) {
+  if (!templateEl || !project) return;
+  const name = project.template || "luxury-suv";
+  if ([...templateEl.options].some((option) => option.value === name)) {
+    templateEl.value = name;
+  }
+}
+
+function selectedTemplate() {
+  return templateEl ? templateEl.value : "luxury-suv";
+}
+
 function selectedModel() {
   return modelEl ? modelEl.value : "";
 }
@@ -1036,6 +1077,12 @@ if (modelEl) {
   });
 }
 
+if (templateEl) {
+  templateEl.addEventListener("change", () => {
+    localStorage.setItem("aivideo.template", templateEl.value);
+  });
+}
+
 function adoptProject(project, isNew) {
   otherOpen = false;
   briefEl.value = "";
@@ -1047,6 +1094,7 @@ function adoptProject(project, isNew) {
   }
   current = project;
   showProjectModel(project);
+  showProjectTemplate(project);
   renderHistory();
   renderThread({ scroll: "bottom" });
   watch();
@@ -1141,6 +1189,7 @@ async function startBrief(text) {
       debug_llm: !!(debugEl && debugEl.checked),
       soundtrack: soundtrackEl ? soundtrackEl.value : "off",
       model: selectedModel(),
+      template: selectedTemplate(),
     };
     if (materials.length) {
       params.materials = [];
@@ -2123,6 +2172,7 @@ async function loadConfig() {
     const config = await rpc("config.get");
     serverDebugDefault = !!config.debug_llm;
     fillModels(config.models || []);
+    fillTemplates(config.templates || []);
   } catch (_error) {
     serverDebugDefault = false;
   }

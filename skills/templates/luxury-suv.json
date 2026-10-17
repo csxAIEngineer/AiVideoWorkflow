@@ -1,0 +1,15 @@
+{
+  "id": "luxury-suv",
+  "label": "高奢感 SUV",
+  "director": "directors/luxury-suv/SKILL.md",
+  "decision": "templates/luxury-suv.decision.md",
+  "output": "templates/luxury-suv.output.md",
+  "skills": [
+    "seedance-car-vehicle/SKILL.md",
+    "seedance-car-vehicle/references/cases.md",
+    "image-node/luxury-suv/SKILL.md"
+  ],
+  "policy": "vehicle_turnaround",
+  "brief_lead": "用户已经通过多轮选择把这条汽车视频定下来了。写的时候锁定这台车、这条路和选定的机位，不要换成另一台车。",
+  "repair_lead": "把用户给出的汽车视频材料收成一个 JSON 对象。"
+}

@@ -1,4 +1,4 @@
-"""Drill the user until the film is clear, then write it with the car-vehicle rules.
+"""Drill the user until the film is clear, then write it with the project template.
 
 Model calls go through the agent layout: LangGraph, then Agent, then LLM Model.
 """
@@ -16,9 +16,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from cr_api import TEXT_MODELS
+from skills.registry import (
+    brief_lead,
+    build_system_prompt,
+    drill_system_prompt,
+    json_shape,
+    load_skill_pack,
+)
 
-DRILL_SKILL_PATH = ROOT / "skills" / "aivideo-work" / "SKILL.md"
-CAR_SKILL_DIR = ROOT / "skills" / "seedance-car-vehicle"
+JSON_SHAPE = json_shape()
 
 DEFAULT_MODEL = "deepseek-v4-pro"
 TEXT_MODEL = DEFAULT_MODEL
@@ -42,66 +48,6 @@ MODEL_LABELS = {
     "glm-5.3-flash": "GLM 5.3 Flash",
     "glm-5.2": "GLM 5.2",
 }
-
-# 确认之后按载具速度片的七段结构填 JSON。技能原文和案例在 skills/seedance-car-vehicle/。
-CAR_STRUCTURE = """
-这些规则只填进 JSON 字段。script 放整段可复制的汽车视频提示词。storyboard 用编号分镜。image_prompts 和各张图的 prompt 用生图规则。整段回复不要在 JSON 外面再写正文。
-
-写之前先读 seedance-car-vehicle 和 references/cases.md。选一个最接近这条片子的案例当锚，在 script 里点名它。只跟这一个案例的结构走，不要把几条案例混成一条。
-
-script 必须有这七段：
-
-1. 开场：时长、画幅 9:16、帧率、镜头数。
-2. 车辆锁定：车型、颜色、必须动对的部件（悬挂、轮转、引擎）。按部件写，不靠车标。
-3. 司机锁定：没有司机就写没有；有司机就锁体型和装备。
-4. 路面和天气。
-5. 一句配比：多少是镜头运动，多少是风景。
-6. 编号分镜：一镜一个机位。速度写在机位和掠过的东西上。
-7. 风格，加上车辆会怎么坏的负面清单：重复部件、轮子几何、悬浮、车标特写。
-
-出片约束盖过技能里冲突的句子：画幅固定 9:16。每镜 duration 是 4 到 15 的整数秒。技能里的一秒一镜只说明案例怎么把速度写进机位，不要原样交给出片。一个镜头可以长于一秒，仍然只有一个机位。
-
-资产：主角车辆写正面、侧面、背面，subject 相同，subject_kind 用 prop。路面是单张，subject_kind 用 location，view 为 single。没有司机就不要写司机图。有司机时把体型和装备写进说明，不要为人物再写一套定妆三视图。换色、天气、伤损是变体，view 为 single，depends_on 填该车正面 id。上传图只是参考：引用它的资产把上传图 id 写进 references，不要写进 depends_on，也不要把它当成已经生成的资产。侧面和背面的 depends_on 仍填生成好的正面 id，上传图只写在直接参考它的那张资产上。姿势和机位不是资产。车辆锚点必须能画出来：车型、颜色、轮廓、必须动对的部件。路面要写铺装、路两边和光线。同一条路不因昼夜或天气再建成另一个地点。
-
-生图：所有图片只放进 Image-Node，分镜不新造图片。主角车辆写正面、侧面、背面，同一个 subject。prompt 用中文，能直接拿去文生图。顺序是车辆锚点、当前变体、角度、光线和材质、背景边界、禁止项。写成实拍：金属和漆面可以有磨损，轮胎接地，不要悬浮，不要重复部件，不要特写车标文字。车辆正面和路面的 depends_on 留空。车辆正面要对齐上传图时，references 填上传图 id。侧面和背面的 depends_on 填正面 id。路面写清从哪看向哪、前后景，以及一到三个固定锚点。禁止字幕、水印、logo 和乱码文字。不要占位符。
-
-分镜：每镜只有一个机位、一个主要运动。镜头数量按车子的节拍来，拍完出发、速度和收束，不要停在固定个数，也不要为了凑数加空镜。写清这一镜的机位、运镜、起点、车子怎么动、掠过什么、终点。duration 是 4 到 15 的整数秒。镜头 prompt 用中文，写这一镜要走完的运动，不要只写一张定格，也不要在同一镜里写第二个机位。没有对白时 dialogue 为空字符串，并写明本镜无对白。有人声时 dialogue 填这一句原话。同一条路的下一镜接上这台车的颜色、路面和光线。images 只列这一镜画面里要保持的、已经写进 Image-Node 的生成资产 id，不列上传图。
-""".strip()
-
-
-def _skill_body(path):
-    text = path.read_text(encoding="utf-8")
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end >= 0:
-            text = text[end + 4 :]
-    return text.strip()
-
-
-def load_skill_pack():
-    skill = _skill_body(CAR_SKILL_DIR / "SKILL.md")
-    cases_path = CAR_SKILL_DIR / "references" / "cases.md"
-    if not skill:
-        raise RuntimeError("缺少 skills/seedance-car-vehicle/SKILL.md")
-    if not cases_path.is_file():
-        raise RuntimeError("缺少 skills/seedance-car-vehicle/references/cases.md")
-    cases = cases_path.read_text(encoding="utf-8").strip()
-    image = _skill_body(ROOT / "skills" / "image-node" / "SKILL.md")
-    if not image:
-        raise RuntimeError("缺少 skills/image-node/SKILL.md")
-    return (
-        CAR_STRUCTURE
-        + "\n\n# seedance-car-vehicle\n\n"
-        + skill
-        + "\n\n# references/cases.md\n\n"
-        + cases
-        + "\n\n"
-        + image
-        + "\n\n出片时以这段为准：画幅固定 9:16。script 是整段可复制提示词，"
-        "shots[].prompt 是其中一镜，一镜一个机位。每镜 duration 是 4 到 15 的整数秒。"
-        "技能里的一秒一镜不要原样交给出片。只选 cases.md 里的一个案例当锚，不要把几条案例混成一条。"
-    )
-
 
 def model_choices():
     choices = []
@@ -141,18 +87,6 @@ def _empty_body_error(model):
     if normalize_model(model) in OFFICIAL_MODELS:
         return "模型没有返回正文。请检查 DEEPSEEK_API_KEY，或把 max_tokens 调大。"
     return "模型没有返回正文。请检查 CR_API_KEY，或把 max_tokens 调大。"
-
-
-def drill_system_prompt():
-    text = DRILL_SKILL_PATH.read_text(encoding="utf-8")
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end >= 0:
-            text = text[end + 4 :]
-    text = text.strip()
-    if not text:
-        raise RuntimeError("缺少 skills/aivideo-work/SKILL.md")
-    return text
 
 
 def _extract_object(text):
@@ -195,7 +129,7 @@ def choice_options(raw):
     return concrete + [OTHER_CHOICE]
 
 
-def conversation_brief(messages):
+def conversation_brief(messages, template=None):
     """Turn the background and the chosen directions into the brief for the writer."""
     user_lines = []
     for item in messages or []:
@@ -207,7 +141,7 @@ def conversation_brief(messages):
     if len(user_lines) < 2:
         return ""
     lines = [
-        "用户已经通过多轮选择把这条汽车视频定下来了。写的时候锁定这台车、这条路和选定的机位，不要换成另一台车。",
+        brief_lead(template),
         "背景：" + user_lines[0],
         "选定方向：",
     ]
@@ -216,8 +150,8 @@ def conversation_brief(messages):
     return "\n".join(lines)
 
 
-def ready_from_conversation(messages):
-    brief = conversation_brief(messages)
+def ready_from_conversation(messages, template=None):
+    brief = conversation_brief(messages, template)
     if not brief:
         return None
     return {
@@ -247,27 +181,11 @@ def parse_drill_text(text):
     return {"phase": "ready", "reply": reply, "brief": brief, "options": []}
 
 
-def call_drill(messages, debug_dir=None, model=None):
+def call_drill(messages, debug_dir=None, model=None, template=None):
     """One drill-me turn. messages are user/assistant text, not the JSON wrapper."""
     from agent.layout import get_layout
 
-    return get_layout().drill(messages, debug_dir=debug_dir, model=model)
-
-
-JSON_SHAPE = (
-    "整段回复只能是一个 JSON 对象，不要 Markdown 围栏，不要在 JSON 外面写提示词。"
-    "title 是字符串。script、storyboard、image_prompts 是 Markdown 字符串，不要 HTML。"
-    "用 ## 分节，镜头用有序列表。车辆锁定、路面、配比和镜头机位，用 ==重点== 包起来。"
-    "script 是整段可复制的汽车视频提示词，按开场、车辆锁定、司机锁定、路面和天气、配比、编号分镜、风格和负面清单来写。"
-    "assets 数组，每项含 id、title、prompt、depends_on、references、subject、subject_kind、view。"
-    "subject_kind 只能是 character、prop、location、other。view 只能是 front、side、back、single。"
-    "全部图片都属于必须的 Image-Node。主角车辆写 front、side、back 三张，subject 相同，subject_kind 用 prop；侧面和背面的 depends_on 填正面 id。路面 view 为 single，subject_kind 用 location。变体 view 为 single，depends_on 填该车正面的 id，不要再拆三视图。不要为人物再写一套定妆三视图。"
-    "车辆正面和路面的 depends_on 为空字符串。上传图只是参考，不是资产。要参考上传图时，references 填上传图 id，例如 [\"U1\"]，不要把上传图 id 写进 depends_on 或镜头 images。侧面和背面依赖生成好的正面。资产个数按片子需要，不设上限。"
-    "shots 数组不设个数上限，每项含 id、duration、prompt、images、dialogue、narration。duration 是 4 到 15 的整数秒，一镜一个机位，不要写成一秒一镜。shots[].prompt 是 script 编号分镜里的一镜，写这一个机位和掠过的东西。images 只列这一镜看得见、且已经写在 Image-Node 里的生成资产 id。分镜不新造图片。"
-    "dialogue 没有对白则为空字符串。有人声时 dialogue 填这一镜要说的原句，并写明谁在画内开口。"
-    "narration 是这一镜的画外旁白，没有则为空字符串。用户给出的图旁白必须原句写进使用对应生成资产的镜头。"
-    "画幅 9:16。script、storyboard、image_prompts、title，以及 assets 和 shots 里的 title、prompt 全部用中文。提示词里禁止字幕、水印、乱码文字和车标特写。"
-)
+    return get_layout().drill(messages, debug_dir=debug_dir, model=model, template=template)
 
 
 def _extract_json(text):
@@ -305,23 +223,13 @@ def _reply_text(result):
     return ((result.content or "") + "\n" + (result.reasoning_content or "")).strip()
 
 
-def build_system_prompt(skill_pack):
-    return (
-        "你是汽车视频导演。只根据用户给出的背景或简要创作，锁定这台车、这条路和选定的机位，不要换成另一台车。\n"
-        + JSON_SHAPE
-        + "\n"
-        + skill_pack
-        + "\n再次确认：回复从 { 开始，到 } 结束。"
-    )
-
-
-def write_llm_debug(folder, brief, skill_pack, result=None, repaired=None):
+def write_llm_debug(folder, brief, skill_pack, result=None, repaired=None, template=None):
     """Persist prompts and raw model text for skill / response inspection."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "skill_pack.txt").write_text(skill_pack or "", encoding="utf-8")
-    (folder / "json_shape.txt").write_text(JSON_SHAPE, encoding="utf-8")
-    (folder / "system_prompt.txt").write_text(build_system_prompt(skill_pack), encoding="utf-8")
+    (folder / "json_shape.txt").write_text(json_shape(template), encoding="utf-8")
+    (folder / "system_prompt.txt").write_text(build_system_prompt(skill_pack, template), encoding="utf-8")
     (folder / "user_brief.txt").write_text(brief or "", encoding="utf-8")
     if result is not None:
         (folder / "raw_response.txt").write_text(_reply_text(result), encoding="utf-8")
@@ -329,10 +237,10 @@ def write_llm_debug(folder, brief, skill_pack, result=None, repaired=None):
         (folder / "raw_response_repaired.txt").write_text(_reply_text(repaired), encoding="utf-8")
 
 
-def call_deepseek(brief, skill_pack, debug_dir=None, model=None):
+def call_deepseek(brief, skill_pack, debug_dir=None, model=None, template=None):
     from agent.layout import get_layout
 
-    return get_layout().write(brief, skill_pack, debug_dir=debug_dir, model=model)
+    return get_layout().write(brief, skill_pack, debug_dir=debug_dir, model=model, template=template)
 
 
 CLOUD_STATUS = {

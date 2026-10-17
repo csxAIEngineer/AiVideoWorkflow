@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AiVideo</title>
-  <link rel="stylesheet" href="/styles.css?v=31" />
+  <link rel="stylesheet" href="/styles.css?v=32" />
 </head>
 <body>
   <aside class="sidebar">
@@ -79,6 +79,12 @@
           <label class="model-picker">
             <select id="model" aria-label="模型"></select>
           </label>
+          <label class="template-picker" title="新建项目使用的模版">
+            <select id="template" aria-label="模版">
+              <option value="luxury-suv">高奢感 SUV</option>
+              <option value="apple-product">Apple 风产品特写</option>
+            </select>
+          </label>
           <label class="soundtrack-picker" title="拼接之后按每镜旁白合成声音">
             <select id="soundtrack" aria-label="声轨">
               <option value="off">声轨：关闭</option>
@@ -95,6 +101,6 @@
     </form>
   </main>
   <script src="/rpc.js?v=1"></script>
-  <script src="/app.js?v=40"></script>
+  <script src="/app.js?v=41"></script>
 </body>
 </html>
