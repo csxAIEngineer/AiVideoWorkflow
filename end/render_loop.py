@@ -13,11 +13,11 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from cr_api.client import ASPECT_RATIOS, CRError
-from icreat_api.client import ICreatError
 from end.soundtrack import lay_soundtrack, normalize_soundtrack, soundtrack_enabled
 from end.workflow_from_spec import collect_steps, ordered_assets
-from image_store import get_image_store
+from end.image_store import get_image_store
+
+ASPECT_RATIOS = ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
 
 
 def _agent_log(hypothesis_id, location, message, data):
@@ -753,7 +753,7 @@ def compact_data_url(path):
 
 
 def image_prompt(asset, reference=False, template=None):
-    from skills.registry import template_render
+    from end.ai_client import template_render
 
     prompt = (asset.get("prompt") or "").strip()
     suffix = template_render(template)["image"]
@@ -1018,7 +1018,7 @@ def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack=
 
     Music or narration is mixed after the join, so those shots keep only room tone.
     """
-    from skills.registry import template_render
+    from end.ai_client import template_render
 
     base = (shot.get("prompt") or "").strip()
     render = template_render(template)
@@ -1392,7 +1392,7 @@ class RenderContext(object):
                 )
                 try:
                     step = self.submit_once(step_id, kind, submit)
-                except (ICreatError, CRError, OSError, RuntimeError) as error:
+                except (OSError, RuntimeError) as error:
                     self.on_submit_error(step_id, kind, label, error)
                     seen = None
                     continue
@@ -1402,7 +1402,7 @@ class RenderContext(object):
                 seen = None
             try:
                 current = poll(step["remote_task_id"])
-            except (ICreatError, CRError, OSError, RuntimeError) as error:
+            except (OSError, RuntimeError) as error:
                 self.on_poll_error(step_id, kind, label, error)
                 continue
             fresh = self.reload_step(step_id, kind)
@@ -1428,7 +1428,7 @@ class RenderContext(object):
             if status in success:
                 try:
                     public_url = download(current, path) or ""
-                except (ICreatError, CRError, OSError, RuntimeError) as error:
+                except (OSError, RuntimeError) as error:
                     self.on_poll_error(step_id, kind, label, error)
                     continue
                 self.mark_done(step_id, kind, relative, public_url, generated=True)
@@ -1878,10 +1878,15 @@ def _reference_url(info, project_id=""):
     raise RuntimeError("参考图没有公网地址，CR 的图生视频只接受 HTTP(S) 网址")
 
 
-def _video_handle(task_id, poll_url):
-    from cr_api.client import VideoTask
+class _VideoHandle(object):
+    def __init__(self, task_id, poll_url):
+        self.id = task_id
+        self.poll_url = poll_url or ""
+        self.status = "submitted"
 
-    return VideoTask({"id": task_id, "poll_url": poll_url or "", "status": "submitted"})
+
+def _video_handle(task_id, poll_url):
+    return _VideoHandle(task_id, poll_url)
 
 
 class LayoutAudio(object):
@@ -1892,9 +1897,9 @@ class LayoutAudio(object):
 
     def _layout(self):
         if self.layout is None:
-            from agent.layout import get_layout
+            from end.remote import LayoutClient
 
-            self.layout = get_layout()
+            self.layout = LayoutClient()
         return self.layout
 
     def synthesize(self, text, dest, voice_id=None):
@@ -1935,18 +1940,18 @@ def run_local_pipeline(
         raise ValueError("没有可用的资产图或镜头")
     assets = ordered_assets(assets)
     if icreat is None:
-        from icreat_api import ICreatClient
+        from end.remote import RemoteImageClient
 
-        icreat = ICreatClient()
+        icreat = RemoteImageClient()
     if not images_only and cr is None:
-        from cr_api import CRClient
+        from end.remote import RemoteVideoClient
 
-        cr = CRClient()
+        cr = RemoteVideoClient()
     mode = normalize_soundtrack(soundtrack)
     if soundtrack_enabled(mode) and not images_only and minimax is None:
-        from minimax_api import MiniMaxClient
+        from end.remote import RemoteAudio
 
-        minimax = MiniMaxClient()
+        minimax = RemoteAudio()
     ctx = RenderContext(
         work_dir,
         on_progress=on_progress,

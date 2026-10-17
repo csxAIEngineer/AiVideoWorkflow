@@ -5,7 +5,7 @@ from pathlib import Path
 
 from end.image_node import prepare_image_node, video_nodes
 from end.intake import enrich_brief
-from end.pipeline import JSON_SHAPE, load_skill_pack
+from AI.script import JSON_SHAPE, load_skill_pack
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED = "所有视频用到的图片都要先经过Image-Node处理/生成"
@@ -21,7 +21,7 @@ def views_of(spec, subject):
 
 class ImageNodeTests(unittest.TestCase):
     def test_skill_requires_the_image_node(self):
-        text = (ROOT / "skills" / "image-node" / "luxury-suv" / "SKILL.md").read_text(encoding="utf-8")
+        text = (ROOT / "AI" / "skills" / "image-node" / "luxury-suv" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn(REQUIRED, text)
         self.assertIn("上传图只是参考", text)
         self.assertIn("references", text)

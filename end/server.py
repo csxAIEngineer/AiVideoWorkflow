@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""DeepSeek-style chat site. Each message is one video project.
+"""Project site. The browser talks to this process over JSON-RPC.
 
-Model work is a task: Front -> End -> Task Queue -> Agent Layout.
-The layout is LangGraph -> Agent -> LLM Model. Rendering stays on its own thread.
+Model work is Front -> End -> AI. End keeps the queue and the render loop.
+AI is a separate process: LangGraph, the agent, and the provider clients.
 """
 
 import base64
@@ -24,8 +24,22 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from end.ai_client import (
+    default_model,
+    load_skill_pack,
+    model_choices,
+    model_label,
+    normalize_model,
+    normalize_template,
+    read_upload,
+    template_choices,
+    template_label,
+    template_policy,
+    drill as ai_drill,
+    write as ai_write,
+)
 from end.db import DATA, connect, delete_project, list_projects, project_dir, read_project, write_project
-from image_store import get_image_store
+from end.image_store import get_image_store
 from end.render_loop import (
     _ffmpeg_bin,
     gate_for,
@@ -50,25 +64,10 @@ from end.intake import (
     new_material,
     save_intake,
 )
-from end.qwen_vision import read_upload
-from agent.layout import get_layout
-from end.pipeline import (
-    DEFAULT_MODEL,
-    load_skill_pack,
-    model_choices,
-    model_label,
-    normalize_model,
-)
-from skills.registry import (
-    normalize_template,
-    template_choices,
-    template_label,
-    template_policy,
-)
 from end.image_node import prepare_image_node, video_nodes
 from end.soundtrack import normalize_soundtrack, project_soundtrack, soundtrack_enabled
 from end.workflow_from_spec import _safe_id, collect_steps, task_plan
-from task_queue import Task, TaskQueue
+from end.task_queue import Task, TaskQueue
 
 STATIC = ROOT / "front"
 HOST = os.environ.get("HOST", "127.0.0.1")
@@ -279,11 +278,11 @@ def public_view(project):
 
 
 def call_drill(messages, debug_dir=None, model=None, template=None):
-    return get_layout().drill(messages, debug_dir=debug_dir, model=model, template=template)
+    return ai_drill(messages, debug_dir=debug_dir, model=model, template=template)
 
 
 def call_deepseek(brief, skill_pack, debug_dir=None, model=None, template=None):
-    return get_layout().write(
+    return ai_write(
         brief,
         skill_pack,
         debug_dir=debug_dir,
@@ -1023,7 +1022,7 @@ def rpc_config(_params):
     return {
         "debug_llm": env_debug_llm(),
         "debug_llm_env": "AIVIDEO_DEBUG_LLM",
-        "model": DEFAULT_MODEL,
+        "model": default_model(),
         "models": model_choices(),
         "template": normalize_template(None),
         "templates": template_choices(),
@@ -1455,8 +1454,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    from end.ai_client import endpoint
+
     connect()
     DATA.mkdir(parents=True, exist_ok=True)
+    ai_url = endpoint()
     start_agent_workers()
     resumed = resume_rendering_projects()
     agent_resumed = resume_agent_tasks()
@@ -1469,8 +1471,8 @@ def main():
     if agent_resumed:
         note += "  agent_resumed=%s" % agent_resumed
     print(
-        "AiVideo http://%s:%s  (sqlite %s)  agent_workers=%s%s"
-        % (HOST, PORT, ROOT / "data" / "aivideo.db", agent_queue().workers, note)
+        "AiVideo http://%s:%s  (sqlite %s)  ai=%s  agent_workers=%s%s"
+        % (HOST, PORT, ROOT / "data" / "aivideo.db", ai_url, agent_queue().workers, note)
     )
     server.serve_forever()
 

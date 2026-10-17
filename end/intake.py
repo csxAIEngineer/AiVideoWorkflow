@@ -4,8 +4,9 @@ import json
 import re
 from pathlib import Path
 
-from end.qwen_vision import UNREAD
 from end.workflow_from_spec import _clamp_duration, _is_upload_id, _reference_ids
+
+UNREAD = "尚未读图"
 
 MAX_MATERIALS = 8
 INTAKE_NAME = "intake.json"

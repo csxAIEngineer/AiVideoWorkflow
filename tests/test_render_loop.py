@@ -9,8 +9,8 @@ import unittest
 import zlib
 from pathlib import Path
 
-from cr_api.client import CRError, VideoTask
-from icreat_api.client import ImageTask
+from AI.cr_api.client import CRError, VideoTask
+from AI.icreat_api.client import ImageTask
 from end.render_loop import (
     _missing_subtitle_glyphs,
     assemble_shot_media,
@@ -476,7 +476,7 @@ class RenderLoopTest(unittest.TestCase):
         self.assertFalse(should_resume_project({"status": "rendering"}, self.work))
 
     def test_wait_video_reports_status_changes(self):
-        from cr_api.client import CRClient
+        from AI.cr_api.client import CRClient
 
         class Client(CRClient):
             def __init__(self):

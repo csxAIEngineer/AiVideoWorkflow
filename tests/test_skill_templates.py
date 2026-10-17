@@ -10,7 +10,7 @@ from unittest.mock import patch
 import end.db as db
 from end.db import project_dir, read_project
 from end.server import public_view, rpc_config, rpc_create_project, run_project
-from skills.registry import (
+from AI.skills.registry import (
     build_system_prompt,
     drill_system_prompt,
     json_shape,
@@ -20,7 +20,7 @@ from skills.registry import (
     template_policy,
     template_render,
 )
-from agent.layout import AgentLayout
+from AI.agent.layout import AgentLayout
 from tests.test_agent_layout import ASK, SPEC, ScriptedModel
 from tests.test_project_api import make_project
 
@@ -135,13 +135,13 @@ class TemplateAssemblyTest(unittest.TestCase):
         self.assertNotIn("seedance-car-vehicle", write_system)
 
     def test_work_skill_points_at_the_registry(self):
-        text = (ROOT / "skills" / "aivideo-work" / "SKILL.md").read_text(encoding="utf-8")
+        text = (ROOT / "AI" / "skills" / "aivideo-work" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("skills/drill-me/SKILL.md", text)
         self.assertIn("skills/registry.py", text)
         self.assertIn("luxury-suv", text)
         self.assertIn("apple-product", text)
         self.assertNotIn("就按这个做", text)
-        studio = (ROOT / "studio" / "chat.py").read_text(encoding="utf-8")
+        studio = (ROOT / "front" / "studio" / "chat.py").read_text(encoding="utf-8")
         self.assertNotIn("不再切换短剧技能", studio)
         self.assertIn("/template", studio)
         self.assertIn("template_files", studio)

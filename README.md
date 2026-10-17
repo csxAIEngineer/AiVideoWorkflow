@@ -2,7 +2,7 @@
 
 汽车视频的聊天入口。先写一段背景，再用 drill-me 把这段背景扩成 2 到 3 个方向让你选，最后一项是「其他」；选到「就按这个做」之后，才按载具速度片技能写出提示词、分镜和生图提示词。写完后仍由本机生图出片：iCreat 生图、CR MiniMax H3 出镜、ffmpeg 拼接，最后用 ffmpeg 把 `字幕.ass` 烧进成片。不再把成片提交到 Comfy Cloud。
 
-页面到成片的路径是 Front → End → Task Queue → Agent Layout。Agent Layout 里面是 LangGraph → Agent → LLM Model：图把这一问交给 Agent，Agent 组好请求，LLM Model 再去调 DeepSeek 或 CR。出片不进这个布局，仍由 End 在本机编排。模型工人数量用 `AIVIDEO_AGENT_WORKERS`，默认 4。进程重启时，还停在「正在想方向」或「正在写提示词」的项目会重新入队。
+页面到成片的路径是 Front → End → AI。Front 和 End、End 和 AI 都只走 JSON-RPC，三个目录互不 import。AI 里面是 LangGraph → Agent → LLM Model：图把这一问交给 Agent，Agent 组好请求，LLM Model 再去调 DeepSeek 或 CR。出片不进这个布局，仍由 End 在本机编排，生图、出镜和声轨的 HTTP 调用发给 AI。模型工人数量用 `AIVIDEO_AGENT_WORKERS`，默认 4。进程重启时，还停在「正在想方向」或「正在写提示词」的项目会重新入队。
 
 ## 运行
 
@@ -18,6 +18,8 @@ cp .env.example .env
 python3 -m end.server
 ```
 
+End 会在本机拉起 AI（`http://127.0.0.1:8791/rpc`）。已经单独启动 AI 时，设置 `AIVIDEO_AI_URL`。不要让 End 再拉起一份时，设置 `AIVIDEO_AI_AUTOSTART=0`。
+
 打开 http://127.0.0.1:8787 。
 
 画幅 9:16。资产和镜头按故事需要增减。单次视频生成是 4 到 15 秒。出片进度写在项目目录的 `run_state.json`。已经落盘的图和视频会跳过。页面上可以暂停、继续，或重置当前失败的那一步。网络中断时，已有远端任务号就继续查状态；还没有任务号就用同一个幂等键再提交。
@@ -25,17 +27,17 @@ python3 -m end.server
 命令行导演室（同一套入口：先 drill-me，确认后只用载具速度片技能写提示词。DeepSeek 走 CR API）：
 
 ```bash
-python3 studio/chat.py
+python3 front/studio/chat.py
 ```
 
 ## CR API 模块
 
-`cr_api/` 按 [CR API](https://api.creative-reasoning.com) 的用法写成，只用 Python 标准库。以后的项目把这个目录拷走就能用。Key 从环境变量或项目根目录的 `.env` 读取，变量名是 `CR_API_KEY`。
+`AI/cr_api/` 按 [CR API](https://api.creative-reasoning.com) 的用法写成，只用 Python 标准库。Key 从环境变量或项目根目录的 `.env` 读取，变量名是 `CR_API_KEY`。
 
 文本模型兼容 OpenAI Chat Completions。DeepSeek 用 `deepseek-v4-pro`：
 
 ```python
-from cr_api import CRClient
+from AI.cr_api import CRClient
 
 client = CRClient()
 result = client.chat(
@@ -75,12 +77,12 @@ client.download_video(task, "sunset.mp4")
 
 ## iCreat 生图
 
-`icreat_api/` 按 iCreat 的 GPT Image 2 两步调用写成，只用 Python 标准库。Key 从环境变量或项目根目录的 `.env` 读取，变量名是 `ICREAT_API_KEY`。
+`AI/icreat_api/` 按 iCreat 的 GPT Image 2 两步调用写成，只用 Python 标准库。Key 从环境变量或项目根目录的 `.env` 读取，变量名是 `ICREAT_API_KEY`。
 
 提交走 `POST /v1/task/submit/openai/gpt-image-2/text-to-image`，请求体是扁平的 `prompt`、`size`、`quality`。大约每 4 秒 `POST /v1/task/result` 查同一个 `task_id`。`SUCCEEDED` 后从 `result` 里的 `url` 下载。默认 `size=1024x1024`、`quality=high`，可用 `ICREAT_IMAGE_SIZE` 和 `ICREAT_IMAGE_QUALITY` 覆盖。尺寸必须是接口允许的值，例如 `1024x1024`，或 9:16 的 `720x1280`、`1440x2560`、`2160x3840`。没有参考图时不要传 `image`。变体把上一张图的公网 URL 放进 `image`，用来锁定同一张脸。
 
 ```python
-from icreat_api import ICreatClient
+from AI.icreat_api import ICreatClient
 
 client = ICreatClient()
 task = client.submit_image("雨夜车站里的女人，竖屏")
@@ -91,16 +93,13 @@ client.download_image(task.url, "hero.png")
 
 ## 目录
 
-- `front/`：聊天页面
-- `end/`：项目接口和本机出片编排。需要模型时只提交任务
-- `task_queue/`：模型任务队列，工人数量由 `AIVIDEO_AGENT_WORKERS` 决定
-- `agent/`：Agent 布局。`graph.py` 里的 LangGraph 把 Agent 接到 LLM Model，再由模型访问 DeepSeek 或 CR
-- `cr_api/`：CR 的文本和视频客户端
-- `icreat_api/`：iCreat GPT Image 2 客户端
-- `skills/`：当前网页写提示词用 `aivideo-work`（drill）、`seedance-car-vehicle`（载具速度片）和 `image-node`。短剧技能还在目录里，不再被调用
-- `pipeline/`：岷江未晚示例工作流的生成脚本
-- `workflows/`：可拖进 Comfy Desktop 的示例工作流
-- `studio/`：命令行多轮编剧室
+代码只有三个目录，互相不 import：
+
+- `front/`：聊天页面，以及命令行编剧室 `front/studio/chat.py`。页面只请求 End 的 `/rpc`。编剧室只请求 AI 的 `/rpc`
+- `end/`：项目接口、任务队列、图片地址和本机出片编排。需要模型、技能或供应商时只发 JSON-RPC
+- `AI/`：Agent 布局、技能、读图，以及 CR、DeepSeek、iCreat、MiniMax 客户端。`python3 -m AI.server` 单独听 `8791`
+
+`workflows/` 是可拖进 Comfy Desktop 的示例工作流。`pipeline/` 只留岷江未晚示例 JSON。
 
 技能来源：
 

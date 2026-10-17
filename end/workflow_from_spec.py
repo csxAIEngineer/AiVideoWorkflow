@@ -1,14 +1,9 @@
 """ComfyUI graphs for the web site: downloadable full graph, plus split cloud jobs."""
 
-import sys
+import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-
-from pipeline.build_workflows import gemini_node, save_image_node  # noqa: E402
-
-import re
+from end.build_workflows import gemini_node, save_image_node
 
 from end.soundtrack import normalize_soundtrack
 

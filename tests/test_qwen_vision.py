@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from end.intake import enrich_brief, intake_note, load_intake, merge_intake, save_intake
-from end.qwen_vision import (
+from AI.vision import (
     DEFAULT_QWEN_VISION_MODEL,
     QwenVisionError,
     UNREAD,
@@ -79,14 +79,14 @@ class QwenVisionTests(unittest.TestCase):
                 )
             )
 
-        with patch("end.qwen_vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
+        with patch("AI.vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
             os.environ,
             {
                 "DASHSCOPE_API_KEY": "test-key",
                 "DASHSCOPE_BASE_URL": "https://workspace.example/compatible-mode/v1",
                 "QWEN_VISION_MODEL": "",
             },
-        ), patch("end.qwen_vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
+        ), patch("AI.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
             text = read_upload("U1.png", opener=opener)
 
         self.assertEqual(text, READING)
@@ -133,14 +133,14 @@ class QwenVisionTests(unittest.TestCase):
             captured["body"] = json.loads(request.data.decode("utf-8"))
             return FakeStream(sse([{"choices": [{"delta": {"content": "海边的车"}}]}]))
 
-        with patch("end.qwen_vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
+        with patch("AI.vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
             os.environ,
             {
                 "DASHSCOPE_API_KEY": "test-key",
                 "DASHSCOPE_BASE_URL": "https://workspace.example/compatible-mode/v1",
                 "QWEN_VISION_MODEL": "qwen-vision-test",
             },
-        ), patch("end.qwen_vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
+        ), patch("AI.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
             text = read_upload("U1.png", opener=opener)
         self.assertEqual(text, "海边的车")
         self.assertEqual(captured["body"]["model"], "qwen-vision-test")
@@ -149,7 +149,7 @@ class QwenVisionTests(unittest.TestCase):
         def opener(request, timeout=None):
             raise AssertionError("should not request")
 
-        with patch("end.qwen_vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
+        with patch("AI.vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
             os.environ, {"DASHSCOPE_API_KEY": ""}, clear=False
         ), patch("urllib.request.urlopen", side_effect=AssertionError("network")):
             text = read_upload("missing.png", opener=opener)
@@ -171,13 +171,13 @@ class QwenVisionTests(unittest.TestCase):
                 BytesIO(b"bad key"),
             )
 
-        with patch("end.qwen_vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
+        with patch("AI.vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
             os.environ,
             {
                 "DASHSCOPE_API_KEY": "test-key",
                 "DASHSCOPE_BASE_URL": "https://workspace.example/compatible-mode/v1",
             },
-        ), patch("end.qwen_vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
+        ), patch("AI.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
             with self.assertRaises(QwenVisionError) as caught:
                 read_upload("U1.png", opener=opener)
         self.assertIn("401", str(caught.exception))
@@ -186,7 +186,7 @@ class QwenVisionTests(unittest.TestCase):
         def opener(request, timeout=None):
             raise AssertionError("should not request")
 
-        with patch("end.qwen_vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
+        with patch("AI.vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
             os.environ,
             {"DASHSCOPE_API_KEY": "test-key", "DASHSCOPE_BASE_URL": ""},
         ), patch("urllib.request.urlopen", side_effect=AssertionError("network")):
@@ -204,7 +204,7 @@ class QwenVisionTests(unittest.TestCase):
                 self.assertEqual(line.split("=", 1)[1].strip(), "")
 
     def test_skill_keeps_identity_on_the_picture(self):
-        text = (ROOT / "skills" / "drill-me" / "SKILL.md").read_text(encoding="utf-8")
+        text = (ROOT / "AI" / "skills" / "drill-me" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("身份跟图", text)
         self.assertIn("故事跟用户自己写下的话", text)
         self.assertIn("读图已定的身份不要再问", text)

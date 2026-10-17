@@ -2,7 +2,7 @@
 
 import unittest
 
-from cr_api.client import CRClient, CRError
+from AI.cr_api.client import CRClient, CRError
 
 
 class _Client(CRClient):

@@ -3,4 +3,8 @@ set -eu
 
 mkdir -p /app/data/web_projects
 
-exec python -m end.server
+if [ "$#" -eq 0 ]; then
+  set -- python -m end.server
+fi
+
+exec "$@"

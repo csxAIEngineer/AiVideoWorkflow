@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from image_store import CosImageStore, ImageStoreError, LocalImageStore, OssImageStore, get_image_store
-from image_store import store as store_module
+from end.image_store import CosImageStore, ImageStoreError, LocalImageStore, OssImageStore, get_image_store
+from end.image_store import store as store_module
 
 
 class ImageStoreTest(unittest.TestCase):
@@ -104,7 +104,7 @@ class ImageStoreTest(unittest.TestCase):
             return _Response()
 
         payload = b"\x89PNG-still"
-        with patch("image_store.store.urllib.request.urlopen", fake_open):
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open):
             url = store.save("fffdd6d6b188", "U1", payload)
         path = root / "fffdd6d6b188" / "outputs" / "images" / "U1.png"
         self.assertEqual(path.read_bytes(), payload)
@@ -122,7 +122,7 @@ class ImageStoreTest(unittest.TestCase):
         self.assertTrue(request.get_header("Date"))
         self.assertFalse(request.has_header("Authorization"))
         self.assertGreater(timeout, 0)
-        with patch("image_store.store.urllib.request.urlopen", fake_open):
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open):
             again = store.ensure_remote(
                 "fffdd6d6b188",
                 "U1.png",
@@ -157,7 +157,7 @@ class ImageStoreTest(unittest.TestCase):
         def fake_open(request, timeout=None):
             raise store_module.urllib.error.HTTPError(request.full_url, 403, "Forbidden", None, None)
 
-        with patch("image_store.store.urllib.request.urlopen", fake_open):
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open):
             with self.assertRaises(ImageStoreError) as raised:
                 store.publish("fffdd6d6b188", "U1.png", b"\x89PNG")
         self.assertIn("403", str(raised.exception))

@@ -10,9 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import end.db as db
-from agent.layout import AgentLayout
-from agent.model import LLMModel
-from end.pipeline import call_drill as pipeline_drill
+from AI.agent.layout import AgentLayout
+from AI.agent.model import LLMModel
+from AI.script import call_drill as pipeline_drill
 from end.server import (
     call_deepseek,
     handle_agent_task,
@@ -21,7 +21,7 @@ from end.server import (
     run_project,
     start_drill,
 )
-from task_queue import Task, TaskQueue
+from end.task_queue import Task, TaskQueue
 from tests.test_project_api import make_project
 
 
@@ -160,7 +160,7 @@ class LayoutTest(unittest.TestCase):
         self.assertIn("不是 JSON", (folder / "raw_response.txt").read_text(encoding="utf-8"))
 
     def test_official_model_uses_deepseek(self):
-        with patch("deepseek_api.DeepSeekClient") as client:
+        with patch("AI.deepseek_api.DeepSeekClient") as client:
             client.return_value.chat.return_value = Reply("ok")
             LLMModel().complete(
                 [{"role": "user", "content": "hi"}],
@@ -174,7 +174,7 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(kwargs["response_format"], {"type": "json_object"})
 
     def test_other_models_use_cr(self):
-        with patch("cr_api.CRClient") as client:
+        with patch("AI.cr_api.CRClient") as client:
             client.return_value.chat.return_value = Reply("ok")
             LLMModel().complete(
                 [{"role": "user", "content": "hi"}],
@@ -187,7 +187,7 @@ class LayoutTest(unittest.TestCase):
         self.assertNotIn("thinking", kwargs)
 
     def test_pipeline_drill_uses_the_layout(self):
-        with patch("agent.layout.get_layout") as get_layout:
+        with patch("AI.agent.layout.get_layout") as get_layout:
             get_layout.return_value.drill.return_value = {"phase": "ask", "reply": "问", "options": []}
             self.assertEqual(pipeline_drill([{"role": "user", "content": "雨"}])["phase"], "ask")
         get_layout.return_value.drill.assert_called_once()
@@ -522,8 +522,7 @@ class EndHandoffTest(unittest.TestCase):
         queued = sorted((task.kind, task.project_id) for task in submitted)
         self.assertEqual(queued, [("drill", "a6e170000015"), ("write", "a6e170000017")])
 
-    def test_server_write_uses_the_layout(self):
-        with patch("end.server.get_layout") as get_layout:
-            get_layout.return_value.write.return_value = {"title": "雨"}
+    def test_server_write_calls_ai(self):
+        with patch("end.server.ai_write", return_value={"title": "雨"}) as write:
             self.assertEqual(call_deepseek("简报", "规则", model="gpt-5.4")["title"], "雨")
-        get_layout.return_value.write.assert_called_once()
+        write.assert_called_once()

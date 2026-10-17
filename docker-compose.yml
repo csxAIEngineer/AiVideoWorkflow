@@ -1,9 +1,40 @@
 services:
-  aivideo:
+  ai:
+    build: .
+    image: aivideo:latest
+    container_name: aivideo-ai
+    restart: unless-stopped
+    command: ["python", "-m", "AI.server"]
+    env_file:
+      - .env
+    environment:
+      AI_HOST: "0.0.0.0"
+      AI_PORT: "8791"
+      AIVIDEO_AI_AUTOSTART: "0"
+    volumes:
+      - aivideo-data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8791/rpc', data=b'{\"jsonrpc\":\"2.0\",\"method\":\"ping\",\"id\":1}', headers={'Content-Type':'application/json'}), timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  end:
     build: .
     image: aivideo:latest
     container_name: aivideo
     restart: unless-stopped
+    command: ["python", "-m", "end.server"]
+    depends_on:
+      ai:
+        condition: service_healthy
     ports:
       - "8787:8787"
     env_file:
@@ -11,6 +42,8 @@ services:
     environment:
       HOST: "0.0.0.0"
       PORT: "8787"
+      AIVIDEO_AI_URL: "http://ai:8791"
+      AIVIDEO_AI_AUTOSTART: "0"
     volumes:
       - aivideo-data:/app/data
     healthcheck:

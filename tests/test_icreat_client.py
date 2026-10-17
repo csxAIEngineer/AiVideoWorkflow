@@ -8,7 +8,7 @@ import unittest
 import urllib.error
 from pathlib import Path
 
-from icreat_api.client import ICreatClient, ICreatError
+from AI.icreat_api.client import ICreatClient, ICreatError
 
 
 class _Response(object):

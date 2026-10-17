@@ -17,7 +17,7 @@ from unittest.mock import patch
 import end.db as db
 from end.render_loop import _ffmpeg_bin, gate_for, load_run_state
 from end.intake import enrich_brief, load_intake, merge_intake
-from end.qwen_vision import QwenVisionError
+from AI.vision import QwenVisionError
 from end.server import (
     Handler,
     pause_render,

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from minimax_api.client import (
+from AI.minimax_api.client import (
     MUSIC_MODEL,
     MUSIC_PATH,
     SPEECH_MODEL,
