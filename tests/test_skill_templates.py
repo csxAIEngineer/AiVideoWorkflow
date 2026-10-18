@@ -37,10 +37,11 @@ class TemplateAssemblyTest(unittest.TestCase):
         self.assertIn("3. 司机", drill)
         self.assertIn("只问一个问题", drill)
         pack = load_skill_pack("luxury-suv")
-        self.assertIn("seedance-car-vehicle/SKILL.md", pack)
-        self.assertIn("references/cases.md", pack)
-        self.assertIn("image-node/luxury-suv/SKILL.md", pack)
-        self.assertNotIn("image-node/apple-product", pack)
+        self.assertIn("luxury-suv/写提示词.md", pack)
+        self.assertIn("读 `案例.md`", pack)
+        self.assertIn("luxury-suv/案例.md", pack)
+        self.assertIn("luxury-suv/生图.md", pack)
+        self.assertNotIn("apple-product/", pack)
         self.assertNotIn("apple-product-closeup", pack)
         prompt = build_system_prompt(pack, "luxury-suv")
         self.assertIn("front", prompt)
@@ -51,15 +52,48 @@ class TemplateAssemblyTest(unittest.TestCase):
         self.assertNotIn("apple-product-closeup", prompt)
         self.assertEqual(template_policy("luxury-suv"), "vehicle_turnaround")
         files = template_files("luxury-suv")
-        self.assertIn("directors/luxury-suv/SKILL.md", files)
-        self.assertIn("drill-me/SKILL.md", files)
-        self.assertIn("seedance-car-vehicle/references/cases.md", files)
-        self.assertNotIn("apple-product-closeup/SKILL.md", files)
+        self.assertIn("luxury-suv/导演.md", files)
+        self.assertIn("luxury-suv/意图分析.md", files)
+        self.assertIn("luxury-suv/意图补充.md", files)
+        self.assertIn("luxury-suv/案例.md", files)
+        self.assertNotIn("apple-product/写提示词.md", files)
         render = template_render("luxury-suv")
-        self.assertEqual(render["image_from"], "image-node/luxury-suv/SKILL.md")
+        self.assertEqual(render["image_from"], "luxury-suv/生图.md")
         self.assertIn("轮胎接地", render["image"])
-        self.assertEqual(render["video_from"], "seedance-car-vehicle/SKILL.md")
+        self.assertEqual(render["video_from"], "luxury-suv/写提示词.md")
         self.assertIn("轮子在转", render["video_lock"])
+        self.assertNotIn("render-video-lock", render["video_lock"])
+
+    def test_vehicle_skill_obeys_the_delivery_contract(self):
+        text = (ROOT / "AI" / "skills" / "luxury-suv" / "写提示词.md").read_text(encoding="utf-8")
+        for phrase in (
+            "只返回一个 JSON",
+            "画幅 9:16",
+            "帧率 24",
+            "4 到 15",
+            "E4",
+            "没有司机就写",
+            "references",
+            "不要写进 script",
+            "这些句子作废",
+            "从远景起幅",
+            "已经在行驶",
+            "全片轨迹",
+            "不得调头",
+            "机位侧",
+        ):
+            self.assertIn(phrase, text)
+        for retired in (
+            "Karakoram",
+            "ready-to-use Seedance",
+            "编号分镜表，一秒一条",
+            "ask if unclear",
+        ):
+            self.assertNotIn(retired, text)
+        prompt = build_system_prompt(load_skill_pack("luxury-suv"), "luxury-suv")
+        self.assertIn("帧率 24", prompt)
+        self.assertNotIn("技能里的一秒一镜", prompt)
+        self.assertNotIn("Karakoram", prompt)
 
     def test_apple_drill_and_write_use_the_product_team(self):
         drill = drill_system_prompt("apple-product")
@@ -80,9 +114,10 @@ class TemplateAssemblyTest(unittest.TestCase):
         self.assertIn("风格和负面清单", pack)
         self.assertNotIn("seedance-car-vehicle", pack)
         self.assertNotIn("cases.md", pack)
+        self.assertNotIn("案例.md", pack)
         self.assertNotIn("轮胎接地", pack)
-        self.assertIn("image-node/apple-product/SKILL.md", pack)
-        self.assertNotIn("image-node/luxury-suv", pack)
+        self.assertIn("apple-product/生图.md", pack)
+        self.assertNotIn("luxury-suv/", pack)
         self.assertIn("hero", pack)
         self.assertNotIn("主角车辆", pack)
         apple_render = template_render("apple-product")
@@ -109,7 +144,7 @@ class TemplateAssemblyTest(unittest.TestCase):
         self.assertEqual(normalize_template("nope"), "luxury-suv")
         self.assertEqual(normalize_template(""), "luxury-suv")
         pack = load_skill_pack()
-        self.assertIn("seedance-car-vehicle/SKILL.md", pack)
+        self.assertIn("luxury-suv/写提示词.md", pack)
         self.assertIn("front", json_shape())
         self.assertIn("side", json_shape())
         self.assertIn("back", json_shape())
@@ -134,13 +169,24 @@ class TemplateAssemblyTest(unittest.TestCase):
         self.assertIn("three_quarter", write_system)
         self.assertNotIn("seedance-car-vehicle", write_system)
 
-    def test_work_skill_points_at_the_registry(self):
-        text = (ROOT / "AI" / "skills" / "aivideo-work" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("skills/drill-me/SKILL.md", text)
-        self.assertIn("skills/registry.py", text)
-        self.assertIn("luxury-suv", text)
-        self.assertIn("apple-product", text)
-        self.assertNotIn("就按这个做", text)
+    def test_each_template_owns_its_prompt_set(self):
+        skills = ROOT / "AI" / "skills"
+        names = {path.name for path in skills.iterdir() if path.is_dir()}
+        self.assertEqual(names, {"apple-product", "luxury-suv"})
+        stages = ("导演.md", "意图分析.md", "意图补充.md", "成稿.md", "写提示词.md", "生图.md")
+        for name in names:
+            folder = skills / name
+            for stage in stages:
+                self.assertTrue((folder / stage).is_file(), "%s/%s" % (name, stage))
+            manifest = json.loads((folder / "template.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["id"], name)
+            self.assertEqual(manifest["intent_analyze"], "意图分析.md")
+            self.assertEqual(manifest["intent_fill"], "意图补充.md")
+        self.assertTrue((skills / "luxury-suv" / "案例.md").is_file())
+        self.assertFalse((skills / "apple-product" / "案例.md").exists())
+        registry = (skills / "registry.py").read_text(encoding="utf-8")
+        self.assertIn("intent_fill", registry)
+        self.assertNotIn("就按这个做", registry)
         studio = (ROOT / "front" / "studio" / "chat.py").read_text(encoding="utf-8")
         self.assertNotIn("不再切换短剧技能", studio)
         self.assertIn("/template", studio)

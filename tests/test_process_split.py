@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP_PARTS = {"drama-skills", "drama-director-skill", "seedance-short-drama", "cinematic-storyboard-generator", "__pycache__"}
+SKIP_PARTS = {"__pycache__"}
 
 
 def _modules(path):

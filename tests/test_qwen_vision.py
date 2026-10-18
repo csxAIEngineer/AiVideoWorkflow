@@ -204,17 +204,22 @@ class QwenVisionTests(unittest.TestCase):
                 self.assertEqual(line.split("=", 1)[1].strip(), "")
 
     def test_skill_keeps_identity_on_the_picture(self):
-        text = (ROOT / "AI" / "skills" / "drill-me" / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("身份跟图", text)
-        self.assertIn("故事跟用户自己写下的话", text)
-        self.assertIn("读图已定的身份不要再问", text)
-        self.assertIn("不要给出和读图相反的选项", text)
-        self.assertIn("用户原文里的感觉和故事照旧问", text)
-        self.assertIn("只有用户自己打出来的话", text)
-        self.assertIn("点选模型编的选项不算", text)
-        self.assertIn("图上的旁白只做原句旁白", text)
-        self.assertIn("不单独锁死剧情", text)
-        self.assertIn("尚未读图", text)
+        phrases = (
+            "身份跟图",
+            "故事跟用户自己写下的话",
+            "读图已定的身份不要再问",
+            "不要给出和读图相反的选项",
+            "用户原文里的感觉和故事照旧问",
+            "只有用户自己打出来的话",
+            "点选模型编的选项不算",
+            "图上的旁白只做原句旁白",
+            "不单独锁死剧情",
+            "尚未读图",
+        )
+        for name in ("luxury-suv", "apple-product"):
+            text = (ROOT / "AI" / "skills" / name / "意图补充.md").read_text(encoding="utf-8")
+            for phrase in phrases:
+                self.assertIn(phrase, text, "%s missing %s" % (name, phrase))
 
     def test_composer_hint_is_shared(self):
         html = (ROOT / "front" / "index.html").read_text(encoding="utf-8")

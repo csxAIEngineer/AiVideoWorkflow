@@ -1,6 +1,6 @@
 # AiVideo
 
-汽车视频的聊天入口。先写一段背景，再用 drill-me 把这段背景扩成 2 到 3 个方向让你选，最后一项是「其他」；选到「就按这个做」之后，才按载具速度片技能写出提示词、分镜和生图提示词。写完后仍由本机生图出片：iCreat 生图、CR MiniMax H3 出镜、ffmpeg 拼接，最后用 ffmpeg 把 `字幕.ass` 烧进成片。不再把成片提交到 Comfy Cloud。
+汽车视频的聊天入口。先写一段背景，再用当前模版的意图补充把这段背景扩成 2 到 3 个方向让你选，最后一项是「其他」；选到「就按这个做」之后，才按该模版写出提示词、分镜和生图提示词。写完后仍由本机生图出片：iCreat 生图、CR MiniMax H3 出镜、ffmpeg 拼接，最后用 ffmpeg 把 `字幕.ass` 烧进成片。不再把成片提交到 Comfy Cloud。
 
 页面到成片的路径是 Front → End → AI。Front 和 End、End 和 AI 都只走 JSON-RPC，三个目录互不 import。AI 里面是 LangGraph → Agent → LLM Model：图把这一问交给 Agent，Agent 组好请求，LLM Model 再去调 DeepSeek 或 CR。出片不进这个布局，仍由 End 在本机编排，生图、出镜和声轨的 HTTP 调用发给 AI。模型工人数量用 `AIVIDEO_AGENT_WORKERS`，默认 4。进程重启时，还停在「正在想方向」或「正在写提示词」的项目会重新入队。
 
@@ -24,7 +24,7 @@ End 会在本机拉起 AI（`http://127.0.0.1:8791/rpc`）。已经单独启动 
 
 画幅 9:16。资产和镜头按故事需要增减。单次视频生成是 4 到 15 秒。出片进度写在项目目录的 `run_state.json`。已经落盘的图和视频会跳过。页面上可以暂停、继续，或重置当前失败的那一步。网络中断时，已有远端任务号就继续查状态；还没有任务号就用同一个幂等键再提交。
 
-命令行导演室（同一套入口：先 drill-me，确认后只用载具速度片技能写提示词。DeepSeek 走 CR API）：
+命令行导演室（同一套入口：先按当前模版做意图补充，确认后用该模版写提示词。DeepSeek 走 CR API）：
 
 ```bash
 python3 front/studio/chat.py
@@ -101,10 +101,9 @@ client.download_image(task.url, "hero.png")
 
 `workflows/` 是可拖进 Comfy Desktop 的示例工作流。`pipeline/` 只留岷江未晚示例 JSON。
 
-技能来源：
+技能只有两个模版目录，各自带齐提示词：导演、意图分析、意图补充、成稿、写提示词、生图。`luxury-suv` 另有案例。
 
-- https://github.com/LearnPrompt/awesome-seedance （`agents/skills/seedance-car-vehicle`，写提示词时先选一个案例当锚）
-- https://github.com/worldwonderer/drama-skills
-- https://github.com/Nianan29/seedance-short-drama
-- https://github.com/kianaliang-dev/drama-director-skill
-- https://github.com/NBchitu/cinematic-storyboard-generator
+- `AI/skills/luxury-suv/`：高奢感 SUV
+- `AI/skills/apple-product/`：Apple 风产品特写
+
+速度片案例来自 https://github.com/LearnPrompt/awesome-seedance 。写提示词时先选一个案例当锚。

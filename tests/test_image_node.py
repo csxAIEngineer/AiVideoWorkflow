@@ -21,7 +21,7 @@ def views_of(spec, subject):
 
 class ImageNodeTests(unittest.TestCase):
     def test_skill_requires_the_image_node(self):
-        text = (ROOT / "AI" / "skills" / "image-node" / "luxury-suv" / "SKILL.md").read_text(encoding="utf-8")
+        text = (ROOT / "AI" / "skills" / "luxury-suv" / "生图.md").read_text(encoding="utf-8")
         self.assertIn(REQUIRED, text)
         self.assertIn("上传图只是参考", text)
         self.assertIn("references", text)

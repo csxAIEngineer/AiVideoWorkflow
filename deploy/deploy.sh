@@ -33,7 +33,7 @@ rsync -az --delete \
   --exclude 'data/' \
   --exclude '__pycache__/' \
   --exclude '.DS_Store' \
-  --exclude 'skills/' \
+  --exclude '/skills/' \
   --exclude 'studio/' \
   --exclude 'input/' \
   --exclude 'workflows/' \

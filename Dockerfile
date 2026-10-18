@@ -20,13 +20,8 @@ COPY AI/deepseek_api ./AI/deepseek_api
 COPY AI/icreat_api ./AI/icreat_api
 COPY AI/minimax_api ./AI/minimax_api
 COPY AI/skills/registry.py ./AI/skills/registry.py
-COPY AI/skills/drill-me ./AI/skills/drill-me
-COPY AI/skills/directors ./AI/skills/directors
-COPY AI/skills/templates ./AI/skills/templates
-COPY AI/skills/seedance-car-vehicle ./AI/skills/seedance-car-vehicle
-COPY AI/skills/image-node ./AI/skills/image-node
-COPY AI/skills/apple-product-closeup ./AI/skills/apple-product-closeup
-COPY AI/skills/aivideo-work ./AI/skills/aivideo-work
+COPY AI/skills/apple-product ./AI/skills/apple-product
+COPY AI/skills/luxury-suv ./AI/skills/luxury-suv
 COPY end ./end
 COPY front ./front
 COPY deploy/entrypoint.sh /entrypoint.sh
