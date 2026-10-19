@@ -101,9 +101,10 @@ client.download_image(task.url, "hero.png")
 
 `workflows/` 是可拖进 Comfy Desktop 的示例工作流。`pipeline/` 只留岷江未晚示例 JSON。
 
-技能只有两个模版目录，各自带齐提示词：导演、意图分析、意图补充、成稿、写提示词、生图。`luxury-suv` 另有案例。
+技能有三支模版，各自带齐提示词：导演、意图分析、意图补充、成稿、写提示词、生图。`luxury-suv` 和 `drama-product-skill` 另有案例。
 
 - `AI/skills/luxury-suv/`：高奢感 SUV
 - `AI/skills/apple-product/`：Apple 风产品特写
+- `AI/skills/drama-product-skill/`：短剧植入，把一件商品嵌进一场竖屏小戏
 
 速度片案例来自 https://github.com/LearnPrompt/awesome-seedance 。写提示词时先选一个案例当锚。

@@ -4,6 +4,7 @@
 .comfyui-desktop-2
 __pycache__/
 *.py[cod]
+DemoAnalyse/runs/
 data/web_projects/
 data/workbuddy_prompts/
 data/*.db

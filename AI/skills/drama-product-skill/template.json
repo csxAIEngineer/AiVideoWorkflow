@@ -1,0 +1,16 @@
+{
+  "id": "drama-product-skill",
+  "label": "短剧植入",
+  "director": "导演.md",
+  "intent_analyze": "意图分析.md",
+  "intent_fill": "意图补充.md",
+  "output": "成稿.md",
+  "skills": [
+    "写提示词.md",
+    "案例.md",
+    "生图.md"
+  ],
+  "policy": "product_hero",
+  "brief_lead": "用户已经通过多轮选择把这条短剧植入定下来了。写的时候锁定这几个人、这场戏、这一件商品和它进入动作的那一拍，不要换成另一件商品，也不要拍成行驶中的汽车广告。",
+  "repair_lead": "把用户给出的短剧植入材料收成一个 JSON 对象。"
+}

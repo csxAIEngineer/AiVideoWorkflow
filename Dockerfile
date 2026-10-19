@@ -21,6 +21,7 @@ COPY AI/icreat_api ./AI/icreat_api
 COPY AI/minimax_api ./AI/minimax_api
 COPY AI/skills/registry.py ./AI/skills/registry.py
 COPY AI/skills/apple-product ./AI/skills/apple-product
+COPY AI/skills/drama-product-skill ./AI/skills/drama-product-skill
 COPY AI/skills/luxury-suv ./AI/skills/luxury-suv
 COPY end ./end
 COPY front ./front

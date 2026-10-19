@@ -1,4 +1,4 @@
-"""Two team templates: how prompts are assembled, and how projects remember the choice."""
+"""Team templates: how prompts are assembled, and how projects remember the choice."""
 
 import json
 import os
@@ -139,6 +139,51 @@ class TemplateAssemblyTest(unittest.TestCase):
         self.assertIn("macro", shape)
         self.assertNotIn("view 只能是 front", shape)
 
+    def test_drama_drill_and_write_use_the_insert_team(self):
+        drill = drill_system_prompt("drama-product-skill")
+        self.assertIn("人物", drill)
+        self.assertIn("植入", drill)
+        self.assertIn("不要问司机", drill)
+        self.assertIn("不要问路面", drill)
+        self.assertNotIn("3. 司机", drill)
+        self.assertIn("就按这个做", drill)
+        pack = load_skill_pack("drama-product-skill")
+        self.assertIn("drama-product-skill/写提示词.md", pack)
+        self.assertIn("drama-product-skill/案例.md", pack)
+        self.assertIn("drama-product-skill/生图.md", pack)
+        self.assertIn("D1", pack)
+        self.assertIn("钩子", pack)
+        self.assertIn("没有口播", pack)
+        self.assertNotIn("luxury-suv/", pack)
+        self.assertNotIn("apple-product/", pack)
+        self.assertNotIn("不得调头", pack)
+        prompt = build_system_prompt(pack, "drama-product-skill")
+        self.assertIn("hero", prompt)
+        self.assertIn("three_quarter", prompt)
+        self.assertIn("macro", prompt)
+        self.assertIn("定妆", prompt)
+        self.assertIn("人物锁定", prompt)
+        self.assertNotIn("车辆锁定", prompt)
+        self.assertNotIn("view 只能是 front", prompt)
+        self.assertEqual(template_policy("drama-product-skill"), "product_hero")
+        files = template_files("drama-product-skill")
+        self.assertIn("drama-product-skill/导演.md", files)
+        self.assertIn("drama-product-skill/意图分析.md", files)
+        self.assertIn("drama-product-skill/意图补充.md", files)
+        self.assertIn("drama-product-skill/案例.md", files)
+        render = template_render("drama-product-skill")
+        self.assertEqual(render["image_from"], "drama-product-skill/生图.md")
+        self.assertIn("不要商标文字", render["image"])
+        self.assertNotIn("同一张脸", render["image"])
+        self.assertEqual(render["video_from"], "drama-product-skill/写提示词.md")
+        self.assertIn("不要换脸", render["video_lock"])
+        self.assertIn("不要换房间", render["video_next"])
+        self.assertNotIn("同一件商品", render["video_lock"])
+        self.assertNotIn("render-video-lock", render["video_lock"])
+        shape = json_shape("drama-product-skill")
+        self.assertIn("植入", shape)
+        self.assertIn("==人名：原句==", shape)
+
     def test_missing_template_stays_on_luxury(self):
         self.assertEqual(normalize_template(None), "luxury-suv")
         self.assertEqual(normalize_template("nope"), "luxury-suv")
@@ -172,7 +217,7 @@ class TemplateAssemblyTest(unittest.TestCase):
     def test_each_template_owns_its_prompt_set(self):
         skills = ROOT / "AI" / "skills"
         names = {path.name for path in skills.iterdir() if path.is_dir()}
-        self.assertEqual(names, {"apple-product", "luxury-suv"})
+        self.assertEqual(names, {"apple-product", "drama-product-skill", "luxury-suv"})
         stages = ("导演.md", "意图分析.md", "意图补充.md", "成稿.md", "写提示词.md", "生图.md")
         for name in names:
             folder = skills / name
@@ -260,6 +305,7 @@ class TemplateProjectTest(unittest.TestCase):
         self.assertIn('aria-label="模版"', html)
         self.assertIn("luxury-suv", html)
         self.assertIn("apple-product", html)
+        self.assertIn("drama-product-skill", html)
         self.assertIn("template: selectedTemplate()", script)
         self.assertIn('project.template || "luxury-suv"', script)
 

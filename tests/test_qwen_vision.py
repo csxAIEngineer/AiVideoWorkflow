@@ -216,7 +216,7 @@ class QwenVisionTests(unittest.TestCase):
             "不单独锁死剧情",
             "尚未读图",
         )
-        for name in ("luxury-suv", "apple-product"):
+        for name in ("luxury-suv", "apple-product", "drama-product-skill"):
             text = (ROOT / "AI" / "skills" / name / "意图补充.md").read_text(encoding="utf-8")
             for phrase in phrases:
                 self.assertIn(phrase, text, "%s missing %s" % (name, phrase))

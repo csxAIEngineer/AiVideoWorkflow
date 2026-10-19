@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>视频分析</title>
+  <style>
+    :root {
+      --bg: #f3f0e8;
+      --ink: #1c1915;
+      --muted: #6d675f;
+      --line: #e2dbcf;
+      --card: #fffdf8;
+      --accent: #8f2d22;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.5 "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+    }
+    main { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { font-size: 28px; font-weight: 650; margin: 0 0 8px; letter-spacing: -0.02em; }
+    .lead { margin: 0 0 24px; color: var(--muted); }
+    form, .result, .error {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+    }
+    form { padding: 20px; }
+    .drop {
+      border: 1.5px dashed #cfc6b8;
+      border-radius: 12px;
+      padding: 28px 16px;
+      text-align: center;
+      background: #faf7f1;
+    }
+    .drop.over { border-color: var(--accent); background: #f8efe8; }
+    .file-name { margin: 12px 0 0; color: var(--muted); min-height: 1.5em; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+    button, .file-label {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 10px 16px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button[type="submit"] { background: var(--ink); color: white; }
+    button.secondary, .file-label { background: #efeae1; color: var(--ink); }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    input[type="file"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .status { margin: 14px 0 0; color: var(--muted); min-height: 1.5em; }
+    .error { margin-top: 16px; padding: 14px 16px; color: var(--accent); }
+    .result { margin-top: 16px; padding: 20px; }
+    .count { display: flex; align-items: baseline; gap: 10px; margin: 0; }
+    .count b { font-size: 56px; line-height: 1; font-weight: 650; letter-spacing: -0.04em; }
+    .meta { margin: 8px 0 0; color: var(--muted); }
+    h2 { font-size: 18px; margin: 28px 0 10px; }
+    .narration {
+      margin: 0;
+      white-space: pre-wrap;
+      background: #faf7f1;
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+    .shots { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+    .shots li {
+      display: grid;
+      grid-template-columns: 84px 1fr;
+      gap: 12px;
+      align-items: center;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .shots li:last-child { border-bottom: 0; padding-bottom: 0; }
+    .shots img, .placeholder {
+      width: 84px;
+      height: 112px;
+      object-fit: cover;
+      border-radius: 8px;
+      background: #ece7de;
+    }
+    .placeholder { display: block; }
+    .shot-index { margin: 0; font-weight: 650; }
+    .shot-time { margin: 2px 0 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+    @media (max-width: 640px) {
+      main { padding-top: 20px; }
+      .count b { font-size: 44px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>视频分析</h1>
+    <p class="lead">上传一段视频。页面会统计画面分镜，并转写音轨里的旁白。</p>
+    <form id="form">
+      <div class="drop" id="drop">
+        <label class="file-label" for="file">选择视频</label>
+        <input id="file" name="video" type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.m4v,.webm,.mkv">
+        <p class="file-name" id="file-name">也可以把文件拖到这里</p>
+      </div>
+      <div class="actions">
+        <button type="submit" id="submit">开始分析</button>
+        <button type="button" class="secondary" id="sample">分析测试视频</button>
+      </div>
+      <p class="status" id="status" role="status"></p>
+    </form>
+    <div class="error" id="error" role="alert" hidden></div>
+    <section class="result" id="result" hidden>
+      <p class="count"><b id="count">0</b><span>个分镜</span></p>
+      <p class="meta" id="meta"></p>
+      <h2>旁白</h2>
+      <p class="narration" id="narration"></p>
+      <h2>分镜</h2>
+      <ol class="shots" id="shots"></ol>
+    </section>
+  </main>
+  <script>
+    var form = document.getElementById("form");
+    var fileInput = document.getElementById("file");
+    var fileName = document.getElementById("file-name");
+    var drop = document.getElementById("drop");
+    var statusEl = document.getElementById("status");
+    var errorEl = document.getElementById("error");
+    var resultEl = document.getElementById("result");
+    var busy = false;
+
+    fileInput.addEventListener("change", function () {
+      var file = fileInput.files && fileInput.files[0];
+      fileName.textContent = file ? file.name : "也可以把文件拖到这里";
+    });
+
+    drop.addEventListener("dragover", function (event) {
+      event.preventDefault();
+      drop.classList.add("over");
+    });
+    drop.addEventListener("dragleave", function () {
+      drop.classList.remove("over");
+    });
+    drop.addEventListener("drop", function (event) {
+      event.preventDefault();
+      drop.classList.remove("over");
+      if (!event.dataTransfer.files.length) return;
+      fileInput.files = event.dataTransfer.files;
+      fileName.textContent = event.dataTransfer.files[0].name;
+    });
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        showError("先选择一段视频。");
+        return;
+      }
+      var body = new FormData();
+      body.append("video", file, file.name);
+      send(fetch("/api/analyse", { method: "POST", body: body }));
+    });
+
+    document.getElementById("sample").addEventListener("click", function () {
+      send(fetch("/api/analyse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sample: true })
+      }));
+    });
+
+    function send(request) {
+      if (busy) return;
+      busy = true;
+      setBusy(true);
+      errorEl.hidden = true;
+      statusEl.textContent = "正在切分镜，并转写旁白…";
+      request.then(function (response) {
+        return response.json().then(function (payload) {
+          return { ok: response.ok, payload: payload };
+        });
+      }).then(function (result) {
+        var payload = result.payload || {};
+        if (!result.ok || payload.success === false) {
+          showError((payload && payload.error) || "分析失败。");
+          if (payload.data) render(payload.data);
+          return;
+        }
+        statusEl.textContent = "";
+        render(payload.data);
+      }).catch(function () {
+        showError("分析和页面之间的连接中断了。");
+      }).then(function () {
+        busy = false;
+        setBusy(false);
+      });
+    }
+
+    function render(data) {
+      resultEl.hidden = false;
+      document.getElementById("count").textContent = String(data.shot_count);
+      document.getElementById("meta").textContent =
+        "时长 " + (data.duration_label || "") + "。按画面切换统计，同一镜头里的运镜和字幕变化不算新分镜。";
+      var narration = document.getElementById("narration");
+      narration.textContent = data.narration || data.narration_error || "没有听清旁白。";
+      var list = document.getElementById("shots");
+      list.replaceChildren();
+      (data.shots || []).forEach(function (shot) {
+        var item = document.createElement("li");
+        if (shot.poster && shot.poster.indexOf("/runs/") === 0 && shot.poster.indexOf("..") < 0) {
+          var image = document.createElement("img");
+          image.alt = "分镜 " + shot.index;
+          image.src = shot.poster;
+          item.appendChild(image);
+        } else {
+          var blank = document.createElement("span");
+          blank.className = "placeholder";
+          item.appendChild(blank);
+        }
+        var copy = document.createElement("div");
+        var title = document.createElement("p");
+        title.className = "shot-index";
+        title.textContent = "分镜 " + shot.index;
+        var time = document.createElement("p");
+        time.className = "shot-time";
+        time.textContent = shot.start_label + " – " + shot.end_label;
+        copy.appendChild(title);
+        copy.appendChild(time);
+        item.appendChild(copy);
+        list.appendChild(item);
+      });
+    }
+
+    function showError(message) {
+      errorEl.hidden = false;
+      errorEl.textContent = message;
+      statusEl.textContent = "";
+    }
+
+    function setBusy(value) {
+      document.getElementById("submit").disabled = value;
+      document.getElementById("sample").disabled = value;
+    }
+  </script>
+</body>
+</html>

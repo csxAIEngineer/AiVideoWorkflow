@@ -11,6 +11,7 @@ AI/tools
 *.md
 !README.md
 !AI/skills/apple-product/**
+!AI/skills/drama-product-skill/**
 !AI/skills/luxury-suv/**
 input/
 workflows/
