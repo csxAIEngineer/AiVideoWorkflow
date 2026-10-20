@@ -65,7 +65,7 @@ def repl(config, provider_name, template):
             return
         if line == "/help":
             print("先问清楚再写。确认之后按当前模版写提示词。")
-            print("/template luxury-suv|apple-product|drama-product-skill")
+            print("/template luxury-suv|apple-product|drama-product-skill|drama-product-skill2")
             print("/skills   /provider qwen|deepseek")
             print("/reset 清空本轮对话    /save 文件路径")
             continue

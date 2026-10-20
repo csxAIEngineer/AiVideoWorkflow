@@ -84,6 +84,7 @@
               <option value="luxury-suv">高奢感 SUV</option>
               <option value="apple-product">Apple 风产品特写</option>
               <option value="drama-product-skill">短剧植入</option>
+              <option value="drama-product-skill2">短剧植入 · 导演</option>
             </select>
           </label>
           <label class="soundtrack-picker" title="拼接之后按每镜旁白合成声音">
@@ -96,12 +97,20 @@
             <input id="debug-llm" type="checkbox" />
             <span>Debug：仅到生图</span>
           </label>
+          <label class="debug-toggle" title="问清意图并写完提示词后停住，不生图">
+            <input id="debug-prompt" type="checkbox" />
+            <span>Debug：只到提示词</span>
+          </label>
+          <label class="debug-toggle" title="问清意图后停住，不写提示词，不生图">
+            <input id="debug-intent" type="checkbox" />
+            <span>Debug：只到意图解析</span>
+          </label>
         </div>
       </div>
       <button id="send" type="submit" aria-label="发送">↑</button>
     </form>
   </main>
   <script src="/rpc.js?v=1"></script>
-  <script src="/app.js?v=41"></script>
+  <script src="/app.js?v=44"></script>
 </body>
 </html>

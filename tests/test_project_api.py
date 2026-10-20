@@ -160,9 +160,15 @@ class ProjectApiTest(unittest.TestCase):
         status, page = self.request("GET", "/")
         self.assertEqual(status, 200)
         self.assertIn(b"/rpc.js", page)
+        self.assertIn("Debug：只到意图解析".encode(), page)
+        self.assertIn("Debug：只到提示词".encode(), page)
+        self.assertIn(b"/app.js?v=44", page)
         status, script = self.request("GET", "/app.js")
         self.assertEqual(status, 200)
         self.assertIn(b"projects.create", script)
+        self.assertIn(b"debug_stop", script)
+        self.assertIn(b"isIntentDebug", script)
+        self.assertIn(b"isPromptDebug", script)
         body = self.rpc(
             "projects.save_content",
             {

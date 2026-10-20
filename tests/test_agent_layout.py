@@ -16,7 +16,9 @@ from AI.script import call_drill as pipeline_drill
 from end.server import (
     call_deepseek,
     handle_agent_task,
+    public_view,
     resume_agent_tasks,
+    rpc_create_project,
     run_drill,
     run_project,
     start_drill,
@@ -478,6 +480,170 @@ class EndHandoffTest(unittest.TestCase):
         self.assertEqual(saved["status"], "writing")
         self.assertEqual(saved["progress"]["phase"], "writing")
         self.assertEqual(saved["messages"][-1]["content"], "开始写")
+
+    def test_intent_debug_stops_before_prompts_and_images(self):
+        project_id = "a6e17000001a"
+        make_project(
+            project_id,
+            status="drilling",
+            script="",
+            storyboard="",
+            progress={
+                "percent": 0,
+                "phase": "drill_think",
+                "message": "正在想方向",
+                "debug_llm": False,
+                "debug_stop": "intent",
+            },
+        )
+        answers = [
+            {"phase": "ask", "reply": "谁来用", "options": ["她", "其他"], "brief": ""},
+            {"phase": "ready", "reply": "就按这个做", "brief": "锁定的简报", "options": []},
+        ]
+        seen = []
+
+        def fake(messages, debug_dir=None, model=None, template=None):
+            seen.append(debug_dir)
+            return answers.pop(0)
+
+        submitted = []
+        with patch("end.server.call_drill", side_effect=fake), patch(
+            "end.server.submit_agent_task", side_effect=submitted.append
+        ):
+            run_drill(project_id)
+            asked = db.read_project(project_id)
+            self.assertEqual(asked["status"], "drilling")
+            self.assertEqual(asked["progress"]["phase"], "drill_wait")
+            self.assertEqual(asked["progress"]["debug_stop"], "intent")
+            run_drill(project_id)
+        self.assertEqual(submitted, [])
+        self.assertEqual(resume_agent_tasks(), 0)
+        self.assertTrue(all(path is not None for path in seen))
+        saved = db.read_project(project_id)
+        view = public_view(saved)
+        self.assertEqual(saved["brief"], "锁定的简报")
+        self.assertEqual(saved["status"], "done")
+        self.assertEqual(saved["script"], "")
+        self.assertEqual(saved["progress"]["phase"], "intent_debug")
+        self.assertEqual(saved["progress"]["debug_stop"], "intent")
+        self.assertFalse(saved["progress"]["debug_llm"])
+        self.assertEqual(view["debug_stop"], "intent")
+        self.assertFalse(view["debug_llm"])
+        self.assertFalse(view["can_reply"])
+        self.assertEqual(view["stage"], "Debug：已停在意图解析")
+
+    def test_create_keeps_intent_stop_ahead_of_image_debug(self):
+        old = os.environ.get("AIVIDEO_DEBUG_LLM")
+        os.environ["AIVIDEO_DEBUG_LLM"] = "1"
+        try:
+            with patch("end.server.start_drill", side_effect=db.write_project):
+                created = rpc_create_project(
+                    {"brief": "银色耳机", "debug_stop": "intent", "debug_llm": True}
+                )
+        finally:
+            if old is None:
+                os.environ.pop("AIVIDEO_DEBUG_LLM", None)
+            else:
+                os.environ["AIVIDEO_DEBUG_LLM"] = old
+        self.assertEqual(created["debug_stop"], "intent")
+        self.assertFalse(created["debug_llm"])
+        self.assertEqual(created["status"], "drilling")
+        saved = db.read_project(created["id"])
+        self.assertEqual(saved["progress"]["debug_stop"], "intent")
+        self.assertFalse(saved["progress"]["debug_llm"])
+
+    def test_prompt_debug_writes_the_spec_and_skips_images(self):
+        project_id = "a6e17000001b"
+        make_project(
+            project_id,
+            status="drilling",
+            script="",
+            storyboard="",
+            progress={
+                "percent": 0,
+                "phase": "drill_wait",
+                "message": "选一个方向",
+                "debug_llm": False,
+                "debug_stop": "prompts",
+            },
+        )
+        submitted = []
+
+        def fake_drill(messages, debug_dir=None, model=None, template=None):
+            self.assertIsNotNone(debug_dir)
+            return {"phase": "ready", "reply": "开始写", "brief": "锁定的简报", "options": []}
+
+        with patch("end.server.call_drill", side_effect=fake_drill), patch(
+            "end.server.submit_agent_task", side_effect=submitted.append
+        ):
+            run_drill(project_id)
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(submitted[0].kind, "write")
+        self.assertTrue(submitted[0].payload["debug_llm"] is False)
+        queued = db.read_project(project_id)
+        self.assertEqual(queued["status"], "writing")
+        self.assertEqual(queued["progress"]["debug_stop"], "prompts")
+        spec = {
+            "title": "新标题",
+            "script": "写完的剧本",
+            "storyboard": "写完的分镜",
+            "image_prompts": "提示",
+            "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人"}],
+            "shots": [{"id": "S01", "duration": 5, "prompt": "离开", "images": ["A1"]}],
+        }
+        seen = {}
+
+        def fake_write(brief, skill_pack, debug_dir=None, model=None, template=None):
+            seen["debug_dir"] = debug_dir
+            return spec
+
+        old = os.environ.get("AIVIDEO_DEBUG_LLM")
+        os.environ["AIVIDEO_DEBUG_LLM"] = "1"
+        try:
+            with patch("end.server.call_deepseek", side_effect=fake_write), patch(
+                "end.server.start_render_thread"
+            ) as start:
+                run_project(project_id, debug_llm=True)
+        finally:
+            if old is None:
+                os.environ.pop("AIVIDEO_DEBUG_LLM", None)
+            else:
+                os.environ["AIVIDEO_DEBUG_LLM"] = old
+        start.assert_not_called()
+        self.assertIsNotNone(seen["debug_dir"])
+        self.assertEqual(resume_agent_tasks(), 0)
+        saved = db.read_project(project_id)
+        view = public_view(saved)
+        self.assertEqual(saved["script"], "写完的剧本")
+        self.assertEqual(saved["storyboard"], "写完的分镜")
+        self.assertEqual(saved["status"], "done")
+        self.assertEqual(saved["progress"]["phase"], "prompt_debug")
+        self.assertEqual(saved["progress"]["debug_stop"], "prompts")
+        self.assertFalse(saved["progress"]["debug_llm"])
+        self.assertTrue(saved["tasks"])
+        self.assertTrue(all(task["state"] == "muted" for task in saved["tasks"]))
+        self.assertEqual(view["debug_stop"], "prompts")
+        self.assertFalse(view["debug_llm"])
+        self.assertEqual(view["stage"], "Debug：已停在提示词")
+
+    def test_create_keeps_prompt_stop_ahead_of_image_debug(self):
+        old = os.environ.get("AIVIDEO_DEBUG_LLM")
+        os.environ["AIVIDEO_DEBUG_LLM"] = "1"
+        try:
+            with patch("end.server.start_drill", side_effect=db.write_project):
+                created = rpc_create_project(
+                    {"brief": "银色耳机", "debug_stop": "prompts", "debug_llm": True}
+                )
+        finally:
+            if old is None:
+                os.environ.pop("AIVIDEO_DEBUG_LLM", None)
+            else:
+                os.environ["AIVIDEO_DEBUG_LLM"] = old
+        self.assertEqual(created["debug_stop"], "prompts")
+        self.assertFalse(created["debug_llm"])
+        saved = db.read_project(created["id"])
+        self.assertEqual(saved["progress"]["debug_stop"], "prompts")
+        self.assertFalse(saved["progress"]["debug_llm"])
 
     def test_finished_script_hands_render_to_another_thread(self):
         project_id = "a6e170000014"

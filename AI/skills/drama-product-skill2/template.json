@@ -1,0 +1,223 @@
+{
+  "id": "drama-product-skill2",
+  "label": "短剧植入 · 导演",
+  "director": "导演.md",
+  "intent_analyze": "意图分析.md",
+  "intent_fill": "意图补充.md",
+  "output": "成稿.md",
+  "skills": [
+    "director/SKILL.md",
+    "director/references/product-and-macro.md",
+    "director/references/genre-playbooks.md",
+    "director/references/ai-video-tool-adapters.md",
+    "director/assets/director-book-template.md",
+    "director/assets/shot-plan-template.md",
+    "director/assets/keyframe-prompt-template.md",
+    "director/references/image-model-adapters.md",
+    "director/assets/video-prompt-template.md",
+    "写提示词.md",
+    "生图.md"
+  ],
+  "routes": [
+    {
+      "kind": "style",
+      "match": [
+        "Steven Spielberg",
+        "Spielberg",
+        "斯皮尔伯格"
+      ],
+      "file": "director/references/director_styles/01_spielberg.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Alfred Hitchcock",
+        "Hitchcock",
+        "希区柯克"
+      ],
+      "file": "director/references/director_styles/02_hitchcock.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Stanley Kubrick",
+        "Kubrick",
+        "库布里克"
+      ],
+      "file": "director/references/director_styles/03_kubrick.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Akira Kurosawa",
+        "Kurosawa",
+        "黑泽明"
+      ],
+      "file": "director/references/director_styles/04_kurosawa.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Martin Scorsese",
+        "Scorsese",
+        "斯科塞斯"
+      ],
+      "file": "director/references/director_styles/05_scorsese.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Federico Fellini",
+        "Fellini",
+        "费里尼"
+      ],
+      "file": "director/references/director_styles/06_fellini.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Ingmar Bergman",
+        "Bergman",
+        "伯格曼"
+      ],
+      "file": "director/references/director_styles/07_bergman.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Andrei Tarkovsky",
+        "Tarkovsky",
+        "塔可夫斯基"
+      ],
+      "file": "director/references/director_styles/08_tarkovsky.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Wong Kar-wai",
+        "Wong Kar Wai",
+        "王家卫",
+        "王家衛",
+        "wong_kar_wai"
+      ],
+      "file": "director/references/director_styles/09_wong_kar_wai.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Christopher Nolan",
+        "Nolan",
+        "诺兰"
+      ],
+      "file": "director/references/director_styles/10_nolan.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Denis Villeneuve",
+        "Villeneuve",
+        "维伦纽瓦"
+      ],
+      "file": "director/references/director_styles/11_villeneuve.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "David Fincher",
+        "Fincher",
+        "芬奇"
+      ],
+      "file": "director/references/director_styles/12_fincher.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Nicolas Winding Refn",
+        "Refn",
+        "雷弗恩"
+      ],
+      "file": "director/references/director_styles/13_refn.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Bi Gan",
+        "毕赣",
+        "bi_gan"
+      ],
+      "file": "director/references/director_styles/14_bi_gan.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Zhang Yimou",
+        "Yimou",
+        "张艺谋",
+        "zhang_yimou"
+      ],
+      "file": "director/references/director_styles/15_zhang_yimou.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Hou Hsiao-hsien",
+        "Hou Hsiao Hsien",
+        "侯孝贤",
+        "hou_hsiao_hsien"
+      ],
+      "file": "director/references/director_styles/16_hou_hsiao_hsien.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Park Chan-wook",
+        "Park Chan Wook",
+        "朴赞郁",
+        "park_chan_wook"
+      ],
+      "file": "director/references/director_styles/17_park_chan_wook.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Terrence Malick",
+        "Malick",
+        "泰伦斯·马力克",
+        "马力克"
+      ],
+      "file": "director/references/director_styles/18_malick.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Michael Mann",
+        "迈克尔·曼",
+        "迈克尔曼",
+        "michael_mann"
+      ],
+      "file": "director/references/director_styles/19_michael_mann.md"
+    },
+    {
+      "kind": "style",
+      "match": [
+        "Coen Brothers",
+        "科恩兄弟",
+        "coen_brothers"
+      ],
+      "file": "director/references/director_styles/20_coen_brothers.md"
+    },
+    {
+      "kind": "failure",
+      "match": [
+        "失败",
+        "PPT",
+        "换脸",
+        "不动"
+      ],
+      "file": "director/references/failure-modes.md"
+    }
+  ],
+  "policy": "product_hero",
+  "brief_lead": "用户已经通过多轮选择把这条短剧植入定下来了。写的时候锁定这几个人、这场戏、这一件商品、它进入动作的那一拍，以及简报里点名的那一位导演。不要换成另一件商品，也不要拍成行驶中的汽车广告。",
+  "repair_lead": "把用户给出的短剧植入材料收成一个 JSON 对象。"
+}

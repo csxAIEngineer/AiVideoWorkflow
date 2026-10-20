@@ -11,6 +11,7 @@ import end.db as db
 from end.db import project_dir, read_project
 from end.server import public_view, rpc_config, rpc_create_project, run_project
 from AI.skills.registry import (
+    _piece,
     build_system_prompt,
     drill_system_prompt,
     json_shape,
@@ -147,6 +148,9 @@ class TemplateAssemblyTest(unittest.TestCase):
         self.assertIn("不要问路面", drill)
         self.assertNotIn("3. 司机", drill)
         self.assertIn("就按这个做", drill)
+        self.assertIn("what is different at the end", drill)
+        self.assertIn("photos, clips, or sound", drill)
+        self.assertIn("手怎么碰到这件商品", drill)
         pack = load_skill_pack("drama-product-skill")
         self.assertIn("drama-product-skill/写提示词.md", pack)
         self.assertIn("drama-product-skill/案例.md", pack)
@@ -154,6 +158,18 @@ class TemplateAssemblyTest(unittest.TestCase):
         self.assertIn("D1", pack)
         self.assertIn("钩子", pack)
         self.assertIn("没有口播", pack)
+        self.assertIn("drama-product-skill/seedance-prompt.md", pack)
+        self.assertNotIn("seedance-prompt-short", pack)
+        self.assertNotIn("seedance-prompt-short", drill)
+        self.assertFalse(
+            (ROOT / "AI" / "skills" / "drama-product-skill" / "seedance-prompt-short.md").exists()
+        )
+        self.assertIn("drama-product-skill/seedance-camera.md", pack)
+        self.assertIn("drama-product-skill/seedance-direct-for-the-model.md", pack)
+        self.assertIn("缓慢推镜", pack)
+        self.assertIn("不要输出 `@Image1`", pack)
+        self.assertNotIn("drama-product-skill/seedance-interview.md", pack)
+        self.assertNotIn("drama-product-skill/seedance-interview-short.md", pack)
         self.assertNotIn("luxury-suv/", pack)
         self.assertNotIn("apple-product/", pack)
         self.assertNotIn("不得调头", pack)
@@ -162,7 +178,15 @@ class TemplateAssemblyTest(unittest.TestCase):
         self.assertIn("three_quarter", prompt)
         self.assertIn("macro", prompt)
         self.assertIn("定妆", prompt)
-        self.assertIn("人物锁定", prompt)
+        self.assertIn("seedance-prompt", prompt)
+        self.assertIn("尽可能详细", prompt)
+        self.assertIn("不缩成一句", prompt)
+        self.assertNotIn("seedance-prompt-short", prompt)
+        self.assertNotIn("30-100", prompt)
+        self.assertNotIn("30 到 100", prompt)
+        self.assertNotIn("Compression Rules", prompt)
+        self.assertNotIn("short shooting brief", prompt)
+        self.assertIn("seedance-vocab-zh", prompt)
         self.assertNotIn("车辆锁定", prompt)
         self.assertNotIn("view 只能是 front", prompt)
         self.assertEqual(template_policy("drama-product-skill"), "product_hero")
@@ -183,6 +207,388 @@ class TemplateAssemblyTest(unittest.TestCase):
         shape = json_shape("drama-product-skill")
         self.assertIn("植入", shape)
         self.assertIn("==人名：原句==", shape)
+
+    def test_director_template_loads_one_style_from_the_brief(self):
+        drill = drill_system_prompt("drama-product-skill2")
+        self.assertIn("Drill me", drill)
+        self.assertIn("一次一问", drill)
+        self.assertIn("导演风格", drill)
+        self.assertIn("画里是谁", drill)
+        self.assertIn("地点和年代", drill)
+        self.assertIn("商品在这场戏里怎么被用到", drill)
+        self.assertIn("必须留下的外观", drill)
+        self.assertIn("不要问司机", drill)
+        self.assertIn("不要问路面", drill)
+        self.assertIn("就按这个做", drill)
+        self.assertIn("其他", drill)
+        self.assertIn("phase", drill)
+        self.assertIn("身份跟图", drill)
+        self.assertNotIn("seedance-interview", drill)
+        self.assertNotIn("3. 司机", drill)
+        self.assertNotIn("09_wong_kar_wai.md", drill)
+        self.assertNotIn("Failure Modes: Diagnosis and Repair", drill)
+        pack = load_skill_pack("drama-product-skill2")
+        self.assertIn("Story function first", pack)
+        self.assertIn("product-and-macro", pack)
+        self.assertIn("即梦/Seedance", pack)
+        self.assertIn("hero", pack)
+        self.assertIn("three_quarter", pack)
+        self.assertIn("macro", pack)
+        self.assertIn("drama-product-skill2/director/SKILL.md", pack)
+        self.assertIn("drama-product-skill2/director/assets/director-book-template.md", pack)
+        self.assertIn("drama-product-skill2/director/references/image-model-adapters.md", pack)
+        self.assertIn("drama-product-skill2/写提示词.md", pack)
+        self.assertIn("drama-product-skill2/生图.md", pack)
+        self.assertNotIn("drama-product-skill2/案例.md", pack)
+        self.assertTrue((ROOT / "AI" / "skills" / "drama-product-skill2" / "案例.md").is_file())
+        styles = (
+            "01_spielberg.md",
+            "02_hitchcock.md",
+            "03_kubrick.md",
+            "04_kurosawa.md",
+            "05_scorsese.md",
+            "06_fellini.md",
+            "07_bergman.md",
+            "08_tarkovsky.md",
+            "09_wong_kar_wai.md",
+            "10_nolan.md",
+            "11_villeneuve.md",
+            "12_fincher.md",
+            "13_refn.md",
+            "14_bi_gan.md",
+            "15_zhang_yimou.md",
+            "16_hou_hsiao_hsien.md",
+            "17_park_chan_wook.md",
+            "18_malick.md",
+            "19_michael_mann.md",
+            "20_coen_brothers.md",
+        )
+        for name in styles:
+            self.assertNotIn(
+                "# drama-product-skill2/director/references/director_styles/%s" % name,
+                pack,
+            )
+        self.assertNotIn(
+            "drama-product-skill2/director/references/failure-modes.md",
+            pack,
+        )
+        routed = load_skill_pack("drama-product-skill2", context="王家卫")
+        self.assertTrue(routed.startswith(pack))
+        extra = routed[len(pack) :]
+        self.assertIn("09_wong_kar_wai.md", extra)
+        self.assertEqual(extra.count("director_styles/"), 1)
+        for name in styles:
+            if name != "09_wong_kar_wai.md":
+                self.assertNotIn(name, extra)
+        self.assertNotIn("failure-modes.md", extra)
+        english = load_skill_pack("drama-product-skill2", context="Wong Kar-wai")
+        self.assertIn("09_wong_kar_wai.md", english[len(pack) :])
+        self.assertNotIn("10_nolan.md", english[len(pack) :])
+        glued = load_skill_pack("drama-product-skill2", context="Wong Kar-wai风格")
+        self.assertIn("09_wong_kar_wai.md", glued[len(pack) :])
+        nolan = load_skill_pack("drama-product-skill2", context="导演Nolan")
+        self.assertIn("10_nolan.md", nolan[len(pack) :])
+        self.assertNotIn("09_wong_kar_wai.md", nolan[len(pack) :])
+        slideshow = load_skill_pack("drama-product-skill2", context="上一版PPT")
+        self.assertIn("drama-product-skill2/director/references/failure-modes.md", slideshow)
+        self.assertNotIn("10_nolan.md", load_skill_pack("drama-product-skill2", context="Nolanese"))
+        self.assertNotIn(
+            "drama-product-skill2/director/references/failure-modes.md",
+            load_skill_pack("drama-product-skill2", context="APPT"),
+        )
+        earliest = load_skill_pack("drama-product-skill2", context="诺兰，再参考王家卫")
+        self.assertIn("10_nolan.md", earliest)
+        self.assertNotIn("09_wong_kar_wai.md", earliest)
+        failed = load_skill_pack("drama-product-skill2", context="上一版换脸了")
+        self.assertIn("drama-product-skill2/director/references/failure-modes.md", failed)
+        self.assertNotIn("director_styles/", failed[len(pack) :])
+        self.assertEqual(template_policy("drama-product-skill2"), "product_hero")
+        render = template_render("drama-product-skill2")
+        self.assertEqual(render["image_from"], "drama-product-skill2/生图.md")
+        self.assertIn("不要商标文字", render["image"])
+        self.assertEqual(render["video_from"], "drama-product-skill2/写提示词.md")
+        self.assertIn("不要换脸", render["video_lock"])
+        self.assertIn("不要换房间", render["video_next"])
+        self.assertNotIn("render-video-lock", render["video_lock"])
+        shape = json_shape("drama-product-skill2")
+        self.assertIn("hero", shape)
+        self.assertIn("three_quarter", shape)
+        self.assertIn("macro", shape)
+        self.assertIn("==人名：原句==", shape)
+        prompt = build_system_prompt(pack, "drama-product-skill2")
+        self.assertIn("Story function first", prompt)
+        self.assertIn("即梦/Seedance", prompt)
+        self.assertIn(
+            "景别和焦段、身份、能看出动作的姿势、衣服和道具、地点、光源和光比、构图、质感、约束",
+            prompt,
+        )
+        self.assertIn(
+            "画面里必须在的物件、起动止、景别和机位高度、焦段、光的方向和光比、这一镜不一样的光、要接着的物件",
+            prompt,
+        )
+        self.assertIn("不缩成四项", prompt)
+        self.assertIn("一个主动作，一个机位运动，一个终点", prompt)
+        self.assertIn("出片用它当首帧", prompt)
+        self.assertNotIn("静帧只锁身份", prompt)
+
+    def test_drill_style_follows_the_latest_user_line(self):
+        styles = (
+            "01_spielberg.md",
+            "02_hitchcock.md",
+            "03_kubrick.md",
+            "04_kurosawa.md",
+            "05_scorsese.md",
+            "06_fellini.md",
+            "07_bergman.md",
+            "08_tarkovsky.md",
+            "09_wong_kar_wai.md",
+            "10_nolan.md",
+            "11_villeneuve.md",
+            "12_fincher.md",
+            "13_refn.md",
+            "14_bi_gan.md",
+            "15_zhang_yimou.md",
+            "16_hou_hsiao_hsien.md",
+            "17_park_chan_wook.md",
+            "18_malick.md",
+            "19_michael_mann.md",
+            "20_coen_brothers.md",
+        )
+        names = (
+            "斯皮尔伯格",
+            "希区柯克",
+            "库布里克",
+            "黑泽明",
+            "斯科塞斯",
+            "费里尼",
+            "伯格曼",
+            "塔可夫斯基",
+            "王家卫",
+            "诺兰",
+            "维伦纽瓦",
+            "芬奇",
+            "雷弗恩",
+            "毕赣",
+            "张艺谋",
+            "侯孝贤",
+            "朴赞郁",
+            "泰伦斯·马力克",
+            "迈克尔·曼",
+            "科恩兄弟",
+        )
+        bodies = {
+            name: _piece("drama-product-skill2", "director/references/director_styles/" + name)
+            for name in styles
+        }
+        base = drill_system_prompt("drama-product-skill2")
+        self.assertIn("一次一问", base)
+        self.assertIn("导演风格", base)
+        self.assertIn("风格还没确认", base)
+        self.assertNotIn("09_wong_kar_wai.md", base)
+        for name in names:
+            self.assertIn(name, base)
+        for body in bodies.values():
+            self.assertNotIn(body, base)
+        self.assertNotIn("Failure Modes: Diagnosis and Repair", base)
+
+        wong = bodies["09_wong_kar_wai.md"]
+        nolan = bodies["10_nolan.md"]
+        self.assertEqual(drill_system_prompt("drama-product-skill2", "王家卫"), base + "\n\n" + wong)
+        self.assertEqual(
+            drill_system_prompt("drama-product-skill2", "不要王家卫，改诺兰"),
+            base + "\n\n" + nolan,
+        )
+        self.assertEqual(
+            drill_system_prompt("drama-product-skill2", "不要诺兰，改王家卫"),
+            base + "\n\n" + wong,
+        )
+        self.assertEqual(drill_system_prompt("drama-product-skill2", "Nolanese"), base)
+        self.assertEqual(
+            drill_system_prompt("drama-product-skill2", "王家卫，上一版换脸了"),
+            base + "\n\n" + wong,
+        )
+        self.assertEqual(
+            drill_system_prompt(
+                "drama-product-skill2",
+                [
+                    {"role": "assistant", "content": "王家卫：雨夜楼梯口，耳机还在手里"},
+                    {"role": "user", "content": "先讲谁在这场戏里"},
+                ],
+            ),
+            base,
+        )
+        self.assertEqual(
+            drill_system_prompt(
+                "drama-product-skill2",
+                [
+                    {"role": "user", "content": "王家卫"},
+                    {"role": "assistant", "content": "要不要改成诺兰"},
+                ],
+            ),
+            base + "\n\n" + wong,
+        )
+        self.assertEqual(
+            drill_system_prompt(
+                "drama-product-skill2",
+                [
+                    {"role": "user", "content": "王家卫"},
+                    {"role": "assistant", "content": "好"},
+                    {"role": "user", "content": "不要王家卫，改诺兰"},
+                ],
+            ),
+            base + "\n\n" + nolan,
+        )
+        for template in ("luxury-suv", "apple-product", "drama-product-skill"):
+            plain = drill_system_prompt(template)
+            self.assertEqual(drill_system_prompt(template, "王家卫"), plain)
+            self.assertEqual(
+                drill_system_prompt(
+                    template,
+                    [{"role": "user", "content": "不要王家卫，改诺兰"}],
+                ),
+                plain,
+            )
+            self.assertNotIn("导演风格 Skill", plain)
+
+    def test_agent_and_studio_drill_pass_user_lines(self):
+        from AI.agent.agent import Agent
+        from AI.api import studio_drill
+
+        prepared = Agent()._prepare_drill(
+            {
+                "model": None,
+                "template": "drama-product-skill2",
+                "messages": [
+                    {"role": "assistant", "content": "王家卫：雨夜楼梯口"},
+                    {"role": "user", "content": "不要王家卫，改诺兰"},
+                ],
+            }
+        )
+        system = prepared["request"]["messages"][0]["content"]
+        self.assertIn("克里斯托弗·诺兰导演风格 Skill", system)
+        self.assertNotIn("王家卫导演风格 Skill", system)
+        self.assertEqual(prepared["system"], system)
+
+        class Reply(object):
+            def __init__(self, content):
+                self.content = content
+                self.reasoning_content = ""
+
+        repaired = Agent()._read_drill(
+            {
+                "template": "drama-product-skill2",
+                "messages": [{"role": "user", "content": "王家卫"}],
+                "model_name": "deepseek-v4-pro",
+                "drill_tokens": 4000,
+                "system": "",
+                "debug_dir": None,
+                "result": Reply("不是 json"),
+            }
+        )
+        repair_system = repaired["request"]["messages"][0]["content"]
+        self.assertIn("王家卫导演风格 Skill", repair_system)
+        self.assertNotIn("克里斯托弗·诺兰导演风格 Skill", repair_system)
+
+        with patch("AI.api._provider_chat", return_value="{}") as chat:
+            studio_drill(
+                {
+                    "template": "drama-product-skill2",
+                    "history": [{"role": "assistant", "content": "建议王家卫"}],
+                    "line": "改诺兰",
+                    "provider": {},
+                }
+            )
+        sent = chat.call_args[0][1]
+        studio_system = sent[0]["content"]
+        self.assertEqual(sent[0]["role"], "system")
+        self.assertIn("克里斯托弗·诺兰导演风格 Skill", studio_system)
+        self.assertNotIn("王家卫导演风格 Skill", studio_system)
+        self.assertEqual(sent[-1], {"role": "user", "content": "改诺兰"})
+
+    def test_template_paths_reject_parent_segments(self):
+        from AI.skills.registry import _rel
+
+        self.assertEqual(_rel("luxury-suv", "写提示词.md"), "luxury-suv/写提示词.md")
+        self.assertEqual(
+            _rel("drama-product-skill2", "director/SKILL.md"),
+            "drama-product-skill2/director/SKILL.md",
+        )
+        for bad in (
+            "../secret.md",
+            "director/../../secret.md",
+            "/etc/passwd",
+            "C:/secret.md",
+            "..\\secret.md",
+        ):
+            with self.assertRaises(RuntimeError):
+                _rel("drama-product-skill2", bad)
+
+    def test_skill_pack_cache_key_uses_the_routed_filenames(self):
+        from end import ai_client
+
+        calls = []
+
+        def fake_call(method, params, timeout=60):
+            calls.append(method)
+            context = params.get("context") or ""
+            if method == "skills.route":
+                if "诺兰" in context:
+                    extra = [
+                        "drama-product-skill2/director/references/director_styles/10_nolan.md"
+                    ]
+                elif "王家卫" in context:
+                    extra = [
+                        "drama-product-skill2/director/references/director_styles/09_wong_kar_wai.md"
+                    ]
+                else:
+                    extra = []
+                return {"extra": extra}
+            return {"pack": "pack:" + context, "extra": []}
+
+        saved = dict(ai_client._MEMO)
+        ai_client._MEMO.clear()
+        try:
+            with patch.object(ai_client, "call", side_effect=fake_call):
+                first = ai_client.load_skill_pack("drama-product-skill2", "王家卫的雨")
+                second = ai_client.load_skill_pack("drama-product-skill2", "另一条王家卫")
+                third = ai_client.load_skill_pack("drama-product-skill2", "诺兰")
+            self.assertEqual(first, second)
+            self.assertEqual(first, "pack:王家卫的雨")
+            self.assertEqual(third, "pack:诺兰")
+            self.assertEqual(
+                calls,
+                ["skills.route", "skills.load", "skills.route", "skills.route", "skills.load"],
+            )
+        finally:
+            ai_client._MEMO.clear()
+            ai_client._MEMO.update(saved)
+
+    def test_api_passes_the_brief_into_the_skill_pack(self):
+        from AI import api
+
+        with patch("AI.api.load_skill_pack", return_value="PACK") as loader, patch(
+            "AI.api.call_deepseek", return_value={"title": "耳机"}
+        ):
+            api.write({"template": "drama-product-skill2", "brief": "王家卫"})
+        loader.assert_called_once_with("drama-product-skill2", context="王家卫")
+        with patch("AI.api.load_skill_pack", return_value="PACK") as loader, patch(
+            "AI.api._provider_chat", return_value="{}"
+        ):
+            api.studio_write(
+                {
+                    "template": "drama-product-skill2",
+                    "locked_brief": "王家卫",
+                    "line": "写",
+                    "history": [],
+                    "provider": {},
+                }
+            )
+        loader.assert_called_once_with("drama-product-skill2", context="王家卫")
+        loaded = api.skills_load({"template": "drama-product-skill2", "context": "王家卫"})
+        self.assertIn("09_wong_kar_wai.md", loaded["extra"][0])
+        self.assertIn("09_wong_kar_wai.md", loaded["pack"])
+        routed = api.skills_route({"template": "drama-product-skill2", "context": "王家卫"})
+        self.assertEqual(routed["extra"], loaded["extra"])
 
     def test_missing_template_stays_on_luxury(self):
         self.assertEqual(normalize_template(None), "luxury-suv")
@@ -217,7 +623,10 @@ class TemplateAssemblyTest(unittest.TestCase):
     def test_each_template_owns_its_prompt_set(self):
         skills = ROOT / "AI" / "skills"
         names = {path.name for path in skills.iterdir() if path.is_dir()}
-        self.assertEqual(names, {"apple-product", "drama-product-skill", "luxury-suv"})
+        self.assertEqual(
+            names,
+            {"apple-product", "drama-product-skill", "drama-product-skill2", "luxury-suv"},
+        )
         stages = ("导演.md", "意图分析.md", "意图补充.md", "成稿.md", "写提示词.md", "生图.md")
         for name in names:
             folder = skills / name
@@ -306,6 +715,8 @@ class TemplateProjectTest(unittest.TestCase):
         self.assertIn("luxury-suv", html)
         self.assertIn("apple-product", html)
         self.assertIn("drama-product-skill", html)
+        self.assertIn("drama-product-skill2", html)
+        self.assertIn("短剧植入 · 导演", html)
         self.assertIn("template: selectedTemplate()", script)
         self.assertIn('project.template || "luxury-suv"', script)
 
@@ -343,6 +754,41 @@ class TemplateProjectTest(unittest.TestCase):
         suv_spec = json.loads((project_dir("suvwrite0001") / "spec.json").read_text(encoding="utf-8"))
         views = {asset["view"] for asset in suv_spec["assets"] if asset["subject"] == "SUV"}
         self.assertEqual(views, {"front", "side", "back"})
+
+    def test_writer_routes_the_pack_from_the_brief(self):
+        make_project(
+            "dirwrite0001",
+            status="writing",
+            template="drama-product-skill2",
+            brief="王家卫，她把耳机递出去",
+        )
+        seen = {}
+
+        def capture(template, context=""):
+            seen["template"] = template
+            seen["context"] = context
+            return "pack"
+
+        spec = {
+            "title": "耳机",
+            "script": "递出",
+            "assets": [
+                {
+                    "id": "E1",
+                    "title": "耳机",
+                    "prompt": "黑色耳机",
+                    "subject": "耳机",
+                    "subject_kind": "prop",
+                }
+            ],
+            "shots": [{"id": "S01", "duration": 5, "prompt": "递出", "images": ["E1"]}],
+        }
+        with patch("end.server.load_skill_pack", side_effect=capture), patch(
+            "end.server.call_deepseek", return_value=spec
+        ), patch("end.server.start_render_thread"):
+            run_project("dirwrite0001")
+        self.assertEqual(seen["template"], "drama-product-skill2")
+        self.assertIn("王家卫", seen["context"])
 
 
 if __name__ == "__main__":

@@ -130,6 +130,17 @@ def can_reply(project):
     return phase == "drill_wait"
 
 
+def normalize_debug_stop(value):
+    name = str(value or "").strip().lower()
+    if name in ("intent", "意图", "意图解析"):
+        return "intent"
+    if name in ("prompts", "prompt", "提示词"):
+        return "prompts"
+    if name in ("images", "image", "生图"):
+        return "images"
+    return ""
+
+
 def project_debug_llm(project):
     if not project:
         return False
@@ -137,6 +148,24 @@ def project_debug_llm(project):
         return True
     progress = project.get("progress") or {}
     return bool(progress.get("debug_llm")) or progress.get("phase") in ("llm_debug", "image_debug")
+
+
+def project_stops_at_intent(project):
+    if not project:
+        return False
+    progress = project.get("progress") or {}
+    if normalize_debug_stop(progress.get("debug_stop") or project.get("debug_stop")) == "intent":
+        return True
+    return progress.get("phase") == "intent_debug"
+
+
+def project_stops_at_prompts(project):
+    if not project:
+        return False
+    progress = project.get("progress") or {}
+    if normalize_debug_stop(progress.get("debug_stop") or project.get("debug_stop")) == "prompts":
+        return True
+    return progress.get("phase") == "prompt_debug"
 
 
 def remember(project, status, stage, progress=None):
@@ -161,6 +190,10 @@ def remember(project, status, stage, progress=None):
             stored.pop("project_status", None)
             prev = project.get("progress") or {}
             debug_flag = stored["debug_llm"] if "debug_llm" in stored else prev.get("debug_llm")
+            if "debug_stop" in stored:
+                debug_stop = normalize_debug_stop(stored.get("debug_stop"))
+            else:
+                debug_stop = normalize_debug_stop(prev.get("debug_stop"))
             soundtrack = stored["soundtrack"] if "soundtrack" in stored else prev.get("soundtrack")
             project["progress"] = {
                 "percent": int(stored.get("percent") or prev.get("percent") or 0),
@@ -169,6 +202,7 @@ def remember(project, status, stage, progress=None):
                 "total": stored["total"] if "total" in stored else prev.get("total"),
                 "message": stored.get("message") or stage,
                 "debug_llm": bool(debug_flag),
+                "debug_stop": debug_stop,
                 "soundtrack": normalize_soundtrack(soundtrack),
             }
             if "soundtrack_note" in stored:
@@ -268,6 +302,7 @@ def public_view(project):
         "template": normalize_template(project.get("template")),
         "template_label": template_label(project.get("template")),
         "debug_llm": debug,
+        "debug_stop": normalize_debug_stop((project.get("progress") or {}).get("debug_stop")),
         "debug_files": debug_files,
         "nodes": video_nodes(spec, soundtrack=project_soundtrack(project)),
         "images": list_output_images(project["id"]),
@@ -295,10 +330,12 @@ def run_drill(project_id):
     project = read_project(project_id)
     folder = project_dir(project_id)
     debug = project_debug_llm(project)
+    intent_stop = project_stops_at_intent(project)
+    prompt_stop = project_stops_at_prompts(project)
     try:
         result = call_drill(
             project.get("messages") or [],
-            debug_dir=folder / "debug" if debug else None,
+            debug_dir=folder / "debug" if (debug or intent_stop or prompt_stop) else None,
             model=project.get("model"),
             template=project.get("template"),
         )
@@ -311,6 +348,21 @@ def run_drill(project_id):
         project["messages"] = messages
         if result["phase"] == "ready":
             project["brief"] = result["brief"]
+            if project_stops_at_intent(project):
+                project["finished_at"] = now()
+                remember(
+                    project,
+                    "done",
+                    "Debug：已停在意图解析",
+                    progress={
+                        "percent": 100,
+                        "phase": "intent_debug",
+                        "message": "Debug：已停在意图解析。不写提示词，不生图。",
+                        "debug_llm": False,
+                        "debug_stop": "intent",
+                    },
+                )
+                return
             remember(
                 project,
                 "writing",
@@ -395,32 +447,56 @@ def _yield_if_paused(project_id):
         return True
 
 
+def finish_prompt_debug(project):
+    project = read_project(project["id"]) or project
+    project["finished_at"] = now()
+    project["error"] = None
+    for task in project.get("tasks") or []:
+        task["state"] = "muted"
+        task["detail"] = "Debug：不生图"
+    remember(
+        project,
+        "done",
+        "Debug：已停在提示词",
+        progress={
+            "percent": 100,
+            "phase": "prompt_debug",
+            "message": "Debug：已停在提示词。不生图。",
+            "debug_llm": False,
+            "debug_stop": "prompts",
+        },
+    )
+
+
 def run_project(project_id, debug_llm=False):
     register_thread(project_id)
     with project_lock(project_id):
         _PIPELINE_HANDOFF[project_id] = "writer"
     project = read_project(project_id)
     folder = project_dir(project_id)
-    debug = want_debug_llm(debug_llm or project_debug_llm(project))
+    prompt_stop = project_stops_at_prompts(project)
+    debug = False if prompt_stop else want_debug_llm(debug_llm or project_debug_llm(project))
     try:
-        remember(
-            project,
-            "writing",
-            model_label(project.get("model"))
-            + " 正在写提示词、分镜和生图提示词"
-            + ("（Debug：仅到生图）" if debug else ""),
-            progress={
-                "percent": 8,
-                "phase": "writing",
-                "message": model_label(project.get("model")) + " 正在写提示词、分镜和生图提示词",
-                "debug_llm": debug,
-            },
-        )
+        writing = model_label(project.get("model")) + " 正在写提示词、分镜和生图提示词"
+        if prompt_stop:
+            writing += "（Debug：只到提示词）"
+        elif debug:
+            writing += "（Debug：仅到生图）"
+        progress = {
+            "percent": 8,
+            "phase": "writing",
+            "message": writing,
+            "debug_llm": debug,
+        }
+        if prompt_stop:
+            progress["debug_stop"] = "prompts"
+        remember(project, "writing", writing, progress=progress)
         template = project.get("template")
-        skill_pack = load_skill_pack(template)
-        debug_dir = folder / "debug" if debug else None
+        brief = enrich_brief(project["brief"], load_intake(folder))
+        skill_pack = load_skill_pack(template, brief)
+        debug_dir = folder / "debug" if (debug or prompt_stop) else None
         spec = call_deepseek(
-            enrich_brief(project["brief"], load_intake(folder)),
+            brief,
             skill_pack,
             debug_dir=debug_dir,
             model=project.get("model"),
@@ -428,6 +504,9 @@ def run_project(project_id, debug_llm=False):
         )
         fresh = _save_written_spec(project_id, spec)
         if fresh is None or _yield_if_paused(project_id):
+            return
+        if prompt_stop or project_stops_at_prompts(fresh):
+            finish_prompt_debug(fresh)
             return
         if debug:
             building = "Debug：iCreat 生图"
@@ -1070,7 +1149,12 @@ def rpc_create_project(params):
     flag = params.get("debug_llm")
     if isinstance(flag, str):
         flag = flag.strip().lower() in ("1", "true", "yes", "on")
+    stop = normalize_debug_stop(params.get("debug_stop"))
     debug = want_debug_llm(flag)
+    if stop in ("intent", "prompts"):
+        debug = False
+    elif debug:
+        stop = "images"
     soundtrack = normalize_soundtrack(params.get("soundtrack"))
     files = _materials_from_params(params)
     created = now()
@@ -1102,6 +1186,7 @@ def rpc_create_project(params):
             "phase": "drill_think",
             "message": "正在想方向",
             "debug_llm": debug,
+            "debug_stop": stop,
             "soundtrack": soundtrack,
         },
         "cloud_log": "",

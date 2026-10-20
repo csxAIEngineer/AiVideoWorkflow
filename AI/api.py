@@ -20,6 +20,7 @@ from AI.skills.registry import (
     json_shape,
     load_skill_pack,
     normalize_template,
+    skill_pack_extra,
     template_choices,
     template_files,
     template_label,
@@ -74,7 +75,18 @@ def templates_render(params):
 
 
 def skills_load(params):
-    return {"pack": load_skill_pack((params or {}).get("template"))}
+    params = params or {}
+    template = params.get("template")
+    context = params.get("context") or ""
+    return {
+        "pack": load_skill_pack(template, context=context),
+        "extra": skill_pack_extra(template, context),
+    }
+
+
+def skills_route(params):
+    params = params or {}
+    return {"extra": skill_pack_extra(params.get("template"), params.get("context") or "")}
 
 
 def skills_shape(params):
@@ -96,7 +108,7 @@ def write(params):
     template = params.get("template")
     pack = params.get("skill_pack")
     if not pack:
-        pack = load_skill_pack(template)
+        pack = load_skill_pack(template, context=params.get("brief") or "")
     return call_deepseek(
         params.get("brief") or "",
         pack,
@@ -291,7 +303,8 @@ def studio_drill(params):
     template = params.get("template")
     history = list(params.get("history") or [])
     line = str(params.get("line") or "")
-    messages = [{"role": "system", "content": drill_system_prompt(template)}] + history
+    context = history + [{"role": "user", "content": line}]
+    messages = [{"role": "system", "content": drill_system_prompt(template, context)}] + history
     messages.append({"role": "user", "content": line})
     raw = _provider_chat(params.get("provider") or {}, messages)
     try:
@@ -312,7 +325,7 @@ def studio_write(params):
     params = params or {}
     template = params.get("template")
     locked = str(params.get("locked_brief") or "")
-    prompt = build_system_prompt(load_skill_pack(template), template)
+    prompt = build_system_prompt(load_skill_pack(template, context=locked), template)
     if locked:
         prompt += "\n\n已经和用户确认的创作简报，必须原样遵守：\n%s" % locked
     history = list(params.get("history") or [])
@@ -334,6 +347,7 @@ METHODS = {
     "templates.files": templates_files,
     "templates.render": templates_render,
     "skills.load": skills_load,
+    "skills.route": skills_route,
     "skills.shape": skills_shape,
     "drill": drill,
     "write": write,

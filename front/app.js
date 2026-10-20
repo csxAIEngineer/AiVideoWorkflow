@@ -7,6 +7,8 @@ const history = document.querySelector("#history");
 const newChat = document.querySelector("#new-chat");
 const main = document.querySelector(".main");
 const debugEl = document.querySelector("#debug-llm");
+const debugPromptEl = document.querySelector("#debug-prompt");
+const debugIntentEl = document.querySelector("#debug-intent");
 const soundtrackEl = document.querySelector("#soundtrack");
 const modelEl = document.querySelector("#model");
 const templateEl = document.querySelector("#template");
@@ -51,6 +53,18 @@ const DEBUG_FILE_LABELS = {
   drill_response_repaired: "Drill 修复回复",
 };
 
+function isPromptDebug(project) {
+  if (!project) return false;
+  const progress = project.progress || {};
+  return progress.debug_stop === "prompts" || progress.phase === "prompt_debug" || project.debug_stop === "prompts";
+}
+
+function isIntentDebug(project) {
+  if (!project) return false;
+  const progress = project.progress || {};
+  return progress.debug_stop === "intent" || progress.phase === "intent_debug" || project.debug_stop === "intent";
+}
+
 function isDebugProject(project) {
   const phase = project && project.progress && project.progress.phase;
   return !!(project && (project.debug_llm || (project.progress && project.progress.debug_llm) || phase === "llm_debug" || phase === "image_debug"));
@@ -60,6 +74,12 @@ function statusText(project) {
   if (project.status === "drilling") {
     const phase = project.progress && project.progress.phase;
     return phase === "drill_think" ? "正在想方向" : "选一个方向";
+  }
+  if (isIntentDebug(project) && project.status === "done") {
+    return project.stage || "Debug：已停在意图解析";
+  }
+  if (isPromptDebug(project) && project.status === "done") {
+    return project.stage || "Debug：已停在提示词";
   }
   if (isDebugProject(project) && project.status === "done") {
     const phase = project.progress && project.progress.phase;
@@ -77,6 +97,17 @@ function statusText(project) {
 
 function jobIndex(project) {
   const phase = (project.progress && project.progress.phase) || "";
+  if (isIntentDebug(project)) {
+    if (project.status === "done") return 2;
+    if (project.status === "drilling" || project.status === "error") return 1;
+    return 0;
+  }
+  if (isPromptDebug(project)) {
+    if (project.status === "done") return 3;
+    if (project.status === "writing" || project.script) return 2;
+    if (project.status === "drilling" || project.status === "error") return 1;
+    return 0;
+  }
   if (isDebugProject(project)) {
     if (project.status === "done" && phase === "llm_debug") return 2;
     if (project.status === "done") return 3;
@@ -265,7 +296,7 @@ function progressPanel(project) {
   const head = document.createElement("div");
   head.className = "job-head";
   const title = document.createElement("b");
-  title.textContent = isDebugProject(project) ? "任务进展 · Debug" : "任务进展";
+  title.textContent = isIntentDebug(project) || isPromptDebug(project) || isDebugProject(project) ? "任务进展 · Debug" : "任务进展";
   const elapsed = document.createElement("span");
   elapsed.className = "job-elapsed";
   elapsed.textContent = elapsedLabel(project);
@@ -275,9 +306,13 @@ function progressPanel(project) {
   const steps = document.createElement("ol");
   steps.className = "job-steps";
   const index = jobIndex(project);
-  const stepLabels = isDebugProject(project)
-    ? ["建立项目", "写提示词", "生图", "Debug 结束"]
-    : JOB_STEPS;
+  const stepLabels = isIntentDebug(project)
+    ? ["建立项目", "意图解析", "Debug 结束"]
+    : isPromptDebug(project)
+      ? ["建立项目", "意图解析", "写提示词", "Debug 结束"]
+      : isDebugProject(project)
+        ? ["建立项目", "写提示词", "生图", "Debug 结束"]
+        : JOB_STEPS;
   stepLabels.forEach((label, step) => {
     const item = document.createElement("li");
     const earlyStop = isDebugProject(project) && (project.progress || {}).phase === "llm_debug";
@@ -721,7 +756,7 @@ function syncComposer() {
 }
 
 function workflowMode(project) {
-  if (!project || inDrill(project)) return false;
+  if (!project || inDrill(project) || isIntentDebug(project)) return false;
   if (["writing", "building", "rendering", "paused", "done", "error"].includes(project.status)) return true;
   return !!project.script;
 }
@@ -792,6 +827,12 @@ function paintTranscript(options, full) {
     thinking.textContent = current.stage || "正在想方向";
     wrap.append(thinking);
   }
+  if ((current.progress || {}).phase === "prompt_debug") {
+    const note = document.createElement("p");
+    note.className = "debug-note";
+    note.textContent = "Debug 模式：提示词已经写好。不生图。";
+    wrap.append(note);
+  }
   if (!full) {
     thread.append(wrap);
     syncComposer();
@@ -804,6 +845,14 @@ function paintTranscript(options, full) {
   assistant.className = "assistant";
   if (!inDrill(current)) assistant.append(progressPanel(current));
   tickElapsed();
+  if ((current.progress || {}).phase === "intent_debug") {
+    const note = document.createElement("p");
+    note.className = "debug-note";
+    note.textContent = "Debug 模式：意图已经锁定。不写提示词，不生图。";
+    assistant.append(note);
+    const locked = section("锁定简报", current.brief);
+    if (locked) assistant.append(locked);
+  }
   if (current.status !== "drilling" && isDebugProject(current)) {
     const note = document.createElement("p");
     note.className = "debug-note";
@@ -1035,25 +1084,64 @@ function selectedModel() {
   return modelEl ? modelEl.value : "";
 }
 
+function uncheckDebug(which) {
+  if (which !== "images" && debugEl && !debugEl.disabled && debugEl.checked) {
+    debugEl.checked = false;
+    localStorage.setItem("aivideo.debug_llm", "0");
+  }
+  if (which !== "prompts" && debugPromptEl && debugPromptEl.checked) {
+    debugPromptEl.checked = false;
+    localStorage.setItem("aivideo.debug_prompt", "0");
+  }
+  if (which !== "intent" && debugIntentEl && debugIntentEl.checked) {
+    debugIntentEl.checked = false;
+    localStorage.setItem("aivideo.debug_intent", "0");
+  }
+}
+
 function syncDebugToggle() {
-  if (!debugEl) return;
-  const saved = localStorage.getItem("aivideo.debug_llm");
-  if (saved === "1" || saved === "0") {
-    debugEl.checked = saved === "1";
-  } else {
-    debugEl.checked = serverDebugDefault;
+  if (debugIntentEl) {
+    debugIntentEl.checked = localStorage.getItem("aivideo.debug_intent") === "1";
   }
-  if (serverDebugDefault) {
-    debugEl.checked = true;
-    debugEl.disabled = true;
-    debugEl.parentElement.title = "服务器已设置 AIVIDEO_DEBUG_LLM=1，全部项目只生图";
+  if (debugPromptEl) {
+    debugPromptEl.checked = localStorage.getItem("aivideo.debug_prompt") === "1";
   }
+  if (debugEl) {
+    const saved = localStorage.getItem("aivideo.debug_llm");
+    if (saved === "1" || saved === "0") {
+      debugEl.checked = saved === "1";
+    } else {
+      debugEl.checked = serverDebugDefault;
+    }
+    if (serverDebugDefault) {
+      debugEl.checked = true;
+      debugEl.disabled = true;
+      debugEl.parentElement.title = "服务器已设置 AIVIDEO_DEBUG_LLM=1，全部项目只生图";
+    }
+  }
+  if (debugIntentEl && debugIntentEl.checked) uncheckDebug("intent");
+  else if (debugPromptEl && debugPromptEl.checked) uncheckDebug("prompts");
 }
 
 if (debugEl) {
   debugEl.addEventListener("change", () => {
     if (debugEl.disabled) return;
     localStorage.setItem("aivideo.debug_llm", debugEl.checked ? "1" : "0");
+    if (debugEl.checked) uncheckDebug("images");
+  });
+}
+
+if (debugPromptEl) {
+  debugPromptEl.addEventListener("change", () => {
+    localStorage.setItem("aivideo.debug_prompt", debugPromptEl.checked ? "1" : "0");
+    if (debugPromptEl.checked) uncheckDebug("prompts");
+  });
+}
+
+if (debugIntentEl) {
+  debugIntentEl.addEventListener("change", () => {
+    localStorage.setItem("aivideo.debug_intent", debugIntentEl.checked ? "1" : "0");
+    if (debugIntentEl.checked) uncheckDebug("intent");
   });
 }
 
@@ -1184,9 +1272,13 @@ async function startBrief(text) {
   sending = true;
   syncComposer();
   try {
+    const intentStop = !!(debugIntentEl && debugIntentEl.checked);
+    const promptStop = !!(debugPromptEl && debugPromptEl.checked);
+    const debugStop = intentStop ? "intent" : (promptStop ? "prompts" : "");
     const params = {
       brief: brief,
-      debug_llm: !!(debugEl && debugEl.checked),
+      debug_llm: debugStop ? false : !!(debugEl && debugEl.checked),
+      debug_stop: debugStop,
       soundtrack: soundtrackEl ? soundtrackEl.value : "off",
       model: selectedModel(),
       template: selectedTemplate(),

@@ -107,9 +107,12 @@ class Agent(object):
     def _template(self, state):
         return state.get("template")
 
+    def _drill_prompt(self, state):
+        return drill_system_prompt(self._template(state), state.get("messages") or [])
+
     def _prepare_drill(self, state):
         name = normalize_model(state.get("model"))
-        system = drill_system_prompt(self._template(state))
+        system = self._drill_prompt(state)
         chat_messages = [{"role": "system", "content": system}]
         for item in state.get("messages") or []:
             role = item.get("role")
@@ -156,7 +159,7 @@ class Agent(object):
         state["repair"] = True
         state["request"] = {
             "messages": [
-                {"role": "system", "content": drill_system_prompt(self._template(state))},
+                {"role": "system", "content": self._drill_prompt(state)},
                 {"role": "user", "content": "把下面这次追问收成规定的 JSON。\n" + reply[:8000]},
             ],
             "model": state.get("model_name"),

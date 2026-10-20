@@ -35,10 +35,20 @@ def _skill_body(path):
 
 
 def _rel(template_id, filename):
-    name = str(filename or "").strip()
-    if not name or "/" in name or "\\" in name or name.startswith("."):
+    """Template-relative path. Slashes stay inside the template; `..` and absolute paths do not."""
+    raw = str(filename or "").strip()
+    name = raw.replace("\\", "/")
+    if not name or name.startswith("/") or name.startswith(".") or ":" in name:
         raise RuntimeError("模版 %s 的文件名不合法：%s" % (template_id, filename))
-    return "%s/%s" % (template_id, name)
+    parts = name.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise RuntimeError("模版 %s 的文件名不合法：%s" % (template_id, filename))
+    relative = "%s/%s" % (template_id, "/".join(parts))
+    root = (SKILLS / template_id).resolve()
+    path = (SKILLS / relative).resolve()
+    if path != root and root not in path.parents:
+        raise RuntimeError("模版 %s 的文件名不合法：%s" % (template_id, filename))
+    return relative
 
 
 def _templates():
@@ -57,6 +67,7 @@ def _templates():
         skills = data.get("skills") or []
         if not isinstance(skills, list) or not skills:
             raise RuntimeError("模版没有技能：%s" % name)
+        _check_routes(name, data)
         found[name] = data
     if DEFAULT_TEMPLATE not in found:
         raise RuntimeError("缺少默认模版 %s" % DEFAULT_TEMPLATE)
@@ -115,7 +126,8 @@ def _piece(template_id, filename):
     return path.read_text(encoding="utf-8").strip()
 
 
-def drill_system_prompt(template=None):
+def drill_system_prompt(template=None, context=""):
+    """Three drill files, plus one director style after a user names that director."""
     item = load_template(template)
     name = item["id"]
     parts = [
@@ -123,17 +135,185 @@ def drill_system_prompt(template=None):
         _piece(name, item["intent_fill"]),
         _piece(name, item["intent_analyze"]),
     ]
+    style = _drill_style_file(item, context)
+    if style:
+        parts.append(_piece(name, style))
     text = "\n\n".join(part for part in parts if part).strip()
     if not text:
         raise RuntimeError("模版 %s 没有追问提示词" % name)
     return text
 
 
-def load_skill_pack(template=None):
+def _check_routes(template_id, data):
+    routes = data.get("routes") or []
+    if not routes:
+        return
+    if not isinstance(routes, list):
+        raise RuntimeError("模版 %s 的 routes 不合法" % template_id)
+    for route in routes:
+        _check_route(template_id, route)
+
+
+def _check_route(template_id, route):
+    if not isinstance(route, dict):
+        raise RuntimeError("模版 %s 的 routes 不合法" % template_id)
+    filename = str(route.get("file") or "").strip()
+    kind = str(route.get("kind") or "").strip()
+    match = route.get("match")
+    if kind not in ("style", "failure") or not filename or not isinstance(match, list) or not match:
+        raise RuntimeError("模版 %s 的 routes 不合法" % template_id)
+    relative = _rel(template_id, filename)
+    if not (SKILLS / relative).is_file():
+        raise RuntimeError("缺少 skills/%s" % relative)
+
+
+def _route_edge(text, index):
+    if index < 0 or index >= len(text):
+        return True
+    char = text[index]
+    if "\u4e00" <= char <= "\u9fff":
+        return True
+    return not (char.isalnum() or char == "_")
+
+
+def _route_boundary(text, pos, probe):
+    if any("\u4e00" <= char <= "\u9fff" for char in probe):
+        return True
+    return _route_edge(text, pos - 1) and _route_edge(text, pos + len(probe))
+
+
+def _route_hit(text, needles):
+    best = None
+    for needle in needles:
+        token = str(needle or "").strip()
+        if not token:
+            continue
+        probe = token.casefold()
+        start = 0
+        while True:
+            pos = text.find(probe, start)
+            if pos < 0:
+                break
+            if _route_boundary(text, pos, probe):
+                found = (pos, len(probe))
+                if best is None or (found[0], -found[1]) < (best[0], -best[1]):
+                    best = found
+                break
+            start = pos + 1
+    return best
+
+
+def _route_rightmost(text, needles):
+    """Latest in-bounds match. A longer needle wins when both start together."""
+    best = None
+    for needle in needles:
+        token = str(needle or "").strip()
+        if not token:
+            continue
+        probe = token.casefold()
+        start = 0
+        while True:
+            pos = text.find(probe, start)
+            if pos < 0:
+                break
+            if _route_boundary(text, pos, probe):
+                found = (pos, len(probe))
+                if best is None or found > best:
+                    best = found
+            start = pos + 1
+    return best
+
+
+def _drill_user_lines(context):
+    """User text only. A bare string is one user line. Assistant lines do not count."""
+    if isinstance(context, str):
+        text = context.strip()
+        return [text] if text else []
+    if not isinstance(context, (list, tuple)):
+        text = str(context or "").strip()
+        return [text] if text else []
+    lines = []
+    for item in context:
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, dict):
+            role = str(item.get("role") or "user").strip().casefold()
+            if role != "user":
+                continue
+            text = str(item.get("content") or "").strip()
+        else:
+            continue
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _drill_style_file(item, context):
+    """Style named by the latest user line that names one. The later name in that line wins."""
+    chosen = None
+    for line in _drill_user_lines(context):
+        best = None
+        folded = line.casefold()
+        for route in item.get("routes") or []:
+            if str(route.get("kind") or "") != "style":
+                continue
+            filename = str(route.get("file") or "").strip()
+            if not filename:
+                continue
+            hit = _route_rightmost(folded, route.get("match") or [])
+            if hit is None:
+                continue
+            pos, length = hit
+            if best is None or (pos, length) > (best[0], best[1]):
+                best = (pos, length, filename)
+        if best is not None:
+            chosen = best[2]
+    return chosen
+
+
+def route_files(item, context):
+    """Extra skill files for this brief. At most one director style, then failure notes."""
+    text = str(context or "")
+    if not text.strip():
+        return []
+    folded = text.casefold()
+    style = None
+    extras = []
+    seen = set()
+    for route in item.get("routes") or []:
+        hit = _route_hit(folded, route.get("match") or [])
+        if hit is None:
+            continue
+        filename = str(route.get("file") or "").strip()
+        if not filename:
+            continue
+        if str(route.get("kind") or "") == "style":
+            pos, length = hit
+            if style is None or (pos, -length) < (style[0], -style[1]):
+                style = (pos, length, filename)
+            continue
+        if filename not in seen:
+            seen.add(filename)
+            extras.append(filename)
+    files = []
+    if style is not None:
+        files.append(style[2])
+    files.extend(extras)
+    return files
+
+
+def skill_pack_extra(template=None, context=""):
+    item = load_template(template)
+    return [_rel(item["id"], filename) for filename in route_files(item, context)]
+
+
+def load_skill_pack(template=None, context=""):
     item = load_template(template)
     name = item["id"]
     chunks = []
-    for filename in item.get("skills") or []:
+    filenames = list(item.get("skills") or [])
+    filenames.extend(route_files(item, context))
+    for filename in filenames:
         relative = _rel(name, filename)
         body = _piece(name, filename)
         if not body:

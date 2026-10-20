@@ -183,9 +183,23 @@ def template_render(template):
     return dict(value or {})
 
 
-def load_skill_pack(template):
-    key = ("skill-pack", str(template or ""))
-    return _remember(key, "skills.load", {"template": template or ""}, timeout=60)["pack"]
+def load_skill_pack(template, context=""):
+    """Cache the pack by the routed filenames so two directors do not share one pack."""
+    template = str(template or "")
+    context = str(context or "")
+    routed = _remember(
+        ("skill-route", template, context),
+        "skills.route",
+        {"template": template, "context": context},
+    )
+    extra = tuple(routed.get("extra") or [])
+    loaded = _remember(
+        ("skill-pack", template, extra),
+        "skills.load",
+        {"template": template, "context": context},
+        timeout=60,
+    )
+    return loaded["pack"]
 
 
 def json_shape(template=None):
