@@ -207,6 +207,27 @@ body {
 
 .choice-other { color: #5c5c66; }
 
+.seam-option {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid #e3e3e8;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.style-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.style-card span {
+  color: #5c5c66;
+  font-size: 13px;
+}
+
 .choice-start {
   width: auto;
   min-width: 220px;

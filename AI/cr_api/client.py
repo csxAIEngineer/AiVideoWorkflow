@@ -9,6 +9,8 @@ import urllib.request
 from pathlib import Path
 
 BASE_URL = "https://api.creative-reasoning.com"
+CHAT_TRANSIENT_STATUS = {429, 502, 503, 504}
+CHAT_RETRY_WAITS = (2, 5)
 
 TEXT_MODELS = {
     "gpt": ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"),
@@ -129,7 +131,7 @@ class CRClient(object):
         if stream:
             body["stream"] = True
             return self._stream(body, model, timeout)
-        data = self._request("POST", "/v1/chat/completions", body, timeout=timeout)
+        data = self._chat_request(body, timeout)
         message = ((data.get("choices") or [{}])[0].get("message") or {})
         return ChatResult(
             content=message.get("content") or "",
@@ -137,6 +139,21 @@ class CRClient(object):
             model=data.get("model") or model,
             raw=data,
         )
+
+    def _chat_request(self, body, timeout):
+        """Retry a chat completion when the CR gateway returns a transient status."""
+        waits = tuple(getattr(self, "chat_retry_waits", CHAT_RETRY_WAITS))
+        attempts = len(waits) + 1
+        for attempt in range(attempts):
+            try:
+                data = self._request("POST", "/v1/chat/completions", body, timeout=timeout)
+            except CRError as error:
+                if getattr(error, "status", None) not in CHAT_TRANSIENT_STATUS or attempt == attempts - 1:
+                    raise
+                time.sleep(waits[attempt])
+                continue
+            return data
+        raise CRError("CR API 没有返回")
 
     def submit_video(self, text, model="minimax-h3-text-to-video", duration=4, aspect_ratio="9:16", images=None, idempotency_key=None, timeout=180):
         if model not in VIDEO_MODELS:

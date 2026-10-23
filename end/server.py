@@ -9,17 +9,19 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -65,6 +67,31 @@ from end.intake import (
     save_intake,
 )
 from end.image_node import prepare_image_node, video_nodes
+from end.delivery import list_deliverables
+from end.locks import (
+    absorb_model_output,
+    apply_selection,
+    corpus,
+    load_style_cards,
+    locked_aspect,
+    locks_ready,
+    pending_question,
+    prepare_locks,
+    read_locks,
+    ready_to_write,
+    style_question,
+    wants_render,
+    write_locks,
+)
+from end.prompt_gate import build_board, feed_text, project_markdown, validate_feed
+from end.stage_runner import (
+    accept_pipeline,
+    detect_only,
+    execute,
+    initial_pipeline,
+    question_message,
+    script_revise_question,
+)
 from end.soundtrack import normalize_soundtrack, project_soundtrack, soundtrack_enabled
 from end.workflow_from_spec import _safe_id, collect_steps, task_plan
 from end.task_queue import Task, TaskQueue
@@ -123,11 +150,23 @@ def load_spec(project_id):
     return data if isinstance(data, dict) else None
 
 
+def _phase(project):
+    return (project.get("progress") or {}).get("phase") or ""
+
+
+def prompts_ready(project):
+    return bool(project) and project.get("status") == "done" and _phase(project) == "prompts_ready"
+
+
 def can_reply(project):
-    if not project or project.get("status") != "drilling":
+    if not project:
         return False
-    phase = (project.get("progress") or {}).get("phase")
-    return phase == "drill_wait"
+    phase = _phase(project)
+    if project.get("status") == "drilling":
+        return phase in ("drill_wait", "aspect_wait", "lock_wait")
+    if project.get("status") == "gate":
+        return phase.startswith("gate_")
+    return prompts_ready(project)
 
 
 def normalize_debug_stop(value):
@@ -211,6 +250,18 @@ def remember(project, status, stage, progress=None):
                     project["progress"]["soundtrack_note"] = note
             elif prev.get("soundtrack_note"):
                 project["progress"]["soundtrack_note"] = prev.get("soundtrack_note")
+            if "lock_machine" in stored:
+                project["progress"]["lock_machine"] = bool(stored.get("lock_machine"))
+            elif prev.get("lock_machine"):
+                project["progress"]["lock_machine"] = True
+            if "pipeline" in stored:
+                project["progress"]["pipeline"] = stored.get("pipeline") or {}
+            elif prev.get("pipeline"):
+                project["progress"]["pipeline"] = prev.get("pipeline")
+            if "question" in stored:
+                project["progress"]["question"] = stored.get("question") or None
+            elif prev.get("question"):
+                project["progress"]["question"] = prev.get("question")
             if status == "paused":
                 paused_from = stored.get("paused_from") or prev.get("paused_from") or ""
                 if paused_from:
@@ -282,6 +333,12 @@ def public_view(project):
         "finished_at": project.get("finished_at"),
         "has_workflow": (folder / "workflow.json").is_file(),
         "has_spec": (folder / "spec.json").is_file(),
+        "has_board": (folder / "board.html").is_file(),
+        "board_url": (
+            "/media/projects/%s/board" % project["id"]
+            if (folder / "board.html").is_file()
+            else ""
+        ),
         "has_video": bool(project.get("video_file"))
         and (folder / "outputs" / str(project.get("video_file"))).is_file(),
         "video_url": (
@@ -309,6 +366,8 @@ def public_view(project):
         "clips": list_output_clips(project["id"]),
         "materials": public_materials(project["id"]),
         "progress": project.get("progress") or {"percent": 0, "phase": "", "message": project.get("stage") or ""},
+        "question": (project.get("progress") or {}).get("question") or None,
+        "deliverables": list_deliverables(folder),
     }
 
 
@@ -326,8 +385,283 @@ def call_deepseek(brief, skill_pack, debug_dir=None, model=None, template=None):
     )
 
 
+def _lock_inputs(project):
+    folder = project_dir(project["id"])
+    brief = project.get("brief") or ""
+    return folder, prepare_locks(
+        read_locks(folder),
+        brief,
+        material_text=corpus(brief, project.get("messages")),
+        has_images=bool(load_intake(folder)),
+    )
+
+
+def _open_question(locks, brief):
+    question = pending_question(locks)
+    if question and question.get("id") == "style":
+        question = style_question(load_style_cards(brief))
+    return question
+
+
+def _ask_lock(project, question):
+    messages = list(project.get("messages") or [])
+    messages.append(question_message(question))
+    project["messages"] = messages
+    remember(
+        project,
+        "drilling",
+        "立项锁定",
+        progress={
+            "percent": 0,
+            "phase": "lock_wait",
+            "message": (question or {}).get("reply") or "立项锁定",
+            "lock_machine": True,
+            "question": question,
+        },
+    )
+    return public_view(read_project(project["id"]) or project)
+
+
+def _begin_writing(project):
+    if project_stops_at_intent(project):
+        project["finished_at"] = now()
+        remember(
+            project,
+            "done",
+            "Debug：已停在意图解析",
+            progress={
+                "percent": 100,
+                "phase": "intent_debug",
+                "message": "Debug：已停在意图解析。不写提示词，不生图。",
+                "debug_llm": False,
+                "debug_stop": "intent",
+                "lock_machine": True,
+                "question": None,
+            },
+        )
+        return public_view(read_project(project["id"]) or project)
+    progress = project.get("progress") or {}
+    pipeline = dict(progress.get("pipeline") or {})
+    if pipeline.get("accepted"):
+        folder = project_dir(project["id"])
+        pipeline, _action = accept_pipeline(pipeline, read_locks(folder))
+        label = "独立质检" if pipeline.get("action") == "finish" else "下一段"
+        _enqueue_stage(project, pipeline, label)
+        return public_view(read_project(project["id"]) or project)
+    pipeline = initial_pipeline(detect_only(project.get("brief") or ""))
+    remember(
+        project,
+        "writing",
+        "赛道分流",
+        progress={
+            "percent": 8,
+            "phase": "writing",
+            "message": "赛道分流",
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": None,
+        },
+    )
+    submit_agent_task(Task("write", project["id"], {"debug_llm": bool(progress.get("debug_llm"))}))
+    return public_view(read_project(project["id"]) or project)
+
+
+def _enqueue_stage(project, pipeline, label):
+    progress = project.get("progress") or {}
+    remember(
+        project,
+        "writing",
+        label,
+        progress={
+            "percent": int(progress.get("percent") or 12),
+            "phase": "writing",
+            "message": label,
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": None,
+        },
+    )
+    submit_agent_task(Task("write", project["id"], {"debug_llm": bool(progress.get("debug_llm"))}))
+
+
+def run_lock_turn(project_id):
+    project = read_project(project_id)
+    if project is None:
+        return
+    folder, locks = _lock_inputs(project)
+    write_locks(folder, locks)
+    if not ready_to_write(locks):
+        _ask_lock(project, _open_question(locks, project.get("brief") or ""))
+        return
+    _begin_writing(project)
+
+
+def answer_lock(project, text):
+    folder, locks = _lock_inputs(project)
+    question = (project.get("progress") or {}).get("question") or pending_question(locks)
+    if question and question.get("id") == "style" and not question.get("cards"):
+        question = style_question(load_style_cards(project.get("brief") or ""))
+    updated, error = apply_selection(locks, question, text, cards=(question or {}).get("cards"))
+    if error:
+        refused = dict(question or {})
+        refused["reply"] = error
+        return _ask_lock(project, refused)
+    brief = project.get("brief") or ""
+    updated = prepare_locks(
+        updated,
+        brief,
+        material_text=corpus(brief, project.get("messages")),
+        has_images=bool(load_intake(folder)),
+    )
+    write_locks(folder, updated)
+    absorb_model_output(folder, {"ignored": True})
+    project = read_project(project["id"]) or project
+    if not ready_to_write(updated):
+        return _ask_lock(project, _open_question(updated, brief))
+    return _begin_writing(project)
+
+
+def _ask_script_revise(project, pipeline):
+    question = script_revise_question()
+    messages = list(project.get("messages") or [])
+    messages.append(question_message(question))
+    project["messages"] = messages
+    remember(
+        project,
+        "gate",
+        "剧本门",
+        progress={
+            "percent": int((project.get("progress") or {}).get("percent") or 20),
+            "phase": "gate_script",
+            "message": "选一个改法",
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": question,
+        },
+    )
+    return public_view(read_project(project["id"]) or project)
+
+
+def answer_gate(project, text):
+    progress = project.get("progress") or {}
+    pipeline = dict(progress.get("pipeline") or {})
+    current = pipeline.get("current") or ""
+    body = " ".join(str(text or "").split())
+    passed = bool(pipeline.get("passed"))
+    question = progress.get("question") or {}
+    if question.get("id") == "script_revise" and body not in ("继续", "接受", "确认"):
+        note = "" if body == "其他" else body
+        if not note:
+            return _ask_script_revise(project, pipeline)
+        pipeline["revise_note"] = note
+        pipeline["action"] = "rewrite"
+        pipeline["current"] = "script"
+        _enqueue_stage(project, pipeline, "剧本")
+        return public_view(read_project(project["id"]) or project)
+    if body == "精修" and current == "script" and passed:
+        pipeline["action"] = "wait"
+        return _ask_script_revise(project, pipeline)
+    if body not in ("继续", "接受", "确认"):
+        question = progress.get("question") or {}
+        if question:
+            messages = list(project.get("messages") or [])
+            messages.append(question_message(question))
+            project["messages"] = messages
+            write_project(project)
+        return public_view(read_project(project["id"]) or project)
+    if not passed:
+        pipeline["action"] = "rewrite"
+        _enqueue_stage(project, pipeline, project.get("stage") or "重写这一段")
+        return public_view(read_project(project["id"]) or project)
+    folder, locks = _lock_inputs(project)
+    if current == "recon":
+        locks["intel_confirmed"] = True
+        locks = prepare_locks(
+            locks,
+            project.get("brief") or "",
+            material_text=corpus(project.get("brief") or "", project.get("messages")),
+            has_images=bool(load_intake(folder)),
+        )
+        write_locks(folder, locks)
+        accepted = list(pipeline.get("accepted") or [])
+        if current not in accepted:
+            accepted.append(current)
+        pipeline["accepted"] = accepted
+        pipeline["action"] = "wait"
+        progress["pipeline"] = pipeline
+        if not ready_to_write(locks):
+            project = read_project(project["id"]) or project
+            project["progress"] = progress
+            return _ask_lock(project, _open_question(locks, project.get("brief") or ""))
+    pipeline, _action = accept_pipeline(pipeline, locks)
+    label = "独立质检" if pipeline.get("action") == "finish" else "下一段"
+    _enqueue_stage(project, pipeline, label)
+    return public_view(read_project(project["id"]) or project)
+
+
+def run_project_gated(project_id, debug_llm=False):
+    register_thread(project_id)
+    with project_lock(project_id):
+        _PIPELINE_HANDOFF[project_id] = "writer"
+    try:
+        project = read_project(project_id)
+        if project is None or not is_running(project_id):
+            return
+        folder = project_dir(project_id)
+        locks = read_locks(folder)
+        outcome = execute(
+            project,
+            folder,
+            locks,
+            write_model=call_deepseek,
+            load_pack=load_skill_pack,
+        )
+        absorb_model_output(folder, outcome.get("spec") or {})
+        if outcome.get("spec"):
+            saved = _save_written_spec(project_id, outcome["spec"])
+            if saved is None or not is_running(project_id):
+                return
+        if not is_running(project_id):
+            return
+        project = read_project(project_id) or project
+        if outcome.get("message"):
+            messages = list(project.get("messages") or [])
+            messages.append(outcome["message"])
+            project["messages"] = messages
+        if outcome.get("terminal") == "ready":
+            if (read_locks(folder).get("model") or "") != "h3":
+                note = "提示词已就绪。Seedance 只交付提示词。"
+            else:
+                note = "提示词已就绪。要出图出片，点按钮或发送「出图」。"
+            messages = list(project.get("messages") or [])
+            messages.append({"role": "assistant", "content": note})
+            project["messages"] = messages
+            if project_stops_at_prompts(project):
+                finish_prompt_debug(project)
+                return
+            finish_prompts_ready(project)
+            return
+        progress = dict(outcome.get("progress") or {})
+        progress["lock_machine"] = True
+        remember(
+            project,
+            outcome.get("status") or "gate",
+            outcome.get("stage") or "停在门上",
+            progress=progress,
+        )
+    except Exception as error:
+        fail_project(project_id, error)
+    finally:
+        with project_lock(project_id):
+            if _PIPELINE_HANDOFF.get(project_id) == "writer":
+                _PIPELINE_HANDOFF[project_id] = "yielded"
+
+
 def run_drill(project_id):
     project = read_project(project_id)
+    if project and (project.get("progress") or {}).get("lock_machine"):
+        run_lock_turn(project_id)
+        return
     folder = project_dir(project_id)
     debug = project_debug_llm(project)
     intent_stop = project_stops_at_intent(project)
@@ -346,7 +680,10 @@ def run_drill(project_id):
             turn["options"] = result["options"]
         messages.append(turn)
         project["messages"] = messages
-        if result["phase"] == "ready":
+        if result["phase"] == "ready" and (
+            template_policy(project.get("template")) != "drama_still"
+            or locks_ready(result.get("brief") or "")
+        ):
             project["brief"] = result["brief"]
             if project_stops_at_intent(project):
                 project["finished_at"] = now()
@@ -422,6 +759,14 @@ def _save_written_spec(project_id, spec):
         policy=policy,
     )
     spec = merge_intake(spec, items)
+    aspect = ""
+    if stored:
+        aspect = read_locks(folder).get("aspect") or ""
+    if aspect not in ("16:9", "9:16", "21:9"):
+        aspect = locked_aspect((stored or {}).get("brief") or "")
+    if aspect:
+        spec = dict(spec)
+        spec["aspect_ratio"] = aspect
     (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
     with project_lock(project_id):
         fresh = read_project(project_id)
@@ -468,7 +813,184 @@ def finish_prompt_debug(project):
     )
 
 
+WRITE_STAGES = (
+    ("P1", "写剧本", 20),
+    ("P2", "资产提示词", 36),
+    ("P3", "分镜", 52),
+    ("P4", "投喂稿", 68),
+)
+
+
+def _merge_spec(base, incoming):
+    merged = dict(base or {})
+    incoming = incoming or {}
+    for key in ("title", "script", "storyboard", "image_prompts"):
+        if str(incoming.get(key) or "").strip():
+            merged[key] = incoming.get(key)
+    if incoming.get("assets"):
+        merged["assets"] = incoming["assets"]
+    if incoming.get("shots"):
+        merged["shots"] = incoming["shots"]
+    return merged
+
+
+def _stage_brief(base, stage, label, carried):
+    lines = [str(base or "").strip(), "", "当前阶段：%s %s" % (stage, label)]
+    if carried:
+        lines.extend(["", "上一阶段正文：", carried])
+    return "\n".join(lines).strip()
+
+
+def _carried_text(spec):
+    spec = spec or {}
+    chunks = [
+        str(spec.get("script") or "").strip(),
+        str(spec.get("image_prompts") or "").strip(),
+        str(spec.get("storyboard") or "").strip(),
+        feed_text(spec),
+    ]
+    return "\n\n".join(chunk for chunk in chunks if chunk)
+
+
+def _write_prompt_files(project_id, spec, brief):
+    folder = project_dir(project_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    feed = feed_text(spec)
+    if not feed:
+        raise RuntimeError("投喂稿是空的")
+    (folder / "feed.md").write_text(feed + "\n", encoding="utf-8")
+    (folder / "project.md").write_text(project_markdown(spec, brief), encoding="utf-8")
+    return folder / "feed.md", folder / "project.md"
+
+
+def finish_prompts_ready(project):
+    project = read_project(project["id"]) or project
+    project["finished_at"] = now()
+    project["error"] = None
+    for task in project.get("tasks") or []:
+        task["state"] = "muted"
+        task["detail"] = "停在提示词"
+    remember(
+        project,
+        "done",
+        "提示词已就绪",
+        progress={
+            "percent": 100,
+            "phase": "prompts_ready",
+            "message": "提示词已就绪。要出图出片，点按钮或发送「出图」。",
+            "debug_llm": False,
+        },
+    )
+
+
+def _store_aspect(project, aspect):
+    brief = str(project.get("brief") or "")
+    if re.search(r"画幅\s*[:：]", brief):
+        brief = re.sub(
+            r"(画幅\s*[:：]\s*)(?:21:9|16:9|9:16)",
+            lambda match: match.group(1) + aspect,
+            brief,
+            count=1,
+        )
+    else:
+        brief = (brief.rstrip() + "\n画幅：" + aspect).strip()
+    project["brief"] = brief
+    # #region agent log
+    try:
+        _kept = re.search(r"画幅\s*[:：]\s*(\S+)", brief)
+        _line = json.dumps({"sessionId": "77976e", "runId": "post-fix", "hypothesisId": "G", "location": "end/server.py:_store_aspect", "message": "aspect stored", "data": {"aspect": aspect, "kept": _kept.group(1) if _kept else ""}, "timestamp": int(time.time() * 1000)}, ensure_ascii=False)
+        with open("/Users/shaneson/AiVideo/.cursor/debug-77976e.log", "a", encoding="utf-8") as _handle:
+            _handle.write(_line + "\n")
+    except Exception:
+        pass
+    # #endregion
+    write_project(project)
+    spec = load_spec(project["id"]) or {}
+    spec["aspect_ratio"] = aspect
+    folder = project_dir(project["id"])
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+    return spec
+
+
+def _ask_aspect(project):
+    messages = list(project.get("messages") or [])
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "这支片子还没有锁定画幅。选 16:9、9:16 或 21:9。没有锁定之前不会默认竖屏，也不会出图。",
+            "options": ["16:9", "9:16", "21:9", "其他"],
+        }
+    )
+    project["messages"] = messages
+    project["finished_at"] = None
+    project["error"] = None
+    remember(
+        project,
+        "drilling",
+        "先锁定画幅",
+        progress={
+            "percent": 100,
+            "phase": "aspect_wait",
+            "message": "先锁定画幅",
+            "debug_llm": False,
+        },
+    )
+    return public_view(read_project(project["id"]) or project)
+
+
+def _seedance_only(project):
+    messages = list(project.get("messages") or [])
+    messages.append({"role": "assistant", "content": "Seedance 只交付提示词。不出图。"})
+    project["messages"] = messages
+    write_project(project)
+    return public_view(read_project(project["id"]) or project)
+
+
+def _start_explicit_render(project):
+    project_id = project["id"]
+    spec = load_spec(project_id)
+    if not isinstance(spec, dict):
+        raise RpcError(409, "还没有提示词")
+    locks = read_locks(project_dir(project_id))
+    if (project.get("progress") or {}).get("lock_machine") and locks.get("model") not in ("", "h3"):
+        return _seedance_only(project)
+    aspect = locks.get("aspect") or locked_aspect(project.get("brief") or "") or locked_aspect(str(spec.get("aspect_ratio") or ""))
+    if not aspect:
+        return _ask_aspect(project)
+    _store_aspect(project, aspect)
+    project = read_project(project_id) or project
+    project["tasks"] = task_plan(spec, soundtrack=project_soundtrack(project))
+    project["error"] = None
+    project["finished_at"] = None
+    write_project(project)
+    remember(
+        project,
+        "building",
+        "出图出片",
+        progress={
+            "percent": 12,
+            "phase": "building",
+            "message": "出图出片",
+            "debug_llm": project_debug_llm(project),
+        },
+    )
+    if _yield_if_paused(project_id):
+        return public_view(read_project(project_id) or project)
+    with project_lock(project_id):
+        if not is_running(project_id):
+            _PIPELINE_HANDOFF[project_id] = "yielded"
+            return public_view(read_project(project_id) or project)
+        _PIPELINE_HANDOFF[project_id] = "render"
+    start_render_thread(project_id, replace=True)
+    return public_view(read_project(project_id) or project)
+
+
 def run_project(project_id, debug_llm=False):
+    project = read_project(project_id)
+    if project and (project.get("progress") or {}).get("lock_machine"):
+        run_project_gated(project_id, debug_llm=debug_llm)
+        return
     register_thread(project_id)
     with project_lock(project_id):
         _PIPELINE_HANDOFF[project_id] = "writer"
@@ -477,11 +999,9 @@ def run_project(project_id, debug_llm=False):
     prompt_stop = project_stops_at_prompts(project)
     debug = False if prompt_stop else want_debug_llm(debug_llm or project_debug_llm(project))
     try:
-        writing = model_label(project.get("model")) + " 正在写提示词、分镜和生图提示词"
+        writing = model_label(project.get("model")) + " 正在写剧本"
         if prompt_stop:
             writing += "（Debug：只到提示词）"
-        elif debug:
-            writing += "（Debug：仅到生图）"
         progress = {
             "percent": 8,
             "phase": "writing",
@@ -493,47 +1013,78 @@ def run_project(project_id, debug_llm=False):
         remember(project, "writing", writing, progress=progress)
         template = project.get("template")
         brief = enrich_brief(project["brief"], load_intake(folder))
-        skill_pack = load_skill_pack(template, brief)
         debug_dir = folder / "debug" if (debug or prompt_stop) else None
-        spec = call_deepseek(
-            brief,
-            skill_pack,
-            debug_dir=debug_dir,
-            model=project.get("model"),
-            template=template,
+        spec = {}
+        for stage, label, percent in WRITE_STAGES:
+            stage_brief = _stage_brief(brief, stage, label, _carried_text(spec))
+            remember(
+                read_project(project_id) or project,
+                "writing",
+                label,
+                progress={
+                    "percent": percent,
+                    "phase": "writing",
+                    "message": label,
+                    "debug_llm": debug,
+                    "debug_stop": "prompts" if prompt_stop else "",
+                },
+            )
+            pack = load_skill_pack(template, stage_brief, stage=stage)
+            written = call_deepseek(
+                stage_brief,
+                pack,
+                debug_dir=debug_dir,
+                model=project.get("model"),
+                template=template,
+            )
+            spec = _merge_spec(spec, written)
+            fresh = _save_written_spec(project_id, spec)
+            if fresh is None or _yield_if_paused(project_id):
+                return
+        feed_path, markdown_path = _write_prompt_files(project_id, spec, brief)
+        aspect = locked_aspect(brief)
+        code, report = validate_feed(feed_path, aspect)
+        if code != 0:
+            remember(
+                read_project(project_id) or project,
+                "writing",
+                "机检",
+                progress={"percent": 82, "phase": "writing", "message": "机检", "debug_llm": debug},
+            )
+            repair_brief = _stage_brief(brief, "P4", "投喂稿", _carried_text(spec))
+            repair_brief += "\n\n机检报告，按它重修一次，画幅和模型不要改：\n" + (report or "")[-8000:]
+            pack = load_skill_pack(template, repair_brief, stage="P4")
+            spec = _merge_spec(
+                spec,
+                call_deepseek(
+                    repair_brief,
+                    pack,
+                    debug_dir=debug_dir,
+                    model=project.get("model"),
+                    template=template,
+                ),
+            )
+            fresh = _save_written_spec(project_id, spec)
+            if fresh is None or _yield_if_paused(project_id):
+                return
+            feed_path, markdown_path = _write_prompt_files(project_id, spec, brief)
+            code, report = validate_feed(feed_path, aspect)
+            if code != 0:
+                raise RuntimeError("投喂稿机检未通过：%s" % ((report or "")[-800:]))
+        remember(
+            read_project(project_id) or project,
+            "writing",
+            "看板",
+            progress={"percent": 92, "phase": "writing", "message": "看板", "debug_llm": debug},
         )
-        fresh = _save_written_spec(project_id, spec)
+        build_board(markdown_path, project_dir(project_id) / "board.html")
+        fresh = read_project(project_id)
         if fresh is None or _yield_if_paused(project_id):
             return
         if prompt_stop or project_stops_at_prompts(fresh):
             finish_prompt_debug(fresh)
             return
-        if debug:
-            building = "Debug：iCreat 生图"
-        else:
-            building = "iCreat 生图 / CR MiniMax H3 / 本机拼接"
-            if soundtrack_enabled(project_soundtrack(fresh)):
-                building += " / MiniMax 声轨"
-            building += " / ffmpeg 烧字幕"
-        remember(
-            fresh,
-            "building",
-            building,
-            progress={
-                "percent": 12,
-                "phase": "building",
-                "message": building,
-                "debug_llm": debug,
-            },
-        )
-        if _yield_if_paused(project_id):
-            return
-        with project_lock(project_id):
-            if not is_running(project_id):
-                _PIPELINE_HANDOFF[project_id] = "yielded"
-                return
-            _PIPELINE_HANDOFF[project_id] = "render"
-        start_render_thread(project_id, replace=True)
+        finish_prompts_ready(fresh)
     except Exception as error:
         fail_project(project_id, error)
     finally:
@@ -579,7 +1130,10 @@ def fail_project(project_id, error):
     folder = project_dir(project_id)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
-    remember(project, "error", "失败")
+    progress = None
+    if "投喂稿机检未通过" in str(error):
+        progress = {"phase": "error", "message": "机检未通过"}
+    remember(project, "error", "失败", progress=progress)
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -781,11 +1335,29 @@ def resume_render(project):
         resume_paused(folder, project_id)
         if alive and handoff in ("writer", "render"):
             return _resume_in_place(fresh, paused_from if handoff == "writer" else "rendering")
-        if not load_spec(project_id):
+        spec = load_spec(project_id)
+        board_ready = bool(spec) and (folder / "board.html").is_file()
+        explicit = paused_from in ("rendering", "building")
+        action = "render"
+        if not explicit:
+            action = "ready" if board_ready else "rewrite"
+        elif not spec:
             mark_user_pause(folder, project_id, "已暂停")
             raise RuntimeError("提示词还没写完，不能继续出片")
-        _PIPELINE_HANDOFF[project_id] = "render"
-        fresh["error"] = None
+        else:
+            aspect = locked_aspect(fresh.get("brief") or "") or locked_aspect(str(spec.get("aspect_ratio") or ""))
+            if not aspect:
+                action = "aspect"
+            else:
+                _PIPELINE_HANDOFF[project_id] = "render"
+                fresh["error"] = None
+    if action == "ready":
+        return finish_prompts_ready(fresh)
+    if action == "rewrite":
+        submit_agent_task(Task("write", project_id, {"debug_llm": project_debug_llm(fresh)}))
+        return read_project(project_id) or fresh
+    if action == "aspect":
+        return _ask_aspect(fresh)
     remember(
         fresh,
         "rendering",
@@ -1188,6 +1760,7 @@ def rpc_create_project(params):
             "debug_llm": debug,
             "debug_stop": stop,
             "soundtrack": soundtrack,
+            "lock_machine": True,
         },
         "cloud_log": "",
         "prompt_id": "",
@@ -1229,8 +1802,54 @@ def rpc_send_message(params):
     if params.get("model"):
         project["model"] = normalize_model(params.get("model"))
     project["error"] = None
+    write_project(project)
+    project = read_project(project["id"]) or project
+    if _phase(project) == "lock_wait":
+        return answer_lock(project, text)
+    if project.get("status") == "gate":
+        return answer_gate(project, text)
+    if _phase(project) == "aspect_wait":
+        picked = text if text in ("16:9", "9:16", "21:9") else locked_aspect(text)
+        if not picked:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "先选一个画幅：16:9、9:16 或 21:9。",
+                    "options": ["16:9", "9:16", "21:9", "其他"],
+                }
+            )
+            project["messages"] = messages
+            write_project(project)
+            return public_view(project)
+        _store_aspect(project, picked)
+        project = read_project(project["id"]) or project
+        if wants_render(text):
+            return _start_explicit_render(project)
+        finish_prompts_ready(project)
+        return public_view(read_project(project["id"]))
+    if prompts_ready(project):
+        if wants_render(text):
+            return _start_explicit_render(project)
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "提示词已经就绪。要出图出片，点按钮或发送「出图」。",
+            }
+        )
+        project["messages"] = messages
+        write_project(project)
+        return public_view(project)
     start_drill(project)
     return public_view(read_project(project["id"]))
+
+
+def rpc_render(params):
+    project = _request_project(params)
+    if not prompts_ready(project) and not (
+        project.get("status") == "drilling" and _phase(project) == "aspect_wait"
+    ):
+        raise RpcError(409, "提示词还没就绪")
+    return _start_explicit_render(project)
 
 
 def rpc_control(action, params):
@@ -1309,6 +1928,8 @@ def rpc_call(method, params):
         return rpc_delete_project(params)
     if method == "projects.send_message":
         return rpc_send_message(params)
+    if method == "projects.render":
+        return rpc_render(params)
     if method == "projects.pause":
         return rpc_control("pause", params)
     if method == "projects.resume":
@@ -1350,6 +1971,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        if path.startswith("/media/projects/") and path.endswith("/board"):
+            project_id = path.split("/")[3]
+            board = project_dir(project_id) / "board.html"
+            if not valid_id(project_id) or not board.is_file():
+                self._send(404, {"error": "还没有看板"})
+                return
+            self._send(200, board.read_bytes(), "text/html; charset=utf-8")
+            return
         if path.startswith("/media/projects/") and path.endswith("/video"):
             project_id = path.split("/")[3]
             if not valid_id(project_id):
@@ -1437,7 +2066,8 @@ class Handler(BaseHTTPRequestHandler):
             and parts[3] == "images"
         ):
             project_id = parts[2]
-            name = parts[4]
+            raw_name = parts[4]
+            name = unquote(raw_name)
             suffix = Path(name).suffix.lower()
             image = project_dir(project_id) / "outputs" / "images" / name
             if (

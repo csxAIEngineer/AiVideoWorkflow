@@ -143,7 +143,10 @@ class Agent(object):
             (folder / "drill_skill.txt").write_text(state.get("system") or "", encoding="utf-8")
             (folder / "drill_response.txt").write_text(_reply_text(result), encoding="utf-8")
         try:
-            state["output"] = parse_drill_text(result.content or result.reasoning_content)
+            state["output"] = parse_drill_text(
+                result.content or result.reasoning_content,
+                self._template(state),
+            )
             state["request"] = None
             return state
         except ValueError:
@@ -177,7 +180,10 @@ class Agent(object):
             folder.mkdir(parents=True, exist_ok=True)
             (folder / "drill_response_repaired.txt").write_text(_reply_text(repaired), encoding="utf-8")
         try:
-            state["output"] = parse_drill_text(repaired.content or repaired.reasoning_content)
+            state["output"] = parse_drill_text(
+                repaired.content or repaired.reasoning_content,
+                self._template(state),
+            )
             state["request"] = None
             return state
         except ValueError:
@@ -192,7 +198,11 @@ class Agent(object):
 
     def _prepare_write(self, state):
         name = normalize_model(state.get("model"))
-        system = build_system_prompt(state.get("skill_pack") or "", self._template(state))
+        system = build_system_prompt(
+            state.get("skill_pack") or "",
+            self._template(state),
+            state.get("brief") or "",
+        )
         state = dict(state)
         state["model_name"] = name
         state["repair"] = False
@@ -235,7 +245,10 @@ class Agent(object):
         state["repair"] = True
         state["request"] = {
             "messages": [
-                {"role": "system", "content": repair_lead(template) + json_shape(template)},
+                {
+                    "role": "system",
+                    "content": repair_lead(template) + "\n" + json_shape(template, state.get("brief") or ""),
+                },
                 {"role": "user", "content": reply[:12000]},
             ],
             "model": state.get("model_name"),

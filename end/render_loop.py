@@ -74,6 +74,12 @@ SUBTITLE_FONT = "Noto Sans CJK SC"
 SUBTITLE_FONTS_DIR = "/usr/share/fonts/opentype/noto"
 FRAME_WIDTH = 768
 FRAME_HEIGHT = 1344
+H3_MAX_REFERENCE_IMAGES = 9
+FRAME_SIZES = {
+    "9:16": (768, 1344),
+    "16:9": (1344, 768),
+    "21:9": (1792, 768),
+}
 CAPTION_LIMIT = 12
 _INNER_PUNCT = "，。、；："
 
@@ -278,6 +284,7 @@ def reset_current_step(work_dir, project_id=None):
         step["public_url"] = ""
         step["local_override"] = False
         step["output_file"] = ""
+        step.pop("video_mode", None)
         state["current_step"] = step_id
         state["paused"] = False
         state["pause_reason"] = ""
@@ -349,6 +356,22 @@ def resume_paused(work_dir, project_id):
         return state
 
 
+def _content_rejected(message):
+    text = str(message or "").lower()
+    return "content safety" in text or "内容安全" in text
+
+
+def _remember_video_mode(ctx, shot_id, mode, clear_error=False):
+    with ctx.lock:
+        state = ctx.load_locked()
+        step = state["steps"].get(shot_id) or blank_step("video")
+        state["steps"][shot_id] = step
+        step["video_mode"] = mode
+        if clear_error:
+            step["error"] = ""
+        ctx.write_locked()
+
+
 def is_transient(error):
     status = getattr(error, "status", None)
     if status in TRANSIENT_HTTP:
@@ -402,7 +425,23 @@ def _clip_geometry(ffmpeg, path):
     return {"duration": seconds, "has_audio": "Audio:" in text}
 
 
-def ffmpeg_join(clips, target):
+def frame_size(aspect):
+    size = FRAME_SIZES.get(str(aspect or "").strip())
+    if not size:
+        raise RuntimeError("没有锁定画幅，不能默认竖屏")
+    return size
+
+
+def resolve_aspect(spec, brief=""):
+    from end.locks import locked_aspect
+
+    value = str((spec or {}).get("aspect_ratio") or "").strip()
+    if value in FRAME_SIZES:
+        return value
+    return locked_aspect(brief)
+
+
+def ffmpeg_join(clips, target, aspect):
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg:
         raise RuntimeError("本机没有 ffmpeg")
@@ -417,7 +456,7 @@ def ffmpeg_join(clips, target):
         lines.append("file '%s'" % path.as_posix().replace("'", "'\\''"))
     list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     proc = subprocess.run(
-        _normalize_join_command(ffmpeg, clips, geometries, target),
+        _normalize_join_command(ffmpeg, clips, geometries, target, aspect),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -427,19 +466,20 @@ def ffmpeg_join(clips, target):
     return target
 
 
-def _normalize_join_command(ffmpeg, clips, geometries, target):
-    """Fit every clip into the 9:16 frame, then concat with fresh timestamps.
+def _normalize_join_command(ffmpeg, clips, geometries, target, aspect):
+    """Fit every clip into the locked frame, then concat with fresh timestamps.
 
     Stream copy keeps each clip's own size and repeats an audio timestamp at
     every cut. Players hold the picture there and replay that sound.
     """
+    width, height = frame_size(aspect)
     filters = []
     labels = []
     for index, item in enumerate(geometries):
         filters.append(
             "[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,"
             "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,format=yuv420p[v%d]"
-            % (index, FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH, FRAME_HEIGHT, index)
+            % (index, width, height, width, height, index)
         )
         if item.get("has_audio"):
             filters.append(
@@ -693,7 +733,7 @@ def burn_joined_subtitles(joined, ass_path, burner=None, source=None):
     return joined
 
 
-def join_clips(clips, target, joiner=None):
+def join_clips(clips, target, joiner=None, aspect=""):
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     if len(clips) == 1:
@@ -703,7 +743,7 @@ def join_clips(clips, target, joiner=None):
         return target
     if joiner:
         return joiner(clips, target)
-    return ffmpeg_join(clips, target)
+    return ffmpeg_join(clips, target, aspect)
 
 
 def data_url(path):
@@ -976,7 +1016,7 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
     images = list((shot or {}).get("images") or [])
     shot_id = (shot or {}).get("id") or ""
     if mode == "text":
-        return "9:16", []
+        return "", []
     if mode == "first_frame":
         if not images:
             raise RuntimeError("首帧模式需要一张起始图")
@@ -1000,17 +1040,18 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
         ]
     if mode != "reference":
         raise RuntimeError("未知的 video_mode：%s" % mode)
+    images = images[:H3_MAX_REFERENCE_IMAGES]
     media = []
     for asset_id in images:
         url, _path = url_for(asset_id)
         if not url:
             raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, asset_id))
         media.append({"role": "reference_image", "url": url})
-    if tail_url:
+    if tail_url and len(media) < H3_MAX_REFERENCE_IMAGES:
         media.append({"role": "reference_image", "url": tail_url})
     if not media:
         raise RuntimeError("参考模式没有可用的参考图")
-    return "9:16", media
+    return "", media
 
 
 def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack="off", template=None):
@@ -1071,6 +1112,20 @@ def _tail_frame(clip_path, dest):
     return dest
 
 
+def _continuation_tail_url(ctx, previous_clip, shot_id):
+    """Publish the previous clip's last frame. Reference mode has nothing else to send."""
+    stem = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(shot_id or "tail"))[:40] or "tail"
+    dest = Path(ctx.work_dir) / "outputs" / "images" / ("%s_tail.jpg" % stem)
+    frame = _tail_frame(previous_clip, dest)
+    if frame is None or not ctx.project_id:
+        return ""
+    try:
+        return get_image_store().publish(ctx.project_id, frame.name, frame.read_bytes())
+    except Exception as error:
+        ctx.note("尾帧没有公开地址：%s" % error)
+        return ""
+
+
 def _should_skip(step, path):
     if not path.is_file() or path.stat().st_size <= 0:
         return False
@@ -1094,9 +1149,11 @@ class RenderContext(object):
         mixer=None,
         duration_of=None,
         template=None,
+        aspect="",
     ):
         self.work_dir = Path(work_dir)
         self.template = template
+        self.aspect = aspect or ""
         self.on_progress = on_progress
         self.project_id = project_id or ""
         self.icreat = icreat
@@ -1365,6 +1422,14 @@ class RenderContext(object):
         while True:
             self.block_while_paused()
             step = self.reload_step(step_id, kind)
+            if (
+                not step.get("remote_task_id")
+                and step.get("video_mode") == "text"
+                and _content_rejected(step.get("error"))
+            ):
+                self.pause_for_failure(step_id, kind, "内容安全拒绝了这一镜的文字提交，不再自动重试")
+                seen = None
+                continue
             if _should_skip(step, path):
                 fresh = self.mark_done(step_id, kind, relative, step.get("public_url") or "")
                 self.done_steps += 1
@@ -1490,7 +1555,7 @@ class RenderContext(object):
                     state["current_step"] = step_id
                     state["phase"] = "join"
                     self.write_locked()
-                join_clips(clips, path, self.joiner)
+                join_clips(clips, path, self.joiner, self.aspect)
             except (OSError, RuntimeError) as error:
                 reason = str(error)
                 with self.lock:
@@ -1660,7 +1725,11 @@ class RenderContext(object):
             for shot in shots:
                 clip, _relative = output_paths(self.work_dir, shot["id"], "video")
                 if clip.is_file() and clip.stat().st_size > 0:
-                    shot["duration"] = self._media_seconds(clip)
+                    try:
+                        shot["duration"] = self._media_seconds(clip)
+                    except RuntimeError:
+                        if not shot.get("duration"):
+                            raise
             cues = subtitle_cues(shots)
             mixed = None
             if soundtrack_enabled(self.soundtrack):
@@ -1685,7 +1754,8 @@ class RenderContext(object):
                     state["current_step"] = step_id
                     state["phase"] = "subtitles"
                     self.write_locked()
-                write_subtitle_ass(cues, ass_path)
+                width, height = frame_size(self.aspect)
+                write_subtitle_ass(cues, ass_path, width, height)
                 burn_joined_subtitles(joined, ass_path, self.burner, source=mixed)
             except (OSError, RuntimeError) as error:
                 reason = str(error)
@@ -1927,12 +1997,16 @@ def run_local_pipeline(
     mixer=None,
     duration_of=None,
     template=None,
+    aspect="",
 ):
     """Generate stills, then clips, join them, optionally mix a soundtrack, then burn 字幕.ass.
 
     images_only stops after the stills. Video, join, soundtrack, and subtitles are left for a later run.
     """
     assets, shots = collect_steps(spec)
+    aspect = aspect or resolve_aspect(spec, brief)
+    if not images_only and not aspect:
+        raise RuntimeError("没有锁定画幅，不能默认竖屏")
     if images_only:
         if not assets:
             raise ValueError("没有可用的资产图")
@@ -1967,6 +2041,7 @@ def run_local_pipeline(
         mixer=mixer,
         duration_of=duration_of,
         template=template,
+        aspect=aspect,
     )
     if project_id:
         register_thread(project_id)
@@ -2078,10 +2153,11 @@ def run_local_pipeline(
                 for asset_id in asset_ids
                 if ctx.reload_step(asset_id, "image").get("local_override")
             ]
-            continues = bool(clips)
+            previous = clips[-1] if clips else None
+            tail_url = _continuation_tail_url(ctx, previous, shot_id) if previous else ""
+            # An empty reference list pauses the shot. Continue only when the tail frame has a URL.
+            continues = bool(tail_url)
             mode = choose_video_mode(current, user_image_ids=user_ids, continues=continues)
-            # The previous clip's tail frame is only a local file. H3 rejects data: URIs.
-            tail_url = None
 
             def url_for(asset_id):
                 info = images.get(asset_id) or _saved_image(ctx, asset_id)
@@ -2123,8 +2199,11 @@ def run_local_pipeline(
                 },
             )
             # #endregion
+            _remember_video_mode(ctx, shot_id, mode)
             # Only text-to-video accepts aspect_ratio. Image and reference follow the input image.
-            ratio = "9:16" if mode == "text" else None
+            if mode == "text" and not ctx.aspect:
+                raise RuntimeError("没有锁定画幅，不能默认竖屏")
+            ratio = ctx.aspect if mode == "text" else None
             return cr.submit_video(
                 text,
                 model=VIDEO_MODE_MODELS[mode],

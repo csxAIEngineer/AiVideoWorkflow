@@ -84,7 +84,7 @@ def _init_schema(conn):
             prompt_id TEXT NOT NULL DEFAULT '',
             video_file TEXT NOT NULL DEFAULT '',
             model TEXT NOT NULL DEFAULT 'deepseek-v4-pro',
-            template TEXT NOT NULL DEFAULT 'luxury-suv',
+            template TEXT NOT NULL DEFAULT 'short-drama-director',
             created_at TEXT NOT NULL,
             started_at TEXT,
             updated_at TEXT NOT NULL,
@@ -109,7 +109,7 @@ def _init_schema(conn):
         )
     if "template" not in columns:
         conn.execute(
-            "ALTER TABLE projects ADD COLUMN template TEXT NOT NULL DEFAULT 'luxury-suv'"
+            "ALTER TABLE projects ADD COLUMN template TEXT NOT NULL DEFAULT 'short-drama-director'"
         )
     conn.commit()
 
@@ -151,7 +151,7 @@ def row_to_project(row):
         "prompt_id": data.get("prompt_id") or "",
         "video_file": data.get("video_file") or "",
         "model": data.get("model") or "deepseek-v4-pro",
-        "template": data.get("template") or "luxury-suv",
+        "template": data.get("template") or "short-drama-director",
         "created_at": data.get("created_at"),
         "started_at": data.get("started_at") or data.get("created_at"),
         "updated_at": data.get("updated_at"),
@@ -178,7 +178,7 @@ def _row_values(project):
         project.get("prompt_id") or "",
         project.get("video_file") or "",
         project.get("model") or "deepseek-v4-pro",
-        project.get("template") or "luxury-suv",
+        project.get("template") or "short-drama-director",
         project.get("created_at") or "",
         project.get("started_at"),
         project.get("updated_at") or "",

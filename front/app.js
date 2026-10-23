@@ -38,9 +38,10 @@ const canvasMinScale = 0.55;
 let pendingSaves = new Set();
 const pointer = { mode: "" };
 let draftMaterials = [];
+let seamKept = new Set();
 const MAX_MATERIALS = 8;
 
-const JOB_STEPS = ["建立项目", "写提示词", "生图", "出视频", "完成"];
+const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "独立质检", "离线看板"];
 const DEBUG_FILE_LABELS = {
   skill_pack: "Skill 规则",
   system_prompt: "System Prompt",
@@ -71,8 +72,10 @@ function isDebugProject(project) {
 }
 
 function statusText(project) {
+  if (project.status === "gate") return project.stage || "停在门上";
   if (project.status === "drilling") {
     const phase = project.progress && project.progress.phase;
+    if (phase === "lock_wait") return project.stage || "立项锁定";
     return phase === "drill_think" ? "正在想方向" : "选一个方向";
   }
   if (isIntentDebug(project) && project.status === "done") {
@@ -86,13 +89,33 @@ function statusText(project) {
     if (phase === "llm_debug") return project.stage || "Debug：已停在大模型";
     return project.stage || "Debug：已停在生图";
   }
-  if (project.status === "done") return project.stage || "成片已生成";
+  if (project.status === "done") {
+    const phase = project.progress && project.progress.phase;
+    if (phase === "prompts_ready") return project.stage || "提示词已就绪";
+    return project.stage || "成片已生成";
+  }
   if (project.status === "paused") return "已暂停";
   if (project.status === "error") return "未完成";
   const phase = project.progress && project.progress.phase;
   if (phase === "retry") return "重试";
   if (phase === "reconnect") return "重新连接";
   return project.stage || "处理中";
+}
+
+function writeStep(project) {
+  const message = ((project.progress && project.progress.message) || project.stage || "");
+  if (message.indexOf("看板") >= 0) return 7;
+  if (message.indexOf("质检") >= 0 || message.indexOf("机检") >= 0) return 6;
+  if (message.indexOf("投喂") >= 0 || message.indexOf("封装") >= 0) return 5;
+  if (message.indexOf("分镜") >= 0) return 4;
+  if (message.indexOf("资产") >= 0) return 3;
+  if (message.indexOf("剧本") >= 0) return 2;
+  if (message.indexOf("分流") >= 0 || message.indexOf("对标") >= 0) return 1;
+  return 1;
+}
+
+function promptsReady(project) {
+  return !!(project && project.status === "done" && project.progress && project.progress.phase === "prompts_ready");
 }
 
 function jobIndex(project) {
@@ -116,20 +139,29 @@ function jobIndex(project) {
     if (project.status === "writing" || project.script) return 1;
     return 0;
   }
-  if (project.status === "done") return 4;
-  if (project.status === "error" || project.status === "paused" || project.status === "rendering") {
-    const tasks = project.tasks || [];
-    const active = tasks.find((task) => ["running", "retrying", "paused", "error"].includes(task.state));
-    if (active) return active.kind === "image" ? 2 : 3;
-    if (tasks.some((task) => task.kind !== "image" && task.state === "done")) return 3;
-    if (tasks.some((task) => task.kind === "image" && task.state === "done")) return 2;
-    if (phase === "videos" || phase === "join" || phase === "audio" || phase === "subtitles") return 3;
-    if (phase === "images" || phase === "retry" || phase === "reconnect" || phase === "paused") return 2;
-    if (project.script) return 1;
-    return 1;
+  if (project.status === "gate") {
+    const gateSteps = {
+      gate_intel: 1,
+      gate_script: 2,
+      gate_asset: 3,
+      gate_storyboard: 4,
+      gate_feed: 5,
+      gate_fail: 6,
+    };
+    if (gateSteps[phase] != null) return gateSteps[phase];
   }
-  const order = { queued: 0, writing: 1, building: 2, rendering: 2 };
-  return order[project.status] == null ? 0 : order[project.status];
+  if (phase === "prompts_ready" || project.has_board) return JOB_STEPS.length;
+  if (project.status === "done" || project.status === "building" || project.status === "rendering") return JOB_STEPS.length;
+  if (project.status === "writing") return writeStep(project);
+  if (project.status === "drilling" || phase === "aspect_wait") return 0;
+  if (project.status === "error" || project.status === "paused") {
+    const from = (project.progress && project.progress.paused_from) || "";
+    if (from === "rendering" || from === "building") return JOB_STEPS.length;
+    if (project.script || phase === "writing") return writeStep(project);
+    return 0;
+  }
+  if (project.status === "queued") return 0;
+  return project.script ? writeStep(project) : 0;
 }
 
 function formatSpan(ms) {
@@ -201,7 +233,7 @@ function renderControls(project) {
   resume.type = "button";
   resume.textContent = "继续";
   resume.disabled = project.status === "rendering";
-  resume.addEventListener("click", () => postControl("resume"));
+  resume.addEventListener("click", () => onResumeClick());
   const reset = document.createElement("button");
   reset.type = "button";
   reset.textContent = "重置当前步骤";
@@ -210,6 +242,10 @@ function renderControls(project) {
   bar.append(pause, resume, reset);
   return bar;
 }
+
+document.querySelectorAll(".js-produce").forEach((button) => {
+  button.addEventListener("click", () => postControl("render"));
+});
 
 async function postControl(action) {
   if (!current || sending) return;
@@ -342,6 +378,23 @@ function progressPanel(project) {
   message.className = "job-message";
   message.textContent = progress.message || project.stage || (project.status === "error" ? "未完成" : "处理中");
   panel.append(message);
+  if (promptsReady(project) || (project.progress || {}).phase === "aspect_wait") {
+    const produce = document.createElement("button");
+    produce.type = "button";
+    produce.className = "produce";
+    produce.textContent = "出图出片";
+    produce.addEventListener("click", () => postControl("render"));
+    panel.append(produce);
+  }
+  if (project.board_url) {
+    const board = document.createElement("a");
+    board.className = "download";
+    board.href = project.board_url;
+    board.target = "_blank";
+    board.rel = "noopener";
+    board.textContent = "打开看板";
+    panel.append(board);
+  }
   const controls = renderControls(project);
   if (controls) panel.append(controls);
 
@@ -674,24 +727,105 @@ function visibleMessages(project) {
   return [];
 }
 
-function latestOptions(project) {
+function latestChoiceMessage(project) {
   const messages = (project && project.messages) || [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message.role === "assistant" && (message.options || []).length) return message.options;
+    if (message.role !== "assistant") continue;
+    if ((message.options || []).length) return message;
+    return null;
   }
-  return [];
+  return null;
 }
 
-function choiceList(options) {
+function latestOptions(project) {
+  const message = latestChoiceMessage(project);
+  return message ? message.options : [];
+}
+
+function onResumeClick() {
+  if (current && current.status === "gate") sendText("继续");
+  else postControl("resume");
+}
+
+function syncChoiceDisabled() {
+  document.querySelectorAll("#thread button.choice").forEach((button) => {
+    button.disabled = !!sending;
+  });
+}
+
+function multiChoices(options) {
+  const list = document.createElement("div");
+  list.className = "choices seam-choices";
+  const boxes = [];
+  options.forEach((label) => {
+    const row = document.createElement("label");
+    row.className = "seam-option";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = label;
+    box.checked = seamKept.has(label);
+    boxes.push(box);
+    row.append(box, document.createTextNode(label));
+    list.append(row);
+  });
+  const submit = document.createElement("button");
+  submit.type = "button";
+  submit.className = "choice";
+  submit.textContent = "继续";
+  submit.addEventListener("click", () => {
+    const labels = boxes.filter((box) => box.checked).map((box) => box.value);
+    if (!labels.length || sending) return;
+    sendText(labels.join("、"));
+  });
+  list.append(submit);
+  return list;
+}
+
+function styleChoices(message) {
+  const list = document.createElement("div");
+  list.className = "choices style-cards";
+  (message.cards || []).forEach((card) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "choice style-card";
+    const title = document.createElement("b");
+    title.textContent = card.title || "";
+    const look = document.createElement("span");
+    look.textContent = card.look || "";
+    button.append(title, look);
+    button.addEventListener("click", () => {
+      if (sending) return;
+      sendText(card.title || "");
+    });
+    list.append(button);
+  });
+  const recommend = document.createElement("button");
+  recommend.type = "button";
+  recommend.className = "choice";
+  recommend.textContent = "按你的推荐走";
+  recommend.addEventListener("click", () => {
+    if (sending) return;
+    sendText("按你的推荐走");
+  });
+  list.append(recommend);
+  return list;
+}
+
+function choiceList(messageOrOptions) {
+  const message = Array.isArray(messageOrOptions) ? { options: messageOrOptions } : (messageOrOptions || {});
+  const options = message.options || [];
+  const kind = message.choice_kind || "";
+  if (kind === "multi") return multiChoices(options);
+  if (kind === "cards") return styleChoices(message);
   const list = document.createElement("div");
   list.className = "choices";
   options.forEach((label, index) => {
     const button = document.createElement("button");
     button.type = "button";
     const other = label === "其他";
-    button.className = "choice" + (other ? " choice-other" : index === 0 ? " choice-rec" : "");
-    if (!other && index === 0) {
+    button.className = "choice" + (other ? " choice-other" : !kind && index === 0 ? " choice-rec" : "");
+    if (!other && !kind && index === 0) {
       const tag = document.createElement("span");
       tag.className = "choice-tag";
       tag.textContent = "建议";
@@ -756,7 +890,9 @@ function syncComposer() {
 }
 
 function workflowMode(project) {
-  if (!project || inDrill(project) || isIntentDebug(project)) return false;
+  if (!project || isIntentDebug(project)) return false;
+  if (project.status === "gate") return true;
+  if (inDrill(project)) return false;
   if (["writing", "building", "rendering", "paused", "done", "error"].includes(project.status)) return true;
   return !!project.script;
 }
@@ -770,7 +906,7 @@ function hideWorkflow() {
 function showWorkflow() {
   if (stageBar) stageBar.classList.remove("hidden");
   if (debugDock) debugDock.classList.remove("hidden");
-  const chat = surface === "chat";
+  const chat = surface === "chat" || (current && current.status === "gate");
   if (canvasWrap) canvasWrap.classList.toggle("hidden", chat);
   if (viewCanvasBtn) viewCanvasBtn.classList.toggle("on", !chat);
   if (viewChatBtn) viewChatBtn.classList.toggle("on", chat);
@@ -787,6 +923,9 @@ function renderThread(options) {
     empty.classList.remove("hidden");
     thread.classList.add("hidden");
     thread.innerHTML = "";
+    paintTranscript.key = "";
+    paintTranscript.projectId = "";
+    seamKept = new Set();
     syncComposer();
     return;
   }
@@ -798,7 +937,7 @@ function renderThread(options) {
     return;
   }
   showWorkflow();
-  const chat = surface === "chat";
+  const chat = surface === "chat" || current.status === "gate";
   thread.classList.toggle("hidden", !chat);
   if (chat) paintTranscript(opts, false);
   syncCanvas(current);
@@ -807,10 +946,54 @@ function renderThread(options) {
   syncComposer();
 }
 
+function transcriptKey(project) {
+  const messages = visibleMessages(project);
+  const last = messages.length ? messages[messages.length - 1] : {};
+  const progress = project.progress || {};
+  return [
+    project.id,
+    project.status,
+    project.stage,
+    project.can_reply,
+    project.error,
+    progress.phase,
+    progress.percent,
+    messages.length,
+    last.role,
+    last.content,
+    (last.options || []).join("\n"),
+    last.choice_kind,
+    (last.cards || []).map((card) => card.title).join("\n"),
+    project.script,
+    project.storyboard,
+    project.image_prompts,
+    (project.images || []).length,
+    (project.shots || []).length,
+  ].join("\u0001");
+}
+
 function paintTranscript(options, full) {
   const opts = options || {};
   const prevScroll = thread.scrollTop;
+  const checkedBefore = [...thread.querySelectorAll(".seam-option input")].map((box) => ({
+    value: box.value,
+    checked: box.checked,
+  }));
+  const key = current ? transcriptKey(current) : "";
+  const sameProject = !!(current && paintTranscript.projectId === current.id);
+  if (key && key === paintTranscript.key && sameProject && thread.childElementCount) {
+    syncChoiceDisabled();
+    if (opts.scroll === "top") thread.scrollTop = 0;
+    else if (opts.scroll === "bottom") thread.scrollTop = thread.scrollHeight;
+    syncComposer();
+    return;
+  }
+  seamKept = new Set(
+    sameProject ? checkedBefore.filter((box) => box.checked).map((box) => box.value) : []
+  );
   thread.innerHTML = "";
+  paintTranscript.key = key;
+  paintTranscript.projectId = current ? current.id : "";
   const wrap = document.createElement("div");
   wrap.className = "wrap";
   const strip = materialStrip(current);
@@ -818,8 +1001,24 @@ function paintTranscript(options, full) {
   visibleMessages(current).forEach((message) => {
     wrap.append(messageBubble(message.role, message.content || ""));
   });
-  if (current.can_reply && latestOptions(current).length) {
-    wrap.append(choiceList(latestOptions(current)));
+  if (current.status === "gate" && (current.progress || {}).phase === "gate_script" && current.script) {
+    const gatePassed = ((current.progress || {}).pipeline || {}).passed !== false;
+    const last = visibleMessages(current).slice(-1)[0] || {};
+    if (gatePassed && String(last.content || "").indexOf("机检已过") < 0) {
+      const note = document.createElement("p");
+      note.className = "stage";
+      note.textContent = "机检已过，没有打回项。看完这一稿，继续才进入资产。精修先选改法，再写一版，写完仍停在这里。";
+      wrap.append(note);
+    }
+    const scriptNode = section("这一稿", current.script);
+    if (scriptNode) wrap.append(scriptNode);
+  }
+  const choice = latestChoiceMessage(current);
+  if (current.can_reply && choice) {
+    wrap.append(choiceList(choice));
+  }
+  if (current.status === "gate" || (current.progress || {}).phase === "lock_wait") {
+    wrap.append(progressPanel(current));
   }
   if (current.status === "drilling" && !current.can_reply) {
     const thinking = document.createElement("p");
@@ -843,7 +1042,9 @@ function paintTranscript(options, full) {
   }
   const assistant = document.createElement("div");
   assistant.className = "assistant";
-  if (!inDrill(current)) assistant.append(progressPanel(current));
+  if (!inDrill(current) && (current.progress || {}).phase !== "lock_wait" && current.status !== "gate") {
+    assistant.append(progressPanel(current));
+  }
   tickElapsed();
   if ((current.progress || {}).phase === "intent_debug") {
     const note = document.createElement("p");
@@ -1045,8 +1246,9 @@ function showProjectModel(project) {
 
 function fillTemplates(templates) {
   if (!templateEl || !templates || !templates.length) return;
-  const saved = localStorage.getItem("aivideo.template") || "luxury-suv";
+  const saved = localStorage.getItem("aivideo.template") || "short-drama-director";
   const preferred = (current && current.template) || saved;
+  const fallback = templates[0].id || "short-drama-director";
   templateEl.innerHTML = "";
   templates.forEach((item) => {
     const option = document.createElement("option");
@@ -1054,15 +1256,17 @@ function fillTemplates(templates) {
     option.textContent = item.label;
     templateEl.appendChild(option);
   });
-  const pick = [...templateEl.options].some((option) => option.value === preferred) ? preferred : "luxury-suv";
+  const pick = [...templateEl.options].some((option) => option.value === preferred) ? preferred : fallback;
   if ([...templateEl.options].some((option) => option.value === pick)) {
     templateEl.value = pick;
   }
+  const picker = templateEl.closest(".template-picker");
+  if (picker) picker.classList.toggle("hidden", templates.length < 2);
 }
 
 function restoreTemplate() {
   if (!templateEl) return;
-  const saved = localStorage.getItem("aivideo.template") || "luxury-suv";
+  const saved = localStorage.getItem("aivideo.template") || "short-drama-director";
   if ([...templateEl.options].some((option) => option.value === saved)) {
     templateEl.value = saved;
   }
@@ -1070,14 +1274,14 @@ function restoreTemplate() {
 
 function showProjectTemplate(project) {
   if (!templateEl || !project) return;
-  const name = project.template || "luxury-suv";
+  const name = project.template || "short-drama-director";
   if ([...templateEl.options].some((option) => option.value === name)) {
     templateEl.value = name;
   }
 }
 
 function selectedTemplate() {
-  return templateEl ? templateEl.value : "luxury-suv";
+  return templateEl ? templateEl.value : "short-drama-director";
 }
 
 function selectedModel() {
@@ -1320,6 +1524,7 @@ async function sendText(text) {
     alert(error.message || "没有发出去");
   } finally {
     sending = false;
+    syncChoiceDisabled();
     syncComposer();
   }
 }
@@ -2028,7 +2233,7 @@ async function uploadAsset(assetId, file) {
 function syncControlButtons(project) {
   if (!project) return;
   const canPause = ["writing", "building", "rendering"].includes(project.status);
-  const canResume = project.status === "paused";
+  const canResume = project.status === "paused" || project.status === "gate";
   const canReset = project.status === "paused" || project.status === "error";
   document.querySelectorAll(".js-pause").forEach((button) => {
     button.disabled = !canPause;
@@ -2038,6 +2243,11 @@ function syncControlButtons(project) {
   });
   document.querySelectorAll(".js-reset").forEach((button) => {
     button.disabled = !canReset;
+  });
+  const showProduce = promptsReady(project) || ((project.progress || {}).phase === "aspect_wait");
+  document.querySelectorAll(".js-produce").forEach((button) => {
+    button.classList.toggle("hidden", !showProduce);
+    button.disabled = !showProduce || sending;
   });
 }
 
@@ -2246,7 +2456,7 @@ function bindCanvas() {
     button.addEventListener("click", () => postControl("pause"));
   });
   document.querySelectorAll(".js-resume").forEach((button) => {
-    button.addEventListener("click", () => postControl("resume"));
+    button.addEventListener("click", () => onResumeClick());
   });
   document.querySelectorAll(".js-reset").forEach((button) => {
     button.addEventListener("click", () => postControl("reset"));

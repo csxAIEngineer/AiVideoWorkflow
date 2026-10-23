@@ -29,7 +29,7 @@ from end.render_loop import (
     note_local_image,
     reset_current_step,
     resume_paused,
-    run_local_pipeline,
+    run_local_pipeline as _run_local_pipeline,
     save_run_state,
     should_resume_project,
     split_caption,
@@ -37,8 +37,18 @@ from end.render_loop import (
 )
 from end.workflow_from_spec import collect_steps, task_plan
 
+
+def run_local_pipeline(spec, *args, **kwargs):
+    """Existing cases lock 9:16 when the spec never named a frame."""
+    copied = dict(spec or {})
+    brief = kwargs.get("brief") or ""
+    if not copied.get("aspect_ratio") and not kwargs.get("aspect") and "画幅" not in str(brief):
+        copied["aspect_ratio"] = "9:16"
+    return _run_local_pipeline(copied, *args, **kwargs)
+
 SPEC = {
     "title": "雨夜",
+    "aspect_ratio": "9:16",
     "assets": [
         {"id": "A1", "title": "主角", "prompt": "一个女人站在车站"},
         {"id": "A2", "title": "雨中", "prompt": "同一个人淋着雨", "depends_on": "A1"},
@@ -50,6 +60,7 @@ SPEC = {
 
 ONE = {
     "title": "雨夜",
+    "aspect_ratio": "9:16",
     "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人站在车站"}],
     "shots": [{"id": "S01", "duration": 5, "prompt": "她转身离开", "images": ["A1"]}],
 }
@@ -766,32 +777,11 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual([item["role"] for item in continued], ["reference_image", "reference_image"])
         self.assertTrue(continued[1]["url"].startswith("data:image/jpeg"))
         kept = delivery_prompt({"prompt": "她回头"}, [], 1, True, "reference")
-        self.assertIn("轮子在转", kept)
-        self.assertIn("不要照抄", kept)
-        apple = delivery_prompt(
-            {"prompt": "她回头"},
-            [],
-            1,
-            True,
-            "reference",
-            template="apple-product",
-        )
-        self.assertNotIn("轮子在转", apple)
-        self.assertNotIn("轮胎", apple)
-        self.assertNotIn("同一台车", apple)
-        self.assertNotIn("不要照抄", apple)
-        product = image_prompt(
-            {"id": "A04", "prompt": "纯白无缝影棚台面"},
-            template="apple-product",
-        )
-        self.assertNotIn("轮胎", product)
-        self.assertNotIn("车标", product)
-        studio = image_prompt(
-            {"id": "A04", "prompt": "纯白无缝影棚台面"},
-            template="luxury-suv",
-        )
-        self.assertIn("轮胎接地", studio)
-        self.assertIn("不要特写车标文字", studio)
+        self.assertNotIn("轮子在转", kept)
+        self.assertIn("本镜无对白", kept)
+        product = image_prompt({"id": "A04", "prompt": "纯白无缝影棚台面"})
+        self.assertEqual(product, "纯白无缝影棚台面")
+        self.assertNotIn("轮胎接地", product)
         _aspect, opened = assemble_shot_media(
             {"id": "S02", "images": ["U2"]},
             "first_frame",
@@ -937,7 +927,7 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(chosen["images"][0]["role"], "reference_image")
         self.assertEqual(chosen["images"][0]["url"], "https://cdn.example/img-1.png")
         self.assertNotEqual(chosen["images"][0]["url"], "https://cdn.example/U1.png")
-        self.assertIn("轮子在转", chosen["text"])
+        self.assertNotIn("轮子在转", chosen["text"])
 
     def test_soundtrack_keeps_narration_out_of_the_h3_prompt(self):
         spec = {
@@ -1033,6 +1023,33 @@ class RenderLoopTest(unittest.TestCase):
         )
         self.assertTrue(any(item.get("message") == "没有旁白，保留镜头原声" for item in quiet))
         self.assertTrue(all(item.get("soundtrack_note") == "没有旁白" for item in quiet))
+
+    def test_text_aspect_comes_from_the_brief_and_a_missing_lock_does_not_default(self):
+        wide = {
+            "title": "海",
+            "assets": [{"id": "A1", "title": "闲置", "prompt": "一张桌子"}],
+            "shots": [{"id": "S01", "duration": 4, "prompt": "海面慢慢亮起来", "images": []}],
+        }
+        cr = FakeCR()
+        _run_local_pipeline(
+            wide,
+            self.work / "wide",
+            icreat=FakeICreat(),
+            cr=cr,
+            sleeper=_noop_sleep,
+            brief="画幅：16:9",
+        )
+        self.assertEqual(cr.submits[0]["aspect_ratio"], "16:9")
+        with self.assertRaises(RuntimeError) as caught:
+            _run_local_pipeline(
+                wide,
+                self.work / "open",
+                icreat=FakeICreat(),
+                cr=FakeCR(),
+                sleeper=_noop_sleep,
+                brief="雨夜",
+            )
+        self.assertIn("没有锁定画幅", str(caught.exception))
 
 
 def _png(width, height):

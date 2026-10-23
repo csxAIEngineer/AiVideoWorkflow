@@ -162,7 +162,7 @@ class ProjectApiTest(unittest.TestCase):
         self.assertIn(b"/rpc.js", page)
         self.assertIn("Debug：只到意图解析".encode(), page)
         self.assertIn("Debug：只到提示词".encode(), page)
-        self.assertIn(b"/app.js?v=44", page)
+        self.assertIn(b"/app.js?v=54", page)
         status, script = self.request("GET", "/app.js")
         self.assertEqual(status, 200)
         self.assertIn(b"projects.create", script)
@@ -299,7 +299,7 @@ class ProjectApiTest(unittest.TestCase):
         self.assertIn("不能暂停", denied["error"]["message"])
         gate_for(project_id).resume()
 
-    def test_paused_writing_saves_spec_and_resume_starts_render(self):
+    def test_paused_writing_saves_spec_and_resume_stays_at_prompts(self):
         project_id = "c0ffee000003"
         make_project(project_id, status="writing")
         pause_render(read_project(project_id))
@@ -309,7 +309,17 @@ class ProjectApiTest(unittest.TestCase):
             "storyboard": "写完的分镜",
             "image_prompts": "提示",
             "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人"}],
-            "shots": [{"id": "S01", "duration": 5, "prompt": "离开", "images": ["A1"]}],
+            "shots": [{
+                "id": "S01",
+                "duration": 5,
+                "prompt": "\n".join([
+                    "integrated_multimodal_description: A woman in a blue coat stands on a wet platform. [Shot 1] She turns and walks toward the train.",
+                    "overall_soundscape: Rain and a distant train brake.",
+                    "non_diegetic_music: Low strings, slow.",
+                    "duration_seconds: 5",
+                ]),
+                "images": ["A1"],
+            }],
         }
         with patch("end.server.call_deepseek", return_value=spec), patch("end.server.execute_render") as execute:
             run_project(project_id)
@@ -318,16 +328,11 @@ class ProjectApiTest(unittest.TestCase):
         self.assertEqual(saved["script"], "写完的剧本")
         self.assertEqual(read_project(project_id)["status"], "paused")
         self.assertEqual(read_project(project_id)["script"], "写完的剧本")
-        started = threading.Event()
-
-        def fake_execute(pid, project=None):
-            self.assertEqual(pid, project_id)
-            started.set()
-
-        with patch("end.server.execute_render", fake_execute):
+        with patch("end.server.execute_render") as execute, patch("end.server.submit_agent_task"):
             resume_render(read_project(project_id))
-            self.assertTrue(started.wait(3))
-        self.assertEqual(read_project(project_id)["status"], "rendering")
+        execute.assert_not_called()
+        self.assertNotEqual(read_project(project_id)["status"], "rendering")
+        self.assertNotEqual(read_project(project_id)["status"], "building")
         gate_for(project_id).resume()
 
     def test_jpeg_upload_becomes_png(self):

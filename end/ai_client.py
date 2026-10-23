@@ -183,21 +183,16 @@ def template_render(template):
     return dict(value or {})
 
 
-def load_skill_pack(template, context=""):
-    """Cache the pack by the routed filenames so two directors do not share one pack."""
+def load_skill_pack(template, context="", stage="P4"):
+    """Cache one stage. Track and combat in the brief change which files are read."""
     template = str(template or "")
     context = str(context or "")
-    routed = _remember(
-        ("skill-route", template, context),
-        "skills.route",
-        {"template": template, "context": context},
-    )
-    extra = tuple(routed.get("extra") or [])
+    stage = str(stage or "P4")
     loaded = _remember(
-        ("skill-pack", template, extra),
+        ("skill-pack", template, stage, context),
         "skills.load",
-        {"template": template, "context": context},
-        timeout=60,
+        {"template": template, "context": context, "stage": stage},
+        timeout=120,
     )
     return loaded["pack"]
 

@@ -12,6 +12,15 @@ from ai_rpc import ai
 
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
+RENDER_WORDS = ("出图出片", "生成图片", "跑图", "出片", "出图")
+RENDER_BLOCKED = ("不出图", "不要出图", "别出图", "先不出图", "不出片", "不要出片", "别出片")
+
+
+def wants_render(text):
+    body = "".join(str(text or "").split())
+    if not body or any(token in body for token in RENDER_BLOCKED):
+        return False
+    return any(token in body for token in RENDER_WORDS)
 
 
 def load_config():
@@ -65,7 +74,8 @@ def repl(config, provider_name, template):
             return
         if line == "/help":
             print("先问清楚再写。确认之后按当前模版写提示词。")
-            print("/template luxury-suv|apple-product|drama-product-skill|drama-product-skill2")
+            print("/template 切换模版。默认是漫剧，模型锁定 MiniMax H3。")
+            print("锁定之后这里只写提示词和看板。出图出片回到页面按钮。")
             print("/skills   /provider qwen|deepseek")
             print("/reset 清空本轮对话    /save 文件路径")
             continue
@@ -109,6 +119,9 @@ def repl(config, provider_name, template):
             print("已写入 %s" % target)
             continue
         provider = config["providers"][provider_name]
+        if not drilling and wants_render(line):
+            print("出图出片不在这里启动。提示词就绪后，回页面点「出图出片」，或在项目里发送「出图」。")
+            continue
         if drilling:
             if pending_options and line.isdigit():
                 index = int(line) - 1

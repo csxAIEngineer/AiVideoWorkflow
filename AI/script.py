@@ -10,6 +10,8 @@ from AI.skills.registry import (
     drill_system_prompt,
     json_shape,
     load_skill_pack,
+    locks_ready,
+    template_policy,
 )
 
 JSON_SHAPE = json_shape()
@@ -98,7 +100,10 @@ OTHER_CHOICE = "其他"
 
 
 def choice_options(raw):
-    """Keep one or two concrete futures, then always end with 其他."""
+    """Keep every concrete choice the drill listed, then always end with 其他.
+
+    A lock can have four choices. Trimming to two hides the rest of the lock.
+    """
     concrete = []
     if isinstance(raw, list):
         for item in raw:
@@ -106,7 +111,7 @@ def choice_options(raw):
             if not text or text == OTHER_CHOICE or text in concrete:
                 continue
             concrete.append(text)
-    concrete = concrete[:2]
+    concrete = concrete[:8]
     if not concrete:
         concrete = ["沿刚才的方向继续"]
     return concrete + [OTHER_CHOICE]
@@ -137,6 +142,8 @@ def ready_from_conversation(messages, template=None):
     brief = conversation_brief(messages, template)
     if not brief:
         return None
+    if template_policy(template) == "drama_still" and not locks_ready(brief):
+        return None
     return {
         "phase": "ready",
         "reply": "方向已经够了，开始写提示词。",
@@ -145,7 +152,7 @@ def ready_from_conversation(messages, template=None):
     }
 
 
-def parse_drill_text(text):
+def parse_drill_text(text, template=None):
     data = _extract_object(text)
     phase = str(data.get("phase") or "").strip().lower()
     reply = str(data.get("reply") or "").strip()
@@ -161,6 +168,13 @@ def parse_drill_text(text):
         }
     if not brief:
         raise ValueError("确认后的简报是空的")
+    if template_policy(template) == "drama_still" and not locks_ready(brief):
+        return {
+            "phase": "ask",
+            "reply": reply,
+            "brief": "",
+            "options": choice_options(data.get("options")),
+        }
     return {"phase": "ready", "reply": reply, "brief": brief, "options": []}
 
 
@@ -188,7 +202,7 @@ def _extract_json(text):
         data = json.loads(cleaned[start : end + 1])
     except json.JSONDecodeError:
         raise ValueError("DeepSeek 没有返回 JSON")
-    if not isinstance(data, dict) or not (data.get("script") or data.get("assets")):
+    if not isinstance(data, dict) or not (data.get("script") or data.get("assets") or data.get("shots")):
         raise ValueError("DeepSeek 没有返回 JSON")
     return data
 
@@ -211,8 +225,11 @@ def write_llm_debug(folder, brief, skill_pack, result=None, repaired=None, templ
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "skill_pack.txt").write_text(skill_pack or "", encoding="utf-8")
-    (folder / "json_shape.txt").write_text(json_shape(template), encoding="utf-8")
-    (folder / "system_prompt.txt").write_text(build_system_prompt(skill_pack, template), encoding="utf-8")
+    (folder / "json_shape.txt").write_text(json_shape(template, brief), encoding="utf-8")
+    (folder / "system_prompt.txt").write_text(
+        build_system_prompt(skill_pack, template, brief),
+        encoding="utf-8",
+    )
     (folder / "user_brief.txt").write_text(brief or "", encoding="utf-8")
     if result is not None:
         (folder / "raw_response.txt").write_text(_reply_text(result), encoding="utf-8")

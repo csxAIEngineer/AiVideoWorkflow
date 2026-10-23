@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AiVideo</title>
-  <link rel="stylesheet" href="/styles.css?v=32" />
+  <link rel="stylesheet" href="/styles.css?v=34" />
 </head>
 <body>
   <aside class="sidebar">
@@ -25,6 +25,7 @@
         <button id="zoom-fit" type="button">适应画面</button>
       </div>
       <div class="stage-controls">
+        <button id="produce" class="js-produce hidden" type="button">出图出片</button>
         <button id="pause-run" class="js-pause" type="button">暂停</button>
         <button id="resume-run" class="js-resume" type="button">继续</button>
         <button id="reset-run" class="js-reset" type="button">重置当前步骤</button>
@@ -47,6 +48,7 @@
           <span id="dock-elapsed" class="dock-elapsed"></span>
         </div>
         <div class="dock-actions">
+          <button class="js-produce hidden" type="button">出图出片</button>
           <button class="js-pause" type="button">暂停</button>
           <button class="js-resume" type="button">继续</button>
           <button class="js-reset" type="button">重置当前步骤</button>
@@ -79,13 +81,8 @@
           <label class="model-picker">
             <select id="model" aria-label="模型"></select>
           </label>
-          <label class="template-picker" title="新建项目使用的模版">
-            <select id="template" aria-label="模版">
-              <option value="luxury-suv">高奢感 SUV</option>
-              <option value="apple-product">Apple 风产品特写</option>
-              <option value="drama-product-skill">短剧植入</option>
-              <option value="drama-product-skill2">短剧植入 · 导演</option>
-            </select>
+          <label class="template-picker hidden" title="新建项目使用的模版">
+            <select id="template" aria-label="模版"></select>
           </label>
           <label class="soundtrack-picker" title="拼接之后按每镜旁白合成声音">
             <select id="soundtrack" aria-label="声轨">
@@ -111,6 +108,6 @@
     </form>
   </main>
   <script src="/rpc.js?v=1"></script>
-  <script src="/app.js?v=44"></script>
+  <script src="/app.js?v=54"></script>
 </body>
 </html>

@@ -5,12 +5,9 @@ from pathlib import Path
 
 from end.image_node import prepare_image_node, video_nodes
 from end.intake import enrich_brief
-from AI.script import JSON_SHAPE, load_skill_pack
+from AI.script import JSON_SHAPE
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED = "所有视频用到的图片都要先经过Image-Node处理/生成"
-
-
 def views_of(spec, subject):
     found = {}
     for asset in spec["assets"]:
@@ -21,19 +18,18 @@ def views_of(spec, subject):
 
 class ImageNodeTests(unittest.TestCase):
     def test_skill_requires_the_image_node(self):
-        text = (ROOT / "AI" / "skills" / "luxury-suv" / "生图.md").read_text(encoding="utf-8")
-        self.assertIn(REQUIRED, text)
-        self.assertIn("上传图只是参考", text)
-        self.assertIn("references", text)
-        pack = load_skill_pack()
-        self.assertIn(REQUIRED, pack)
-        self.assertIn("上传图只是参考", pack)
-        self.assertIn("Image-Node", JSON_SHAPE)
-        self.assertIn("front", JSON_SHAPE)
-        self.assertIn("side", JSON_SHAPE)
-        self.assertIn("back", JSON_SHAPE)
-        self.assertIn("references", JSON_SHAPE)
+        text = (ROOT / "AI" / "skills" / "short-drama-director" / "host" / "成稿.md").read_text(encoding="utf-8")
+        self.assertIn("所有视频用到的图片都要先经过 Image-Node 处理/生成", text)
+        self.assertIn("九宫格", text)
+        self.assertIn("全图共 4 格", text)
+        self.assertNotIn("不要拆正面", text)
         self.assertIn("上传图只是参考", JSON_SHAPE)
+        self.assertIn("references", JSON_SHAPE)
+        self.assertIn("Image-Node", JSON_SHAPE)
+        self.assertIn("view 写 single", JSON_SHAPE)
+        self.assertIn("九宫格", JSON_SHAPE)
+        self.assertNotIn("不要拆成多张视图", JSON_SHAPE)
+        self.assertNotIn("画幅 9:16", JSON_SHAPE)
         brief = enrich_brief("雨夜", [{"id": "U1", "title": "车站", "narration": "她在等"}])
         self.assertIn("上传图只是参考", brief)
         self.assertIn("U1", brief)
@@ -306,6 +302,21 @@ class ImageNodeTests(unittest.TestCase):
         self.assertEqual(macro["id"], "D1")
         self.assertEqual(macro["depends_on"], hero["id"])
         self.assertEqual(hero["depends_on"], "")
+
+
+    def test_drama_still_keeps_one_prompt(self):
+        spec = prepare_image_node(
+            {
+                "assets": [
+                    {"id": "P1", "title": "程屿", "prompt": "三十二岁男人", "subject": "程屿", "subject_kind": "character"},
+                ],
+                "shots": [{"id": "S01", "prompt": "他回头", "images": ["P1"]}],
+            },
+            policy="drama_still",
+        )
+        self.assertEqual(len(spec["assets"]), 1)
+        self.assertEqual(spec["assets"][0]["view"], "single")
+        self.assertEqual(spec["assets"][0]["id"], "P1")
 
 
 if __name__ == "__main__":

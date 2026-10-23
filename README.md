@@ -1,6 +1,6 @@
 # AiVideo
 
-汽车视频的聊天入口。先写一段背景，再用当前模版的意图补充把这段背景扩成 2 到 3 个方向让你选，最后一项是「其他」；选到「就按这个做」之后，才按该模版写出提示词、分镜和生图提示词。写完后仍由本机生图出片：iCreat 生图、CR MiniMax H3 出镜、ffmpeg 拼接，最后用 ffmpeg 把 `字幕.ass` 烧进成片。不再把成片提交到 Comfy Cloud。
+漫剧的聊天入口。先锁定赛道、素材来源、画幅（16:9 / 9:16 / 21:9）、画风和动作强度，模型固定为 MiniMax H3。锁定之后按剧本、资产提示词、分镜、H3 投喂稿分阶段写完，跑机检，生成离线看板，然后停在「提示词已就绪」。只有点「出图出片」，或消息里出现「出图」「生成图片」「跑图」「出片」，才会用 iCreat 生静帧、CR MiniMax H3 出镜，再用 ffmpeg 拼接并把 `字幕.ass` 烧进成片。没有锁定画幅时不会默认竖屏。
 
 页面到成片的路径是 Front → End → AI。Front 和 End、End 和 AI 都只走 JSON-RPC，三个目录互不 import。AI 里面是 LangGraph → Agent → LLM Model：图把这一问交给 Agent，Agent 组好请求，LLM Model 再去调 DeepSeek 或 CR。出片不进这个布局，仍由 End 在本机编排，生图、出镜和声轨的 HTTP 调用发给 AI。模型工人数量用 `AIVIDEO_AGENT_WORKERS`，默认 4。进程重启时，还停在「正在想方向」或「正在写提示词」的项目会重新入队。
 
@@ -22,7 +22,7 @@ End 会在本机拉起 AI（`http://127.0.0.1:8791/rpc`）。已经单独启动 
 
 打开 http://127.0.0.1:8787 。
 
-画幅 9:16。资产和镜头按故事需要增减。单次视频生成是 4 到 15 秒。出片进度写在项目目录的 `run_state.json`。已经落盘的图和视频会跳过。页面上可以暂停、继续，或重置当前失败的那一步。网络中断时，已有远端任务号就继续查状态；还没有任务号就用同一个幂等键再提交。
+画幅跟立项时锁下的 16:9、9:16 或 21:9 走。资产和镜头按故事需要增减。单次视频生成是 4 到 15 秒。写完的项目目录里有 `project.md`、`feed.md`、`board.html` 和 `spec.json`。出片进度写在 `run_state.json`。已经落盘的图和视频会跳过。页面上可以暂停、继续，或重置当前失败的那一步。网络中断时，已有远端任务号就继续查状态；还没有任务号就用同一个幂等键再提交。
 
 命令行导演室（同一套入口：先按当前模版做意图补充，确认后用该模版写提示词。DeepSeek 走 CR API）：
 
@@ -101,11 +101,4 @@ client.download_image(task.url, "hero.png")
 
 `workflows/` 是可拖进 Comfy Desktop 的示例工作流。`pipeline/` 只留岷江未晚示例 JSON。
 
-技能有四支模版，各自带齐提示词：导演、意图分析、意图补充、成稿、写提示词、生图。`luxury-suv`、`drama-product-skill` 和 `drama-product-skill2` 另有案例。
-
-- `AI/skills/luxury-suv/`：高奢感 SUV
-- `AI/skills/apple-product/`：Apple 风产品特写
-- `AI/skills/drama-product-skill/`：短剧植入，把一件商品嵌进一场竖屏小戏
-- `AI/skills/drama-product-skill2/`：短剧植入 · 导演。导演原文来自 https://github.com/wuwangzhang1216/DirectorSKILL ，commit `c65ae0d14457053efb1e354c7e7f7e120d97fad1`（cinematic-director 2.1.0，MIT）
-
-速度片案例来自 https://github.com/LearnPrompt/awesome-seedance 。写提示词时先选一个案例当锚。
+技能只有一套模版 `short-drama-director`。追问稿在 `AI/skills/short-drama-director/host/`。写稿按阶段读取同目录下的 `sd-*-engine`。上游原文来自 https://github.com/lixiaoxiao9888-create/manju-laoli-skill ，`main` 的 `a06451b07acc2a24a2dc909f88b4469e2495eb32`。页面默认停在提示词和看板，出图是另一步。

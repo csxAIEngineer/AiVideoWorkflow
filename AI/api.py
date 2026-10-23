@@ -78,8 +78,9 @@ def skills_load(params):
     params = params or {}
     template = params.get("template")
     context = params.get("context") or ""
+    stage = params.get("stage") or "P4"
     return {
-        "pack": load_skill_pack(template, context=context),
+        "pack": load_skill_pack(template, context=context, stage=stage),
         "extra": skill_pack_extra(template, context),
     }
 
@@ -108,7 +109,11 @@ def write(params):
     template = params.get("template")
     pack = params.get("skill_pack")
     if not pack:
-        pack = load_skill_pack(template, context=params.get("brief") or "")
+        pack = load_skill_pack(
+            template,
+            context=params.get("brief") or "",
+            stage=params.get("stage") or "P4",
+        )
     return call_deepseek(
         params.get("brief") or "",
         pack,
@@ -308,7 +313,7 @@ def studio_drill(params):
     messages.append({"role": "user", "content": line})
     raw = _provider_chat(params.get("provider") or {}, messages)
     try:
-        parsed = parse_drill_text(raw)
+        parsed = parse_drill_text(raw, template)
     except ValueError:
         return {"parsed": False, "raw": raw}
     return {
@@ -325,7 +330,11 @@ def studio_write(params):
     params = params or {}
     template = params.get("template")
     locked = str(params.get("locked_brief") or "")
-    prompt = build_system_prompt(load_skill_pack(template, context=locked), template)
+    prompt = build_system_prompt(
+        load_skill_pack(template, context=locked, stage=params.get("stage") or "P4"),
+        template,
+        locked,
+    )
     if locked:
         prompt += "\n\n已经和用户确认的创作简报，必须原样遵守：\n%s" % locked
     history = list(params.get("history") or [])

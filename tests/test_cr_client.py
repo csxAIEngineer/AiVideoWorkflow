@@ -16,6 +16,33 @@ class _Client(CRClient):
         return {"id": "vid-1", "status": "submitted", "poll_url": "https://example/poll"}
 
 
+class CRChatRetryTest(unittest.TestCase):
+    def test_transient_gateway_502_is_retried(self):
+        class Client(CRClient):
+            def __init__(self):
+                self.api_key = "test"
+                self.base_url = "https://example.invalid"
+                self.chat_retry_waits = (0, 0)
+                self.calls = 0
+
+            def _request(self, method, path, body, timeout, headers=None):
+                self.calls += 1
+                if self.calls == 1:
+                    raise CRError("CR API 返回 502：nginx", 502, "<html>502</html>")
+                return {"model": "gpt-5.5", "choices": [{"message": {"content": "{\"ok\":true}"}}]}
+
+        client = Client()
+        result = client.chat(
+            [{"role": "user", "content": "ok"}],
+            model="gpt-5.5",
+            max_tokens=200,
+            response_format={"type": "json_object"},
+        )
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(result.content, "{\"ok\":true}")
+        self.assertEqual(result.model, "gpt-5.5")
+
+
 class CRVideoRolesTest(unittest.TestCase):
     def test_reference_video_and_audio_are_separate_content_items(self):
         client = _Client()

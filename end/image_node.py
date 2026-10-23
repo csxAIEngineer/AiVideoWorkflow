@@ -9,6 +9,7 @@ VIEWS = ("front", "side", "back")
 PRODUCT_VIEWS = ("hero", "three_quarter", "macro")
 VEHICLE_TURNAROUND = "vehicle_turnaround"
 PRODUCT_HERO = "product_hero"
+DRAMA_STILL = "drama_still"
 TURNAROUND = ("character", "prop")
 VIEW_LABEL = {"front": "正面", "side": "侧面", "back": "背面"}
 PRODUCT_LABEL = {"hero": "英雄图", "three_quarter": "四分之三", "macro": "微距"}
@@ -52,7 +53,7 @@ def prepare_image_node(spec, locked_ids=None, items=None, policy=None):
     No policy means vehicle_turnaround, the same front, side, and back fill as before.
     """
     chosen = policy or VEHICLE_TURNAROUND
-    if chosen not in (VEHICLE_TURNAROUND, PRODUCT_HERO):
+    if chosen not in (VEHICLE_TURNAROUND, PRODUCT_HERO, DRAMA_STILL):
         chosen = VEHICLE_TURNAROUND
     spec = bind_upload_references(spec, items, extra_ids=locked_ids)
     locked = {str(item) for item in (locked_ids or []) if item}
@@ -67,6 +68,8 @@ def prepare_image_node(spec, locked_ids=None, items=None, policy=None):
         assets.append(_normalize_asset(item, index, used))
     if chosen == PRODUCT_HERO:
         assets = _expand_product(assets)
+    elif chosen == DRAMA_STILL:
+        assets = _single_stills(assets)
     else:
         assets = _expand_turnarounds(assets)
     known = {asset["id"] for asset in assets}
@@ -147,6 +150,11 @@ def _normalize_asset(item, index, used):
         "subject_kind": kind,
         "view": view,
     }
+
+
+def _single_stills(assets):
+    """One written prompt stays one still. No hero set and no vehicle views."""
+    return [dict(asset, view="single") for asset in assets]
 
 
 def _expand_turnarounds(assets):

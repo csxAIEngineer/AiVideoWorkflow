@@ -61,5 +61,5 @@ class ProcessSplitTest(unittest.TestCase):
         info = catalog()
         self.assertIn("deepseek-v4-pro", {item["id"] for item in info["models"]})
         self.assertEqual(normalize_model("nope"), info["default_model"])
-        self.assertEqual(normalize_template("apple-product"), "apple-product")
-        self.assertIn("luxury-suv", {item["id"] for item in info["templates"]})
+        self.assertEqual(normalize_template("apple-product"), "short-drama-director")
+        self.assertEqual({item["id"] for item in info["templates"]}, {"short-drama-director"})

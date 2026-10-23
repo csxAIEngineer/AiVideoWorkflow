@@ -26,6 +26,19 @@ from end.server import (
 from end.task_queue import Task, TaskQueue
 from tests.test_project_api import make_project
 
+LOCKED_BRIEF = "\n".join(
+    [
+        "赛道：1",
+        "素材来源：1",
+        "模型：MiniMax H3",
+        "画幅：16:9",
+        "交付：③",
+        "段缝：①",
+        "画风：冷色写实",
+        "动作强度：R1",
+    ]
+)
+
 
 class Reply(object):
     def __init__(self, content="", reasoning_content=""):
@@ -465,7 +478,7 @@ class EndHandoffTest(unittest.TestCase):
         submitted = []
 
         def fake(messages, debug_dir=None, model=None, template=None):
-            return {"phase": "ready", "reply": "开始写", "brief": "锁定的简报", "options": []}
+            return {"phase": "ready", "reply": "开始写", "brief": LOCKED_BRIEF, "options": []}
 
         with patch("end.server.call_drill", side_effect=fake), patch(
             "end.server.submit_agent_task", side_effect=submitted.append
@@ -476,7 +489,7 @@ class EndHandoffTest(unittest.TestCase):
         self.assertEqual(submitted[0].project_id, project_id)
         self.assertTrue(submitted[0].payload["debug_llm"] is False)
         saved = db.read_project(project_id)
-        self.assertEqual(saved["brief"], "锁定的简报")
+        self.assertEqual(saved["brief"], LOCKED_BRIEF)
         self.assertEqual(saved["status"], "writing")
         self.assertEqual(saved["progress"]["phase"], "writing")
         self.assertEqual(saved["messages"][-1]["content"], "开始写")
@@ -498,7 +511,7 @@ class EndHandoffTest(unittest.TestCase):
         )
         answers = [
             {"phase": "ask", "reply": "谁来用", "options": ["她", "其他"], "brief": ""},
-            {"phase": "ready", "reply": "就按这个做", "brief": "锁定的简报", "options": []},
+            {"phase": "ready", "reply": "就按这个做", "brief": LOCKED_BRIEF, "options": []},
         ]
         seen = []
 
@@ -521,7 +534,7 @@ class EndHandoffTest(unittest.TestCase):
         self.assertTrue(all(path is not None for path in seen))
         saved = db.read_project(project_id)
         view = public_view(saved)
-        self.assertEqual(saved["brief"], "锁定的简报")
+        self.assertEqual(saved["brief"], LOCKED_BRIEF)
         self.assertEqual(saved["status"], "done")
         self.assertEqual(saved["script"], "")
         self.assertEqual(saved["progress"]["phase"], "intent_debug")
@@ -571,7 +584,7 @@ class EndHandoffTest(unittest.TestCase):
 
         def fake_drill(messages, debug_dir=None, model=None, template=None):
             self.assertIsNotNone(debug_dir)
-            return {"phase": "ready", "reply": "开始写", "brief": "锁定的简报", "options": []}
+            return {"phase": "ready", "reply": "开始写", "brief": LOCKED_BRIEF, "options": []}
 
         with patch("end.server.call_drill", side_effect=fake_drill), patch(
             "end.server.submit_agent_task", side_effect=submitted.append
@@ -589,7 +602,17 @@ class EndHandoffTest(unittest.TestCase):
             "storyboard": "写完的分镜",
             "image_prompts": "提示",
             "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人"}],
-            "shots": [{"id": "S01", "duration": 5, "prompt": "离开", "images": ["A1"]}],
+            "shots": [{
+                "id": "S01",
+                "duration": 5,
+                "prompt": "\n".join([
+                    "integrated_multimodal_description: A woman in a blue coat stands on a wet platform. [Shot 1] She turns and walks toward the train.",
+                    "overall_soundscape: Rain and a distant train brake.",
+                    "non_diegetic_music: Low strings, slow.",
+                    "duration_seconds: 5",
+                ]),
+                "images": ["A1"],
+            }],
         }
         seen = {}
 
@@ -654,15 +677,27 @@ class EndHandoffTest(unittest.TestCase):
             "storyboard": "写完的分镜",
             "image_prompts": "提示",
             "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人"}],
-            "shots": [{"id": "S01", "duration": 5, "prompt": "离开", "images": ["A1"]}],
+            "shots": [{
+                "id": "S01",
+                "duration": 5,
+                "prompt": "\n".join([
+                    "integrated_multimodal_description: A woman in a blue coat stands on a wet platform. [Shot 1] She turns and walks toward the train.",
+                    "overall_soundscape: Rain and a distant train brake.",
+                    "non_diegetic_music: Low strings, slow.",
+                    "duration_seconds: 5",
+                ]),
+                "images": ["A1"],
+            }],
         }
         with patch("end.server.call_deepseek", return_value=spec), patch(
             "end.server.start_render_thread"
         ) as start:
             run_project(project_id)
-        start.assert_called_once_with(project_id, replace=True)
-        self.assertEqual(db.read_project(project_id)["status"], "building")
-        self.assertEqual(db.read_project(project_id)["script"], "写完的剧本")
+        start.assert_not_called()
+        saved = db.read_project(project_id)
+        self.assertEqual(saved["status"], "done")
+        self.assertEqual(saved["progress"]["phase"], "prompts_ready")
+        self.assertEqual(saved["script"], "写完的剧本")
 
     def test_restart_requeues_an_open_model_call(self):
         make_project(

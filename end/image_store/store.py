@@ -8,6 +8,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -231,21 +232,45 @@ def _put_cos(domain, bucket, key, payload, content_type):
     request.add_header("Content-Type", content_type)
     request.add_header("Content-MD5", digest)
     request.add_header("Date", email.utils.formatdate(usegmt=True))
+    parsed = urllib.parse.urlparse(target)
+    # #region agent log
+    try:
+        _line = json.dumps({"sessionId": "77976e", "runId": "pre-fix", "hypothesisId": "A", "location": "end/image_store/store.py:_put_cos", "message": "cos put start", "data": {"scheme": parsed.scheme, "host": parsed.hostname, "port": parsed.port, "bucket": bucket, "bytes": len(payload or b""), "content_type": content_type, "signed": bool(request.has_header("Authorization")), "python": ".".join(map(str, __import__("sys").version_info[:3]))}, "timestamp": int(time.time() * 1000)}, ensure_ascii=False)
+        with open("/Users/shaneson/AiVideo/.cursor/debug-77976e.log", "a", encoding="utf-8") as _handle:
+            _handle.write(_line + "\n")
+    except Exception:
+        pass
+    # #endregion
     status = None
     body = ""
+    started = time.monotonic()
+    error_kind = ""
+    error_errno = None
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
             status = getattr(response, "status", 200)
             body = response.read(180).decode("utf-8", "replace")
     except urllib.error.HTTPError as error:
+        error_kind = "HTTPError"
         status = error.code
         try:
             body = error.read(180).decode("utf-8", "replace")
         except Exception:
             body = ""
     except Exception as error:
+        error_kind = type(error).__name__
+        reason = getattr(error, "reason", None)
+        error_errno = getattr(reason, "errno", None) or getattr(error, "errno", None)
         status = None
         body = str(error)[:180]
+    # #region agent log
+    try:
+        _line = json.dumps({"sessionId": "77976e", "runId": "pre-fix", "hypothesisId": "B", "location": "end/image_store/store.py:_put_cos", "message": "cos put result", "data": {"error_kind": error_kind, "errno": error_errno, "status": status, "elapsed_ms": int((time.monotonic() - started) * 1000), "body": body[:180]}, "timestamp": int(time.time() * 1000)}, ensure_ascii=False)
+        with open("/Users/shaneson/AiVideo/.cursor/debug-77976e.log", "a", encoding="utf-8") as _handle:
+            _handle.write(_line + "\n")
+    except Exception:
+        pass
+    # #endregion
     # #region agent log
     try:
         line = json.dumps(
