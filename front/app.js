@@ -11,6 +11,7 @@ const debugPromptEl = document.querySelector("#debug-prompt");
 const debugIntentEl = document.querySelector("#debug-intent");
 const soundtrackEl = document.querySelector("#soundtrack");
 const modelEl = document.querySelector("#model");
+const qwenEnvEl = document.querySelector("#qwen-env");
 const templateEl = document.querySelector("#template");
 const modelFoot = document.querySelector("#model-foot");
 
@@ -31,6 +32,8 @@ let serverDebugDefault = false;
 let otherOpen = false;
 let sending = false;
 let surface = "canvas";
+let surfaceLock = "";
+let surfaced = "";
 let canvasSig = "";
 let canvasEdges = [];
 let view = { x: 48, y: 48, scale: 1 };
@@ -247,6 +250,52 @@ document.querySelectorAll(".js-produce").forEach((button) => {
   button.addEventListener("click", () => postControl("render"));
 });
 
+function traceList(project) {
+  const rows = (project && project.traces) || [];
+  if (!project || !project.debug_trace || !rows.length) return null;
+  const box = document.createElement("div");
+  box.className = "trace-list";
+  const title = document.createElement("h4");
+  title.textContent = "过程";
+  box.append(title);
+  const list = document.createElement("ul");
+  const busy = ["writing", "building", "rendering"].includes(project.status);
+  rows.forEach((row) => {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = (row.label || row.stage || row.id) + ((row.error || row.pending) ? "（没写完）" : "");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "向前重放";
+    button.disabled = busy || sending || !!row.pending || !!row.error;
+    button.addEventListener("click", () => replayTrace(row.id));
+    item.append(name, button);
+    list.append(item);
+  });
+  box.append(list);
+  return box;
+}
+
+async function replayTrace(traceId) {
+  if (!current || sending || !traceId) return;
+  sending = true;
+  syncComposer();
+  try {
+    current = await rpc("projects.replay", { id: current.id, trace_id: traceId });
+    const listed = projects.find((item) => item.id === current.id);
+    if (listed) Object.assign(listed, current);
+    renderHistory();
+    renderThread();
+    watch();
+  } catch (error) {
+    alert(error.message || "没有完成");
+  } finally {
+    sending = false;
+    syncComposer();
+    if (current) renderThread();
+  }
+}
+
 async function postControl(action) {
   if (!current || sending) return;
   sending = true;
@@ -378,6 +427,25 @@ function progressPanel(project) {
   message.className = "job-message";
   message.textContent = progress.message || project.stage || (project.status === "error" ? "未完成" : "处理中");
   panel.append(message);
+  const calls = Array.isArray(progress.calls) ? progress.calls : [];
+  if (calls.length) {
+    const list = document.createElement("ul");
+    list.className = "job-calls";
+    calls.forEach((item) => {
+      const row = document.createElement("li");
+      const status = String(item.status || "");
+      if (status === "完成") row.className = "done";
+      else if (status === "进行中") row.className = "current";
+      else if (status === "失败") row.className = "failed";
+      const name = document.createElement("span");
+      name.textContent = item.name || "";
+      const mark = document.createElement("em");
+      mark.textContent = status;
+      row.append(name, mark);
+      list.append(row);
+    });
+    panel.append(list);
+  }
   if (promptsReady(project) || (project.progress || {}).phase === "aspect_wait") {
     const produce = document.createElement("button");
     produce.type = "button";
@@ -897,6 +965,60 @@ function workflowMode(project) {
   return !!project.script;
 }
 
+function chatHome(project) {
+  if (!project) return false;
+  const status = project.status;
+  const progress = project.progress || {};
+  if (status === "drilling" || status === "gate" || status === "writing") return true;
+  return status === "paused" && (progress.paused_from || "") === "writing";
+}
+
+function canvasHome(project) {
+  if (!project) return false;
+  const status = project.status;
+  const progress = project.progress || {};
+  const phase = progress.phase || "";
+  if (status === "done" && phase === "prompts_ready") return true;
+  if (status === "rendering" || status === "building") return true;
+  if (status === "paused") {
+    const from = progress.paused_from || "";
+    if (from === "rendering" || from === "building") return true;
+  }
+  return status === "done" && (phase === "done" || !!project.video_file);
+}
+
+function surfaceKey(project) {
+  if (!project) return "";
+  const progress = project.progress || {};
+  if (canvasHome(project)) return "canvas:" + project.status + ":" + (progress.phase || "");
+  if (chatHome(project)) return "chat:" + project.status;
+  return "other:" + (project.status || "");
+}
+
+function settleSurface(project) {
+  const key = surfaceKey(project);
+  if (key !== surfaced) {
+    const previous = surfaced;
+    surfaced = key;
+    if (key.indexOf("canvas:") === 0) {
+      surface = "canvas";
+      surfaceLock = "";
+      return;
+    }
+    if (key.indexOf("chat:") === 0 && surfaceLock !== "canvas") {
+      surface = "chat";
+      return;
+    }
+    if (key.indexOf("other:") === 0 && previous.indexOf("chat:") === 0) {
+      surface = "chat";
+      surfaceLock = "";
+      return;
+    }
+  }
+  if (key.indexOf("chat:") === 0 && surfaceLock !== "canvas") surface = "chat";
+  else if (key.indexOf("canvas:") === 0 && surfaceLock !== "chat") surface = "canvas";
+}
+
 function hideWorkflow() {
   if (stageBar) stageBar.classList.add("hidden");
   if (canvasWrap) canvasWrap.classList.add("hidden");
@@ -906,7 +1028,7 @@ function hideWorkflow() {
 function showWorkflow() {
   if (stageBar) stageBar.classList.remove("hidden");
   if (debugDock) debugDock.classList.remove("hidden");
-  const chat = surface === "chat" || (current && current.status === "gate");
+  const chat = surface === "chat";
   if (canvasWrap) canvasWrap.classList.toggle("hidden", chat);
   if (viewCanvasBtn) viewCanvasBtn.classList.toggle("on", !chat);
   if (viewChatBtn) viewChatBtn.classList.toggle("on", chat);
@@ -918,6 +1040,8 @@ function renderThread(options) {
   main.classList.toggle("fresh", !current);
   if (!current) {
     surface = "canvas";
+    surfaceLock = "";
+    surfaced = "";
     canvasSig = "";
     hideWorkflow();
     empty.classList.remove("hidden");
@@ -930,6 +1054,7 @@ function renderThread(options) {
     return;
   }
   empty.classList.add("hidden");
+  settleSurface(current);
   if (!workflowMode(current)) {
     hideWorkflow();
     thread.classList.remove("hidden");
@@ -937,7 +1062,7 @@ function renderThread(options) {
     return;
   }
   showWorkflow();
-  const chat = surface === "chat" || current.status === "gate";
+  const chat = surface === "chat";
   thread.classList.toggle("hidden", !chat);
   if (chat) paintTranscript(opts, false);
   syncCanvas(current);
@@ -958,6 +1083,8 @@ function transcriptKey(project) {
     project.error,
     progress.phase,
     progress.percent,
+    progress.message,
+    (progress.calls || []).map((item) => `${item.name}:${item.status}`).join(","),
     messages.length,
     last.role,
     last.content,
@@ -967,6 +1094,8 @@ function transcriptKey(project) {
     project.script,
     project.storyboard,
     project.image_prompts,
+    project.debug_trace ? "trace" : "",
+    (project.traces || []).map((row) => [row.id, row.label, row.error, row.pending].join(":")).join("|"),
     (project.images || []).length,
     (project.shots || []).length,
   ].join("\u0001");
@@ -998,6 +1127,10 @@ function paintTranscript(options, full) {
   wrap.className = "wrap";
   const strip = materialStrip(current);
   if (strip) wrap.append(strip);
+  if (!workflowMode(current)) {
+    const traces = traceList(current);
+    if (traces) wrap.append(traces);
+  }
   visibleMessages(current).forEach((message) => {
     wrap.append(messageBubble(message.role, message.content || ""));
   });
@@ -1133,14 +1266,16 @@ async function refreshList() {
 }
 
 async function openProject(id) {
-  if (!current || current.id !== id) {
-    surface = "canvas";
-    canvasSig = "";
-  }
+  const switching = !current || current.id !== id;
   try {
     current = await rpc("projects.get", { id: id });
   } catch (_error) {
     return;
+  }
+  if (switching) {
+    surfaceLock = "";
+    surfaced = "";
+    canvasSig = "";
   }
   showProjectModel(current);
   showProjectTemplate(current);
@@ -1209,7 +1344,7 @@ briefEl.addEventListener("keydown", (event) => {
 function syncModelFoot() {
   if (!modelFoot || !modelEl) return;
   const option = modelEl.selectedOptions && modelEl.selectedOptions[0];
-  modelFoot.textContent = (option ? option.textContent : "DeepSeek V4 Pro") + " · 本机出片";
+  modelFoot.textContent = (option ? option.textContent : "Qwen3.8 Flash") + " · 本机出片";
 }
 
 function fillModels(models) {
@@ -1511,8 +1646,13 @@ async function startBrief(text) {
 async function sendText(text) {
   const body = String(text || "").trim();
   if (!body || sending || !current || !current.can_reply) return;
+  if (chatHome(current)) {
+    surface = "chat";
+    surfaceLock = "";
+  }
   sending = true;
   syncComposer();
+  if (chatHome(current)) renderThread();
   try {
     const project = await rpc("projects.send_message", {
       id: current.id,
@@ -2299,6 +2439,22 @@ function syncDock(project) {
   const errorNode = document.querySelector("#dock-error");
   if (errorNode && errorNode.textContent !== (project.error || "")) errorNode.textContent = project.error || "";
   syncDockFiles(project);
+  const traceBox = document.querySelector("#dock-traces");
+  if (traceBox) {
+    const rows = project.traces || [];
+    const sig = [
+      project.debug_trace ? "1" : "0",
+      project.status,
+      sending ? "1" : "0",
+      rows.map((row) => [row.id, row.label, row.error, row.pending].join(":")).join("|"),
+    ].join("\n");
+    if (traceBox.dataset.sig !== sig) {
+      traceBox.dataset.sig = sig;
+      traceBox.replaceChildren();
+      const node = traceList(project);
+      if (node) traceBox.append(node);
+    }
+  }
   syncControlButtons(project);
 }
 
@@ -2443,12 +2599,14 @@ function bindCanvas() {
   if (viewCanvasBtn) {
     viewCanvasBtn.addEventListener("click", () => {
       surface = "canvas";
+      surfaceLock = "canvas";
       renderThread();
     });
   }
   if (viewChatBtn) {
     viewChatBtn.addEventListener("click", () => {
       surface = "chat";
+      surfaceLock = canvasHome(current) ? "chat" : "";
       renderThread();
     });
   }
@@ -2475,10 +2633,27 @@ async function loadConfig() {
     serverDebugDefault = !!config.debug_llm;
     fillModels(config.models || []);
     fillTemplates(config.templates || []);
+    if (qwenEnvEl && (config.qwen_env === "prod" || config.qwen_env === "test")) {
+      qwenEnvEl.value = config.qwen_env;
+    }
   } catch (_error) {
     serverDebugDefault = false;
   }
   syncDebugToggle();
+}
+
+if (qwenEnvEl) {
+  qwenEnvEl.addEventListener("change", async () => {
+    const choice = qwenEnvEl.value;
+    try {
+      const saved = await rpc("config.set_qwen_env", { qwen_env: choice });
+      if (saved && (saved.qwen_env === "prod" || saved.qwen_env === "test")) {
+        qwenEnvEl.value = saved.qwen_env;
+      }
+    } catch (_error) {
+      await loadConfig();
+    }
+  });
 }
 
 loadConfig();

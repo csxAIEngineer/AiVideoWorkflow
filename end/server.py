@@ -6,6 +6,7 @@ AI is a separate process: LangGraph, the agent, and the provider clients.
 """
 
 import base64
+import contextvars
 import json
 import mimetypes
 import os
@@ -28,12 +29,14 @@ sys.path.insert(0, str(ROOT))
 
 from end.ai_client import (
     default_model,
+    job_message,
     load_skill_pack,
     model_choices,
     model_label,
     normalize_model,
     normalize_template,
     read_upload,
+    set_status_hook,
     template_choices,
     template_label,
     template_policy,
@@ -71,6 +74,7 @@ from end.delivery import list_deliverables
 from end.locks import (
     absorb_model_output,
     apply_selection,
+    copy_locks,
     corpus,
     load_style_cards,
     locked_aspect,
@@ -84,13 +88,17 @@ from end.locks import (
     write_locks,
 )
 from end.prompt_gate import build_board, feed_text, project_markdown, validate_feed
+from end.repair_units import choice_action, next_asset_question
 from end.stage_runner import (
     accept_pipeline,
     detect_only,
     execute,
     initial_pipeline,
     question_message,
+    ASSET_REVISE,
+    STORYBOARD_KEEP,
     script_revise_question,
+    storyboard_has_draft,
 )
 from end.soundtrack import normalize_soundtrack, project_soundtrack, soundtrack_enabled
 from end.workflow_from_spec import _safe_id, collect_steps, task_plan
@@ -262,6 +270,9 @@ def remember(project, status, stage, progress=None):
                 project["progress"]["question"] = stored.get("question") or None
             elif prev.get("question"):
                 project["progress"]["question"] = prev.get("question")
+            if "calls" in stored:
+                calls = stored.get("calls") or []
+                project["progress"]["calls"] = list(calls) if isinstance(calls, list) else []
             if status == "paused":
                 paused_from = stored.get("paused_from") or prev.get("paused_from") or ""
                 if paused_from:
@@ -285,7 +296,7 @@ def remember(project, status, stage, progress=None):
 def load_tasks(project):
     """Fill the task list from the saved spec when older rows have none."""
     if project.get("status") == "done" and project.get("stage") == "工作流已生成，可以下载":
-        project["stage"] = "提示词已写好。出片改为 iCreat 生图 / CR MiniMax H3 / 本机拼接 / ffmpeg 烧字幕"
+        project["stage"] = "提示词已写好。出片改为千问生图 / 万相出镜 / 本机拼接 / ffmpeg 烧字幕"
         write_project(project)
     if project.get("tasks"):
         return
@@ -299,12 +310,47 @@ def load_tasks(project):
     write_project(project)
 
 
+def _shown_messages(project):
+    """A failed machine check offers one revision from the report, even if an older reply still says 继续."""
+    messages = [dict(item) if isinstance(item, dict) else item for item in (project.get("messages") or [])]
+    progress = project.get("progress") or {}
+    pipeline = progress.get("pipeline") or {}
+    if project.get("status") != "gate" or pipeline.get("passed"):
+        return messages
+    if not messages or not isinstance(messages[-1], dict) or messages[-1].get("role") != "assistant":
+        return messages
+    options = list(messages[-1].get("options") or [])
+    if options == ["继续"]:
+        options = [ASSET_REVISE]
+    if (
+        pipeline.get("current") == "storyboard"
+        and options == [ASSET_REVISE]
+        and storyboard_has_draft(project_dir(project["id"]))
+    ):
+        options = [ASSET_REVISE, STORYBOARD_KEEP]
+    if options != list(messages[-1].get("options") or []):
+        messages[-1]["options"] = options
+    return messages
+
+
 def public_view(project):
+    from end.trace import list_traces, trace_enabled
+
     load_tasks(project)
     folder = project_dir(project["id"])
     spec = load_spec(project["id"])
     assets, shots = ([], [])
     if spec:
+        from end.board_shots import apply_storyboard_shots
+
+        filled = apply_storyboard_shots(spec)
+        if filled.get("shots") != spec.get("shots"):
+            spec = filled
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "spec.json").write_text(
+                json.dumps(spec, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         assets, shots = collect_steps(spec)
     debug_dir = folder / "debug"
     debug_files = [
@@ -314,7 +360,7 @@ def public_view(project):
     return {
         "id": project["id"],
         "brief": project.get("brief", ""),
-        "messages": project.get("messages") or [],
+        "messages": _shown_messages(project),
         "can_reply": can_reply(project),
         "title": project.get("title") or project.get("brief", "")[:24],
         "status": project.get("status"),
@@ -361,6 +407,8 @@ def public_view(project):
         "debug_llm": debug,
         "debug_stop": normalize_debug_stop((project.get("progress") or {}).get("debug_stop")),
         "debug_files": debug_files,
+        "debug_trace": trace_enabled(),
+        "traces": list_traces(folder),
         "nodes": video_nodes(spec, soundtrack=project_soundtrack(project)),
         "images": list_output_images(project["id"]),
         "clips": list_output_clips(project["id"]),
@@ -371,17 +419,81 @@ def public_view(project):
     }
 
 
+_JOB_PROJECT = contextvars.ContextVar("aivideo_job_project", default="")
+_CALL_LABEL = {
+    "script": "剧本",
+    "asset": "资产锁定",
+    "storyboard": "分镜",
+    "feed": "提示词封装",
+    "recon": "对标",
+    "qc": "独立质检",
+    "board": "离线看板",
+    "route": "赛道分流",
+}
+
+
+def _bind_job(project_id):
+    return _JOB_PROJECT.set(str(project_id or ""))
+
+
+def _call_label(project, calls):
+    names = [item.get("name") for item in calls or []]
+    if names == ["读图"]:
+        return "读图"
+    if names == ["旁白"]:
+        return "旁白"
+    current = ((project.get("progress") or {}).get("pipeline") or {}).get("current") or ""
+    if current in _CALL_LABEL:
+        return _CALL_LABEL[current]
+    if project.get("status") == "drilling":
+        return "立项锁定"
+    return project.get("stage") or "写稿"
+
+
+def _publish_job(snap):
+    project_id = _JOB_PROJECT.get()
+    if not project_id or not isinstance(snap, dict):
+        return
+    project = read_project(project_id)
+    if project is None:
+        return
+    calls = []
+    for item in snap.get("nodes") or []:
+        if not isinstance(item, dict):
+            continue
+        calls.append(
+            {
+                "name": item.get("name") or item.get("id") or "",
+                "status": item.get("status") or "",
+            }
+        )
+    label = _call_label(project, calls)
+    progress = dict(project.get("progress") or {})
+    progress["calls"] = calls
+    progress["message"] = job_message(label, calls)
+    remember(
+        project,
+        project.get("status") or "writing",
+        project.get("stage") or label,
+        progress=progress,
+    )
+
+
+set_status_hook(_publish_job)
+
+
 def call_drill(messages, debug_dir=None, model=None, template=None):
     return ai_drill(messages, debug_dir=debug_dir, model=model, template=template)
 
 
-def call_deepseek(brief, skill_pack, debug_dir=None, model=None, template=None):
+def call_deepseek(brief, skill_pack, debug_dir=None, model=None, template=None, trace_prompts=None):
     return ai_write(
         brief,
         skill_pack,
         debug_dir=debug_dir,
         model=model,
         template=template,
+        trace_prompts=trace_prompts,
     )
 
 
@@ -501,7 +613,13 @@ def answer_lock(project, text):
     question = (project.get("progress") or {}).get("question") or pending_question(locks)
     if question and question.get("id") == "style" and not question.get("cards"):
         question = style_question(load_style_cards(project.get("brief") or ""))
-    updated, error = apply_selection(locks, question, text, cards=(question or {}).get("cards"))
+    if (question or {}).get("id") in ("model", "reference_mode"):
+        updated = copy_locks(locks)
+        updated["model"] = "h3"
+        updated["reference_mode"] = ""
+        error = ""
+    else:
+        updated, error = apply_selection(locks, question, text, cards=(question or {}).get("cards"))
     if error:
         refused = dict(question or {})
         refused["reply"] = error
@@ -542,6 +660,67 @@ def _ask_script_revise(project, pipeline):
     return public_view(read_project(project["id"]) or project)
 
 
+def _asset_text(project):
+    path = project_dir(project["id"]) / "_内部_" / "assets.md"
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def _ask_asset_choice(project, pipeline, question):
+    messages = list(project.get("messages") or [])
+    messages.append(question_message(question))
+    project["messages"] = messages
+    pipeline = dict(pipeline or {})
+    pipeline["action"] = "wait"
+    remember(
+        project,
+        "gate",
+        "资产门",
+        progress={
+            "percent": int((project.get("progress") or {}).get("percent") or 40),
+            "phase": "gate_asset",
+            "message": "选一个改法",
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": question,
+        },
+    )
+    return public_view(read_project(project["id"]) or project)
+
+
+def _open_asset_choices(project, pipeline):
+    pipeline = dict(pipeline or {})
+    pipeline["repair_choices"] = {}
+    question = next_asset_question(_asset_text(project), {})
+    if question is None:
+        pipeline["action"] = "rewrite"
+        pipeline["repair_round"] = True
+        pipeline["repair"] = pipeline.get("report") or pipeline.get("repair") or "按块修补"
+        _enqueue_stage(project, pipeline, "资产门")
+        return public_view(read_project(project["id"]) or project)
+    return _ask_asset_choice(project, pipeline, question)
+
+
+def _take_asset_choice(project, pipeline, body, question):
+    picked = choice_action(body)
+    options = list((question or {}).get("options") or [])
+    if picked is None or body not in options:
+        return _ask_asset_choice(project, pipeline, question)
+    choices = dict(pipeline.get("repair_choices") or {})
+    choices[str(question.get("unit_id") or "")] = picked
+    pipeline = dict(pipeline or {})
+    pipeline["repair_choices"] = choices
+    nxt = next_asset_question(_asset_text(project), choices)
+    if nxt:
+        return _ask_asset_choice(project, pipeline, nxt)
+    pipeline["action"] = "rewrite"
+    pipeline["repair_round"] = True
+    pipeline["repair"] = pipeline.get("report") or pipeline.get("repair") or "按块修补"
+    _enqueue_stage(project, pipeline, "资产门")
+    return public_view(read_project(project["id"]) or project)
+
+
 def answer_gate(project, text):
     progress = project.get("progress") or {}
     pipeline = dict(progress.get("pipeline") or {})
@@ -558,10 +737,12 @@ def answer_gate(project, text):
         pipeline["current"] = "script"
         _enqueue_stage(project, pipeline, "剧本")
         return public_view(read_project(project["id"]) or project)
+    if question.get("id") == "asset_repair_choice":
+        return _take_asset_choice(project, pipeline, body, question)
     if body == "精修" and current == "script" and passed:
         pipeline["action"] = "wait"
         return _ask_script_revise(project, pipeline)
-    if body not in ("继续", "接受", "确认"):
+    if body == ASSET_REVISE and (passed or not current):
         question = progress.get("question") or {}
         if question:
             messages = list(project.get("messages") or [])
@@ -569,8 +750,64 @@ def answer_gate(project, text):
             project["messages"] = messages
             write_project(project)
         return public_view(read_project(project["id"]) or project)
+    if body not in ("继续", "接受", "确认", ASSET_REVISE, STORYBOARD_KEEP):
+        question = progress.get("question") or {}
+        if question:
+            messages = list(project.get("messages") or [])
+            messages.append(question_message(question))
+            project["messages"] = messages
+            write_project(project)
+        return public_view(read_project(project["id"]) or project)
+    if not passed and pipeline.get("retry_write"):
+        pipeline["action"] = "write"
+        pipeline["retry_write"] = False
+        pipeline["passed"] = True
+        pipeline["repair"] = ""
+        pipeline["report"] = ""
+        # region agent log
+        try:
+            import json as _json
+            import time as _time
+
+            with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
+                handle.write(
+                    _json.dumps(
+                        {
+                            "sessionId": "ee5fa7",
+                            "hypothesisId": "H9",
+                            "location": "end/server.py:answer_gate",
+                            "message": "retry unfinished write",
+                            "data": {"current": current, "action": "write"},
+                            "timestamp": int(_time.time() * 1000),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except OSError:
+            pass
+        # endregion
+        _enqueue_stage(project, pipeline, project.get("stage") or "再写这一段")
+        return public_view(read_project(project["id"]) or project)
+    if body == ASSET_REVISE and current == "asset" and not passed:
+        return _open_asset_choices(project, pipeline)
+    if body == STORYBOARD_KEEP and current == "storyboard" and not passed:
+        folder = project_dir(project["id"])
+        if not storyboard_has_draft(folder):
+            question = progress.get("question") or {}
+            if question:
+                messages = list(project.get("messages") or [])
+                messages.append(question_message(question))
+                project["messages"] = messages
+                write_project(project)
+            return public_view(read_project(project["id"]) or project)
+        pipeline["passed"] = True
+        pipeline["repair"] = ""
+        pipeline["report"] = ""
+        passed = True
     if not passed:
         pipeline["action"] = "rewrite"
+        pipeline["repair"] = pipeline.get("report") or pipeline.get("repair") or ""
         _enqueue_stage(project, pipeline, project.get("stage") or "重写这一段")
         return public_view(read_project(project["id"]) or project)
     folder, locks = _lock_inputs(project)
@@ -658,6 +895,14 @@ def run_project_gated(project_id, debug_llm=False):
 
 
 def run_drill(project_id):
+    token = _bind_job(project_id)
+    try:
+        _run_drill(project_id)
+    finally:
+        _JOB_PROJECT.reset(token)
+
+
+def _run_drill(project_id):
     project = read_project(project_id)
     if project and (project.get("progress") or {}).get("lock_machine"):
         run_lock_turn(project_id)
@@ -987,6 +1232,14 @@ def _start_explicit_render(project):
 
 
 def run_project(project_id, debug_llm=False):
+    token = _bind_job(project_id)
+    try:
+        _run_project(project_id, debug_llm=debug_llm)
+    finally:
+        _JOB_PROJECT.reset(token)
+
+
+def _run_project(project_id, debug_llm=False):
     project = read_project(project_id)
     if project and (project.get("progress") or {}).get("lock_machine"):
         run_project_gated(project_id, debug_llm=debug_llm)
@@ -1016,7 +1269,7 @@ def run_project(project_id, debug_llm=False):
         debug_dir = folder / "debug" if (debug or prompt_stop) else None
         spec = {}
         for stage, label, percent in WRITE_STAGES:
-            stage_brief = _stage_brief(brief, stage, label, _carried_text(spec))
+            stage_brief = _stage_brief("" if stage != "P1" else brief, stage, label, _carried_text(spec))
             remember(
                 read_project(project_id) or project,
                 "writing",
@@ -1051,7 +1304,7 @@ def run_project(project_id, debug_llm=False):
                 "机检",
                 progress={"percent": 82, "phase": "writing", "message": "机检", "debug_llm": debug},
             )
-            repair_brief = _stage_brief(brief, "P4", "投喂稿", _carried_text(spec))
+            repair_brief = _stage_brief("", "P4", "投喂稿", _carried_text(spec))
             repair_brief += "\n\n机检报告，按它重修一次，画幅和模型不要改：\n" + (report or "")[-8000:]
             pack = load_skill_pack(template, repair_brief, stage="P4")
             spec = _merge_spec(
@@ -1201,6 +1454,14 @@ def finish_image_debug(project, result):
 
 
 def execute_render(project_id, project=None):
+    token = _bind_job(project_id)
+    try:
+        _execute_render(project_id, project=project)
+    finally:
+        _JOB_PROJECT.reset(token)
+
+
+def _execute_render(project_id, project=None):
     from end.render_loop import register_thread
 
     register_thread(project_id)
@@ -1527,7 +1788,27 @@ def store_materials(project_id, files):
         public_url = store.save(project_id, material["id"], _png_bytes(item.get("data") or b""))
         note_local_image(folder, project_id, material["id"], public_url)
         image_path = folder / "outputs" / "images" / (material["id"] + ".png")
-        material["reading"] = read_upload(image_path)
+        from end.trace import begin_trace, finish_trace
+
+        prompts = begin_trace(folder, "vision", repair=False, brief="读图")
+        token = _bind_job(project_id)
+        try:
+            if prompts:
+                reading = read_upload(image_path, trace_prompts=prompts)
+            else:
+                reading = read_upload(image_path)
+        except Exception as error:
+            if prompts:
+                finish_trace(folder, {}, error=str(error))
+            raise
+        finally:
+            _JOB_PROJECT.reset(token)
+        material["reading"] = reading
+        if prompts:
+            finish_trace(
+                folder,
+                {"readings": [{"id": material["id"], "reading": reading}]},
+            )
         items.append(material)
     save_intake(folder, items)
     return items
@@ -1670,14 +1951,30 @@ def _request_project(params):
 
 
 def rpc_config(_params):
+    from end.qwen_env import read_qwen_env
+    from end.trace import trace_enabled
+
     return {
         "debug_llm": env_debug_llm(),
         "debug_llm_env": "AIVIDEO_DEBUG_LLM",
+        "debug_trace": trace_enabled(),
+        "debug_trace_env": "AIVIDEO_DEBUG_TRACE",
+        "qwen_env": read_qwen_env(),
         "model": default_model(),
         "models": model_choices(),
         "template": normalize_template(None),
         "templates": template_choices(),
     }
+
+
+def rpc_set_qwen_env(params):
+    from end.qwen_env import write_qwen_env
+
+    try:
+        name = write_qwen_env((params or {}).get("qwen_env"))
+    except ValueError as error:
+        raise RpcError(400, str(error))
+    return {"qwen_env": name}
 
 
 def rpc_list_projects(_params):
@@ -1905,6 +2202,106 @@ def rpc_set_asset_image(params):
     return public_view(read_project(project_id))
 
 
+def rpc_replay(params):
+    """Restore one saved process and start the next stage."""
+    from end.stage_runner import _GATE_LABEL, _GATE_PHASE, _PERCENT, _gate_copy
+    from end.trace import restore_trace
+
+    project = _request_project(params)
+    if project.get("status") in ("writing", "building", "rendering"):
+        raise RpcError(409, "这一步还在写，完成后再重放")
+    trace_id = str((params or {}).get("trace_id") or "")
+    folder = project_dir(project["id"])
+    with project_lock(project["id"]):
+        fresh = read_project(project["id"])
+        if fresh is None:
+            raise RpcError(404, "没有这个项目")
+        if fresh.get("status") in ("writing", "building", "rendering"):
+            raise RpcError(409, "这一步还在写，完成后再重放")
+        locks = read_locks(folder)
+        pipeline = dict((fresh.get("progress") or {}).get("pipeline") or {})
+        try:
+            plan = restore_trace(folder, trace_id, locks, pipeline.get("only") or "")
+        except ValueError as error:
+            raise RpcError(400, str(error))
+        spec = load_spec(fresh["id"]) or {}
+        fresh["script"] = str(spec.get("script") or "")
+        fresh["storyboard"] = str(spec.get("storyboard") or "")
+        fresh["image_prompts"] = str(spec.get("image_prompts") or "")
+        if spec.get("title"):
+            fresh["title"] = str(spec.get("title"))
+        fresh["error"] = None
+        fresh["finished_at"] = None
+        messages = list(fresh.get("messages") or [])
+        pipeline["accepted"] = list(plan.get("accepted") or [])
+        pipeline["current"] = plan.get("current") or ""
+        pipeline["action"] = plan.get("action") or "wait"
+        if plan.get("script_from"):
+            pipeline["script_from"] = plan["script_from"]
+        else:
+            pipeline.pop("script_from", None)
+        pipeline["passed"] = True
+        pipeline["report"] = ""
+        pipeline["repair"] = ""
+        pipeline["retry_write"] = False
+        pipeline["repairs"] = 0
+        pipeline["check"] = ""
+        pipeline["revise_note"] = ""
+        kept_progress = fresh.get("progress") or {}
+        if plan.get("action") == "write":
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "已恢复「%s」。接下来%s。" % (plan.get("label") or "这一次", plan.get("write_label") or "写下一段"),
+                }
+            )
+            fresh["messages"] = messages
+            gate_for(fresh["id"]).resume()
+            remember(
+                fresh,
+                "writing",
+                plan.get("write_label") or "下一段",
+                progress={
+                    "percent": _PERCENT.get(plan.get("next") or "", 50),
+                    "phase": "writing",
+                    "message": plan.get("write_label") or "下一段",
+                    "lock_machine": True,
+                    "pipeline": pipeline,
+                    "question": None,
+                    "debug_llm": bool(kept_progress.get("debug_llm")),
+                    "debug_stop": kept_progress.get("debug_stop") or "",
+                },
+            )
+            submit_agent_task(Task("write", fresh["id"], {"debug_llm": bool(kept_progress.get("debug_llm"))}))
+        else:
+            gate_stage = plan.get("stage") if plan.get("stage") in _GATE_PHASE else "script"
+            reply, options = _gate_copy(gate_stage, True, "", 0)
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "已恢复「%s」。%s" % (plan.get("label") or "这一次", reply),
+                    "options": list(options or []),
+                }
+            )
+            fresh["messages"] = messages
+            remember(
+                fresh,
+                "gate",
+                _GATE_LABEL.get(gate_stage, "停在门上"),
+                progress={
+                    "percent": _PERCENT.get(gate_stage, 76),
+                    "phase": _GATE_PHASE.get(gate_stage, "gate_fail"),
+                    "message": reply,
+                    "lock_machine": True,
+                    "pipeline": pipeline,
+                    "question": None,
+                    "debug_llm": bool(kept_progress.get("debug_llm")),
+                    "debug_stop": kept_progress.get("debug_stop") or "",
+                },
+            )
+    return public_view(read_project(project["id"]) or project)
+
+
 def rpc_logs(params):
     project_id = str(params.get("id") or "")
     if not valid_id(project_id):
@@ -1918,6 +2315,8 @@ def rpc_logs(params):
 def rpc_call(method, params):
     if method == "config.get":
         return rpc_config(params)
+    if method == "config.set_qwen_env":
+        return rpc_set_qwen_env(params)
     if method == "projects.list":
         return rpc_list_projects(params)
     if method == "projects.get":
@@ -1942,6 +2341,8 @@ def rpc_call(method, params):
         return rpc_set_asset_image(params)
     if method == "projects.logs":
         return rpc_logs(params)
+    if method == "projects.replay":
+        return rpc_replay(params)
     raise RpcError(-32601, "没有这个接口")
 
 

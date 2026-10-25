@@ -65,7 +65,7 @@ class LocalImageStore(ImageStore):
             raw = os.environ.get("AIVIDEO_PUBLIC_BASE") or ""
         base = str(raw).strip().rstrip("/")
         if not base:
-            raise ImageStoreError("未配置 AIVIDEO_PUBLIC_BASE，不能给出 CR 能打开的图片地址")
+            raise ImageStoreError("未配置 AIVIDEO_PUBLIC_BASE，不能交给出镜能打开的图片地址")
         lowered = base.lower()
         if not (lowered.startswith("http://") or lowered.startswith("https://")):
             raise ImageStoreError("AIVIDEO_PUBLIC_BASE 必须是 HTTP(S) 地址")

@@ -150,13 +150,13 @@ def _open(body, timeout):
 
 def _endpoint():
     load_project_env()
-    api_key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
-    base_url = os.environ.get("DASHSCOPE_BASE_URL", "").strip().rstrip("/")
+    api_key = os.environ.get("QWEN_API_KEY", "").strip()
+    base_url = os.environ.get("QWEN_BASE_URL", "").strip().rstrip("/") or "https://maas.qianwenaiapi.com"
+    if base_url.endswith("/compatible-mode/v1"):
+        base_url = base_url[: -len("/compatible-mode/v1")].rstrip("/")
     if not api_key:
-        raise NarrationError("未配置 DASHSCOPE_API_KEY，不能转写旁白。")
-    if not base_url:
-        raise NarrationError("未配置 DASHSCOPE_BASE_URL，不能转写旁白。")
-    return api_key, base_url + "/chat/completions"
+        raise NarrationError("未配置 QWEN_API_KEY，不能转写旁白。")
+    return api_key, base_url + "/compatible-mode/v1/chat/completions"
 
 
 def _http_message(status, detail):

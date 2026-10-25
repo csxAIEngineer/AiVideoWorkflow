@@ -14,7 +14,6 @@ SEGMENT_LIMITS = {"2.5": 30, "2.0": 15, "h3": 15}
 TRACK_OPTIONS = ("① 国内剧", "② 海外剧", "③ 解说叙事", "④ 其他")
 SOURCE_OPTIONS = ("① 原创", "② 改编", "③ 对标爆款", "④ 热点速成")
 NARRATION_OPTIONS = ("历史人物志", "历史事件战役", "科普知识解说")
-MODEL_OPTIONS = ("Seedance 2.5", "Seedance 2.0", "MiniMax H3")
 REFERENCE_OPTIONS = ("① 全能参考", "② 首尾帧")
 DELIVERY_OPTIONS = ("① 只要离线看板", "② 只要 markdown", "③ 两者都要")
 SEAM_OPTIONS = ("① 末帧定格承接", "② 换机位硬切", "③ 空镜过渡", "④ 技巧型转场")
@@ -217,8 +216,13 @@ def _ready_for_duration(locks):
 
 
 def prepare_locks(locks, demand="", material_text="", has_images=False):
-    """Fill only a duration the user already wrote, and whether seam applies. Never infer a lock."""
+    """Fill a duration the user already wrote, and whether seam applies.
+
+    An empty video model becomes the fixed Wan lock. Other locks are never inferred.
+    """
     updated = copy_locks(locks)
+    if not updated.get("model"):
+        updated["model"] = "h3"
     updated["material_mode"] = judge_material_mode(material_text or demand, has_images)
     if _ready_for_duration(updated) and not updated.get("duration_seconds"):
         seconds = explicit_duration_seconds(demand)
@@ -281,13 +285,6 @@ def pending_question(locks, cards=None):
             "single",
             "来源和赛道分开存。选③或④，先出对标情报卡，确认后才写剧本。",
             SOURCE_OPTIONS,
-        )
-    if not locks.get("model"):
-        return _question(
-            "model",
-            "single",
-            "三选一。锁定后语法不混写。Seedance 2.5 还要选参考模式。Seedance 2.0 不写首尾帧。",
-            MODEL_OPTIONS,
         )
     if locks.get("model") == "2.5" and locks.get("reference_mode") not in REFERENCE_OPTIONS:
         return _question(
@@ -451,11 +448,16 @@ def _apply_style(updated, picked, cards):
 def lock_brief(locks):
     """Text the writer may read. Director names stay out of this brief."""
     locks = locks or {}
+    model = str(locks.get("model") or "")
+    if model in ("", "h3"):
+        model_line = "出镜：万相 3.0"
+    else:
+        model_line = "模型：%s" % model
     lines = [
         "以下锁已由用户选定，只读。不要改写，也不要写进正文里的人名、工作室名、影片名。",
         "赛道：%s" % (locks.get("track") or ""),
         "来源：%s" % (locks.get("source") or ""),
-        "模型：%s" % (locks.get("model") or ""),
+        model_line,
         "成片画幅：%s" % (locks.get("aspect") or ""),
         "交付：%s" % (locks.get("delivery") or ""),
         "成片时长秒：%s" % (locks.get("duration_seconds") or ""),

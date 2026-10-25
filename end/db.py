@@ -83,7 +83,7 @@ def _init_schema(conn):
             cloud_log TEXT NOT NULL DEFAULT '',
             prompt_id TEXT NOT NULL DEFAULT '',
             video_file TEXT NOT NULL DEFAULT '',
-            model TEXT NOT NULL DEFAULT 'deepseek-v4-pro',
+            model TEXT NOT NULL DEFAULT 'qwen3.8-flash',
             template TEXT NOT NULL DEFAULT 'short-drama-director',
             created_at TEXT NOT NULL,
             started_at TEXT,
@@ -105,7 +105,7 @@ def _init_schema(conn):
         )
     if "model" not in columns:
         conn.execute(
-            "ALTER TABLE projects ADD COLUMN model TEXT NOT NULL DEFAULT 'deepseek-v4-pro'"
+            "ALTER TABLE projects ADD COLUMN model TEXT NOT NULL DEFAULT 'qwen3.8-flash'"
         )
     if "template" not in columns:
         conn.execute(
@@ -150,7 +150,7 @@ def row_to_project(row):
         "cloud_log": data.get("cloud_log") or "",
         "prompt_id": data.get("prompt_id") or "",
         "video_file": data.get("video_file") or "",
-        "model": data.get("model") or "deepseek-v4-pro",
+        "model": data.get("model") or "qwen3.8-flash",
         "template": data.get("template") or "short-drama-director",
         "created_at": data.get("created_at"),
         "started_at": data.get("started_at") or data.get("created_at"),
@@ -177,7 +177,7 @@ def _row_values(project):
         project.get("cloud_log") or "",
         project.get("prompt_id") or "",
         project.get("video_file") or "",
-        project.get("model") or "deepseek-v4-pro",
+        project.get("model") or "qwen3.8-flash",
         project.get("template") or "short-drama-director",
         project.get("created_at") or "",
         project.get("started_at"),

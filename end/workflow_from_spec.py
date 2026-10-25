@@ -147,7 +147,7 @@ def ordered_assets(assets):
 
 
 def task_plan(spec, soundtrack="off"):
-    """Local render rows: iCreat stills, CR MiniMax H3 clips, ffmpeg join, optional soundtrack, then burn 字幕.ass."""
+    """Local render rows: Qwen stills, Wan clips, ffmpeg join, optional narration, then burn 字幕.ass."""
     assets, shots = collect_steps(spec)
     if not assets or not shots:
         return []
@@ -161,7 +161,7 @@ def task_plan(spec, soundtrack="off"):
                 "title": asset["title"],
                 "duration": None,
                 "state": "pending",
-                "detail": "iCreat 生图",
+                "detail": "千问生图",
             }
         )
     for shot in shots:
@@ -173,7 +173,7 @@ def task_plan(spec, soundtrack="off"):
                 "title": shot["id"],
                 "duration": shot["duration"],
                 "state": "pending",
-                "detail": "CR MiniMax H3",
+                "detail": "万相出镜",
             }
         )
     tasks.append(
@@ -195,7 +195,7 @@ def task_plan(spec, soundtrack="off"):
                 "title": "声轨",
                 "duration": total,
                 "state": "pending",
-                "detail": "MiniMax 旁白",
+                "detail": "千问旁白",
             }
         )
     tasks.append(

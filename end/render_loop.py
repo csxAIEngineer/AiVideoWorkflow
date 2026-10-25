@@ -1,4 +1,4 @@
-"""Local render: iCreat stills, CR MiniMax H3 clips, ffmpeg join, optional MiniMax soundtrack, then burn 字幕.ass."""
+"""Local render: Qwen stills, Wan clips, ffmpeg join, optional Qwen narration, then burn 字幕.ass."""
 
 import base64
 import json
@@ -903,12 +903,8 @@ def assign_dialogues(spec, shots):
 
 
 VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
-VIDEO_MODE_MODELS = {
-    "text": "minimax-h3-text-to-video",
-    "first_frame": "minimax-h3-image-to-video",
-    "first_last_frame": "minimax-h3-image-to-video",
-    "reference": "minimax-h3-reference-to-video",
-}
+VIDEO_MODEL = "wan3.0-video"
+VIDEO_MODE_MODELS = {mode: VIDEO_MODEL for mode in VIDEO_MODES}
 FRAME_OPENING = "从这张首帧的可见内容开始，主体、材质和构图保持一致，只做本镜写的光影和轻微运镜。"
 
 
@@ -1055,7 +1051,7 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
 
 
 def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack="off", template=None):
-    """Prompt sent to MiniMax. Vehicle lines come only from the active template's skills.
+    """Prompt sent with the clip. Vehicle lines come only from the active template's skills.
 
     Music or narration is mixed after the join, so those shots keep only room tone.
     """
@@ -1931,10 +1927,10 @@ def _saved_image(ctx, asset_id):
 
 
 def _reference_url(info, project_id=""):
-    """CR 的图生视频和参考图生视频只接受它能打开的 HTTP(S) 网址。
+    """图生视频和参考图生视频只接受能打开的 HTTP(S) 网址。
 
-    An existing http(s) address wins, including iCreat's own URL. A still that
-    only has this service's /media address is published to COS first.
+    An existing http(s) address wins. A still that only has this service's
+    /media address is published to COS first.
     """
     url = _http_media_url((info or {}).get("url"))
     filename = Path(str((info or {}).get("path") or "")).name
@@ -1945,7 +1941,7 @@ def _reference_url(info, project_id=""):
         return store.ensure_remote(project_id, filename, url, source=(info or {}).get("path"))
     if url:
         return url
-    raise RuntimeError("参考图没有公网地址，CR 的图生视频只接受 HTTP(S) 网址")
+    raise RuntimeError("参考图没有公网地址，出镜只接受 HTTP(S) 网址")
 
 
 class _VideoHandle(object):
@@ -1960,7 +1956,7 @@ def _video_handle(task_id, poll_url):
 
 
 class LayoutAudio(object):
-    """Speech and music enter the existing LangGraph. There is no separate client."""
+    """Speech goes through the Qwen layout. Music is refused by that layout."""
 
     def __init__(self, layout=None):
         self.layout = layout
@@ -1973,8 +1969,7 @@ class LayoutAudio(object):
         return self.layout
 
     def synthesize(self, text, dest, voice_id=None):
-        del voice_id
-        return self._layout().speak(text, dest)
+        return self._layout().speak(text, dest, voice_id=voice_id)
 
     def generate_music(self, prompt, dest):
         return self._layout().compose(prompt, dest)
@@ -2053,9 +2048,9 @@ def run_local_pipeline(
     if images_only:
         ctx.emit("Debug：开始生图", "images", assets[0]["id"], "running")
     else:
-        steps = "iCreat 生图 / CR MiniMax H3 / 本机拼接"
+        steps = "千问生图 / 万相出镜 / 本机拼接"
         if soundtrack_enabled(mode):
-            steps += " / MiniMax 声轨"
+            steps += " / 千问旁白"
         steps += " / ffmpeg 烧字幕"
         ctx.emit(
             "开始出片：" + steps,
@@ -2073,9 +2068,14 @@ def run_local_pipeline(
             current = find_asset(read_spec_file(ctx.work_dir, spec), asset_id, fallback)
             urls = image_input_urls(ctx, current)
             image = urls or None
+            size = None
+            if ctx.aspect in FRAME_SIZES:
+                width, height = FRAME_SIZES[ctx.aspect]
+                size = "%d*%d" % (width, height)
             return icreat.submit_image(
                 image_prompt(current, reference=bool(urls), template=ctx.template),
                 image=image,
+                size=size,
             )
 
         def poll(task_id):

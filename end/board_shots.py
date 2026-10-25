@@ -1,0 +1,203 @@
+"""Build the canvas shot list from a storyboard body."""
+
+import ast
+import json
+import re
+import time
+
+from end.workflow_from_spec import MAX_SHOT_REFERENCES, _clamp_duration
+
+PLACEHOLDER_PROMPT = "按这张资产图演这一镜"
+_NAME_STOP = {
+    "角色",
+    "四格",
+    "九宫",
+    "宫格",
+    "场景",
+    "母版",
+    "设定",
+    "图板",
+    "纯图",
+    "关键",
+    "道具",
+    "特效",
+    "元素",
+    "女主",
+    "男主",
+    "参考",
+    "素材",
+    "状态",
+    "锁定",
+}
+_PROMPT_KEYS = ("camera_spec", "visual_content", "blocking_note")
+
+
+def _log(message, data):
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "eab7ec",
+            "runId": "post-fix",
+            "hypothesisId": "S",
+            "location": "end/board_shots.py:apply_storyboard_shots",
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open("/Users/shaneson/AiVideo/.cursor/debug-eab7ec.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+
+
+def storyboard_rows(value):
+    """Shot dicts from a list, a JSON text, or a Python literal."""
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        for key in ("shots", "storyboard", "items"):
+            found = value.get(key)
+            if isinstance(found, list):
+                return storyboard_rows(found)
+        if value.get("visual_content") or value.get("shot_id") or value.get("camera_spec"):
+            return [value]
+        return []
+    text = str(value or "").strip()
+    if not text or text[0] not in "[{":
+        return []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, (dict, list)):
+        try:
+            data = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return []
+    return storyboard_rows(data)
+
+
+def shots_are_placeholder(shots):
+    """True when the canvas has no shot, or only the upload stand-in."""
+    if not isinstance(shots, list) or not shots:
+        return True
+    for shot in shots:
+        if not isinstance(shot, dict):
+            continue
+        prompt = str(shot.get("prompt") or "").strip()
+        if prompt and prompt != PLACEHOLDER_PROMPT:
+            return False
+    return True
+
+
+def _shot_id(row, index):
+    raw = str(row.get("shot_id") or row.get("id") or "")
+    match = re.search(r"(\d+)", raw)
+    number = int(match.group(1)) if match else index + 1
+    return "S%02d" % number
+
+
+def _dialogue(row):
+    text = str(row.get("dialogue") or "").strip()
+    if text in ("无", "无。", "无对白"):
+        return ""
+    return text
+
+
+def _prompt(row):
+    written = str(row.get("prompt") or "").strip()
+    if written and not any(row.get(key) for key in _PROMPT_KEYS):
+        return written
+    parts = []
+    for key in _PROMPT_KEYS:
+        text = str(row.get(key) or "").strip()
+        if text and text not in ("无", "无。"):
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _needles(asset):
+    raw = "%s %s" % (asset.get("title") or "", asset.get("subject") or "")
+    parts = re.split(r"[·•|/\\\s（）()【】\[\]、，,：:《》\"“”']+", raw)
+    found = []
+    for part in parts:
+        part = part.strip()
+        if len(part) >= 2 and part not in _NAME_STOP and part not in found:
+            found.append(part)
+        cjk = "".join(re.findall(r"[\u4e00-\u9fff]", part))
+        for offset in range(0, len(cjk) - 1, 2):
+            word = cjk[offset : offset + 2]
+            if word not in _NAME_STOP and word not in found:
+                found.append(word)
+    return found
+
+
+def _images(row, assets, blob):
+    listed = []
+    for name in row.get("images") or []:
+        text = str(name or "").strip()
+        if text and text not in listed:
+            listed.append(text)
+    for asset in assets or []:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = str(asset.get("id") or "").strip()
+        if not asset_id or asset_id in listed:
+            continue
+        if any(needle in blob for needle in _needles(asset)):
+            listed.append(asset_id)
+    return listed[:MAX_SHOT_REFERENCES]
+
+
+def shots_from_storyboard(value, assets=None):
+    """One canvas shot per storyboard row. Empty when the body is not a shot list."""
+    shots = []
+    for index, row in enumerate(storyboard_rows(value)):
+        prompt = _prompt(row)
+        if not prompt:
+            continue
+        dialogue = _dialogue(row)
+        duration_raw = row.get("duration")
+        if duration_raw in (None, ""):
+            duration_raw = row.get("duration_sec")
+        blob = "\n".join(
+            str(row.get(key) or "")
+            for key in ("shot_id", "visual_content", "camera_spec", "blocking_note", "dialogue", "prompt")
+        )
+        shots.append(
+            {
+                "id": _shot_id(row, index),
+                "duration": _clamp_duration(duration_raw, dialogue),
+                "prompt": prompt,
+                "images": _images(row, assets, blob),
+                "dialogue": dialogue,
+                "narration": str(row.get("narration") or "").strip(),
+            }
+        )
+    return shots
+
+
+def apply_storyboard_shots(spec):
+    """Fill shots from the storyboard when the canvas list is empty or a stand-in."""
+    spec = spec if isinstance(spec, dict) else {}
+    current = spec.get("shots") if isinstance(spec.get("shots"), list) else []
+    derived = shots_from_storyboard(spec.get("storyboard"), spec.get("assets"))
+    placeholder = shots_are_placeholder(current)
+    wrote = bool(derived) and placeholder
+    _log(
+        "storyboard shots",
+        {
+            "boardRows": len(storyboard_rows(spec.get("storyboard"))),
+            "derived": len(derived),
+            "before": len(current),
+            "placeholder": placeholder,
+            "wrote": wrote,
+            "ids": [shot["id"] for shot in (derived if wrote else current)],
+        },
+    )
+    if not wrote:
+        return spec
+    updated = dict(spec)
+    updated["shots"] = derived
+    return updated

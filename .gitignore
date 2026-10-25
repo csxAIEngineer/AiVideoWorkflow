@@ -7,6 +7,7 @@ __pycache__/
 DemoAnalyse/runs/
 data/web_projects/
 data/workbuddy_prompts/
+data/qwen_env
 data/*.db
 data/*.db-journal
 data/*.db-wal

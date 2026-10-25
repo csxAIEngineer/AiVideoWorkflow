@@ -1,14 +1,8 @@
 {
-  "provider": "deepseek",
+  "provider": "qwen",
   "providers": {
-    "deepseek": {
-      "model": "deepseek-v4-pro",
-      "via": "cr"
-    },
     "qwen": {
-      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "model": "qwen-plus",
-      "api_key_env": "DASHSCOPE_API_KEY"
+      "model": "deepseek-v4.1-flash"
     }
   },
   "roles": {

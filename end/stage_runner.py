@@ -1,13 +1,15 @@
 """One stage at a time. The writer only sees the files resolve_files returns for that stage."""
 
+import inspect
 import json
 import re
 import time
 from pathlib import Path
 
+from end.board_shots import apply_storyboard_shots, shots_are_placeholder
 from end.delivery import internal_dir, list_deliverables, previs_name, publish
 from end.gates import check_asset_blocks, check_feed, check_p45, check_prompt, unverified_claim
-from end.intake import enrich_brief, load_intake
+from end.intake import enrich_brief, intake_note, load_intake
 from end.locks import lock_brief
 
 _ASSET_HEAD = re.compile(r"^(#{2,6})\s*\*{0,2}\s*图\s*(\d+)\b", re.M)
@@ -73,6 +75,216 @@ def keep_missing_asset_blocks(previous, new):
             seen.add(number)
             parts.append(body)
     return "\n\n".join(part.strip() for part in parts if part.strip()) + "\n"
+
+
+def _figure_log(message, data):
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "ee5fa7",
+            "runId": "post-fix",
+            "hypothesisId": "H-fig",
+            "location": "end/stage_runner.py",
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+
+
+def _repair_with_graph(
+    folder, stage, repair, write_model, debug_dir, model, template, locks=None, title="", choices=None
+):
+    """One repair graph for the failed items. Passing text stays on disk."""
+    from end.repair_units import (
+        apply_repair_choices,
+        apply_repairs,
+        prepare_asset_repair,
+        repair_brief,
+        units_for,
+    )
+    from end.trace import begin_trace
+
+    folder = Path(folder)
+    internal = folder / "_内部_"
+    asset = _read(internal / "assets.md")
+    previs = _read(internal / "previs.md")
+    storyboard = _read(internal / "分镜.md")
+    feed = _read(internal / "feed.md")
+    units = units_for(stage, repair, asset=asset, previs=previs, feed=feed)
+    if not units:
+        _figure_log("repair skipped", {"stage": stage, "units": 0})
+        _passed, fresh = check_stage(folder, stage, locks or {}, title)
+        units = units_for(stage, fresh, asset=asset, previs=previs, feed=feed)
+        # region agent log
+        _figure_log(
+            "repair recheck",
+            {
+                "stage": stage,
+                "storedLen": len(repair or ""),
+                "freshLen": len(fresh or ""),
+                "summary": sum(
+                    1 for line in (fresh or "").splitlines() if line.startswith("[x]") or line.startswith("[+]")
+                ),
+                "units": len(units),
+            },
+        )
+        # endregion
+        repair = fresh or repair
+    chosen = dict(choices) if isinstance(choices, dict) else {}
+    if stage == "asset" and chosen:
+        _passed, fresh = check_stage(folder, stage, locks or {}, title)
+        units = units_for(stage, fresh, asset=asset)
+        asset, indexes, units = apply_repair_choices(asset, units, chosen)
+        if not units:
+            return {"image_prompts": asset, "_figure_repair": True, "_figure_indexes": indexes}
+    elif stage == "asset" and units:
+        asset, indexes, units = prepare_asset_repair(asset, units)
+        if not units:
+            return {"image_prompts": asset, "_figure_repair": True, "_figure_indexes": indexes}
+    if not units:
+        return _saved_stage(stage, asset, previs, storyboard, feed)
+    brief = repair_brief(stage, units)
+    _figure_log(
+        "repair brief",
+        {
+            "stage": stage,
+            "units": [unit.get("id") for unit in units],
+            "briefLen": len(brief),
+            "hasSuiteTask": "任务：资产锁定" in brief or "任务：分镜" in brief or "任务：提示词封装" in brief,
+        },
+    )
+    prompts = begin_trace(folder, stage, repair=True, brief="建议修补 %s 项" % len(units))
+    result = _write_model(
+        write_model,
+        brief,
+        "",
+        debug_dir=debug_dir,
+        model=model,
+        template=template,
+        prompts=prompts,
+    )
+    repairs = []
+    if isinstance(result, dict):
+        if isinstance(result.get("repairs"), list):
+            repairs = result.get("repairs")
+        elif isinstance(result.get("partials"), list):
+            repairs = [
+                {"id": item.get("skill"), "text": item.get("text")}
+                for item in result.get("partials")
+                if isinstance(item, dict)
+            ]
+        elif len(units) == 1:
+            fresh = _flatten_prompt_text(result.get("text"))
+            if not fresh:
+                fresh = _flatten_prompt_text(result.get("image_prompts") or result.get("previs") or result.get("feed"))
+            if fresh:
+                repairs = [{"id": units[0]["id"], "text": fresh}]
+    applied = apply_repairs(
+        stage,
+        units,
+        repairs,
+        asset=asset,
+        previs=previs,
+        storyboard=storyboard,
+        feed=feed,
+    )
+    _figure_log(
+        "repair splice",
+        {"stage": stage, "units": len(units), "replies": len(repairs)},
+    )
+    return applied
+
+
+def _saved_stage(stage, asset, previs, storyboard, feed):
+    if stage == "asset":
+        return {"image_prompts": asset, "_figure_repair": True, "_figure_indexes": []}
+    if stage == "storyboard":
+        return {"storyboard": storyboard, "previs": previs}
+    if stage == "feed":
+        return {"feed": feed}
+    return {}
+
+
+def _flatten_prompt_text(value):
+    """Turn a string, a list of prompts, or a nested object into one markdown body."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = [_flatten_prompt_text(item) for item in value]
+        return "\n\n".join(part for part in parts if part)
+    if isinstance(value, dict):
+        for key in ("image_prompts", "prompt", "text", "markdown", "content"):
+            if value.get(key):
+                found = _flatten_prompt_text(value[key])
+                if found:
+                    return found
+        return ""
+    return ""
+
+
+def _prompt_shape(value):
+    if isinstance(value, str):
+        return {"type": "str", "len": len(value)}
+    if isinstance(value, list):
+        first = value[0] if value else None
+        info = {"type": "list", "len": len(value), "first": type(first).__name__ if value else ""}
+        if isinstance(first, dict):
+            info["firstKeys"] = sorted(str(key) for key in first.keys())[:8]
+        return info
+    if isinstance(value, dict):
+        return {"type": "dict", "keys": sorted(str(key) for key in value.keys())[:12]}
+    return {"type": type(value).__name__}
+
+
+def _coerce_asset_prompts(result):
+    """Keep 图 blocks when the model puts them in a list or in the specialist notes."""
+    if not isinstance(result, dict):
+        return result
+    raw = result.get("image_prompts")
+    flat = _flatten_prompt_text(raw)
+    notes = []
+    for item in result.get("partials") or []:
+        notes.append(item.get("text") if isinstance(item, dict) else item)
+    partial_flat = _flatten_prompt_text(notes)
+    field_blocks = len(_asset_pieces(flat))
+    partial_blocks = len(_asset_pieces(partial_flat))
+    chosen = flat
+    source = "field"
+    if field_blocks == 0 and partial_blocks:
+        chosen = partial_flat
+        source = "partials"
+    chosen_blocks = len(_asset_pieces(chosen))
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "ee5fa7",
+            "runId": "post-fix",
+            "hypothesisId": "A",
+            "location": "end/stage_runner.py:_coerce_asset_prompts",
+            "message": "asset prompt shape",
+            "data": {
+                "shape": _prompt_shape(raw),
+                "fieldBlocks": field_blocks,
+                "partialBlocks": partial_blocks,
+                "source": source,
+                "chosenBlocks": chosen_blocks,
+            },
+            "timestamp": int(time.time() * 1000),
+        }
+        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+    if chosen_blocks and chosen != raw:
+        result = dict(result)
+        result["image_prompts"] = chosen
+    return result
 
 
 def asset_markdown(result):
@@ -337,6 +549,21 @@ _DRAFT_FILE = {
     "storyboard": "分镜.md",
     "feed": "feed.md",
 }
+_TASK_LINE = {
+    "script": "任务：剧本",
+    "asset": "任务：资产锁定",
+    "storyboard": "任务：分镜",
+    "feed": "任务：提示词封装",
+}
+_SCRIPT_CHAIN = {
+    "sd-script-engine/references/source-registration.md": "01-来源登记.md",
+    "sd-script-engine/references/story-bible-and-ip.md": "02-IP与角色.md",
+    "sd-script-engine/references/episode-planning.md": "04-分集规划.md",
+    "sd-script-engine/references/six-stage-pipeline.md": "05-正式剧本.md",
+    "sd-script-engine/references/dialogue-naturalization.md": "05-台词.md",
+    "short-drama-director/references/dialogue-doctor-7d.md": "05-对白医生.md",
+    "sd-script-engine/references/roundtable-review.md": "06-圆桌.md",
+}
 _INSTRUCTION = {
     "recon": "只写《对标情报卡》，放在 intel。这是来源，不是事实。不要写剧本。",
     "script": "只写剧本，放在 script。过程稿放在 internal。不要改锁。",
@@ -353,7 +580,12 @@ _INSTRUCTION = {
         "后面每一段都同样写全。每一格都要答完六问：谁在哪、朝哪、看哪、做什么、镜头在哪、光从哪来。",
         "文末一行：预演故事板：段1~段N ✅",
     )),
-    "feed": "只写投喂稿，放在 feed。Seedance 七段顺序固定。模型是 h3 时只在这一步改成六段式。画面写正面有什么。",
+    "feed": "\n".join((
+        "只写投喂稿，放在 feed。feed 必须是字符串。",
+        "Seedance 用 ## 【投喂单元 N/M】标题，下面写七段。",
+        "模型是 h3 时，每一段改成六段正文。字段名必须带冒号并且单独成行：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+        "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
+    )),
 }
 
 
@@ -513,6 +745,12 @@ def store_stage(folder, stage, result):
 
 
 SCRIPT_REVISE_OPTIONS = ("更贴我写的故事", "产品信息写清楚", "打斗再收着点", "其他")
+ASSET_REVISE = "根据建议修改"
+STORYBOARD_KEEP = "先用这一稿继续"
+
+
+def storyboard_has_draft(folder):
+    return bool(_read(Path(folder) / "_内部_" / "分镜.md").strip())
 
 
 def script_revise_question():
@@ -525,7 +763,7 @@ def script_revise_question():
     }
 
 
-def _gate_copy(stage, passed, report, tries=0):
+def _gate_copy(stage, passed, report, tries=0, has_draft=False):
     if passed and stage == "script":
         return (
             "剧本门。机检已过，没有打回项。继续才进入资产。"
@@ -543,18 +781,30 @@ def _gate_copy(stage, passed, report, tries=0):
     tail = (report or "").strip()
     if len(tail) > 1200:
         tail = tail[-1200:]
-    if tries:
-        reply = "机检没过。已按检查结果自动改了%d次，还剩这些。继续再改一轮。" % tries
+    if stage in ("asset", "storyboard", "feed"):
+        reply = "机检没过。根据建议修改会按下面这些项改。"
+        if tail:
+            reply = reply + "\n" + tail
+        options = [ASSET_REVISE]
+        if stage == "storyboard" and has_draft:
+            options.append(STORYBOARD_KEEP)
+        return reply, options
+    if stage == "script":
+        keep = "通过的部分留下"
     else:
-        reply = "机检没过。下面是还要改的地方。继续再改一轮。"
+        keep = "通过的部分留下"
+    if tries:
+        reply = "机检没过。已按检查结果自动改了%d次，还剩这些。根据建议修改会按这些项改上一稿，%s。" % (tries, keep)
+    else:
+        reply = "机检没过。下面是还要改的地方。根据建议修改会按这些项改上一稿，%s。" % keep
     if tail:
         reply = reply + "\n" + tail
-    return reply, ["继续"]
+    return reply, [ASSET_REVISE]
 
 
-def gate_result(stage, passed, report, pipeline):
+def gate_result(stage, passed, report, pipeline, has_draft=False):
     tries = int((pipeline or {}).get("repairs") or 0)
-    reply, options = _gate_copy(stage, passed, report, tries)
+    reply, options = _gate_copy(stage, passed, report, tries, has_draft=has_draft)
     phase = _GATE_PHASE.get(stage, "gate_fail")
     if not passed and stage == "feed" and (pipeline or {}).get("check") == "qc":
         phase = "gate_fail"
@@ -564,7 +814,7 @@ def gate_result(stage, passed, report, pipeline):
             "current": stage,
             "action": "wait",
             "passed": bool(passed),
-            "report": (report or "")[-4000:],
+            "report": report or "",
         }
     )
     return {
@@ -606,11 +856,14 @@ def _spec_patch(stage, result, previous):
             merged["storyboard"] = result.get("storyboard")
         if result.get("previs"):
             merged["previs"] = result.get("previs")
+        merged = apply_storyboard_shots(merged)
     elif stage == "feed":
         if result.get("feed"):
             merged["feed"] = result.get("feed")
-        if result.get("shots"):
-            merged["shots"] = result.get("shots")
+        incoming = result.get("shots")
+        if isinstance(incoming, list) and incoming and not shots_are_placeholder(incoming):
+            merged["shots"] = incoming
+        merged = apply_storyboard_shots(merged)
     merged.pop("locks", None)
     return merged
 
@@ -692,6 +945,34 @@ def check_stage(folder, stage, locks, title=""):
             # endregion
             target.write_text(body if body.endswith("\n") else body + "\n", encoding="utf-8")
             code, report = check_p45(target, material_mode=mode)
+            # region agent log
+            try:
+                with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "sessionId": "ee5fa7",
+                                "runId": "pre",
+                                "hypothesisId": "D",
+                                "location": "end/stage_runner.py:check_stage",
+                                "message": "storyboard six-question check",
+                                "data": {
+                                    "passed": code == 0,
+                                    "p453": len([line for line in (report or "").splitlines() if "P453" in line and "FAIL" in line]),
+                                    "previsRank": list(_board_rank(previs)),
+                                    "storyboardRank": list(_board_rank(text)),
+                                    "selectedChars": len(body),
+                                    "selectedIsPrevis": previs.strip() in body,
+                                },
+                                "timestamp": int(time.time() * 1000),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+            except OSError:
+                pass
+            # endregion
             if code != 0:
                 if target.is_file():
                     _write_internal(folder, target.name, target.read_text(encoding="utf-8"))
@@ -700,7 +981,10 @@ def check_stage(folder, stage, locks, title=""):
         return True, ""
     if stage == "feed":
         path = internal / "feed.md"
-        text = _read(path)
+        text = render_feed_text(_read(path))
+        if text.strip() and text.strip() != _read(path).strip():
+            text = patch_h3_voiceover(text)
+            _write_internal(folder, "feed.md", text)
         if not text.strip():
             return False, "投喂稿是空的"
         claim = unverified_claim(text, mode)
@@ -826,6 +1110,247 @@ def previs_check_text(storyboard, previs, mode):
     return "素材形态：%s\n\n%s\n" % (mode or "M1", body)
 
 
+_H3_SECTION_FIELDS = (
+    "subject_definitions",
+    "summary",
+    "retention_analysis",
+    "detailed_description",
+    "overall_soundscape",
+    "non_diegetic_music",
+)
+
+
+def _feed_payload(value):
+    if isinstance(value, (dict, list)):
+        return value
+    text = str(value or "").strip()
+    if not text or text[0] not in "{[":
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, (dict, list)):
+        try:
+            import ast
+
+            data = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return None
+    if isinstance(data, (dict, list)):
+        return data
+    return None
+
+
+def _feed_segments(payload):
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    segments = payload.get("segments")
+    if isinstance(segments, list) and segments:
+        return [item for item in segments if isinstance(item, dict)]
+    content = payload.get("content")
+    if isinstance(content, dict) and any(content.get(field) for field in _H3_SECTION_FIELDS):
+        return [payload]
+    if any(payload.get(field) for field in _H3_SECTION_FIELDS):
+        return [{"content": payload}]
+    return []
+
+
+_H3_AT = re.compile(r"(\[Shot\s+\d+\][^\n]{0,14}?(?:At|在)\s*)(\d{1,2}):(\d{2})\.(\d{3})")
+
+
+def _feed_span(time_range):
+    match = re.match(r"(\d+):(\d{2})\s*-\s*(\d+):(\d{2})", str(time_range or "").strip())
+    if not match:
+        return None, None
+    start = int(match.group(1)) * 60 + int(match.group(2))
+    end = int(match.group(3)) * 60 + int(match.group(4))
+    if end <= start:
+        return None, None
+    return start, end - start
+
+
+def _rebase_cuts(body, start):
+    if not start:
+        return body
+
+    def local(match):
+        seconds = int(match.group(2)) * 60 + int(match.group(3)) + int(match.group(4)) / 1000
+        shifted = max(0, seconds - start)
+        whole = int(shifted)
+        millis = int(round((shifted - whole) * 1000))
+        return "%s%02d:%02d.%03d" % (match.group(1), whole // 60, whole % 60, millis)
+
+    return _H3_AT.sub(local, body)
+
+
+_LOOSE_FIELD = re.compile(
+    r"^(?:【\s*)?(%s)(?:\s*】)?\s*[:：]?\s*$" % "|".join(_H3_SECTION_FIELDS)
+)
+_SHOT_HEAD = re.compile(r"\[Shot\s+\d+\]")
+_SHOT_CLOCK = re.compile(
+    r"\[Shot\s+(\d+)\][^\n]{0,40}?(?:At|在)\s*(\d{1,2}):(\d{2})\.(\d{3})"
+)
+_SHOT1_CLOCK = re.compile(
+    r"(\[Shot\s*1\])[^\n]{0,40}?(?:At|在)\s*\d{1,2}:\d{2}\.\d{3}\s*,?\s*"
+)
+
+
+def _loose_h3_sections(text):
+    sections = {}
+    current = None
+    buf = []
+
+    def flush():
+        if current:
+            sections[current] = "\n".join(buf).strip()
+
+    for line in str(text or "").splitlines():
+        match = _LOOSE_FIELD.match(line.strip())
+        if match:
+            flush()
+            current = match.group(1)
+            buf = []
+        elif current:
+            buf.append(line)
+    flush()
+    return sections
+
+
+def _shot_pieces(body):
+    marks = list(_SHOT_HEAD.finditer(body))
+    if not marks:
+        return []
+    pieces = []
+    for index, mark in enumerate(marks):
+        end = marks[index + 1].start() if index + 1 < len(marks) else len(body)
+        chunk = body[mark.start():end].strip()
+        clock = _SHOT_CLOCK.match(chunk)
+        if clock:
+            seconds = int(clock.group(2)) * 60 + int(clock.group(3)) + int(clock.group(4)) / 1000
+            number = int(clock.group(1))
+        else:
+            number = int(re.match(r"\[Shot\s+(\d+)\]", chunk).group(1))
+            seconds = None
+        pieces.append((number, seconds, chunk))
+    return pieces
+
+
+def _shot_groups(pieces):
+    groups = []
+    current = []
+    origin = 0
+    last = 0
+    for number, seconds, chunk in pieces:
+        if seconds is None:
+            seconds = last
+        last = seconds
+        if current and seconds >= origin + 15:
+            groups.append((origin, current))
+            origin = int(seconds // 15) * 15
+            current = [(number, seconds, chunk)]
+        else:
+            if not current:
+                origin = int(seconds // 15) * 15
+            current.append((number, seconds, chunk))
+    if current:
+        groups.append((origin, current))
+    return groups
+
+
+def _normalize_loose_h3(text):
+    """Turn bare H3 field names into line-oriented sections the checker can see."""
+    raw = str(text or "")
+    ready = bool(re.search(r"(?m)^subject_definitions\s*[:：]", raw)) and "## 【投喂单元" in raw
+    sections = {} if ready else _loose_h3_sections(raw)
+    bare = len(re.findall(
+        r"(?m)^(?:%s)\s*$" % "|".join(_H3_SECTION_FIELDS),
+        raw,
+    ))
+    # #region agent log
+    try:
+        with open("/Users/shaneson/AiVideo/.cursor/debug-eab7ec.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "sessionId": "eab7ec",
+                "runId": "post-fix",
+                "hypothesisId": "C",
+                "location": "stage_runner.py:_normalize_loose_h3",
+                "message": "loose h3 feed",
+                "data": {
+                    "chars": len(raw),
+                    "bareFields": bare,
+                    "colonField": bool(re.search(r"(?m)^subject_definitions\s*[:：]", raw)),
+                    "unitHeading": "## 【投喂单元" in raw,
+                    "ready": ready,
+                    "sections": sorted(sections),
+                },
+                "timestamp": int(time.time() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # #endregion
+    if ready or "subject_definitions" not in sections or "detailed_description" not in sections:
+        return raw
+    pieces = _shot_pieces(sections.get("detailed_description") or "")
+    groups = _shot_groups(pieces) or [(0, [])]
+    total = len(groups)
+    blocks = []
+    for index, (origin, shots) in enumerate(groups, 1):
+        lines = ["## 【投喂单元 %s/%s · 段%s】" % (index, total, index)]
+        last = origin
+        shot_text = []
+        for number, seconds, chunk in shots:
+            last = max(last, seconds)
+            chunk = _rebase_cuts(chunk, origin)
+            if number == 1:
+                chunk = _SHOT1_CLOCK.sub(r"\1 ", chunk)
+            shot_text.append(chunk)
+        span = max(4, min(15, int(round(last - origin)) or 4))
+        lines.append("duration: %s" % span)
+        for field in _H3_SECTION_FIELDS:
+            if field == "detailed_description":
+                body = "\n\n".join(shot_text).strip()
+            else:
+                body = sections.get(field) or ""
+            if not body:
+                continue
+            lines.append("%s:" % field)
+            lines.append(body)
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks).strip()
+
+
+def render_feed_text(value):
+    """Write an H3 segment object as one six-section block per segment."""
+    payload = _feed_payload(value)
+    segments = _feed_segments(payload) if payload is not None else []
+    if not segments:
+        return _normalize_loose_h3(str(value or ""))
+    total = len(segments)
+    blocks = []
+    for index, segment in enumerate(segments, 1):
+        content = segment.get("content")
+        if not isinstance(content, dict):
+            content = segment
+        lines = ["## 【投喂单元 %s/%s · 段%s】" % (index, total, index)]
+        start, span = _feed_span(segment.get("time_range") or "")
+        if span:
+            shown = int(span) if span == int(span) else span
+            lines.append("duration: %s" % shown)
+        for field in _H3_SECTION_FIELDS:
+            body = str(content.get(field) or "").strip()
+            if field == "detailed_description" and start:
+                body = _rebase_cuts(body, start)
+            if not body:
+                continue
+            lines.append("%s:" % field)
+            lines.append(body)
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks).strip()
+
+
 def patch_h3_voiceover(text):
     """H3 voiceover must carry the checker's closed-lips phrase."""
     raw = str(text or "")
@@ -865,7 +1390,292 @@ def _repair_line(stage, repair):
     return "机检没过，只改这些，不要另起一套：\n" + repair
 
 
+def _repair_task(stage):
+    if stage == "storyboard":
+        target = "分镜和预演故事板"
+        locked = "剧本和资产图"
+    elif stage == "asset":
+        target = "资产图块"
+        locked = "剧本"
+    elif stage == "feed":
+        target = "投喂稿"
+        locked = "剧本、资产和分镜"
+    else:
+        target = "这一阶段正文"
+        locked = "上一阶段正文"
+    return "\n".join((
+        "这次是返修。只改机检点名的失败项，改完放进%s。" % target,
+        "%s整段保留，当作锁定参考。" % locked,
+        "没有点名的段落原样保留。",
+    ))
+
+
+_REPAIR_FIELD = {
+    "storyboard": "改完的分镜放在 storyboard，预演放在 previs。",
+    "asset": "改完的图块放在 image_prompts。",
+    "script": "改完的剧本放在 script。",
+    "feed": "改完的投喂稿放在 feed。",
+    "recon": "改完的情报卡放在 intel。",
+}
+
+
+def _user_story_block(stage, story, draft):
+    """The raw user text is only for the first script. Later prompts use the drafts."""
+    if stage != "script" or str(draft or "").strip():
+        return ""
+    body = str(story or "").strip()
+    if not body:
+        return ""
+    return "用户原文：\n" + body
+
+
+def _locked_reference(label, text):
+    body = str(text or "").strip()
+    if not body:
+        return ""
+    return "%s（锁定参考，整段保留）：\n%s" % (label, body)
+
+
+def _accepts_trace(func):
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    for param in signature.parameters.values():
+        if param.name == "trace_prompts" or param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return False
+
+
+def _write_model(write_model, brief, pack, debug_dir, model, template, prompts):
+    kwargs = {
+        "debug_dir": debug_dir,
+        "model": model,
+        "template": template,
+    }
+    if prompts and _accepts_trace(write_model):
+        kwargs["trace_prompts"] = prompts
+    return write_model(brief, pack, **kwargs)
+
+
+SCRIPT_STEPS = (
+    ("1", "来源登记", "01-来源登记.md"),
+    ("2", "IP与角色", "02-IP与角色.md"),
+    ("3", "故事圣经", "03-故事圣经.md"),
+    ("4", "分集规划", "04-分集规划.md"),
+    ("5", "正式剧本", "05-正式剧本.md"),
+    ("6", "圆桌", "06-圆桌.md"),
+)
+_SCRIPT_TASK = {
+    "1": "这一步只做来源登记。正文放在 text。",
+    "2": "这一步只做 IP 与角色。正文放在 text。",
+    "3": "这一步只写全剧开发圣经。正文放在 text。",
+    "4": "这一步只做分集规划。时长已经锁定，不要再问集数。正文放在 text。",
+    "5": "这一步只写正式剧本。正文放在 script。标题放在 title。",
+    "6": "这一步只做圆桌审核。意见放在 text。",
+}
+
+
+def _chain_dir(folder):
+    path = Path(folder) / "_内部_" / "剧本链"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _chain_text(folder, name):
+    path = Path(folder) / "_内部_" / "剧本链" / name
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _script_rows(pipeline):
+    pipeline = pipeline or {}
+    repair = str(pipeline.get("repair") or "").strip()
+    revise = str(pipeline.get("revise_note") or "").strip()
+    if str(pipeline.get("action") or "") == "rewrite" or repair or revise:
+        return [row for row in SCRIPT_STEPS if row[0] in ("5", "6")]
+    start = str(pipeline.get("script_from") or "")
+    ids = [row[0] for row in SCRIPT_STEPS]
+    if start in ids:
+        return [row for row in SCRIPT_STEPS if ids.index(row[0]) >= ids.index(start)]
+    return list(SCRIPT_STEPS)
+
+
+def _step_body(step_id, result):
+    if step_id == "5":
+        body = str(result.get("script") or "").strip()
+        used = "script"
+    else:
+        body = str(result.get("text") or result.get("internal") or "").strip()
+        used = "text" if str(result.get("text") or "").strip() else ("internal" if body else "")
+    # region agent log
+    try:
+        import json
+        import time
+
+        payload = {
+            "sessionId": "ee5fa7",
+            "runId": "post-fix",
+            "hypothesisId": "D",
+            "location": "end/stage_runner.py:_step_body",
+            "message": "script step body field",
+            "data": {
+                "step": step_id,
+                "used": used,
+                "bodyLen": len(body),
+                "keys": [str(key) for key in list(result)[:12]] if isinstance(result, dict) else [],
+            },
+            "timestamp": int(time.time() * 1000),
+        }
+        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+    return body
+
+
+def _script_brief(project, folder, locks, only, pipeline, step_id, previous):
+    revise = str((pipeline or {}).get("revise_note") or "").strip()
+    repair = str((pipeline or {}).get("repair") or "").strip()
+    lines = [
+        mount_header("script", locks, previous, only),
+        "剧本步：%s" % step_id,
+        _SCRIPT_TASK[step_id],
+        lock_brief(locks),
+    ]
+    if step_id == "5" and revise:
+        lines.append("精修原文：1")
+        lines.append("用户要改的是：%s" % revise)
+    if step_id == "5" and repair and not revise:
+        lines.append("机检没过。只改点名的条目，原文不要重写。")
+        lines.append(repair)
+    rewriting = str((pipeline or {}).get("action") or "") == "rewrite"
+    if step_id == "1" and not (revise or repair or rewriting):
+        story = str((project or {}).get("brief") or "").strip()
+        if story:
+            lines.extend(["", "用户原文", story])
+        note = intake_note(load_intake(folder))
+        if note:
+            lines.extend(["", note])
+    elif step_id != "1":
+        lines.extend(["", "上一步正文", previous or "（上一步还没有正文）"])
+    if step_id in ("5", "6") and (revise or repair or rewriting):
+        draft = _read(Path(folder) / "_内部_" / "剧本.md").strip()
+        if draft:
+            lines.extend(["", "要改的底稿", draft])
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def _produce_script(project, folder, locks, only, write_model, load_pack, pipeline):
+    from end.trace import begin_trace, finish_trace
+
+    del load_pack
+    pipeline = pipeline or {}
+    revise = str(pipeline.get("revise_note") or "").strip()
+    repair = str(pipeline.get("repair") or "").strip()
+    rewriting = str(pipeline.get("action") or "") == "rewrite"
+    continuing = bool(str(pipeline.get("script_from") or "").strip())
+    chain = _chain_dir(folder)
+    if not (revise or repair or rewriting or continuing):
+        for child in chain.glob("*.md"):
+            child.unlink()
+    brief = _script_suite_brief(project, folder, locks, only, pipeline)
+    debug = bool((project.get("progress") or {}).get("debug_llm"))
+    debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
+    prompts = begin_trace(folder, "script", bool(revise or repair or rewriting), brief, label="剧本")
+    try:
+        result = _write_model(
+            write_model,
+            brief,
+            "",
+            debug_dir=debug_dir,
+            model=project.get("model"),
+            template=project.get("template"),
+            prompts=prompts,
+        )
+    except Exception as error:
+        finish_trace(folder, {}, error=str(error))
+        raise
+    if not isinstance(result, dict):
+        finish_trace(folder, {}, error="这一段没有写成 JSON")
+        raise RuntimeError("这一段没有写成 JSON")
+    _save_script_partials(chain, result.get("partials") or [])
+    script = str(result.get("script") or "").strip()
+    if not script:
+        formal = chain / "05-正式剧本.md"
+        if formal.is_file():
+            script = formal.read_text(encoding="utf-8").strip()
+    if not script:
+        finish_trace(folder, {}, error="这一步没有正文")
+        raise RuntimeError("这一步没有正文")
+    title = str(result.get("title") or "").strip()
+    internal = str(result.get("internal") or "").strip()
+    if not internal:
+        table = chain / "06-圆桌.md"
+        if table.is_file():
+            internal = table.read_text(encoding="utf-8").strip()
+    _write_internal(folder, "剧本.md", script)
+    if internal:
+        _write_internal(folder, "剧本过程.md", internal)
+    (chain / "05-正式剧本.md").write_text(script + "\n", encoding="utf-8")
+    finish_trace(folder, {"script": script, "title": title, "internal": internal, "partials": result.get("partials") or []})
+    return {"title": title, "script": script, "internal": internal}
+
+
+def _script_suite_brief(project, folder, locks, only, pipeline):
+    pipeline = pipeline or {}
+    revise = str(pipeline.get("revise_note") or "").strip()
+    repair = str(pipeline.get("repair") or "").strip()
+    rewriting = str(pipeline.get("action") or "") == "rewrite"
+    lines = [
+        mount_header("script", locks, "", only),
+        "任务：剧本",
+        lock_brief(locks),
+        "只写剧本，放在 script。圆桌意见放在 internal。",
+    ]
+    if revise:
+        lines.append("精修原文：1")
+        lines.append("用户要改的是：%s" % revise)
+    if repair and not revise:
+        lines.append("机检没过。只改点名的条目，原文不要重写。")
+        lines.append(repair)
+    if not (revise or repair or rewriting or pipeline.get("script_from")):
+        story = str((project or {}).get("brief") or "").strip()
+        if story:
+            lines.extend(["", "用户原文", story])
+        note = intake_note(load_intake(folder))
+        if note:
+            lines.extend(["", note])
+    else:
+        draft = _read(Path(folder) / "_内部_" / "剧本.md").strip()
+        if draft:
+            lines.extend(["", "要改的底稿", draft])
+        kept = []
+        for _step, label, filename in SCRIPT_STEPS:
+            body = _chain_text(folder, filename)
+            if body:
+                kept.append("%s\n%s" % (label, body))
+        if kept:
+            lines.extend(["", "已有剧本链", "\n\n".join(kept)])
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
+def _save_script_partials(chain, partials):
+    for item in partials or []:
+        if not isinstance(item, dict):
+            continue
+        name = _SCRIPT_CHAIN.get(str(item.get("skill") or ""))
+        text = str(item.get("text") or "").strip()
+        if name and text:
+            (chain / name).write_text(text + "\n", encoding="utf-8")
+
+
 def _produce(project, folder, stage, locks, only, write_model, load_pack):
+    pipeline = (project.get("progress") or {}).get("pipeline") or {}
+    if stage == "script":
+        return _produce_script(project, folder, locks, only, write_model, load_pack, pipeline)
     carried = carried_text(folder, stage)
     header = mount_header(stage, locks, carried, only)
     story = enrich_brief(project.get("brief") or "", load_intake(folder))
@@ -873,37 +1683,74 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
     note = ""
     current_draft = ""
     repair = str(pipeline.get("repair") or "").strip()
-    if stage == "script":
-        note = str(pipeline.get("revise_note") or "").strip()
+    raw_choices = pipeline.get("repair_choices")
+    repair_choices = raw_choices if isinstance(raw_choices, dict) else {}
     if note or repair:
         current_draft = _read(Path(folder) / "_内部_" / _DRAFT_FILE.get(stage, "")).strip()
         if stage == "storyboard":
             previs_draft = _read(Path(folder) / "_内部_" / "previs.md").strip()
             if previs_draft:
                 current_draft = (current_draft + "\n\n预演故事板：\n" + previs_draft).strip()
-    brief = "\n\n".join(
-        part
-        for part in (
-            header,
-            lock_brief(locks),
-            "用户原文：\n" + story if story else "",
-            _INSTRUCTION.get(stage, ""),
-            "当前这一稿：\n" + current_draft if current_draft else "",
-            "精修要求：\n" + note if note else "",
-            _repair_line(stage, repair),
-            "上一阶段正文：\n" + carried if carried else "",
-        )
-        if part
-    )
-    pack = load_pack(project.get("template"), brief, _STAGE_CODE.get(stage, "P4"))
+    task_line = _TASK_LINE.get(stage, "")
     debug = bool((project.get("progress") or {}).get("debug_llm"))
     debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
-    result = write_model(
+    if (repair or repair_choices) and stage in ("asset", "storyboard", "feed"):
+        return _repair_with_graph(
+            folder,
+            stage,
+            repair,
+            write_model,
+            debug_dir,
+            project.get("model"),
+            project.get("template"),
+            locks,
+            str(project.get("title") or ""),
+            repair_choices,
+        )
+    if repair:
+        brief = "\n\n".join(
+            part
+            for part in (
+                header,
+                task_line,
+                lock_brief(locks),
+                _repair_task(stage),
+                _repair_line(stage, repair),
+                "要改的底稿：\n" + current_draft if current_draft else "",
+                _REPAIR_FIELD.get(stage, ""),
+                "精修要求：\n" + note if note else "",
+                _locked_reference("上一阶段正文", carried),
+                "再确认：只改机检点名的失败项。锁定参考整段保留，不要为它另写一批。",
+            )
+            if part
+        )
+    else:
+        brief = "\n\n".join(
+            part
+            for part in (
+                header,
+                task_line,
+                lock_brief(locks),
+                _user_story_block(stage, story, current_draft),
+                _INSTRUCTION.get(stage, ""),
+                "当前这一稿：\n" + current_draft if current_draft else "",
+                "精修要求：\n" + note if note else "",
+                "上一阶段正文：\n" + carried if carried else "",
+            )
+            if part
+        )
+    pack = "" if task_line else load_pack(project.get("template"), brief, _STAGE_CODE.get(stage, "P4"))
+    from end.trace import begin_trace
+
+    prompts = begin_trace(folder, stage, repair=bool(repair), brief=brief)
+    result = _write_model(
+        write_model,
         brief,
         pack,
         debug_dir=debug_dir,
         model=project.get("model"),
         template=project.get("template"),
+        prompts=prompts,
     )
     # region agent log
     _agent_log(
@@ -974,6 +1821,209 @@ def _project_with_pipeline(project, pipeline):
     return updated
 
 
+def _has_saved_draft(folder, stage):
+    internal = Path(folder) / "_内部_"
+    names = []
+    draft = _DRAFT_FILE.get(stage) or ""
+    if draft:
+        names.append(draft)
+    if stage == "storyboard":
+        names.append("previs.md")
+    for name in names:
+        if _read(internal / name).strip():
+            return True
+    return False
+
+
+def _write_fail_log(stage, has_draft, error):
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "ee5fa7",
+            "hypothesisId": "H9",
+            "location": "end/stage_runner.py:execute",
+            "message": "write failed",
+            "data": {
+                "stage": stage,
+                "hasDraft": bool(has_draft),
+                "errorHead": str(error or "").splitlines()[0][:120],
+            },
+            "timestamp": int(time.time() * 1000),
+        }
+        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+
+
+def _unfinished_write(stage, pipeline, error):
+    """A failed first write has no draft to keep. Stay on this gate and allow another write."""
+    stored = dict(pipeline or {})
+    stored.update(
+        {
+            "current": stage,
+            "action": "wait",
+            "passed": False,
+            "retry_write": True,
+            "report": "",
+            "repair": "",
+            "check": "",
+        }
+    )
+    detail = str(error or "").strip()
+    if len(detail) > 500:
+        detail = detail[:500]
+    label = _GATE_LABEL.get(stage, "这一阶段")
+    reply = "%s没写完。继续会再写一次。" % label
+    if detail:
+        reply = reply + "\n" + detail
+    return {
+        "terminal": "gate",
+        "status": "gate",
+        "stage": label,
+        "progress": {
+            "percent": _PERCENT.get(stage, 50),
+            "phase": _GATE_PHASE.get(stage, "gate_fail"),
+            "message": reply.split("\n", 1)[0],
+            "pipeline": stored,
+            "question": {"id": stage, "kind": "single", "reply": reply, "options": ["继续"], "cards": []},
+        },
+        "message": {
+            "role": "assistant",
+            "content": reply,
+            "options": ["继续"],
+            "choice_kind": "single",
+            "cards": [],
+        },
+    }
+
+
+def _keep_previous_draft(stage, pipeline, folder=None):
+    """A failed rewrite leaves the saved draft and returns to the same gate."""
+    outcome = gate_result(
+        stage,
+        bool((pipeline or {}).get("passed")),
+        (pipeline or {}).get("report") or "",
+        pipeline,
+        has_draft=bool(folder) and storyboard_has_draft(folder),
+    )
+    note = "这一版没写完，上一稿还留着。"
+    previous = (outcome.get("message") or {}).get("content") or ""
+    reply = note if not previous else note + "\n" + previous
+    message = dict(outcome.get("message") or {})
+    message["content"] = reply
+    progress = dict(outcome.get("progress") or {})
+    question = dict(progress.get("question") or {})
+    question["reply"] = reply
+    progress["question"] = question
+    progress["message"] = note
+    updated = dict(outcome)
+    updated["message"] = message
+    updated["progress"] = progress
+    return updated
+
+
+def _write_route(project, folder, locks, only, write_model):
+    from end.trace import begin_trace, finish_trace
+
+    del only
+
+    brief = "\n".join(
+        (
+            "阶段：P0",
+            "赛道：%s" % ((locks or {}).get("track") or "1"),
+            "来源：%s" % ((locks or {}).get("source") or "1"),
+            "动作档：%s" % ((locks or {}).get("combat") or "none"),
+            "模型：%s" % ((locks or {}).get("model") or "h3"),
+            "素材形态：%s" % ((locks or {}).get("material_mode") or "M1"),
+            "",
+            "任务：赛道分流",
+            lock_brief(locks),
+            "写路线说明，放在 text。不要改已经选定的锁。",
+        )
+    )
+    debug = bool((project.get("progress") or {}).get("debug_llm"))
+    debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
+    prompts = begin_trace(folder, "route", False, brief, label="赛道分流")
+    try:
+        result = _write_model(
+            write_model,
+            brief,
+            "",
+            debug_dir=debug_dir,
+            model=project.get("model"),
+            template=project.get("template"),
+            prompts=prompts,
+        )
+    except Exception as error:
+        finish_trace(folder, {}, error=str(error))
+        raise
+    text = ""
+    if isinstance(result, dict):
+        text = str(result.get("text") or result.get("internal") or "").strip()
+    if text:
+        _write_internal(folder, "路线.md", text)
+    finish_trace(folder, {"text": text})
+    return text
+
+
+def _write_side(project, folder, locks, write_model, task_line, filename, label, stage):
+    from end.trace import begin_trace, finish_trace
+
+    brief = "\n".join(
+        (
+            "阶段：P5",
+            "赛道：%s" % ((locks or {}).get("track") or "1"),
+            "来源：%s" % ((locks or {}).get("source") or "1"),
+            "动作档：%s" % ((locks or {}).get("combat") or "none"),
+            "模型：%s" % ((locks or {}).get("model") or "h3"),
+            "素材形态：%s" % ((locks or {}).get("material_mode") or "M1"),
+            "",
+            task_line,
+            lock_brief(locks),
+            "上一阶段正文：\n" + carried_text(folder, "feed"),
+        )
+    )
+    debug = bool((project.get("progress") or {}).get("debug_llm"))
+    debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
+    prompts = begin_trace(folder, stage, False, brief, label=label)
+    try:
+        result = _write_model(
+            write_model,
+            brief,
+            "",
+            debug_dir=debug_dir,
+            model=project.get("model"),
+            template=project.get("template"),
+            prompts=prompts,
+        )
+    except Exception as error:
+        finish_trace(folder, {}, error=str(error))
+        raise
+    text = ""
+    if isinstance(result, dict):
+        text = str(result.get("text") or result.get("internal") or "").strip()
+    if text:
+        _write_internal(folder, filename, text)
+    finish_trace(folder, {"text": text})
+    return text
+
+
+def _side_note(project, folder, locks, write_model, task_line, filename, label, stage):
+    try:
+        _write_side(project, folder, locks, write_model, task_line, filename, label, stage)
+    except Exception as error:
+        _write_internal(folder, filename, "这一次没有写完。\n%s" % error)
+
+
+def _done(project, folder, locks, pipeline, write_model):
+    _side_note(project, folder, locks, write_model, "任务：独立质检", "质检.md", "独立质检", "qc")
+    if str((locks or {}).get("delivery") or "") in ("1", "3"):
+        _side_note(project, folder, locks, write_model, "任务：离线看板", "看板说明.md", "离线看板", "board")
+    return _finish(folder, locks, pipeline)
+
+
 def execute(project, folder, locks, write_model, load_pack):
     """Write the current stage, or finish. Stop at the gate. Do not continue into the next stage."""
     progress = project.get("progress") or {}
@@ -981,33 +2031,79 @@ def execute(project, folder, locks, write_model, load_pack):
     only = pipeline.get("only") or ""
     action = pipeline.get("action") or "write"
     if action == "finish":
-        return _finish(folder, locks, pipeline)
+        return _done(project, folder, locks, pipeline, write_model)
     if action == "wait":
         current = pipeline.get("current") or ""
-        return gate_result(current, pipeline.get("passed"), pipeline.get("report"), pipeline)
+        return gate_result(
+            current,
+            pipeline.get("passed"),
+            pipeline.get("report"),
+            pipeline,
+            has_draft=storyboard_has_draft(folder),
+        )
     stages = stages_for(locks, only)
     accepted = list(pipeline.get("accepted") or [])
     pending = next_pending(stages, accepted)
     requested = pipeline.get("current") or pending
     current = requested if requested == pending else pending
     if not current:
-        return _finish(folder, locks, pipeline)
+        return _done(project, folder, locks, pipeline, write_model)
     if current in accepted and pipeline.get("action") != "rewrite":
         pipeline = dict(pipeline)
         pipeline["action"] = "finish"
-        return _finish(folder, locks, pipeline)
+        return _done(project, folder, locks, pipeline, write_model)
+    if not accepted and action == "write" and not (
+        pipeline.get("script_from") or pipeline.get("repair") or pipeline.get("revise_note")
+    ):
+        try:
+            _write_route(project, folder, locks, only, write_model)
+        except RuntimeError as error:
+            return _unfinished_write(current, pipeline, error)
     if action == "rewrite":
         pipeline["repair"] = pipeline.get("repair") or pipeline.get("report") or ""
     passed = False
     report = ""
+    checked = False
     spec = _load_spec(folder)
     attempts = 0
     while True:
         project = _project_with_pipeline(project, pipeline)
-        result = _produce(project, folder, current, locks, only, write_model, load_pack)
+        from end.trace import finish_trace, stage_output
+
+        try:
+            stored_feed = _read(Path(folder) / "_内部_" / "feed.md") if current == "feed" else ""
+            rendered_feed = render_feed_text(stored_feed) if current == "feed" else ""
+            reuse_wrapped_feed = (
+                current == "feed"
+                and bool(rendered_feed.strip())
+                and rendered_feed.strip() != stored_feed.strip()
+            )
+            if reuse_wrapped_feed:
+                result = {"feed": rendered_feed}
+            else:
+                result = _produce(project, folder, current, locks, only, write_model, load_pack)
+            if current == "script":
+                pipeline.pop("script_from", None)
+        except RuntimeError as error:
+            finish_trace(folder, {}, error=str(error))
+            has_draft = _has_saved_draft(folder, current)
+            _write_fail_log(current, has_draft, error)
+            if has_draft:
+                status = dict(pipeline)
+                if checked:
+                    status["passed"] = passed
+                    status["report"] = report
+                return _keep_previous_draft(current, status, folder)
+            return _unfinished_write(current, pipeline, error)
         if current == "asset":
+            figure_repair = False
+            figure_indexes = []
+            if isinstance(result, dict):
+                figure_repair = bool(result.pop("_figure_repair", False))
+                figure_indexes = list(result.pop("_figure_indexes", []) or [])
             _write_field_log(result)
             _asset_item_log(result)
+            result = _coerce_asset_prompts(result)
             previous_assets = _read(Path(folder) / "_内部_" / "assets.md")
             image = asset_markdown(result)
             if not _asset_pieces(image):
@@ -1026,7 +2122,7 @@ def execute(project, folder, locks, write_model, load_pack):
                 },
             )
             # endregion
-            patched = patch_asset_phrases(kept)
+            patched = kept if figure_repair else patch_asset_phrases(kept)
             # region agent log
             _agent_log(
                 "G",
@@ -1035,6 +2131,23 @@ def execute(project, folder, locks, write_model, load_pack):
             )
             # endregion
             kept = patched
+            if figure_repair:
+                old_bodies = [body for _number, body in _asset_pieces(previous_assets)]
+                new_bodies = [body for _number, body in _asset_pieces(kept)]
+                unchanged = [
+                    index
+                    for index, (old, new) in enumerate(zip(old_bodies, new_bodies))
+                    if old == new
+                ]
+                _figure_log(
+                    "figure kept",
+                    {
+                        "targets": figure_indexes,
+                        "unchanged": unchanged,
+                        "oldPieces": len(old_bodies),
+                        "newPieces": len(new_bodies),
+                    },
+                )
             result = dict(result or {})
             result["image_prompts"] = kept
             result["assets"] = assets_from_markdown(kept, spec.get("assets"))
@@ -1060,7 +2173,7 @@ def execute(project, folder, locks, write_model, load_pack):
             result["storyboard"] = storyboard
             result["previs"] = previs
         if current == "feed":
-            raw_feed = str((result or {}).get("feed") or "")
+            raw_feed = render_feed_text((result or {}).get("feed") or "")
             patched_feed = patch_h3_voiceover(raw_feed)
             # region agent log
             _agent_log(
@@ -1072,8 +2185,10 @@ def execute(project, folder, locks, write_model, load_pack):
             result = dict(result or {})
             result["feed"] = patched_feed
         store_stage(folder, current, result)
+        finish_trace(folder, stage_output(current, result))
         spec = _spec_patch(current, result, spec)
         passed, report = check_stage(folder, current, locks, spec.get("title") or "")
+        checked = True
         # region agent log
         _agent_log(
             "C",
@@ -1089,14 +2204,50 @@ def execute(project, folder, locks, write_model, load_pack):
         # endregion
         attempts += 1
         pipeline["repairs"] = attempts
-        pipeline["repair"] = "" if passed else (report or "")[-4000:]
-        if passed or attempts >= REPAIR_LIMIT:
+        pipeline["repair"] = "" if passed else (report or "")
+        if current == "script" and not passed and not pipeline["repair"]:
+            pipeline["repair"] = "机检没过"
+        if passed or current in ("asset", "storyboard", "feed") or attempts >= REPAIR_LIMIT:
             break
-    outcome = gate_result(current, passed, report, pipeline)
+    if passed:
+        pipeline.pop("repair_round", None)
+        pipeline.pop("repair_choices", None)
+    outcome = gate_result(
+        current,
+        passed,
+        report,
+        pipeline,
+        has_draft=storyboard_has_draft(folder),
+    )
+    if current == "asset" and not passed and pipeline.get("repair_round"):
+        from end.repair_units import reopen_asset_question
+
+        kept, question = reopen_asset_question(
+            _read(Path(folder) / "_内部_" / "assets.md"),
+            pipeline.get("repair_choices") or {},
+        )
+        if question:
+            outcome = _attach_asset_choice(outcome, question, kept)
     outcome["spec"] = spec
     outcome["used_stage"] = current
     outcome["mount"] = mount_header(current, locks, carried_text(folder, current), only)
     return outcome
+
+
+def _attach_asset_choice(outcome, question, choices):
+    """Replace the generic gate with one block's direction question."""
+    progress = dict(outcome.get("progress") or {})
+    pipeline = dict(progress.get("pipeline") or {})
+    pipeline["repair_choices"] = choices
+    pipeline["repair_round"] = True
+    pipeline["action"] = "wait"
+    progress["pipeline"] = pipeline
+    progress["question"] = question
+    progress["message"] = "选一个改法"
+    attached = dict(outcome)
+    attached["progress"] = progress
+    attached["message"] = question_message(question)
+    return attached
 
 
 def question_message(question):

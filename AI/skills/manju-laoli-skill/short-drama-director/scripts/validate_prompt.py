@@ -628,26 +628,55 @@ H3_PARALLEL_PAT = re.compile(r"同框|同在画面|一同入画|同处一室")
 H3_DEIXIS_PAT = re.compile(r"(这只|那只|这个|那个|这双|那副)(手|脸|眼睛|脚|背影|身体)")
 
 
+_H3_NAMES = H3_SECTIONS + ["scene_description", "camera", "action", "dialogue", "audio"]
+H3_ALIAS = {
+    "subject_definitions": "subject_definitions",
+    "summary": "summary",
+    "scene_description": "summary",
+    "retention_analysis": "retention_analysis",
+    "detailed_description": "detailed_description",
+    "camera": "detailed_description",
+    "action": "detailed_description",
+    "dialogue": "detailed_description",
+    "overall_soundscape": "overall_soundscape",
+    "audio": "overall_soundscape",
+    "non_diegetic_music": "non_diegetic_music",
+}
+_H3_HEADER = re.compile(
+    r"^\s*(?:【\s*(" + "|".join(_H3_NAMES) + r")\s*】\s*(.*)|("
+    + "|".join(_H3_NAMES) + r")\s*[:：]\s*(.*))$"
+)
+
+
+def _h3_header(line):
+    match = _H3_HEADER.match(line)
+    if not match:
+        return None
+    raw = match.group(1) or match.group(3)
+    rest = match.group(2) if match.group(1) else match.group(4)
+    return H3_ALIAS[raw], rest or ""
+
+
 def _h3_order(text):
     """返回出现过的六段字段名，按文件顺序。"""
-    pat = re.compile(r"^\s*(" + "|".join(H3_SECTIONS) + r")\s*[:：]")
     out = []
     for line in text.splitlines():
-        m = pat.match(line)
-        if m and m.group(1) not in out:
-            out.append(m.group(1))
+        header = _h3_header(line)
+        if header and header[0] not in out:
+            out.append(header[0])
     return out
 
 
 def _h3_sections(text):
-    """按行首字段名+冒号切分，返回 {字段: 内容}。"""
-    pat = re.compile(r"^\s*(" + "|".join(H3_SECTIONS) + r")\s*[:：]\s*(.*)$")
+    """按行首字段名切分。冒号和【字段】是同一种段名。"""
     out, cur = {}, None
     for line in text.splitlines():
-        m = pat.match(line)
-        if m:
-            cur = m.group(1)
-            out[cur] = [m.group(2)]
+        header = _h3_header(line)
+        if header:
+            cur, rest = header
+            out.setdefault(cur, [])
+            if rest:
+                out[cur].append(rest)
         elif cur:
             out[cur].append(line)
     return {k: "\n".join(v).strip() for k, v in out.items()}
@@ -5390,8 +5419,12 @@ def _looks_like_feed(text):
     if sum(1 for s in SEVEN_SEGMENTS if s in text) >= 6:
         return True
     if re.search(r"^\s*(?:subject_definitions|summary|retention_analysis|"
-                 r"detailed_description|overall_soundscape|non_diegetic_music)\s*:",
+                 r"detailed_description|overall_soundscape|non_diegetic_music)\s*(?:[:：]|$)",
                  text, re.M):
+        return True
+    if re.search(r"(?m)^【\s*subject_definitions\s*】", text):
+        return True
+    if re.search(r"(?m)^##\s*【投喂单元", text):
         return True
     return False
 
@@ -5557,7 +5590,22 @@ def main():
             print("    或镜行是否为「00:00-00:05 [镜头1] 景别 · 视角 · 运镜。…」格式。")
             print("    exit code 3 = 非稿件（既非 PASS 也非 FAIL）。")
             sys.exit(3)
-        issues, warns, stats = validate_h3(text, opt("--mode", "new"))
+        segs = _split_feed_segments(text) if "--whole" not in argv else []
+        if len(segs) >= 2:
+            print(f"[i] 分单元校验：识别到 {len(segs)} 个投喂段，逐段独立跑 H3 判据"
+                  "（整份合并会把各段时间码累加，误判成一段超过 15s）")
+            issues, warns = [], []
+            stats = {"duration_s": 0, "shots": 0, "chars": 0, "segments": len(segs)}
+            for _label, _body in segs:
+                _si, _sw, _ss = validate_h3(_body, opt("--mode", "new"))
+                print(f"[i] {_label}：时长{_ss['duration_s']}s 镜头{_ss['shots']} 字符{_ss['chars']}"
+                      f" | FAIL={len(_si)} WARN={len(_sw)}")
+                issues.extend(f"[{_label}] {item}" for item in _si)
+                warns.extend(f"[{_label}] {item}" for item in _sw)
+                for _key in ("duration_s", "shots", "chars"):
+                    stats[_key] += _ss.get(_key) or 0
+        else:
+            issues, warns, stats = validate_h3(text, opt("--mode", "new"))
     else:
         if not _looks_like_feed(text):
             print("[!] 该文件不具备投喂稿件形态——未识别到「时间轴镜行 / 七段式栏位 / H3 六段式字段」。")

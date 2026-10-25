@@ -76,6 +76,8 @@ def parse_units(text):
                 units.append((title, fm.group(1)))
             elif '【画幅风格】' in chunk and '【时间轴分镜】' in chunk:
                 units.append((title, chunk.strip()))
+            elif re.search(r'【\s*(?:subject_definitions|scene_description|camera)\s*】', chunk):
+                units.append((title, chunk.strip()))
     if not units:
         # 兜底：直接扫描所有包含【画幅风格】与【时间轴分镜】的代码框或段落
         for idx, fm in enumerate(re.finditer(r'```(?:text|prompt)?\s*\n(.*?)```', text, re.S), 1):

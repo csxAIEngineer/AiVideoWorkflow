@@ -285,9 +285,9 @@ class SoundtrackTimelineTest(unittest.TestCase):
         voiced = task_plan(spec, soundtrack="narration")
         self.assertEqual([task["id"] for task in voiced[-3:]], ["join", "audio", "subtitles"])
         self.assertEqual(voiced[-2]["title"], "声轨")
-        self.assertEqual(voiced[-2]["detail"], "MiniMax 旁白")
+        self.assertEqual(voiced[-2]["detail"], "千问旁白")
         legacy = task_plan(spec, soundtrack="music_narration")
-        self.assertEqual(legacy[-2]["detail"], "MiniMax 旁白")
+        self.assertEqual(legacy[-2]["detail"], "千问旁白")
         plain = [node["id"] for node in video_nodes(spec) if node["role"] == "function"]
         self.assertEqual(plain, ["script", "storyboard", "image", "join", "subtitles", "film"])
         with_audio = [node["id"] for node in video_nodes(spec, soundtrack="narration") if node["role"] == "function"]

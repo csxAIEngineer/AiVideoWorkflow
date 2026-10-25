@@ -1,6 +1,6 @@
 """Provider proxies. Render keeps the retry loop; the HTTP calls stay in AI."""
 
-from end.ai_client import RemoteError, call
+from end.ai_client import RemoteError, await_job, call
 
 
 class RemoteTask(object):
@@ -15,8 +15,14 @@ class RemoteTask(object):
 
 class RemoteImageClient(object):
     def submit_image(self, prompt, size=None, quality=None, image=None, timeout=60):
-        del size, quality, timeout
-        return RemoteTask(call("image.submit", {"prompt": prompt or "", "image": image}, timeout=90))
+        del quality, timeout
+        return RemoteTask(
+            call(
+                "image.submit",
+                {"prompt": prompt or "", "image": image, "size": size or ""},
+                timeout=90,
+            )
+        )
 
     def query_status(self, task_id, timeout=60):
         del timeout
@@ -36,9 +42,9 @@ class RemoteVideoClient(object):
     def submit_video(
         self,
         text,
-        model="minimax-h3-text-to-video",
+        model="wan3.0-video",
         duration=4,
-        aspect_ratio="9:16",
+        aspect_ratio="",
         images=None,
         idempotency_key=None,
         timeout=180,
@@ -89,15 +95,14 @@ class RemoteVideoClient(object):
 
 
 class RemoteAudio(object):
-    """MiniMax speech and music. The render loop still decides when to ask."""
+    """Qwen speech. Music is refused. The render loop still decides when to ask."""
 
     def synthesize(self, text, dest, voice_id=None):
-        result = call(
+        result = await_job(
             "audio.speak",
             {"text": text or "", "dest": str(dest), "voice_id": voice_id or ""},
-            timeout=180,
         )
-        return result.get("path") or str(dest)
+        return (result or {}).get("path") or str(dest)
 
     def generate_music(self, prompt, dest):
         result = call(
@@ -111,9 +116,12 @@ class RemoteAudio(object):
 class LayoutClient(object):
     """Speech and music through the agent layout, for callers that pass no layout."""
 
-    def speak(self, text, dest):
-        result = call("layout.speak", {"text": text or "", "dest": str(dest)}, timeout=120)
-        return result.get("path") or str(dest)
+    def speak(self, text, dest, voice_id=None):
+        result = await_job(
+            "layout.speak",
+            {"text": text or "", "dest": str(dest), "voice_id": voice_id or ""},
+        )
+        return (result or {}).get("path") or str(dest)
 
     def compose(self, prompt, dest):
         result = call("layout.compose", {"prompt": prompt or "", "dest": str(dest)}, timeout=150)

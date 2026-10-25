@@ -216,7 +216,7 @@ def prepare_lines(voice_dir, shots, doc, client, duration_of, mode):
             )
             continue
         if client is None:
-            raise RuntimeError("没有 MiniMax 客户端，不能合成旁白")
+            raise RuntimeError("没有旁白客户端，不能合成旁白")
         client.synthesize(text, dest)
         requests += 1
         lines.append(

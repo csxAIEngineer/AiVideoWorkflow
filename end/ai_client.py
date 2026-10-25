@@ -36,6 +36,32 @@ def _autostart():
     return (os.environ.get("AIVIDEO_AI_AUTOSTART") or "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+def _rpc_log(method, timeout, started, error_name):
+    # region agent log
+    if method != "write" and not error_name:
+        return
+    try:
+        payload = {
+            "sessionId": "ee5fa7",
+            "runId": "post-fix",
+            "hypothesisId": "H-wait",
+            "location": "end/ai_client.py:_post",
+            "message": "ai rpc finished",
+            "data": {
+                "method": method,
+                "timeout": timeout,
+                "elapsedMs": int((time.time() - started) * 1000),
+                "error": error_name,
+            },
+            "timestamp": int(time.time() * 1000),
+        }
+        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+
+
 def _post(url, method, params, timeout):
     global _SERIAL
     with _SERIAL_LOCK:
@@ -51,14 +77,19 @@ def _post(url, method, params, timeout):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    started = time.time()
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")[:300]
+        _rpc_log(method, timeout, started, "HTTPError")
         raise RemoteError("AI 接口返回 %s：%s" % (error.code, detail), status=error.code)
     except (urllib.error.URLError, TimeoutError, OSError) as error:
+        _rpc_log(method, timeout, started, type(error).__name__)
         raise RemoteError("AI 服务没有响应：%s" % error)
+    if method == "write":
+        _rpc_log(method, timeout, started, "")
     if not isinstance(body, dict):
         raise RemoteError("AI 没有返回 JSON")
     if body.get("error"):
@@ -202,8 +233,8 @@ def json_shape(template=None):
     return _remember(key, "skills.shape", {"template": template or ""})["shape"]
 
 
-def drill(messages, debug_dir=None, model=None, template=None):
-    return call(
+def drill(messages, debug_dir=None, model=None, template=None, on_status=None):
+    return await_job(
         "drill",
         {
             "messages": messages or [],
@@ -211,12 +242,74 @@ def drill(messages, debug_dir=None, model=None, template=None):
             "model": model or "",
             "template": template or "",
         },
-        timeout=240,
+        on_status=on_status,
     )
 
 
-def write(brief, skill_pack, debug_dir=None, model=None, template=None):
-    return call(
+_SUBMIT_TIMEOUT = 30
+_POLL_TIMEOUT = 15
+_POLL_WAIT = 2
+_STATUS_HOOK = None
+
+
+def set_status_hook(hook):
+    """End registers this so each poll can refresh the open project."""
+    global _STATUS_HOOK
+    _STATUS_HOOK = hook
+
+
+def job_message(label, nodes):
+    """One line for the progress panel: ``资产锁定 3/7 · name 进行中``."""
+    nodes = [item for item in (nodes or []) if isinstance(item, dict)]
+    done = sum(1 for item in nodes if item.get("status") == "完成")
+    total = len(nodes)
+    text = "%s %s/%s" % (label, done, total) if total else str(label or "")
+    active = next((item for item in nodes if item.get("status") == "进行中"), None)
+    if active:
+        name = active.get("name") or active.get("id") or ""
+        if name:
+            text = "%s · %s 进行中" % (text, name)
+    return text
+
+
+def await_job(method, params, on_status=None, submit_timeout=_SUBMIT_TIMEOUT):
+    """Submit one model call, then poll until it finishes. Each HTTP call stays short."""
+    snap = call(method, params or {}, timeout=submit_timeout)
+    _notify(snap, on_status)
+    finished, result = _job_done(snap)
+    if finished:
+        return result
+    while True:
+        time.sleep(_POLL_WAIT)
+        snap = call("llm.status", {"job_id": (snap or {}).get("job_id") or ""}, timeout=_POLL_TIMEOUT)
+        _notify(snap, on_status)
+        finished, result = _job_done(snap)
+        if finished:
+            return result
+
+
+def _notify(snap, on_status):
+    hook = _STATUS_HOOK
+    if hook is not None:
+        try:
+            hook(snap)
+        except Exception:
+            pass
+    if on_status is not None:
+        on_status(snap)
+
+
+def _job_done(snap):
+    status = (snap or {}).get("status")
+    if status == "succeeded":
+        return True, snap.get("result")
+    if status in ("failed", "lost"):
+        raise RemoteError((snap or {}).get("error") or "AI 服务没有响应")
+    return False, None
+
+
+def write(brief, skill_pack, debug_dir=None, model=None, template=None, trace_prompts=None, on_status=None):
+    return await_job(
         "write",
         {
             "brief": brief or "",
@@ -224,10 +317,18 @@ def write(brief, skill_pack, debug_dir=None, model=None, template=None):
             "debug_dir": str(debug_dir) if debug_dir else "",
             "model": model or "",
             "template": template or "",
+            "trace_prompts": str(trace_prompts or ""),
         },
-        timeout=1300,
+        on_status=on_status,
     )
 
 
-def read_upload(image_path):
-    return call("vision.read", {"path": str(image_path)}, timeout=240)["text"]
+def read_upload(image_path, trace_prompts=None, on_status=None):
+    result = await_job(
+        "vision.read",
+        {"path": str(image_path), "trace_prompts": str(trace_prompts or "")},
+        on_status=on_status,
+    )
+    if isinstance(result, dict):
+        return result.get("text") or ""
+    return result or ""

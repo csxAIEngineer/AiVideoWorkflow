@@ -324,6 +324,45 @@ body {
   word-break: break-word;
 }
 
+.job-calls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.job-calls li {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #f3f1ea;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.job-calls em {
+  font-style: normal;
+}
+
+.job-calls .done {
+  background: #e7f6ee;
+  color: #0d7a45;
+}
+
+.job-calls .current {
+  background: #e8f0ff;
+  color: var(--accent);
+}
+
+.job-calls .failed {
+  background: #fff2f0;
+  color: #b42318;
+}
+
 .job-bar {
   position: relative;
   height: 18px;
@@ -1214,6 +1253,25 @@ a.download {
 }
 
 .dock-files .download { display: block; margin: 6px 0; }
+
+.trace-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.trace-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+.trace-list button {
+  flex: none;
+}
 
 @media (max-width: 900px) {
   .dock-toggle { display: inline-flex; }

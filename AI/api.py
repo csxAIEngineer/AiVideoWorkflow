@@ -1,10 +1,5 @@
 """JSON-RPC methods. Callers outside this process never import these modules."""
 
-import json
-import os
-import urllib.error
-import urllib.request
-
 from AI.script import (
     DEFAULT_MODEL,
     call_deepseek,
@@ -19,6 +14,7 @@ from AI.skills.registry import (
     drill_system_prompt,
     json_shape,
     load_skill_pack,
+    suite_task_for,
     normalize_template,
     skill_pack_extra,
     template_choices,
@@ -28,9 +24,8 @@ from AI.skills.registry import (
     template_render,
 )
 
-_ICREAT = None
-_CR = None
-_MINIMAX = None
+_IMAGE = None
+_VIDEO = None
 
 
 def ping(_params):
@@ -95,65 +90,120 @@ def skills_shape(params):
 
 
 def drill(params):
+    from AI.qwen_api.jobs import node_name, submit
+    from AI.skills.registry import suite_files
+
     params = params or {}
-    return call_drill(
-        params.get("messages") or [],
-        debug_dir=params.get("debug_dir") or None,
-        model=params.get("model"),
-        template=params.get("template"),
-    )
+    files = suite_files("lock", "")
+    nodes = [{"id": path, "name": node_name(path)} for path in files]
+    nodes.append({"id": "merge", "name": "汇总"})
+
+    def work(job_id):
+        return call_drill(
+            params.get("messages") or [],
+            debug_dir=params.get("debug_dir") or None,
+            model=params.get("model"),
+            template=params.get("template"),
+            job_id=job_id,
+        )
+
+    return submit(nodes, work)
 
 
 def write(params):
+    from AI.qwen_api.jobs import node_name, set_node, submit
+    from AI.skills.registry import suite_files
+
     params = params or {}
     template = params.get("template")
+    brief = params.get("brief") or ""
     pack = params.get("skill_pack")
-    if not pack:
+    task = suite_task_for(brief)
+    if not pack and not task:
         pack = load_skill_pack(
             template,
-            context=params.get("brief") or "",
+            context=brief,
             stage=params.get("stage") or "P4",
         )
-    return call_deepseek(
-        params.get("brief") or "",
-        pack,
-        debug_dir=params.get("debug_dir") or None,
-        model=params.get("model"),
-        template=template,
-    )
+    if task == "repair":
+        from AI.qwen_api.repair_graph import repair_job_nodes
+
+        nodes = repair_job_nodes(brief)
+    elif task:
+        files = suite_files(task, brief)
+        nodes = [{"id": path, "name": node_name(path)} for path in files]
+        nodes.append({"id": "merge", "name": "汇总"})
+    else:
+        nodes = [{"id": "write", "name": "写稿"}]
+    trace = params.get("trace_prompts") or ""
+
+    def work(job_id):
+        if not task:
+            set_node(job_id, "write", "进行中")
+        result = call_deepseek(
+            brief,
+            pack,
+            debug_dir=params.get("debug_dir") or None,
+            model=params.get("model"),
+            template=template,
+            job_id=job_id,
+        )
+        if not task:
+            set_node(job_id, "write", "完成")
+        return result
+
+    return submit(nodes, work, trace=trace)
 
 
 def vision_read(params):
+    from AI.qwen_api.jobs import set_node, submit
     from AI.vision import read_upload
 
-    return {"text": read_upload((params or {}).get("path"))}
+    params = params or {}
+
+    def work(job_id):
+        set_node(job_id, "vision", "进行中")
+        text = read_upload(params.get("path"))
+        set_node(job_id, "vision", "完成")
+        return {"text": text}
+
+    return submit([{"id": "vision", "name": "读图"}], work, trace=params.get("trace_prompts") or "")
 
 
-def _icreat():
-    global _ICREAT
-    if _ICREAT is None:
-        from AI.icreat_api import ICreatClient
-
-        _ICREAT = ICreatClient()
-    return _ICREAT
+def _client_host(client):
+    inner = getattr(client, "client", None)
+    return str(getattr(inner, "base_url", "") or "")
 
 
-def _cr():
-    global _CR
-    if _CR is None:
-        from AI.cr_api import CRClient
-
-        _CR = CRClient()
-    return _CR
+def _client_key(client):
+    inner = getattr(client, "client", None)
+    return str(getattr(inner, "api_key", "") or "")
 
 
-def _minimax():
-    global _MINIMAX
-    if _MINIMAX is None:
-        from AI.minimax_api import MiniMaxClient
+def _image_client():
+    global _IMAGE
+    from AI.qwen_api.client import load_dotenv, qwen_api_key, resolve_qwen_host
+    from AI.qwen_api.image import QwenImageClient
 
-        _MINIMAX = MiniMaxClient()
-    return _MINIMAX
+    load_dotenv()
+    host = resolve_qwen_host()
+    key, _var = qwen_api_key()
+    if _IMAGE is None or _client_host(_IMAGE) != host or _client_key(_IMAGE) != key:
+        _IMAGE = QwenImageClient()
+    return _IMAGE
+
+
+def _video_client():
+    global _VIDEO
+    from AI.qwen_api.client import load_dotenv, qwen_api_key, resolve_qwen_host
+    from AI.qwen_api.video import QwenVideoClient
+
+    load_dotenv()
+    host = resolve_qwen_host()
+    key, _var = qwen_api_key()
+    if _VIDEO is None or _client_host(_VIDEO) != host or _client_key(_VIDEO) != key:
+        _VIDEO = QwenVideoClient()
+    return _VIDEO
 
 
 def _image(task):
@@ -177,33 +227,36 @@ def _video(task):
 
 def image_submit(params):
     params = params or {}
-    task = _icreat().submit_image(params.get("prompt") or "", image=params.get("image"))
+    task = _image_client().submit_image(
+        params.get("prompt") or "",
+        image=params.get("image"),
+        size=params.get("size"),
+    )
     return _image(task)
 
 
 def image_query(params):
-    task = _icreat().query_status((params or {}).get("task_id") or "")
+    task = _image_client().query_status((params or {}).get("task_id") or "")
     return _image(task)
 
 
 def image_result(params):
-    task = _icreat().get_result((params or {}).get("task_id") or "")
+    task = _image_client().get_result((params or {}).get("task_id") or "")
     return _image(task)
 
 
 def image_download(params):
     params = params or {}
-    path = _icreat().download_image(params.get("url") or "", params.get("dest") or "")
+    path = _image_client().download_image(params.get("url") or "", params.get("dest") or "")
     return {"path": str(path)}
 
 
 def video_submit(params):
     params = params or {}
-    task = _cr().submit_video(
+    task = _video_client().submit_video(
         params.get("text") or "",
-        model=params.get("model") or "minimax-h3-text-to-video",
         duration=int(params.get("duration") or 4),
-        aspect_ratio=params.get("aspect_ratio") or "9:16",
+        aspect_ratio=params.get("aspect_ratio") or "",
         images=params.get("images") or None,
         idempotency_key=params.get("idempotency_key"),
         timeout=int(params.get("timeout") or 180),
@@ -212,54 +265,53 @@ def video_submit(params):
 
 
 def video_poll(params):
-    from AI.cr_api import VideoTask
-
     params = params or {}
-    task = VideoTask({
-        "id": params.get("task_id") or "",
-        "poll_url": params.get("poll_url") or "",
-        "status": "submitted",
-    })
-    updated = _cr().poll_video(task, timeout=int(params.get("timeout") or 60))
+    updated = _video_client().poll(params.get("task_id") or "", timeout=int(params.get("timeout") or 60))
     return _video(updated)
 
 
 def video_download(params):
-    from AI.cr_api import VideoTask
-
     params = params or {}
-    task = VideoTask({
-        "id": params.get("task_id") or "",
-        "poll_url": params.get("poll_url") or "",
-        "status": params.get("status") or "completed",
-        "data": [{"url": params.get("url") or ""}],
-    })
-    path = _cr().download_video(task, params.get("dest") or "", timeout=int(params.get("timeout") or 300))
-    return {"path": str(path)}
-
-
-def audio_speak(params):
-    params = params or {}
-    path = _minimax().synthesize(
-        params.get("text") or "",
+    path = _video_client().download_video(
+        params.get("url") or "",
         params.get("dest") or "",
-        voice_id=params.get("voice_id"),
+        timeout=int(params.get("timeout") or 300),
     )
     return {"path": str(path)}
 
 
-def audio_compose(params):
+def audio_speak(params):
+    return _speech_job(params)
+
+
+def _speech_job(params):
+    from AI.qwen_api.audio import synthesize
+    from AI.qwen_api.jobs import set_node, submit
+
     params = params or {}
-    path = _minimax().generate_music(params.get("prompt") or "", params.get("dest") or "")
-    return {"path": str(path)}
+
+    def work(job_id):
+        set_node(job_id, "speech", "进行中")
+        path = synthesize(
+            params.get("text") or "",
+            params.get("dest") or "",
+            voice_id=params.get("voice_id"),
+        )
+        set_node(job_id, "speech", "完成")
+        return {"path": str(path)}
+
+    return submit([{"id": "speech", "name": "旁白"}], work)
+
+
+def audio_compose(params):
+    del params
+    from AI.qwen_api.audio import reject_music
+
+    reject_music()
 
 
 def layout_speak(params):
-    from AI.agent.layout import get_layout
-
-    params = params or {}
-    path = get_layout().speak(params.get("text") or "", params.get("dest") or "")
-    return {"path": str(path)}
+    return _speech_job(params)
 
 
 def layout_compose(params):
@@ -270,36 +322,18 @@ def layout_compose(params):
     return {"path": str(path)}
 
 
-def _provider_chat(provider, messages):
-    provider = provider or {}
-    if provider.get("via") == "cr":
-        from AI.cr_api import CRClient, CRError
+def _qwen_text(messages, kind, provider):
+    from AI.qwen_api.graph import generate_text, understand_text
 
-        try:
-            result = CRClient().chat(messages, model=provider.get("model") or DEFAULT_MODEL, max_tokens=8000)
-        except CRError as error:
-            raise RuntimeError(str(error))
-        return result.content or ""
-    api_key = os.environ.get(provider.get("api_key_env") or "", "")
-    if not api_key:
-        raise RuntimeError("缺少环境变量 %s" % (provider.get("api_key_env") or ""))
-    payload = json.dumps(
-        {"model": provider.get("model"), "messages": messages},
-        ensure_ascii=False,
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        str(provider.get("base_url") or "").rstrip("/") + "/chat/completions",
-        data=payload,
-        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError("接口返回 %s\n%s" % (error.code, detail[:800]))
-    return data["choices"][0]["message"]["content"]
+    model = normalize_model((provider or {}).get("model"))
+    call = understand_text if kind == "drill" else generate_text
+    return call(messages, model=model, timeout=180, max_output_tokens=4000 if kind == "drill" else 16000)
+
+
+def llm_status(params):
+    from AI.qwen_api.jobs import snapshot
+
+    return snapshot((params or {}).get("job_id") or "")
 
 
 def studio_drill(params):
@@ -311,7 +345,7 @@ def studio_drill(params):
     context = history + [{"role": "user", "content": line}]
     messages = [{"role": "system", "content": drill_system_prompt(template, context)}] + history
     messages.append({"role": "user", "content": line})
-    raw = _provider_chat(params.get("provider") or {}, messages)
+    raw = _qwen_text(messages, "drill", params.get("provider") or {})
     try:
         parsed = parse_drill_text(raw, template)
     except ValueError:
@@ -341,7 +375,7 @@ def studio_write(params):
     line = str(params.get("line") or "")
     messages = [{"role": "system", "content": prompt}] + history
     messages.append({"role": "user", "content": line})
-    raw = _provider_chat(params.get("provider") or {}, messages)
+    raw = _qwen_text(messages, "write", params.get("provider") or {})
     return {"raw": raw}
 
 
@@ -360,6 +394,7 @@ METHODS = {
     "skills.shape": skills_shape,
     "drill": drill,
     "write": write,
+    "llm.status": llm_status,
     "vision.read": vision_read,
     "image.submit": image_submit,
     "image.query": image_query,

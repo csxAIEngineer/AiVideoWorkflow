@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+from end.board_shots import PLACEHOLDER_PROMPT, shots_are_placeholder
 from end.workflow_from_spec import _clamp_duration, _is_upload_id, _reference_ids
 
 UNREAD = "尚未读图"
@@ -329,14 +330,14 @@ def _place_narration(shots, records, owners):
             if isinstance(shot, dict) and asset_id in [str(name) for name in (shot.get("images") or [])]:
                 referenced = True
                 break
-        if referenced:
+        if referenced or not shots_are_placeholder(shots):
             continue
         narration = item.get("narration") or ""
         shots.append(
             {
                 "id": _shot_id(shots),
                 "duration": _clamp_duration(None, narration),
-                "prompt": narration or "按这张资产图演这一镜",
+                "prompt": narration or PLACEHOLDER_PROMPT,
                 "images": [asset_id],
                 "dialogue": "",
                 "narration": narration,

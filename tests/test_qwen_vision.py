@@ -1,4 +1,4 @@
-"""Qwen still readings stay on the intake note. Tests never call DashScope."""
+"""Qwen still readings stay on the intake note. Tests never call the network."""
 
 import json
 import os
@@ -79,14 +79,18 @@ class QwenVisionTests(unittest.TestCase):
                 )
             )
 
-        with patch("AI.vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
+        with patch("AI.qwen_api.vision.load_dotenv", lambda *args, **kwargs: None), patch(
+            "AI.qwen_api.client.saved_qwen_env", return_value=""
+        ), patch.dict(
             os.environ,
             {
-                "DASHSCOPE_API_KEY": "test-key",
-                "DASHSCOPE_BASE_URL": "https://workspace.example/compatible-mode/v1",
+                "QWEN_API_KEY": "test-key",
+                "QWEN_ENV": "",
+                "DASHSCOPE_API_KEY": "dash-secret",
+                "QWEN_BASE_URL": "https://workspace.example/compatible-mode/v1",
                 "QWEN_VISION_MODEL": "",
             },
-        ), patch("AI.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
+        ), patch("AI.qwen_api.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
             text = read_upload("U1.png", opener=opener)
 
         self.assertEqual(text, READING)
@@ -94,7 +98,8 @@ class QwenVisionTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://workspace.example/compatible-mode/v1/chat/completions")
         self.assertEqual(captured["auth"], "Bearer test-key")
         self.assertEqual(body["model"], DEFAULT_QWEN_VISION_MODEL)
-        self.assertEqual(body["modalities"], ["text"])
+        self.assertEqual(body["enable_thinking"], False)
+        self.assertNotIn("modalities", body)
         self.assertTrue(body["stream"])
         self.assertEqual(body["stream_options"], {"include_usage": True})
         part = body["messages"][0]["content"][0]
@@ -133,14 +138,17 @@ class QwenVisionTests(unittest.TestCase):
             captured["body"] = json.loads(request.data.decode("utf-8"))
             return FakeStream(sse([{"choices": [{"delta": {"content": "海边的车"}}]}]))
 
-        with patch("AI.vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
+        with patch("AI.qwen_api.vision.load_dotenv", lambda *args, **kwargs: None), patch(
+            "AI.qwen_api.client.saved_qwen_env", return_value=""
+        ), patch.dict(
             os.environ,
             {
-                "DASHSCOPE_API_KEY": "test-key",
-                "DASHSCOPE_BASE_URL": "https://workspace.example/compatible-mode/v1",
+                "QWEN_API_KEY": "test-key",
+                "QWEN_ENV": "",
+                "QWEN_BASE_URL": "https://workspace.example",
                 "QWEN_VISION_MODEL": "qwen-vision-test",
             },
-        ), patch("AI.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
+        ), patch("AI.qwen_api.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
             text = read_upload("U1.png", opener=opener)
         self.assertEqual(text, "海边的车")
         self.assertEqual(captured["body"]["model"], "qwen-vision-test")
@@ -149,12 +157,48 @@ class QwenVisionTests(unittest.TestCase):
         def opener(request, timeout=None):
             raise AssertionError("should not request")
 
-        with patch("AI.vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
-            os.environ, {"DASHSCOPE_API_KEY": ""}, clear=False
+        with patch("AI.qwen_api.vision.load_dotenv", lambda *args, **kwargs: None), patch(
+            "AI.qwen_api.client.saved_qwen_env", return_value=""
+        ), patch.dict(
+            os.environ,
+            {
+                "QWEN_API_KEY": "",
+                "QWEN_ENV": "",
+                "QWEN_BASE_URL": "",
+                "TOKE_PLAN_QWEN_API_KEY": "plan-key",
+                "DASHSCOPE_API_KEY": "dash-secret",
+            },
+            clear=False,
         ), patch("urllib.request.urlopen", side_effect=AssertionError("network")):
             text = read_upload("missing.png", opener=opener)
 
         self.assertEqual(text, UNREAD)
+        with patch("AI.qwen_api.vision.load_dotenv", lambda *args, **kwargs: None), patch(
+            "AI.qwen_api.client.saved_qwen_env", return_value="prod"
+        ), patch.dict(
+            os.environ,
+            {"QWEN_API_KEY": "test-key", "TOKE_PLAN_QWEN_API_KEY": "", "QWEN_ENV": "test"},
+            clear=False,
+        ), patch("urllib.request.urlopen", side_effect=AssertionError("network")):
+            production = read_upload("missing.png", opener=opener)
+        self.assertEqual(production, UNREAD)
+        captured = {}
+
+        def production_opener(request, timeout=None):
+            captured["auth"] = request.get_header("Authorization")
+            captured["url"] = request.full_url
+            return FakeStream(sse([{"choices": [{"delta": {"content": "海边的车"}}]}]))
+
+        with patch("AI.qwen_api.vision.load_dotenv", lambda *args, **kwargs: None), patch(
+            "AI.qwen_api.client.saved_qwen_env", return_value="prod"
+        ), patch.dict(
+            os.environ,
+            {"QWEN_API_KEY": "test-key", "TOKE_PLAN_QWEN_API_KEY": "plan-key", "QWEN_ENV": "test"},
+            clear=False,
+        ), patch("AI.qwen_api.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
+            read_upload("U1.png", opener=production_opener)
+        self.assertEqual(captured["auth"], "Bearer plan-key")
+        self.assertTrue(captured["url"].startswith("https://token-plan.maas.qianwenaiapi.com/"))
         note = intake_note([{"id": "U1", "title": "海边", "narration": "", "reading": text}])
         brief = enrich_brief("做一条广告", [{"id": "U1", "title": "海边", "narration": "", "reading": text}])
         self.assertIn("素材读图", note)
@@ -171,36 +215,53 @@ class QwenVisionTests(unittest.TestCase):
                 BytesIO(b"bad key"),
             )
 
-        with patch("AI.vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
+        with patch("AI.qwen_api.vision.load_dotenv", lambda *args, **kwargs: None), patch(
+            "AI.qwen_api.client.saved_qwen_env", return_value=""
+        ), patch.dict(
             os.environ,
             {
-                "DASHSCOPE_API_KEY": "test-key",
-                "DASHSCOPE_BASE_URL": "https://workspace.example/compatible-mode/v1",
+                "QWEN_API_KEY": "test-key",
+                "QWEN_ENV": "",
+                "QWEN_BASE_URL": "https://workspace.example/compatible-mode/v1",
             },
-        ), patch("AI.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
+        ), patch("AI.qwen_api.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
             with self.assertRaises(QwenVisionError) as caught:
                 read_upload("U1.png", opener=opener)
         self.assertIn("401", str(caught.exception))
 
-    def test_missing_base_url_does_not_request(self):
+    def test_empty_base_url_uses_the_default_host(self):
+        captured = {}
+
         def opener(request, timeout=None):
-            raise AssertionError("should not request")
+            captured["url"] = request.full_url
+            return FakeStream(sse([{"choices": [{"delta": {"content": "海边的车"}}]}]))
 
-        with patch("AI.vision.load_dotenv", lambda *args, **kwargs: None), patch.dict(
+        with patch("AI.qwen_api.vision.load_dotenv", lambda *args, **kwargs: None), patch(
+            "AI.qwen_api.client.saved_qwen_env", return_value=""
+        ), patch.dict(
             os.environ,
-            {"DASHSCOPE_API_KEY": "test-key", "DASHSCOPE_BASE_URL": ""},
-        ), patch("urllib.request.urlopen", side_effect=AssertionError("network")):
-            with self.assertRaises(QwenVisionError) as caught:
-                read_upload("U1.png", opener=opener)
-        self.assertIn("DASHSCOPE_BASE_URL", str(caught.exception))
+            {"QWEN_API_KEY": "test-key", "QWEN_BASE_URL": "", "QWEN_ENV": "", "DASHSCOPE_BASE_URL": "https://other.example"},
+        ), patch("AI.qwen_api.vision.vision_jpeg_bytes", return_value=b"\xff\xd8\xff\xd9"):
+            text = read_upload("U1.png", opener=opener)
+        self.assertEqual(text, "海边的车")
+        self.assertEqual(
+            captured["url"],
+            "https://maas.qianwenaiapi.com/compatible-mode/v1/chat/completions",
+        )
 
-    def test_env_example_names_dashscope_without_secrets(self):
+    def test_env_example_names_one_empty_key(self):
         text = (ROOT / ".env.example").read_text(encoding="utf-8")
-        self.assertIn("DASHSCOPE_API_KEY=", text)
-        self.assertIn("DASHSCOPE_BASE_URL=", text)
+        self.assertIn("QWEN_API_KEY=", text)
+        self.assertIn("TOKE_PLAN_QWEN_API_KEY=", text)
         self.assertIn("QWEN_VISION_MODEL", text)
+        self.assertNotIn("DASHSCOPE_API_KEY", text)
+        self.assertNotIn("DASHSCOPE_BASE_URL", text)
+        self.assertNotIn("DEEPSEEK_API_KEY", text)
+        self.assertNotIn("CR_API_KEY", text)
+        self.assertNotIn("ICREAT_API_KEY", text)
+        self.assertNotIn("MINIMAX_API_KEY", text)
         for line in text.splitlines():
-            if line.startswith("DASHSCOPE_API_KEY=") or line.startswith("DASHSCOPE_BASE_URL="):
+            if line.startswith("QWEN_API_KEY=") or line.startswith("TOKE_PLAN_QWEN_API_KEY="):
                 self.assertEqual(line.split("=", 1)[1].strip(), "")
 
     def test_skill_keeps_identity_on_the_picture(self):

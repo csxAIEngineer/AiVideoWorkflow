@@ -4,13 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AiVideo</title>
-  <link rel="stylesheet" href="/styles.css?v=34" />
+  <link rel="stylesheet" href="/styles.css?v=35" />
 </head>
 <body>
   <aside class="sidebar">
     <button id="new-chat" class="new-chat" type="button">开启新对话</button>
     <div id="history" class="history"></div>
-    <div id="model-foot" class="sidebar-foot">DeepSeek V4 Pro · 本机出片</div>
+    <div id="model-foot" class="sidebar-foot">Qwen3.8 Flash · 本机出片</div>
   </aside>
   <main class="main">
     <section id="empty" class="empty" aria-hidden="true"></section>
@@ -64,6 +64,7 @@
         <pre id="dock-error-log" class="dock-log"></pre>
         <h4>render.log</h4>
         <pre id="dock-render-log" class="dock-log"></pre>
+        <div id="dock-traces"></div>
         <div id="dock-files" class="dock-files"></div>
       </aside>
     </div>
@@ -83,6 +84,12 @@
           </label>
           <label class="template-picker hidden" title="新建项目使用的模版">
             <select id="template" aria-label="模版"></select>
+          </label>
+          <label class="model-picker" title="测试 https://maas.qianwenaiapi.com ，生产 https://token-plan.maas.qianwenaiapi.com">
+            <select id="qwen-env" aria-label="千问环境">
+              <option value="test">千问：测试</option>
+              <option value="prod">千问：生产</option>
+            </select>
           </label>
           <label class="soundtrack-picker" title="拼接之后按每镜旁白合成声音">
             <select id="soundtrack" aria-label="声轨">
@@ -108,6 +115,6 @@
     </form>
   </main>
   <script src="/rpc.js?v=1"></script>
-  <script src="/app.js?v=54"></script>
+    <script src="/app.js?v=60"></script>
 </body>
 </html>

@@ -1,18 +1,22 @@
 """Agent. Turns a drill or a script task into one model request, then reads the reply.
 
-Speech and music each make one MiniMax request. The reply is audio bytes, not JSON.
+Drill calls go to the intent graph. Writing calls go to the text graph.
+Speech is not a model request here.
 """
 
 from pathlib import Path
 
-from AI.cr_api import is_thinking_model
+from AI.agent.batch import begin_batches, incomplete_reason, is_overlong, read_catalog, read_item
 from AI.script import (
-    OFFICIAL_MODELS,
+    TruncatedJSON,
+    _continued_spec,
     _empty_body_error,
     _reply_text,
     _spec_from_result,
+    _truncated_body,
     build_system_prompt,
     drill_system_prompt,
+    explain_parse_failure,
     normalize_model,
     parse_drill_text,
     ready_from_conversation,
@@ -20,53 +24,13 @@ from AI.script import (
 )
 from AI.skills.registry import json_shape, repair_lead
 
-
-SPEECH_TIMEOUT = 60
-MUSIC_TIMEOUT = 90
-MUSIC_PROMPT_LIMIT = 2000
-
-
-def speech_request(text):
-    """Official MiniMax speech-2.8-hd body. POST /v1/t2a_v2."""
-    return {
-        "model": "speech-2.8-hd",
-        "text": text,
-        "stream": False,
-        "output_format": "hex",
-        "subtitle_enable": False,
-        "voice_setting": {
-            "voice_id": "male-qn-qingse",
-            "speed": 1,
-            "vol": 1,
-            "pitch": 0,
-        },
-        "audio_setting": {
-            "sample_rate": 32000,
-            "bitrate": 128000,
-            "format": "mp3",
-            "channel": 1,
-        },
-        "pronunciation_dict": {"tone": []},
-    }
-
-
-def music_request(prompt):
-    """Official MiniMax music-3.0 body. Instrumental: no lyrics and no seed."""
-    text = str(prompt or "").strip()
-    if len(text) > MUSIC_PROMPT_LIMIT:
-        text = text[:MUSIC_PROMPT_LIMIT]
-    return {
-        "model": "music-3.0",
-        "prompt": text,
-        "is_instrumental": True,
-        "stream": False,
-        "output_format": "hex",
-        "audio_setting": {
-            "sample_rate": 44100,
-            "bitrate": 256000,
-            "format": "mp3",
-        },
-    }
+CONTINUE_TOKENS = 32000
+CONTINUE_LEAD = (
+    "下面这段 JSON 在中途被截断了。"
+    "从断点接着写，把同一个对象补完。"
+    "不要重写已经写过的内容，不要加说明。"
+    "只输出断点之后的字符。"
+)
 
 
 class Agent(object):
@@ -74,17 +38,10 @@ class Agent(object):
         kind = state.get("kind")
         if kind == "write":
             return self._prepare_write(state)
-        if kind == "speech":
-            return self._prepare_speech(state)
-        if kind == "music":
-            return self._prepare_music(state)
         return self._prepare_drill(state)
 
     def read(self, state):
-        kind = state.get("kind")
-        if kind in ("speech", "music"):
-            return self._read_audio(state)
-        if kind == "write":
+        if state.get("kind") == "write":
             return self._read_write(state)
         return self._read_drill(state)
 
@@ -119,13 +76,14 @@ class Agent(object):
             content = str(item.get("content") or "").strip()
             if role in ("user", "assistant") and content:
                 chat_messages.append({"role": role, "content": content})
-        tokens = 8000 if is_thinking_model(name) and name not in OFFICIAL_MODELS else 4000
+        tokens = 4000
         state = dict(state)
         state["model_name"] = name
         state["system"] = system
         state["drill_tokens"] = tokens
         state["repair"] = False
         state["request"] = {
+            "kind": "drill",
             "messages": chat_messages,
             "model": name,
             "max_tokens": tokens,
@@ -161,6 +119,7 @@ class Agent(object):
                 raise RuntimeError("模型没有返回问题。")
         state["repair"] = True
         state["request"] = {
+            "kind": "drill",
             "messages": [
                 {"role": "system", "content": self._drill_prompt(state)},
                 {"role": "user", "content": "把下面这次追问收成规定的 JSON。\n" + reply[:8000]},
@@ -186,15 +145,20 @@ class Agent(object):
             )
             state["request"] = None
             return state
-        except ValueError:
+        except ValueError as error:
             ready = ready_from_conversation(state.get("messages"), self._template(state))
             if ready:
                 state["output"] = ready
                 state["request"] = None
                 return state
-            reply = state.get("reply") or ""
-            preview = ((repaired.content if repaired else "") or reply).strip().replace("\n", " ")[:120]
-            raise RuntimeError("追问没有返回 JSON。回复开头是：%s" % preview)
+            raise RuntimeError(
+                explain_parse_failure(
+                    error,
+                    "追问改写",
+                    "第二次仍没有收成规定的 JSON。",
+                    title="追问没有返回 JSON。",
+                )
+            ) from error
 
     def _prepare_write(self, state):
         name = normalize_model(state.get("model"))
@@ -208,6 +172,7 @@ class Agent(object):
         state["repair"] = False
         state["first_result"] = None
         state["request"] = {
+            "kind": "write",
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": state.get("brief") or ""},
@@ -224,10 +189,31 @@ class Agent(object):
         debug_dir = state.get("debug_dir")
         brief = state.get("brief") or ""
         skill_pack = state.get("skill_pack") or ""
+        truncated = False
         try:
-            spec = _spec_from_result(result)
+            spec = _spec_from_result(result, brief)
+        except TruncatedJSON:
+            spec = None
+            truncated = True
         except ValueError:
             spec = None
+        # region agent log
+        if spec is None:
+            from AI.script import _debug_log
+
+            reply_head = _reply_text(result)[:80]
+            _debug_log(
+                "C",
+                "AI/agent/agent.py:_read_write",
+                "first reply missed spec keys",
+                {
+                    "step": brief.split("剧本步：", 1)[-1][:1] if "剧本步：" in brief else "",
+                    "asksForText": "放在 text" in (skill_pack or "") or "放在 text" in brief,
+                    "replyStartsWithText": reply_head.lstrip().startswith('{"text"'),
+                    "replyHead": reply_head,
+                },
+            )
+        # endregion
         if spec is not None:
             if debug_dir:
                 write_llm_debug(debug_dir, brief, skill_pack, result=result, template=state.get("template"))
@@ -239,15 +225,61 @@ class Agent(object):
             if debug_dir:
                 write_llm_debug(debug_dir, brief, skill_pack, result=result, template=state.get("template"))
             raise RuntimeError(_empty_body_error(state.get("model_name")))
-        template = self._template(state)
         state["first_result"] = result
-        state["reply"] = reply
         state["repair"] = True
-        state["request"] = {
+        capped = incomplete_reason(result) == "max_output_tokens"
+        if truncated or capped:
+            body = _truncated_body(result) if truncated else reply
+            state["reply"] = body
+            if is_overlong(result, body):
+                return begin_batches(state, body)
+            state["continue_write"] = True
+            state["request"] = self._continue_request(state, body)
+            return state
+        state["continue_write"] = False
+        state["reply"] = reply
+        state["request"] = self._rewrite_request(state, reply)
+        return state
+
+    def _continue_request(self, state, reply):
+        return {
+            "kind": "write",
+            "messages": [
+                {"role": "system", "content": CONTINUE_LEAD},
+                {"role": "user", "content": reply},
+            ],
+            "model": state.get("model_name"),
+            "max_tokens": CONTINUE_TOKENS,
+            "timeout": 1200,
+            "effort": "low",
+        }
+
+    def _rewrite_request(self, state, reply):
+        template = self._template(state)
+        brief = state.get("brief") or ""
+        shape = repair_lead(template) + "\n" + json_shape(template, brief)
+        # region agent log
+        from AI.script import _debug_log
+
+        _debug_log(
+            "B",
+            "AI/agent/agent.py:_rewrite_request",
+            "rewrite contract",
+            {
+                "step": brief.split("剧本步：", 1)[-1][:1] if "剧本步：" in brief else "",
+                "shapeAsksText": "放在 text" in shape,
+                "shapeAsksScript": "放在 script" in shape,
+                "shapeListsSpecFields": "assets 数组" in shape,
+                "replyStartsWithText": str(reply or "").lstrip().startswith('{"text"'),
+            },
+        )
+        # endregion
+        return {
+            "kind": "write",
             "messages": [
                 {
                     "role": "system",
-                    "content": repair_lead(template) + "\n" + json_shape(template, state.get("brief") or ""),
+                    "content": shape,
                 },
                 {"role": "user", "content": reply[:12000]},
             ],
@@ -255,7 +287,11 @@ class Agent(object):
             "max_tokens": 16000,
             "timeout": 1200,
         }
-        return state
+
+    def read_batch(self, state):
+        if state.get("batch_phase") == "item":
+            return read_item(state)
+        return read_catalog(state)
 
     def _read_repair_write(self, state):
         state = dict(state)
@@ -265,8 +301,11 @@ class Agent(object):
         skill_pack = state.get("skill_pack") or ""
         first = state.get("first_result")
         try:
-            spec = _spec_from_result(repaired)
-        except ValueError:
+            if state.get("continue_write"):
+                spec = _continued_spec(state.get("reply") or "", repaired, brief)
+            else:
+                spec = _spec_from_result(repaired, brief)
+        except ValueError as error:
             if debug_dir:
                 write_llm_debug(
                     debug_dir,
@@ -276,9 +315,13 @@ class Agent(object):
                     repaired=repaired,
                     template=state.get("template"),
                 )
-            reply = state.get("reply") or ""
-            preview = ((repaired.content if repaired else "") or reply).strip().replace("\n", " ")[:120]
-            raise RuntimeError("模型没有返回 JSON。回复开头是：%s" % preview)
+            step = "续写" if state.get("continue_write") else "改写"
+            why = (
+                "第一次回复被判定为写到一半被截断，第二次仍没有补成规格 JSON。"
+                if state.get("continue_write")
+                else "第一次回复不是合法规格 JSON，第二次改写后仍然不是。"
+            )
+            raise RuntimeError(explain_parse_failure(error, step, why)) from error
         if debug_dir:
             write_llm_debug(
                 debug_dir,
@@ -289,49 +332,5 @@ class Agent(object):
                 template=state.get("template"),
             )
         state["output"] = spec
-        state["request"] = None
-        return state
-
-    def _prepare_speech(self, state):
-        text = str(state.get("text") or "").strip()
-        if not text:
-            raise RuntimeError("没有旁白")
-        if not str(state.get("dest") or "").strip():
-            raise RuntimeError("没有音频文件")
-        state = dict(state)
-        state["text"] = text
-        state["repair"] = False
-        state["request"] = {
-            "kind": "speech",
-            "body": speech_request(text),
-            "timeout": SPEECH_TIMEOUT,
-        }
-        return state
-
-    def _prepare_music(self, state):
-        prompt = str(state.get("text") or "").strip()
-        if not prompt:
-            raise RuntimeError("没有配乐描述")
-        if not str(state.get("dest") or "").strip():
-            raise RuntimeError("没有音频文件")
-        state = dict(state)
-        state["text"] = prompt
-        state["repair"] = False
-        state["request"] = {
-            "kind": "music",
-            "body": music_request(prompt),
-            "timeout": MUSIC_TIMEOUT,
-        }
-        return state
-
-    def _read_audio(self, state):
-        state = dict(state)
-        audio = state.get("result")
-        if not isinstance(audio, (bytes, bytearray)) or not audio:
-            raise RuntimeError("没有返回音频")
-        dest = Path(state.get("dest"))
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(bytes(audio))
-        state["output"] = str(dest)
         state["request"] = None
         return state

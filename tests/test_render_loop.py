@@ -9,8 +9,9 @@ import unittest
 import zlib
 from pathlib import Path
 
-from AI.cr_api.client import CRError, VideoTask
-from AI.icreat_api.client import ImageTask
+from AI.qwen_api.client import QwenError
+from AI.qwen_api.image import ImageTask
+from AI.qwen_api.video import VideoTask
 from end.render_loop import (
     _missing_subtitle_glyphs,
     assemble_shot_media,
@@ -117,7 +118,7 @@ class FakeCR(object):
         self.polls = []
         self._n = 0
 
-    def submit_video(self, text, model="minimax-h3-text-to-video", duration=4, aspect_ratio="9:16", images=None, idempotency_key=None, timeout=60):
+    def submit_video(self, text, model="wan3.0-video", duration=4, aspect_ratio="9:16", images=None, idempotency_key=None, timeout=60):
         self.submits.append(
             {
                 "key": idempotency_key,
@@ -130,7 +131,7 @@ class FakeCR(object):
         )
         if self.fail_submit:
             self.fail_submit -= 1
-            raise CRError("CR API 网络错误：timed out")
+            raise QwenError("千问网络错误：timed out")
         self._n += 1
         return VideoTask(
             {
@@ -144,7 +145,7 @@ class FakeCR(object):
         self.polls.append({"id": task.id, "poll_url": task.poll_url})
         if self.fail_poll:
             self.fail_poll -= 1
-            raise CRError("CR API 返回 429：rate limit", 429, "rate limit")
+            raise QwenError("千问返回 429：rate limit", 429, "rate limit")
         return VideoTask(
             {
                 "id": task.id,
@@ -219,7 +220,7 @@ class RenderLoopTest(unittest.TestCase):
         variant = icreat.submits[0]
         self.assertIn("锁定同一张脸", variant["prompt"])
         self.assertEqual(variant["image"], ["https://cdn.example/A1.png"])
-        self.assertEqual(cr.submits[0]["model"], "minimax-h3-reference-to-video")
+        self.assertEqual(cr.submits[0]["model"], "wan3.0-video")
         self.assertIsNone(cr.submits[0]["aspect_ratio"])
         self.assertEqual(cr.submits[0]["duration"], 5)
         self.assertEqual(cr.submits[0]["images"][0]["role"], "reference_image")
@@ -340,7 +341,7 @@ class RenderLoopTest(unittest.TestCase):
         )
         body = json.dumps(cr.submits)
         self.assertNotIn("uguu", body)
-        self.assertEqual(cr.submits[0]["model"], "minimax-h3-image-to-video")
+        self.assertEqual(cr.submits[0]["model"], "wan3.0-video")
         self.assertIsNone(cr.submits[0]["aspect_ratio"])
         self.assertEqual(cr.submits[0]["images"][0]["url"], hosted)
 
@@ -485,28 +486,6 @@ class RenderLoopTest(unittest.TestCase):
         video.write_bytes(b"mp4")
         save_run_state(self.work, {"phase": "done", "steps": {}})
         self.assertFalse(should_resume_project({"status": "rendering"}, self.work))
-
-    def test_wait_video_reports_status_changes(self):
-        from AI.cr_api.client import CRClient
-
-        class Client(CRClient):
-            def __init__(self):
-                self.api_key = "test"
-                self.base_url = "https://example.invalid"
-                self.left = ["processing", "completed"]
-
-            def poll_video(self, task, timeout=60):
-                status = self.left.pop(0)
-                payload = {"id": task.id, "status": status, "poll_url": task.poll_url}
-                if status == "completed":
-                    payload["data"] = [{"url": "https://cdn.example/a.mp4"}]
-                return VideoTask(payload)
-
-        seen = []
-        task = VideoTask({"id": "vid-1", "status": "submitted", "poll_url": "https://example/poll"})
-        finished = Client().wait_video(task, interval=0, on_status=lambda item: seen.append(item.status))
-        self.assertEqual(seen, ["submitted", "processing", "completed"])
-        self.assertEqual(finished.status, "completed")
 
     def test_subtitle_cues_follow_the_script_line(self):
         shown = display_caption("十几个号，粉丝加起来，没号多。")
@@ -737,7 +716,7 @@ class RenderLoopTest(unittest.TestCase):
         cr = FakeCR()
         run_local_pipeline(ONE, self.work, project_id=project_id, icreat=icreat, cr=cr, sleeper=_noop_sleep)
         self.assertEqual(icreat.submits, [])
-        self.assertEqual(cr.submits[0]["model"], "minimax-h3-image-to-video")
+        self.assertEqual(cr.submits[0]["model"], "wan3.0-video")
         self.assertEqual([item["role"] for item in cr.submits[0]["images"]], ["first_frame"])
         self.assertEqual(cr.submits[0]["images"][0]["url"], "https://cdn.example/A1.png")
         self.assertNotIn("轮子在转", cr.submits[0]["text"])
@@ -854,7 +833,7 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(icreat.submits[1]["image"], ["https://cdn.example/img-1.png"])
         self.assertNotIn("https://cdn.example/U1.png", icreat.submits[1]["image"])
         video = cr.submits[0]
-        self.assertEqual(video["model"], "minimax-h3-reference-to-video")
+        self.assertEqual(video["model"], "wan3.0-video")
         self.assertEqual(video["images"][0]["url"], "https://cdn.example/img-1.png")
         self.assertNotEqual(video["images"][0]["url"], "https://cdn.example/U1.png")
         self.assertIn("她在等最后一班车", video["text"])
@@ -867,7 +846,7 @@ class RenderLoopTest(unittest.TestCase):
         }
         cr = FakeCR()
         run_local_pipeline(text_spec, self.work, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep)
-        self.assertEqual(cr.submits[0]["model"], "minimax-h3-text-to-video")
+        self.assertEqual(cr.submits[0]["model"], "wan3.0-video")
         self.assertEqual(cr.submits[0]["aspect_ratio"], "9:16")
         self.assertFalse(cr.submits[0]["images"])
 
@@ -894,7 +873,7 @@ class RenderLoopTest(unittest.TestCase):
         cr = FakeCR()
         run_local_pipeline(end_spec, end_dir, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep)
         opened = cr.submits[0]
-        self.assertEqual(opened["model"], "minimax-h3-image-to-video")
+        self.assertEqual(opened["model"], "wan3.0-video")
         self.assertIsNone(opened["aspect_ratio"])
         self.assertEqual([item["role"] for item in opened["images"]], ["first_frame", "last_frame"])
         self.assertIn("从这张首帧的可见内容开始", opened["text"])
@@ -922,7 +901,7 @@ class RenderLoopTest(unittest.TestCase):
         run_local_pipeline(explicit_spec, explicit, icreat=icreat, cr=cr, sleeper=_noop_sleep)
         self.assertEqual(icreat.submits[0]["image"], ["https://cdn.example/U1.png"])
         chosen = cr.submits[0]
-        self.assertEqual(chosen["model"], "minimax-h3-reference-to-video")
+        self.assertEqual(chosen["model"], "wan3.0-video")
         self.assertIsNone(chosen["aspect_ratio"])
         self.assertEqual(chosen["images"][0]["role"], "reference_image")
         self.assertEqual(chosen["images"][0]["url"], "https://cdn.example/img-1.png")

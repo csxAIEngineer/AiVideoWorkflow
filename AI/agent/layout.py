@@ -1,4 +1,11 @@
-"""Agent layout. A task enters here and leaves as a drill turn, a script spec, or an audio file."""
+"""Agent layout. Drill uses the intent graph, writing uses the text graph, speech uses audio.py."""
+
+import json
+
+from AI.qwen_api.graph import _TRACE_PROMPTS
+from AI.qwen_api.suite_graph import run_suite
+from AI.script import parse_drill_text
+from AI.skills.registry import suite_task_for
 
 from .agent import Agent
 from .graph import LangGraph
@@ -13,27 +20,70 @@ class AgentLayout(object):
         self.agent = agent or Agent()
         self.graph = LangGraph(self.agent, self.model)
 
-    def drill(self, messages, debug_dir=None, model=None, template=None):
-        state = self.graph.invoke(
-            {
-                "kind": "drill",
-                "model": model,
-                "template": template,
-                "messages": messages or [],
-                "brief": "",
-                "skill_pack": "",
-                "debug_dir": debug_dir,
-                "request": None,
-                "result": None,
-                "output": None,
-                "repair": False,
-            }
+    def drill(self, messages, debug_dir=None, model=None, template=None, job_id=""):
+        lines = []
+        for item in messages or []:
+            role = str((item or {}).get("role") or "")
+            content = str((item or {}).get("content") or "").strip()
+            if role in ("user", "assistant") and content:
+                lines.append("%s\n%s" % (role, content))
+        parsed = run_suite(
+            "lock",
+            "任务：立项锁定\n" + "\n\n".join(lines),
+            self.model,
+            model_name=model,
+            template=template,
+            trace_path=_TRACE_PROMPTS.get(),
+            kind="drill",
+            job_id=job_id,
         )
-        if state.get("output") is None:
-            raise RuntimeError("模型没有返回问题。")
-        return state["output"]
+        payload = {
+            "phase": parsed.get("phase") or "",
+            "reply": parsed.get("reply") or "",
+            "options": parsed.get("options") or [],
+            "brief": parsed.get("brief") or "",
+        }
+        return parse_drill_text(json.dumps(payload, ensure_ascii=False), template)
 
-    def write(self, brief, skill_pack, debug_dir=None, model=None, template=None):
+    def write(self, brief, skill_pack, debug_dir=None, model=None, template=None, job_id=""):
+        task = suite_task_for(brief)
+        # #region agent log
+        from AI.qwen_api.graph import _burst_log
+
+        _burst_log(
+            "D",
+            "layout.py:write",
+            "write path",
+            {
+                "task": task or "single",
+                "briefChars": len(brief or ""),
+                "feed": "任务：提示词封装" in (brief or ""),
+                "repair": task == "repair",
+            },
+        )
+        # #endregion
+        if task == "repair":
+            from AI.qwen_api.repair_graph import run_repair
+
+            return run_repair(
+                brief or "",
+                self.model,
+                model_name=model,
+                trace_path=_TRACE_PROMPTS.get(),
+                kind="write",
+                job_id=job_id,
+            )
+        if task:
+            return run_suite(
+                task,
+                brief or "",
+                self.model,
+                model_name=model,
+                template=template,
+                trace_path=_TRACE_PROMPTS.get(),
+                kind="write",
+                job_id=job_id,
+            )
         state = self.graph.invoke(
             {
                 "kind": "write",
@@ -53,32 +103,16 @@ class AgentLayout(object):
             raise RuntimeError("模型没有返回结果")
         return state["output"]
 
-    def speak(self, text, dest):
-        return self._audio("speech", text, dest, "没有生成旁白")
+    def speak(self, text, dest, voice_id=None):
+        from AI.qwen_api.audio import synthesize
+
+        return str(synthesize(text, dest, voice_id=voice_id))
 
     def compose(self, prompt, dest):
-        return self._audio("music", prompt, dest, "没有生成音乐")
+        del prompt, dest
+        from AI.qwen_api.audio import reject_music
 
-    def _audio(self, kind, text, dest, empty):
-        state = self.graph.invoke(
-            {
-                "kind": kind,
-                "model": None,
-                "messages": [],
-                "brief": "",
-                "skill_pack": "",
-                "debug_dir": None,
-                "request": None,
-                "result": None,
-                "output": None,
-                "repair": False,
-                "text": text or "",
-                "dest": str(dest),
-            }
-        )
-        if not state.get("output"):
-            raise RuntimeError(empty)
-        return state["output"]
+        reject_music()
 
 
 def get_layout():
