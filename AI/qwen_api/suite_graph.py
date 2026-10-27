@@ -1,8 +1,8 @@
 """One StateGraph per writing task.
 
-Specialist nodes run together. Each one carries the director and a single
-original. Their notes collect on TextState.partials. The merge node writes
-the task result.
+Specialist nodes run together. Each node carries one cohort of originals,
+not the director. Their notes collect on TextState.partials. The merge node
+writes the task result from those notes and the brief.
 """
 
 import json
@@ -21,15 +21,28 @@ except OSError:
     pass
 # #endregion
 from AI.script import _empty_body_error, normalize_model
-from AI.skills.registry import _is_repair_context, merge_prompt, skill_node_prompt, suite_files, suite_task_for
+from AI.skills.registry import (
+    _is_repair_context,
+    cohort_prompt,
+    merge_prompt,
+    pack_cohorts,
+    suite_files,
+    suite_task_for,
+)
 
 _LOG_LOCK = threading.Lock()
-_NODE_START_GAP = 2.0
+# Stagger only the first packet of a fan-out. Long calls overlap anyway, so a
+# multi-second gap just delayed the last node without lowering peak concurrency.
+_NODE_START_GAP = 0.4
 _NODE_START_LOCK = threading.Lock()
 _NODE_START_AT = 0.0
 _WRITE_TOKENS = 16000
 _WRITE_RETRY_TOKENS = 32000
 _WRITE_TIMEOUT = 1200
+_SPECIALIST_TOKENS = 8000
+_SPECIALIST_RETRY_TOKENS = 8000
+_MERGE_TOKENS = 16000
+_MERGE_RETRY_TOKENS = 16000
 _DRILL_TOKENS = 4000
 _DRILL_RETRY_TOKENS = 8000
 _DRILL_TIMEOUT = 180
@@ -81,23 +94,24 @@ def run_suite(task, brief, model, model_name=None, template=None, trace_path="",
 
 
 def compile_suite_graph(files, task, model, kind, repair=False):
+    cohorts = pack_cohorts(files)
     graph = StateGraph(TextState)
 
     def fan(state):
-        return [Send("skill-%s" % index, dict(state)) for index in range(len(files))]
+        return [Send("skill-%s" % index, dict(state)) for index in range(len(cohorts))]
 
-    for index, relative in enumerate(files):
-        graph.add_node("skill-%s" % index, _skill_node(relative, model, kind, repair))
+    for index, relatives in enumerate(cohorts):
+        graph.add_node("skill-%s" % index, _skill_node(relatives, model, kind, repair))
     graph.add_node("merge", _merge_node(task, model, kind))
-    graph.add_conditional_edges(START, fan, ["skill-%s" % index for index in range(len(files))])
-    for index in range(len(files)):
+    graph.add_conditional_edges(START, fan, ["skill-%s" % index for index in range(len(cohorts))])
+    for index in range(len(cohorts)):
         graph.add_edge("skill-%s" % index, "merge")
     graph.add_edge("merge", END)
-    _emit_structure(graph, files, task)
+    _emit_structure(graph, cohorts, task)
     return graph.compile()
 
 
-def describe_suite_graph(graph, files, task):
+def describe_suite_graph(graph, cohorts, task):
     """Nodes and edges of one task graph, read before compile."""
     lines = [
         "StateGraph %s" % _TASK_LABEL.get(task, task),
@@ -105,26 +119,26 @@ def describe_suite_graph(graph, files, task):
         "节点 %s" % len(graph.nodes),
     ]
     for name in graph.nodes:
-        lines.append("%s  %s" % (name, _node_label(name, files)))
+        lines.append("%s  %s" % (name, _node_label(name, cohorts)))
     lines.append("边")
     for start, end in _structure_edges(graph):
         lines.append("%s -> %s" % (start, end))
     return "\n".join(lines)
 
 
-def _emit_structure(graph, files, task):
+def _emit_structure(graph, cohorts, task):
     if not prompt_debug_enabled():
         return
-    print(describe_suite_graph(graph, files, task), flush=True)
+    print(describe_suite_graph(graph, cohorts, task), flush=True)
 
 
-def _node_label(name, files):
+def _node_label(name, cohorts):
     if name == "merge":
         return "汇总"
     if str(name).startswith("skill-"):
         index = int(str(name).split("-", 1)[1])
-        if 0 <= index < len(files):
-            return files[index]
+        if 0 <= index < len(cohorts):
+            return " + ".join(cohorts[index])
     return name
 
 
@@ -158,18 +172,30 @@ def _node_rank(name):
     return (1, 0)
 
 
-def _skill_node(relative, model, kind, repair):
-    system = skill_node_prompt(relative, repair=repair)
+def _role_budget(kind, role):
+    if kind == "drill":
+        return _DRILL_TOKENS, _DRILL_RETRY_TOKENS, _DRILL_TIMEOUT
+    if role == "merge":
+        return _MERGE_TOKENS, _MERGE_RETRY_TOKENS, _WRITE_TIMEOUT
+    return _SPECIALIST_TOKENS, _SPECIALIST_RETRY_TOKENS, _WRITE_TIMEOUT
+
+
+def _skill_node(relatives, model, kind, repair):
+    relatives = list(relatives)
+    system = cohort_prompt(relatives, repair=repair)
+    tokens, retry_tokens, timeout = _role_budget(kind, "specialist")
+    label = " + ".join(relatives)
 
     def node(state):
-        _mark(state, relative, "进行中")
+        for relative in relatives:
+            _mark(state, relative, "进行中")
         try:
             messages = [
                 {"role": "system", "content": system},
                 {"role": "user", "content": state.get("brief") or ""},
             ]
             _record(state.get("trace_path") or "", messages)
-            raw = _complete(model, messages, state.get("model"), kind, relative)
+            raw = _complete(model, messages, state.get("model"), kind, label, tokens=tokens, timeout=timeout)
             # #region agent log
             _agent_debug(
                 "A",
@@ -177,15 +203,25 @@ def _skill_node(relative, model, kind, repair):
                 "skill node model body",
                 {
                     "task": state.get("task") or "",
-                    "skill": relative,
+                    "skill": label,
                     "rawLen": len(str(raw or "").strip()),
                     "empty": not str(raw or "").strip(),
                 },
             )
             # #endregion
-            raw = _retry_empty(model, messages, state.get("model"), kind, relative, state.get("trace_path") or "", raw)
+            raw = _retry_empty(
+                model,
+                messages,
+                state.get("model"),
+                kind,
+                label,
+                state.get("trace_path") or "",
+                raw,
+                tokens=retry_tokens,
+                timeout=timeout,
+            )
             text = _node_text(raw)
-            if "p45-previs" in relative:
+            if any("p45-previs" in relative for relative in relatives):
                 brief = state.get("brief") or ""
                 mark = brief.rfind("每一格都要答完六问")
                 # region agent log
@@ -194,7 +230,7 @@ def _skill_node(relative, model, kind, repair):
                     "suite_graph.py:_skill_node",
                     "p45 specialist body",
                     {
-                        "skill": relative,
+                        "skill": label,
                         "systemChars": len(system),
                         "briefChars": len(brief),
                         "sixFromEnd": (len(brief) - mark) if mark >= 0 else -1,
@@ -206,16 +242,50 @@ def _skill_node(relative, model, kind, repair):
                 )
                 # endregion
         except Exception:
-            _mark(state, relative, "失败")
+            for relative in relatives:
+                _mark(state, relative, "失败")
             raise
-        _mark(state, relative, "完成")
-        return {"partials": [{"skill": relative, "text": text}]}
+        for relative in relatives:
+            _mark(state, relative, "完成")
+        return {"partials": _cohort_partials(relatives, text)}
 
     return node
 
 
+def _cohort_partials(relatives, text):
+    """One note per original when the model kept the path headings, else one note."""
+    if len(relatives) == 1:
+        return [{"skill": relatives[0], "text": text}]
+    sections = {}
+    current = None
+    buf = []
+
+    def close():
+        if current is not None:
+            sections[current] = "\n".join(buf).strip()
+
+    for line in str(text or "").splitlines():
+        if line.startswith("## "):
+            close()
+            current = line[3:].strip()
+            buf = []
+            continue
+        if current is not None:
+            buf.append(line)
+    close()
+    matched = []
+    for relative in relatives:
+        body = sections.get(relative) or ""
+        if body.strip():
+            matched.append({"skill": relative, "text": body.strip()})
+    if len(matched) == len(relatives):
+        return matched
+    return [{"skill": " + ".join(relatives), "text": text}]
+
+
 def _merge_node(task, model, kind):
     system = merge_prompt(task)
+    tokens, retry_tokens, timeout = _role_budget(kind, "merge")
 
     def node(state):
         _mark(state, "merge", "进行中")
@@ -248,7 +318,7 @@ def _merge_node(task, model, kind):
                     },
                 )
                 # endregion
-            raw = _complete(model, messages, state.get("model"), kind, "merge")
+            raw = _complete(model, messages, state.get("model"), kind, "merge", tokens=tokens, timeout=timeout)
             # #region agent log
             _agent_debug(
                 "D",
@@ -262,7 +332,17 @@ def _merge_node(task, model, kind):
                 },
             )
             # #endregion
-            raw = _retry_empty(model, messages, state.get("model"), kind, "merge", state.get("trace_path") or "", raw)
+            raw = _retry_empty(
+                model,
+                messages,
+                state.get("model"),
+                kind,
+                "merge",
+                state.get("trace_path") or "",
+                raw,
+                tokens=retry_tokens,
+                timeout=timeout,
+            )
             if not str(raw or "").strip():
                 raise RuntimeError(_empty_body_error(state.get("model")))
         except Exception:

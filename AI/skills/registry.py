@@ -437,9 +437,16 @@ _MERGE_SHAPE = {
 }
 _NODE_SHAPE = "\n".join((
     "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-    "这一份原文负责的正文放在 text。",
-    "不要写其他规格字段。",
+    "只写这些原文要求落到本阶段产物里的内容，放在 text。",
+    "有多份原文时，text 里用「## 」加文件路径分节，路径必须与上面的原文路径一致。",
+    "不要复述简报，不要照抄原文，不要写这一节点没有的规格。",
 ))
+# One cohort stays within the size of a single large original we already send whole.
+COHORT_CHAR_BUDGET = 28000
+# A smaller file would cost another full copy of the brief if it opened its own call.
+COHORT_TINY_CHARS = 4500
+_ORIGINAL_CACHE = {}
+_MERGE_DIRECTOR = ""
 
 
 def suite_task_for(brief):
@@ -457,7 +464,7 @@ def suite_task_for(brief):
 
 
 def suite_files(task, brief=""):
-    """One path per specialist node. The director file is not in this list."""
+    """Originals this task mounts. The director file is not in this list."""
     task = str(task or "")
     if task == "lock":
         return list(LOCK_FILES)
@@ -492,6 +499,117 @@ def director_text():
     return _DIRECTOR_TEXT
 
 
+def _director_body_lines():
+    text = director_text()
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end >= 0:
+            text = text[end + 4 :]
+    return text.strip().splitlines()
+
+
+def director_for_merge():
+    """Verbatim director chapters the merge node applies.
+
+    The stage originals already sit on the specialist nodes. The merge keeps
+    the lock rules, the budget law, and the industrial laws. Index tables that
+    only say which file to open are left out.
+    """
+    global _MERGE_DIRECTOR
+    if _MERGE_DIRECTOR:
+        return _MERGE_DIRECTOR
+    kept = []
+    mode = "preamble"
+    for line in _director_body_lines():
+        if line.startswith("## "):
+            if (
+                line.startswith("## ★ 使用入口")
+                or line.startswith("## 〇、")
+                or line.startswith("## 三、")
+            ):
+                mode = "keep"
+            else:
+                mode = "skip"
+        if mode == "keep" and line.startswith("### 机检维度分组"):
+            mode = "table"
+            continue
+        if mode == "table":
+            if line.startswith("**分级处置"):
+                mode = "keep"
+            else:
+                continue
+        if mode == "skip":
+            continue
+        kept.append(line)
+    _MERGE_DIRECTOR = "\n".join(kept).strip()
+    return _MERGE_DIRECTOR
+
+
+def _cohort_engine(relative):
+    text = str(relative)
+    if text.startswith("host/"):
+        return "host"
+    head, sep, _tail = text.partition("/")
+    return head if sep else text
+
+
+def pack_cohorts(files, budget=COHORT_CHAR_BUDGET):
+    """Group originals that share one model call.
+
+    File order stays put. A call breaks when the next original would pass the
+    character budget, or when a large original belongs to another engine.
+    A short original rides along, because its own call would repeat the brief.
+    """
+    cohorts = []
+    current = []
+    size = 0
+    engine = ""
+    for relative in files:
+        body_len = len(suite_original(relative))
+        this_engine = _cohort_engine(relative)
+        crosses = bool(current) and this_engine != engine and body_len >= COHORT_TINY_CHARS
+        overflows = bool(current) and size + body_len > budget
+        if crosses or overflows:
+            cohorts.append(list(current))
+            current = []
+            size = 0
+        current.append(relative)
+        size += body_len
+        engine = this_engine
+        if size >= budget:
+            cohorts.append(list(current))
+            current = []
+            size = 0
+            engine = ""
+    if current:
+        cohorts.append(list(current))
+    return cohorts
+
+
+def suite_prompt_chars(task, brief):
+    """Input characters before and after cohort packing. Partials are not included."""
+    files = suite_files(task, brief)
+    cohorts = pack_cohorts(files)
+    skill = sum(len(suite_original(relative)) for relative in files)
+    brief_chars = len(str(brief or ""))
+    full_director = len(director_text())
+    merge_director = len(director_for_merge())
+    unpacked = skill + brief_chars * (len(files) + 1) + full_director
+    packed = skill + brief_chars * (len(cohorts) + 1) + merge_director
+    return {
+        "files": len(files),
+        "cohorts": len(cohorts),
+        "calls_before": len(files) + 1,
+        "calls_after": len(cohorts) + 1,
+        "skill_chars": skill,
+        "brief_chars": brief_chars,
+        "director_chars": full_director,
+        "merge_director_chars": merge_director,
+        "unpacked_chars": unpacked,
+        "packed_chars": packed,
+    }
+
+
 def _suite_path(relative):
     if str(relative).startswith("host/"):
         return HOST / str(relative)[len("host/") :]
@@ -499,28 +617,38 @@ def _suite_path(relative):
 
 
 def suite_original(relative, repair=False):
+    key = (str(relative), bool(repair))
+    cached = _ORIGINAL_CACHE.get(key)
+    if cached is not None:
+        return cached
     body = _read_original(_suite_path(relative))
     if repair:
-        return _strip_source_banner(body)
+        body = _strip_source_banner(body)
+    _ORIGINAL_CACHE[key] = body
     return body
+
+
+def cohort_prompt(relatives, repair=False):
+    """Full originals for one specialist call. No director and no other cohort."""
+    parts = []
+    for relative in relatives:
+        parts.append("# 本节点原文 %s" % relative)
+        parts.append(suite_original(relative, repair=repair))
+    parts.append(_NODE_SHAPE)
+    return "\n\n".join(parts)
 
 
 def skill_node_prompt(relative, repair=False):
     """Exactly one original. The director stays on the merge node."""
-    original = suite_original(relative, repair=repair)
-    return "\n\n".join((
-        "# 本节点原文 %s" % relative,
-        original,
-        _NODE_SHAPE,
-    ))
+    return cohort_prompt([relative], repair=repair)
 
 
 def merge_prompt(task):
-    """Director plus the task's output shape. No specialist originals."""
+    """Director chapters plus the task's output shape. No specialist originals."""
     shape = _MERGE_SHAPE.get(task) or _MERGE_SHAPE["script"]
     return "\n\n".join((
         "# 总控 %s" % _DIRECTOR_FILE,
-        director_text(),
-        "你是汇总节点。只根据各节点正文和简报交出这一任务的结果。不要再展开其他原文。",
+        director_for_merge(),
+        "你是汇总节点。各节点已经读过本阶段原文。只根据各节点正文和简报交出这一任务的结果。不要再展开其他原文。",
         shape,
     ))
