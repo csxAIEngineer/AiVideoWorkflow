@@ -57,22 +57,38 @@ def _reference_ids(value):
     return refs
 
 
+def _figure_blocks(text):
+    from end.repair_units import asset_pieces
+
+    return {number: body.strip() for number, body in asset_pieces(text)}
+
+
+def _image_prompt(item, blocks):
+    """Use the 图 block when the asset line is shorter than that block."""
+    prompt = str(item.get("prompt") or "").strip()
+    match = re.search(r"图\s*(\d+)", str(item.get("id") or ""))
+    if not match:
+        return prompt
+    block = blocks.get(int(match.group(1))) or ""
+    if block and (not prompt or len(prompt) < len(block)):
+        return block
+    return prompt
+
+
 def collect_steps(spec):
-    """Assets and shots that actually become nodes, in run order.
+    """Assets and shots that actually become nodes, in run order."""
+    from end.prompt_gate import delivery_units
 
-    When a delivery feed or 图 blocks exist, those texts replace the short
-    asset line and the storyboard-column shot line for this read.
-    """
-    from end.prompt_handoff import prepare_delivery_spec
-
-    spec = prepare_delivery_spec(spec)
+    spec = spec or {}
+    blocks = _figure_blocks(spec.get("image_prompts") or "")
+    units = delivery_units(spec.get("feed"))
     assets = []
     pending_refs = []
     for index, item in enumerate(spec.get("assets") or []):
         asset = {
             "id": _safe_id(item.get("id"), "A%s" % (index + 1)),
             "title": str(item.get("title") or "资产"),
-            "prompt": str(item.get("prompt") or "").strip(),
+            "prompt": _image_prompt(item, blocks),
             "depends_on": _safe_id(item.get("depends_on"), "") if item.get("depends_on") else "",
         }
         for key in ("subject", "subject_kind", "view"):
@@ -107,6 +123,8 @@ def collect_steps(spec):
             images = [_safe_id(name, "") for name in (item.get("images") or [])]
             images = [name for name in images if name in known or _is_upload_id(name)][:MAX_SHOT_REFERENCES]
         prompt = str(item.get("prompt") or "").strip()
+        if index < len(units):
+            prompt = units[index]
         if not prompt:
             continue
         dialogue = str(item.get("dialogue") or "").strip()
@@ -128,9 +146,22 @@ def collect_steps(spec):
         video_mode = str(item.get("video_mode") or "").strip()
         if video_mode:
             shot["video_mode"] = video_mode
-        if "tts_text" in item:
-            shot["tts_text"] = str(item.get("tts_text") or "")
         shots.append(shot)
+    source = [item for item in (spec.get("shots") or []) if isinstance(item, dict)]
+    stand_in = not source or all(
+        str(item.get("prompt") or "").strip() in ("", "按这张资产图演这一镜") for item in source
+    )
+    if stand_in and len(units) > len(source):
+        template = shots[0] if shots else None
+        for index in range(len(source), len(units)):
+            shots.append({
+                "id": "S%02d" % (index + 1),
+                "duration": template["duration"] if template else MIN_SECONDS,
+                "prompt": units[index],
+                "dialogue": "",
+                "narration": "",
+                "images": list(template["images"]) if template else [],
+            })
     return assets, shots
 
 

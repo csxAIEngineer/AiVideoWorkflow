@@ -902,7 +902,7 @@ def assign_dialogues(spec, shots):
     return assigned
 
 
-VIDEO_MODES = ("text", "first_frame", "last_frame", "first_last_frame", "reference")
+VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
 VIDEO_MODEL = "wan3.0-video"
 VIDEO_MODE_MODELS = {mode: VIDEO_MODEL for mode in VIDEO_MODES}
 FRAME_OPENING = "从这张首帧的可见内容开始，主体、材质和构图保持一致，只做本镜写的光影和轻微运镜。"
@@ -1020,13 +1020,6 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
         if not url:
             raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, images[0]))
         return aspect_for_image(path), [{"role": "first_frame", "url": url}]
-    if mode == "last_frame":
-        if not images:
-            raise RuntimeError("尾帧模式需要一张结束图")
-        url, path = url_for(images[0])
-        if not url:
-            raise RuntimeError("镜头 %s 缺少结束帧 %s" % (shot_id, images[0]))
-        return aspect_for_image(path), [{"role": "last_frame", "url": url}]
     if mode == "first_last_frame":
         end_id = str((shot or {}).get("end_image") or "").strip()
         if not images or not end_id:
@@ -1063,10 +1056,10 @@ def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack=
     Music or narration is mixed after the join, so those shots keep only room tone.
     """
     from end.ai_client import template_render
-    from end.prompt_handoff import is_prepared_delivery
+    from end.prompt_gate import is_full_delivery
 
     base = (shot.get("prompt") or "").strip()
-    if is_prepared_delivery(base):
+    if is_full_delivery(base):
         return base
     render = template_render(template)
     if mode in ("first_frame", "first_last_frame"):

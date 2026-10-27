@@ -1,6 +1,7 @@
 """Write the H3 feed and the offline board, then run the vendored checker."""
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,15 +16,53 @@ VALIDATOR = SUITE / "short-drama-director" / "scripts" / "validate_prompt.py"
 BOARD = SUITE / "short-drama-director" / "scripts" / "build_board_lite.py"
 
 
-def feed_text(spec):
-    """Prepared ``feed`` wins. Shot lines are only the fallback before a feed exists."""
-    spec = spec or {}
-    raw = str(spec.get("feed") or "").strip()
-    if raw:
-        from end.stage_runner import render_feed_text
+_UNIT_HEAD = re.compile(r"(?m)^#{1,6}[^\n]*投喂单元[^\n]*$")
+_SUBJECT = re.compile(r"(?m)^subject_definitions\s*[:：]")
 
-        rendered = render_feed_text(raw).strip()
-        return rendered or raw
+
+def delivery_units(feed):
+    """H3 or Seedance blocks in order. Empty when ``feed`` is not a delivery."""
+    raw = str(feed or "").strip()
+    if not raw:
+        return []
+    heads = list(_UNIT_HEAD.finditer(raw))
+    if heads:
+        units = []
+        for index, head in enumerate(heads):
+            end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+            chunk = raw[head.start():end].strip()
+            if chunk:
+                units.append(chunk)
+        return units
+    subjects = list(_SUBJECT.finditer(raw))
+    if len(subjects) > 1:
+        units = []
+        for index, mark in enumerate(subjects):
+            start = 0 if index == 0 else mark.start()
+            end = subjects[index + 1].start() if index + 1 < len(subjects) else len(raw)
+            chunk = raw[start:end].strip()
+            if chunk:
+                units.append(chunk)
+        return units
+    if subjects or "【画幅风格】" in raw or "【时间轴分镜】" in raw:
+        return [raw]
+    return []
+
+
+def is_full_delivery(text):
+    """A six-section H3 unit or a Seedance unit. Render must not add room-tone lines."""
+    raw = str(text or "")
+    if "subject_definitions" in raw and "detailed_description" in raw:
+        return True
+    return "【画幅风格】" in raw or "【时间轴分镜】" in raw
+
+
+def feed_text(spec):
+    """Prepared ``feed`` wins so a short shot list cannot replace feed.md."""
+    spec = spec or {}
+    raw = spec.get("feed")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
     parts = []
     for shot in spec.get("shots") or []:
         if not isinstance(shot, dict):
@@ -53,19 +92,13 @@ def project_markdown(spec, brief=""):
             str(spec.get("storyboard") or ""),
             "",
             "## P4 · 投喂提示词",
-            _feed_section(feed_text(spec)),
+            "### 段1",
+            "```text",
+            feed_text(spec),
+            "```",
             "",
         ]
     )
-
-
-def _feed_section(text):
-    body = str(text or "").strip()
-    if not body:
-        return ""
-    if "投喂单元" in body or "subject_definitions" in body or "【时间轴分镜】" in body:
-        return body
-    return "### 段1\n```text\n%s\n```" % body
 
 
 def _feed_segments(text):

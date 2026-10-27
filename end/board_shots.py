@@ -252,17 +252,22 @@ def shots_from_storyboard(value, assets=None):
     return shots
 
 
+def _shots_for_units(current, units):
+    """One shot per delivery unit when the storyboard never became rows."""
+    rows = [dict(shot) for shot in current if isinstance(shot, dict)]
+    made = []
+    for index, text in enumerate(units):
+        shot = dict(rows[index] if index < len(rows) else (rows[0] if rows else {}))
+        shot["prompt"] = text
+        if index >= len(rows) or not shot.get("id"):
+            shot["id"] = "S%02d" % (index + 1)
+        made.append(shot)
+    return made
+
+
 def apply_storyboard_shots(spec):
-    """Fill shots from the storyboard when the canvas list is empty or a stand-in.
-
-    A prepared feed already owns the render text, so this pass does not replace
-    shots with the three short columns.
-    """
+    """Fill shots from the storyboard when the canvas list is empty or a stand-in."""
     spec = spec if isinstance(spec, dict) else {}
-    from end.prompt_handoff import feed_has_units
-
-    if feed_has_units(spec.get("feed")):
-        return spec
     current = spec.get("shots") if isinstance(spec.get("shots"), list) else []
     derived = shots_from_storyboard(spec.get("storyboard"), spec.get("assets"))
     placeholder = shots_are_placeholder(current)
@@ -279,6 +284,14 @@ def apply_storyboard_shots(spec):
         },
     )
     if not wrote:
+        if placeholder and not derived:
+            from end.prompt_gate import delivery_units
+
+            units = delivery_units(spec.get("feed"))
+            if units:
+                updated = dict(spec)
+                updated["shots"] = _shots_for_units(current, units)
+                return updated
         return spec
     updated = dict(spec)
     updated["shots"] = derived
