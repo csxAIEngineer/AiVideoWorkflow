@@ -13,7 +13,7 @@ import end.db as db
 from AI.agent.agent import CONTINUE_LEAD
 from AI.agent.batch import CATALOG_LEAD, CATALOG_TOKENS, REPAIR_CATALOG_LEAD, batch_tokens, overlong_chars
 from AI.agent.layout import AgentLayout
-from AI.skills.registry import LOCK_FILES
+from AI.skills.registry import LOCK_FILES, pack_cohorts
 from AI.agent.model import LLMModel
 from AI.script import call_drill as pipeline_drill
 from end.server import (
@@ -94,13 +94,15 @@ def _agent_threads():
 
 class LayoutTest(unittest.TestCase):
     def test_drill_goes_agent_then_model_then_agent(self):
-        model = ScriptedModel([ASK] * (len(LOCK_FILES) + 1))
+        calls = len(pack_cohorts(LOCK_FILES)) + 1
+        model = ScriptedModel([ASK] * calls)
         layout = AgentLayout(model=model)
         result = layout.drill([{"role": "user", "content": "雨夜车站"}], model="deepseek-v4-pro")
         self.assertEqual(result["phase"], "ask")
         self.assertEqual(result["reply"], "先定谁在雨里")
         self.assertEqual(result["options"][-1], "其他")
-        self.assertEqual(len(model.calls), len(LOCK_FILES) + 1)
+        self.assertEqual(len(model.calls), calls)
+        self.assertLess(calls, len(LOCK_FILES) + 1)
         self.assertEqual(model.calls[0]["max_tokens"], 4000)
         self.assertEqual(model.calls[0]["kind"], "drill")
         self.assertEqual(model.calls[0]["model"], "qwen3.8-flash")
@@ -127,20 +129,21 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(state["trail"], ["agent", "llm", "agent"])
 
     def test_unknown_model_uses_qwen_flash(self):
-        model = ScriptedModel([ASK] * (len(LOCK_FILES) + 1))
+        model = ScriptedModel([ASK] * (len(pack_cohorts(LOCK_FILES)) + 1))
         AgentLayout(model=model).drill([{"role": "user", "content": "雨"}], model="glm-5.2")
         self.assertEqual(model.calls[0]["max_tokens"], 4000)
         self.assertEqual(model.calls[0]["model"], "qwen3.8-flash")
         self.assertEqual(model.calls[0]["kind"], "drill")
 
     def test_drill_keeps_a_plain_specialist_note_for_the_merge(self):
-        model = ScriptedModel(["先随便说一句"] * len(LOCK_FILES) + [ASK])
+        calls = len(pack_cohorts(LOCK_FILES)) + 1
+        model = ScriptedModel(["先随便说一句"] * (calls - 1) + [ASK])
         result = AgentLayout(model=model).drill(
             [{"role": "user", "content": "雨夜车站"}],
             model="deepseek-v4-pro",
         )
         self.assertEqual(result["phase"], "ask")
-        self.assertEqual(len(model.calls), len(LOCK_FILES) + 1)
+        self.assertEqual(len(model.calls), calls)
         self.assertIn("先随便说一句", model.calls[-1]["messages"][-1]["content"])
 
     def test_write_returns_the_spec(self):

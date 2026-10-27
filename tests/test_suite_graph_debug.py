@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from AI.qwen_api import suite_graph
-from AI.skills.registry import suite_files
+from AI.skills.registry import pack_cohorts, suite_files
 
 STORYBOARD = "\n".join((
     "阶段：P3",
@@ -21,7 +21,9 @@ STORYBOARD = "\n".join((
 class SuiteGraphDebugTest(unittest.TestCase):
     def test_debug_prints_the_storyboard_graph_before_compile(self):
         files = suite_files("storyboard", STORYBOARD)
+        cohorts = pack_cohorts(files)
         self.assertEqual(len(files), 15)
+        self.assertLess(len(cohorts), len(files))
         order = []
         printed = []
         real_compile = suite_graph.StateGraph.compile
@@ -43,15 +45,15 @@ class SuiteGraphDebugTest(unittest.TestCase):
         text = printed[0]
         self.assertTrue(text.startswith("StateGraph 分镜"))
         self.assertIn("状态 TextState", text)
-        self.assertIn("节点 16", text)
-        for index, relative in enumerate(files):
-            self.assertIn("skill-%s  %s" % (index, relative), text)
+        self.assertIn("节点 %s" % (len(cohorts) + 1), text)
+        for index, cohort in enumerate(cohorts):
+            self.assertIn("skill-%s  %s" % (index, " + ".join(cohort)), text)
             self.assertIn("__start__ -> skill-%s" % index, text)
             self.assertIn("skill-%s -> merge" % index, text)
         self.assertIn("merge  汇总", text)
         self.assertIn("merge -> __end__", text)
         self.assertIn("merge", compiled.nodes)
-        self.assertEqual(sum(1 for name in compiled.nodes if str(name).startswith("skill-")), 15)
+        self.assertEqual(sum(1 for name in compiled.nodes if str(name).startswith("skill-")), len(cohorts))
 
     def test_structure_stays_quiet_when_debug_is_off(self):
         files = suite_files("board", "任务：离线看板")
