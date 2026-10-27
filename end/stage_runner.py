@@ -1260,6 +1260,124 @@ def _shot_groups(pieces):
     return groups
 
 
+_UNIT_HEAD = re.compile(r"(?m)^## 【投喂单元")
+_TAIL_MARK = re.compile(r"^(?:---\s*|强制禁止项)")
+
+
+def _debug_baee6e_feed(message, data):
+    # region agent log
+    try:
+        with open("/Users/shaneson/AiVideo/.cursor/debug-baee6e.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "sessionId": "baee6e",
+                "runId": "post-fix",
+                "hypothesisId": "A",
+                "location": "stage_runner.py:_reorder_ready_h3",
+                "message": message,
+                "data": data,
+                "timestamp": int(time.time() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+
+
+def _order_h3_block(block):
+    """Move the six H3 sections into checker order. Leave an already-correct block untouched."""
+    lines = block.splitlines()
+    if not lines:
+        return block
+    preamble = []
+    fields = {}
+    order = []
+    current = None
+    buf = []
+    tail = []
+    closed = False
+
+    def flush():
+        nonlocal current, buf
+        if current:
+            fields[current] = buf
+        current = None
+        buf = []
+
+    for line in lines[1:]:
+        match = None if closed else _LOOSE_FIELD.match(line.strip())
+        if match:
+            flush()
+            current = match.group(1)
+            if current not in order:
+                order.append(current)
+            buf = []
+            continue
+        if current and _TAIL_MARK.match(line.strip()):
+            flush()
+            closed = True
+            tail.append(line)
+            continue
+        if closed or (not current and fields):
+            tail.append(line)
+        elif current:
+            buf.append(line)
+        else:
+            preamble.append(line)
+    flush()
+    wanted = [field for field in _H3_SECTION_FIELDS if field in fields]
+    if not fields or order == wanted:
+        return block
+    out = [lines[0], *preamble]
+    for field in wanted:
+        body = "\n".join(fields[field]).strip("\n")
+        out.append("%s:" % field)
+        if body:
+            out.append(body)
+    while tail and not tail[0].strip():
+        tail.pop(0)
+    if tail:
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(tail)
+    text = "\n".join(out)
+    if block.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def _reorder_ready_h3(raw):
+    """Reorder each finished H3 unit. The checker rejects sound sections placed before detailed_description."""
+    matches = list(_UNIT_HEAD.finditer(raw))
+    if not matches:
+        return raw
+    pieces = [raw[:matches[0].start()]]
+    before = []
+    after = []
+    changed = False
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
+        block = raw[match.start():end]
+        ordered = _order_h3_block(block)
+        pieces.append(ordered)
+        before.append(_h3_names(block))
+        after.append(_h3_names(ordered))
+        changed = changed or ordered != block
+    # region agent log
+    _debug_baee6e_feed("h3 section order", {"changed": changed, "before": before, "after": after})
+    # endregion
+    if not changed:
+        return raw
+    return "".join(pieces)
+
+
+def _h3_names(block):
+    names = []
+    for line in block.splitlines():
+        match = _LOOSE_FIELD.match(line.strip())
+        if match and match.group(1) not in names:
+            names.append(match.group(1))
+    return names
+
+
 def _normalize_loose_h3(text):
     """Turn bare H3 field names into line-oriented sections the checker can see."""
     raw = str(text or "")
@@ -1291,7 +1409,9 @@ def _normalize_loose_h3(text):
     except OSError:
         pass
     # #endregion
-    if ready or "subject_definitions" not in sections or "detailed_description" not in sections:
+    if ready:
+        return _reorder_ready_h3(raw)
+    if "subject_definitions" not in sections or "detailed_description" not in sections:
         return raw
     pieces = _shot_pieces(sections.get("detailed_description") or "")
     groups = _shot_groups(pieces) or [(0, [])]

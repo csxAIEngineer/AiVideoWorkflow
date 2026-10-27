@@ -88,3 +88,24 @@ class BoardShotsTest(unittest.TestCase):
         )
         self.assertEqual([shot["id"] for shot in spec["shots"]], ["S01", "S02"])
         self.assertEqual(spec["previs"], "## 段 1")
+
+    def test_description_rows_become_canvas_shots(self):
+        board = str(
+            [
+                {
+                    "shot_id": "S01",
+                    "time_range": "00:00-00:05",
+                    "scene_ref": "图1",
+                    "character_refs": ["图3"],
+                    "description": "【全景】苏棠站在客厅。",
+                    "action_phase": "起势",
+                    "vfx": "无",
+                }
+            ]
+        )
+        shots = shots_from_storyboard(board, ASSETS)
+        self.assertEqual(shots[0]["id"], "S01")
+        self.assertEqual(shots[0]["duration"], 5)
+        self.assertIn("苏棠站在客厅", shots[0]["prompt"])
+        self.assertIn("起势", shots[0]["prompt"])
+        self.assertEqual(shots[0]["images"][:2], ["图1", "图3"])

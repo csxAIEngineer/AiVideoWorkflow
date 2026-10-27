@@ -11,6 +11,7 @@ AI/tools
 *.md
 !README.md
 !AI/skills/short-drama-director/**
+!AI/skills/manju-laoli-skill/**
 !AI/skills/sd-asset-engine/**
 !AI/skills/sd-combat-engine/**
 !AI/skills/sd-decision-engine/**

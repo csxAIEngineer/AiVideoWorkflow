@@ -12,27 +12,14 @@ RUN apt-get update \
 
 WORKDIR /app
 
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 # Three processes share this image: front is static, end serves it, AI is the model process.
 COPY AI/__init__.py AI/script.py AI/api.py AI/server.py AI/vision.py ./AI/
 COPY AI/agent ./AI/agent
-COPY AI/cr_api ./AI/cr_api
-COPY AI/deepseek_api ./AI/deepseek_api
-COPY AI/icreat_api ./AI/icreat_api
-COPY AI/minimax_api ./AI/minimax_api
-COPY AI/skills/registry.py ./AI/skills/registry.py
-COPY AI/skills/short-drama-director ./AI/skills/short-drama-director
-COPY AI/skills/sd-asset-engine ./AI/skills/sd-asset-engine
-COPY AI/skills/sd-combat-engine ./AI/skills/sd-combat-engine
-COPY AI/skills/sd-decision-engine ./AI/skills/sd-decision-engine
-COPY AI/skills/sd-feed-engine ./AI/skills/sd-feed-engine
-COPY AI/skills/sd-jieshuo-engine ./AI/skills/sd-jieshuo-engine
-COPY AI/skills/sd-overseas-engine ./AI/skills/sd-overseas-engine
-COPY AI/skills/sd-qc-engine ./AI/skills/sd-qc-engine
-COPY AI/skills/sd-real-engine ./AI/skills/sd-real-engine
-COPY AI/skills/sd-recon-engine ./AI/skills/sd-recon-engine
-COPY AI/skills/sd-script-engine ./AI/skills/sd-script-engine
-COPY AI/skills/sd-storyboard-engine ./AI/skills/sd-storyboard-engine
-COPY AI/skills/sd-xuanhuan-engine ./AI/skills/sd-xuanhuan-engine
+COPY AI/qwen_api ./AI/qwen_api
+COPY AI/skills ./AI/skills
 COPY end ./end
 COPY front ./front
 COPY deploy/entrypoint.sh /entrypoint.sh

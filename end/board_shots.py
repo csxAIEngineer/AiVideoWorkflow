@@ -105,16 +105,73 @@ def _dialogue(row):
     return text
 
 
+def _debug_baee6e(message, data):
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "baee6e",
+            "runId": "post-fix",
+            "hypothesisId": "A",
+            "location": "end/board_shots.py:shots_from_storyboard",
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open("/Users/shaneson/AiVideo/.cursor/debug-baee6e.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+
+
 def _prompt(row):
     written = str(row.get("prompt") or "").strip()
-    if written and not any(row.get(key) for key in _PROMPT_KEYS):
+    if written and not any(row.get(key) for key in _PROMPT_KEYS) and not row.get("description"):
         return written
     parts = []
     for key in _PROMPT_KEYS:
         text = str(row.get(key) or "").strip()
         if text and text not in ("无", "无。"):
             parts.append(text)
+    description = str(row.get("description") or "").strip()
+    if description and description not in parts:
+        parts.insert(0, description)
+    for key in ("action_phase", "vfx"):
+        text = str(row.get(key) or "").strip()
+        if text and text not in ("无", "无。") and text not in parts:
+            parts.append(text)
     return "\n".join(parts)
+
+
+def _duration_value(row):
+    raw = row.get("duration")
+    if raw in (None, ""):
+        raw = row.get("duration_sec")
+    if raw not in (None, ""):
+        return raw
+    match = re.search(
+        r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})",
+        str(row.get("time_range") or ""),
+    )
+    if not match:
+        return None
+    start = int(match.group(1)) * 60 + int(match.group(2))
+    end = int(match.group(3)) * 60 + int(match.group(4))
+    if end <= start:
+        return None
+    return end - start
+
+
+def _ref_ids(row):
+    found = []
+    for key in ("images", "scene_ref", "character_refs"):
+        value = row.get(key)
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            text = str(item or "").strip()
+            if text and text not in found:
+                found.append(text)
+    return found
 
 
 def _needles(asset):
@@ -135,10 +192,9 @@ def _needles(asset):
 
 def _images(row, assets, blob):
     listed = []
-    for name in row.get("images") or []:
-        text = str(name or "").strip()
-        if text and text not in listed:
-            listed.append(text)
+    for name in _ref_ids(row):
+        if name not in listed:
+            listed.append(name)
     for asset in assets or []:
         if not isinstance(asset, dict):
             continue
@@ -158,12 +214,19 @@ def shots_from_storyboard(value, assets=None):
         if not prompt:
             continue
         dialogue = _dialogue(row)
-        duration_raw = row.get("duration")
-        if duration_raw in (None, ""):
-            duration_raw = row.get("duration_sec")
+        duration_raw = _duration_value(row)
         blob = "\n".join(
             str(row.get(key) or "")
-            for key in ("shot_id", "visual_content", "camera_spec", "blocking_note", "dialogue", "prompt")
+            for key in (
+                "shot_id",
+                "visual_content",
+                "camera_spec",
+                "blocking_note",
+                "dialogue",
+                "prompt",
+                "description",
+                "scene_ref",
+            )
         )
         shots.append(
             {
@@ -175,6 +238,16 @@ def shots_from_storyboard(value, assets=None):
                 "narration": str(row.get("narration") or "").strip(),
             }
         )
+    # region agent log
+    _debug_baee6e(
+        "storyboard rows to canvas",
+        {
+            "rows": len(storyboard_rows(value)),
+            "derived": len(shots),
+            "withDescription": sum(1 for row in storyboard_rows(value) if row.get("description")),
+        },
+    )
+    # endregion
     return shots
 
 

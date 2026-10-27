@@ -1175,6 +1175,34 @@ class MachineAndMountTest(unittest.TestCase):
         _code, report = check_feed(path, "h3", "M2", "1")
         self.assertNotIn("未找到投喂单元", report)
 
+    def test_h3_sections_are_reordered_before_the_check(self):
+        swapped = "\n".join((
+            "## 【投喂单元 1/1】",
+            "subject_definitions:",
+            "<Subject 1> is a woman.",
+            "summary:",
+            "She waits.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved.",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+            "detailed_description:",
+            "[Shot 1] She stands inside.",
+            "",
+            "强制禁止项：禁字幕。",
+        ))
+        text = render_feed_text(swapped)
+        detailed = text.index("detailed_description:")
+        sound = text.index("overall_soundscape:")
+        music = text.index("non_diegetic_music:")
+        self.assertLess(detailed, sound)
+        self.assertLess(sound, music)
+        self.assertIn("[Shot 1] She stands inside.", text)
+        self.assertTrue(text.rstrip().endswith("强制禁止项：禁字幕。"))
+        self.assertEqual(render_feed_text(text), text)
+
 
 class DeliveryTest(unittest.TestCase):
     def test_public_package_is_at_most_three_and_skips_internal(self):

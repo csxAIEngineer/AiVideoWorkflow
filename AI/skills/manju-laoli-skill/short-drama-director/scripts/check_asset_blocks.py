@@ -16,7 +16,8 @@
   python scripts/check_asset_blocks.py <含资产提示词的 md>
       [--min-blocks 3] [--json]
 
-判定单元：以 `#### 图N · 名称（类型）`（# 数不限，图N 开头）为块起点，到下一个同级或更高级标题为止。
+判定单元：以 `#### 图N · 名称（类型）`（# 数不限，图N 开头）为块起点，到下一张图为止。
+块内的 `###` 小标题仍属于这一张图。后面若先出现 `#` 或 `##` 新章节，块停在那里。
 
 规则码：
   A1 块内出现跨条引用（不自包含）              ERROR
@@ -61,9 +62,9 @@ PROP_FIELDS_ALT = ["正面视图", "45°侧视图", "顶部俯视图", "关键�
 def split_blocks(text):
     """按 `图N` 标题切块，返回 [(图号, 标题, 正文)]。
 
-    块的右边界 = **下一个同级或更高级标题**，不是「下一个图N」。
-    否则最后一个资产块会一路吞到文末（把分镜段、说明段全算进资产块，
-    既漏判该块自身，又会把别处的「同上」误报成资产块的跨条引用）。
+    一块延伸到下一张图。`#### 图N` 里面的 `###` 小标题仍算这一张图，
+    否则角色模板的音色段和四格表会被切掉。
+    若先遇到 `#` 或 `##` 新章节，块停在那里，避免最后一张图吞进分镜段。
     """
     lines = text.split("\n")
     offsets, cursor = [], 0
@@ -81,10 +82,12 @@ def split_blocks(text):
         match = BLOCK_RE.match(line)
         if not match:
             continue
-        level = heading_levels[index]
         end = len(text)
         for later in range(index + 1, len(lines)):
-            if heading_levels[later] and heading_levels[later] <= level:
+            if BLOCK_RE.match(lines[later]):
+                end = offsets[later]
+                break
+            if heading_levels[later] and heading_levels[later] <= 2:
                 end = offsets[later]
                 break
         body = text[offsets[index]:end]
