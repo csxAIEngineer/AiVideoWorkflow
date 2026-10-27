@@ -16,8 +16,16 @@ BOARD = SUITE / "short-drama-director" / "scripts" / "build_board_lite.py"
 
 
 def feed_text(spec):
+    """Prepared ``feed`` wins. Shot lines are only the fallback before a feed exists."""
+    spec = spec or {}
+    raw = str(spec.get("feed") or "").strip()
+    if raw:
+        from end.stage_runner import render_feed_text
+
+        rendered = render_feed_text(raw).strip()
+        return rendered or raw
     parts = []
-    for shot in (spec or {}).get("shots") or []:
+    for shot in spec.get("shots") or []:
         if not isinstance(shot, dict):
             continue
         prompt = str(shot.get("prompt") or "").strip()
@@ -45,13 +53,19 @@ def project_markdown(spec, brief=""):
             str(spec.get("storyboard") or ""),
             "",
             "## P4 · 投喂提示词",
-            "### 段1",
-            "```text",
-            feed_text(spec),
-            "```",
+            _feed_section(feed_text(spec)),
             "",
         ]
     )
+
+
+def _feed_section(text):
+    body = str(text or "").strip()
+    if not body:
+        return ""
+    if "投喂单元" in body or "subject_definitions" in body or "【时间轴分镜】" in body:
+        return body
+    return "### 段1\n```text\n%s\n```" % body
 
 
 def _feed_segments(text):

@@ -1069,7 +1069,7 @@ WRITE_STAGES = (
 def _merge_spec(base, incoming):
     merged = dict(base or {})
     incoming = incoming or {}
-    for key in ("title", "script", "storyboard", "image_prompts"):
+    for key in ("title", "script", "storyboard", "image_prompts", "feed", "previs"):
         if str(incoming.get(key) or "").strip():
             merged[key] = incoming.get(key)
     if incoming.get("assets"):

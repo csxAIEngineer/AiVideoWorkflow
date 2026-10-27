@@ -126,8 +126,6 @@ def _debug_baee6e(message, data):
 
 def _prompt(row):
     written = str(row.get("prompt") or "").strip()
-    if written and not any(row.get(key) for key in _PROMPT_KEYS) and not row.get("description"):
-        return written
     parts = []
     for key in _PROMPT_KEYS:
         text = str(row.get(key) or "").strip()
@@ -140,7 +138,10 @@ def _prompt(row):
         text = str(row.get(key) or "").strip()
         if text and text not in ("无", "无。") and text not in parts:
             parts.append(text)
-    return "\n".join(parts)
+    joined = "\n".join(parts)
+    if written and len(written) >= len(joined):
+        return written
+    return joined
 
 
 def _duration_value(row):
@@ -252,8 +253,16 @@ def shots_from_storyboard(value, assets=None):
 
 
 def apply_storyboard_shots(spec):
-    """Fill shots from the storyboard when the canvas list is empty or a stand-in."""
+    """Fill shots from the storyboard when the canvas list is empty or a stand-in.
+
+    A prepared feed already owns the render text, so this pass does not replace
+    shots with the three short columns.
+    """
     spec = spec if isinstance(spec, dict) else {}
+    from end.prompt_handoff import feed_has_units
+
+    if feed_has_units(spec.get("feed")):
+        return spec
     current = spec.get("shots") if isinstance(spec.get("shots"), list) else []
     derived = shots_from_storyboard(spec.get("storyboard"), spec.get("assets"))
     placeholder = shots_are_placeholder(current)

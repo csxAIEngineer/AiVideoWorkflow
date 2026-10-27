@@ -58,7 +58,14 @@ def _reference_ids(value):
 
 
 def collect_steps(spec):
-    """Assets and shots that actually become nodes, in run order."""
+    """Assets and shots that actually become nodes, in run order.
+
+    When a delivery feed or 图 blocks exist, those texts replace the short
+    asset line and the storyboard-column shot line for this read.
+    """
+    from end.prompt_handoff import prepare_delivery_spec
+
+    spec = prepare_delivery_spec(spec)
     assets = []
     pending_refs = []
     for index, item in enumerate(spec.get("assets") or []):
@@ -121,6 +128,8 @@ def collect_steps(spec):
         video_mode = str(item.get("video_mode") or "").strip()
         if video_mode:
             shot["video_mode"] = video_mode
+        if "tts_text" in item:
+            shot["tts_text"] = str(item.get("tts_text") or "")
         shots.append(shot)
     return assets, shots
 
