@@ -193,10 +193,7 @@ def prepare_lines(voice_dir, shots, doc, client, duration_of, mode):
     lines = []
     requests = 0
     for shot in shots or []:
-        if isinstance(shot, dict) and "tts_text" in shot:
-            text = str(shot.get("tts_text") or "").strip()
-        else:
-            text = str((shot or {}).get("narration") or "").strip()
+        text = str((shot or {}).get("narration") or "").strip()
         if not text:
             continue
         shot_id = str(shot.get("id") or "")
