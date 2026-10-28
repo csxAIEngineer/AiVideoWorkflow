@@ -1,6 +1,6 @@
 # AiVideo
 
-漫剧的聊天入口。先锁定赛道、素材来源、画幅（16:9 / 9:16 / 21:9）、画风和动作强度。锁定之后按剧本、资产提示词、分镜、投喂稿分阶段写完，跑机检，生成离线看板，然后停在「提示词已就绪」。只有点「出图出片」，或消息里出现「出图」「生成图片」「跑图」「出片」，才会用千问生静帧、万相出镜，再用 ffmpeg 拼接并把 `字幕.ass` 烧进成片。没有锁定画幅时不会默认竖屏。
+漫剧的聊天入口。先锁定赛道、素材来源、画幅（16:9 / 9:16 / 21:9）、画风和动作强度。锁定之后按剧本、资产提示词、分镜、投喂稿分阶段写完，跑机检，生成离线看板，然后停在「提示词已就绪」。只有点「出图出片」，或消息里出现「出图」「生成图片」「跑图」「出片」，才会用千问生静帧、MiniMax H3 出镜，再用 ffmpeg 拼接并把 `字幕.ass` 烧进成片。没有锁定画幅时不会默认竖屏。
 
 页面到成片的路径是 Front → End → AI。Front 和 End、End 和 AI 都只走 JSON-RPC，三个目录互不 import。AI 里面是 LangGraph → Agent → 千问：追问走意图图，写稿走文本图。出片不进这个布局，仍由 End 在本机编排，生图、出镜和旁白的 HTTP 调用发给 AI。模型工人数量用 `AIVIDEO_AGENT_WORKERS`，默认 4。进程重启时，还停在「正在想方向」或「正在写提示词」的项目会重新入队。
 
@@ -37,7 +37,7 @@ python3 front/studio/chat.py
 
 文本和意图用 `qwen3.8-flash`，走兼容模式 `/compatible-mode/v1` 的 Responses API。意图图只调用函数 `submit_intent`。请求带 `enable_thinking: false`，并且不传 `reasoning.effort`。带上 `low` 时仍会返回推理 token。解析仍用 `AI/script.py` 的 `parse_drill_text`。
 
-读图用 `qwen3.8-flash`，请求带 `enable_thinking: false`。生产 Token Plan 不提供 `qwen3.8-omni-flash`。生图用 `wan2.7-image`：没有参考图是文生图，有参考图是同一模型的图生图。Token Plan 没有 `qwen-image-3.0`。万相不接受 `prompt_extend`，无参考图时关闭 `thinking_mode`，`watermark` 关闭。出镜用 `wan3.0-video`，一个模型覆盖文生、首帧、首尾帧和参考素材，`prompt_extend` 关闭。`16:9`、`9:16`、`21:9` 原样传入，其它比例用 `adaptive`。旁白用 `qwen-audio-3.0-tts-flash`，音色默认 `longanhuan_v3.6`，可用 `QWEN_TTS_VOICE` 覆盖。没有对等的器乐模型，`audio.compose` 直接失败，不再请求别的供应商。
+读图用 `qwen3.8-flash`，请求带 `enable_thinking: false`。生产 Token Plan 不提供 `qwen3.8-omni-flash`。生图用 `wan2.7-image`：没有参考图是文生图，有参考图是同一模型的图生图。Token Plan 没有 `qwen-image-3.0`。万相不接受 `prompt_extend`，无参考图时关闭 `thinking_mode`，`watermark` 关闭。出镜用 `MiniMax/MiniMax-H3`，一个模型覆盖文生、首帧、首尾帧和参考素材，`resolution` 为 `768P`，`watermark` 关闭。`16:9`、`9:16`、`21:9` 原样传入，其它比例用 `adaptive`。旁白用 `qwen-audio-3.0-tts-flash`，音色默认 `longanhuan_v3.6`，可用 `QWEN_TTS_VOICE` 覆盖。没有对等的器乐模型，`audio.compose` 直接失败，不再请求别的供应商。
 
 生图和出镜都带 `X-DashScope-Async: enable` 提交，再用 `GET /api/v1/tasks/{task_id}` 查状态。生图把 `PENDING` / `RUNNING` 看成 `IN_PROGRESS`，`SUCCEEDED` 保持不变。出镜把 `SUCCEEDED` 看成 `completed`，`FAILED` 看成 `failed`。轮询节奏仍由 End 掌握。
 

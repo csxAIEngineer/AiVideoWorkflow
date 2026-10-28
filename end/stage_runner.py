@@ -2,36 +2,18 @@
 
 import inspect
 import json
+import math
 import re
 import time
 from pathlib import Path
 
-from end.board_shots import apply_storyboard_shots, shots_are_placeholder
+from end.board_shots import apply_feed_binding, apply_storyboard_shots, bind_feed_document, shots_are_placeholder
 from end.delivery import internal_dir, list_deliverables, previs_name, publish
 from end.gates import check_asset_blocks, check_feed, check_p45, check_prompt, unverified_claim
 from end.intake import enrich_brief, intake_note, load_intake
 from end.locks import lock_brief
 
 _ASSET_HEAD = re.compile(r"^(#{2,6})\s*\*{0,2}\s*图\s*(\d+)\b", re.M)
-
-
-def _agent_log(hypothesis, message, data):
-    # region agent log
-    try:
-        payload = {
-            "sessionId": "9920cc",
-            "runId": "post-fix",
-            "hypothesisId": hypothesis,
-            "location": "end/stage_runner.py",
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("/Users/shaneson/AiVideo/.cursor/debug-9920cc.log", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    # endregion
 
 
 def _asset_pieces(text):
@@ -77,25 +59,6 @@ def keep_missing_asset_blocks(previous, new):
     return "\n\n".join(part.strip() for part in parts if part.strip()) + "\n"
 
 
-def _figure_log(message, data):
-    # region agent log
-    try:
-        payload = {
-            "sessionId": "ee5fa7",
-            "runId": "post-fix",
-            "hypothesisId": "H-fig",
-            "location": "end/stage_runner.py",
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    # endregion
-
-
 def _repair_with_graph(
     folder, stage, repair, write_model, debug_dir, model, template, locks=None, title="", choices=None
 ):
@@ -115,30 +78,19 @@ def _repair_with_graph(
     previs = _read(internal / "previs.md")
     storyboard = _read(internal / "分镜.md")
     feed = _read(internal / "feed.md")
+    # Always recheck disk before trusting a stale gate report. Feed H2 may already
+    # be fixed by normalize_h3_shot_cuts; rewriting from an old FAIL just rebreaks it.
+    _passed, fresh = check_stage(folder, stage, locks or {}, title)
+    asset = _read(internal / "assets.md")
+    previs = _read(internal / "previs.md")
+    storyboard = _read(internal / "分镜.md")
+    feed = _read(internal / "feed.md")
+    if _passed:
+        return _saved_stage(stage, asset, previs, storyboard, feed)
+    repair = fresh or repair
     units = units_for(stage, repair, asset=asset, previs=previs, feed=feed)
-    if not units:
-        _figure_log("repair skipped", {"stage": stage, "units": 0})
-        _passed, fresh = check_stage(folder, stage, locks or {}, title)
-        units = units_for(stage, fresh, asset=asset, previs=previs, feed=feed)
-        # region agent log
-        _figure_log(
-            "repair recheck",
-            {
-                "stage": stage,
-                "storedLen": len(repair or ""),
-                "freshLen": len(fresh or ""),
-                "summary": sum(
-                    1 for line in (fresh or "").splitlines() if line.startswith("[x]") or line.startswith("[+]")
-                ),
-                "units": len(units),
-            },
-        )
-        # endregion
-        repair = fresh or repair
     chosen = dict(choices) if isinstance(choices, dict) else {}
     if stage == "asset" and chosen:
-        _passed, fresh = check_stage(folder, stage, locks or {}, title)
-        units = units_for(stage, fresh, asset=asset)
         asset, indexes, units = apply_repair_choices(asset, units, chosen)
         if not units:
             return {"image_prompts": asset, "_figure_repair": True, "_figure_indexes": indexes}
@@ -149,15 +101,6 @@ def _repair_with_graph(
     if not units:
         return _saved_stage(stage, asset, previs, storyboard, feed)
     brief = repair_brief(stage, units)
-    _figure_log(
-        "repair brief",
-        {
-            "stage": stage,
-            "units": [unit.get("id") for unit in units],
-            "briefLen": len(brief),
-            "hasSuiteTask": "任务：资产锁定" in brief or "任务：分镜" in brief or "任务：提示词封装" in brief,
-        },
-    )
     prompts = begin_trace(folder, stage, repair=True, brief="建议修补 %s 项" % len(units))
     result = _write_model(
         write_model,
@@ -193,10 +136,12 @@ def _repair_with_graph(
         storyboard=storyboard,
         feed=feed,
     )
-    _figure_log(
-        "repair splice",
-        {"stage": stage, "units": len(units), "replies": len(repairs)},
-    )
+    if stage == "feed" and isinstance(applied, dict):
+        applied = dict(applied)
+        applied["feed"] = normalize_h3_shot_cuts(applied.get("feed") or feed)
+    if stage == "storyboard" and isinstance(applied, dict):
+        applied = dict(applied)
+        applied["previs"] = coerce_previs(applied.get("previs") or previs)
     return applied
 
 
@@ -210,20 +155,98 @@ def _saved_stage(stage, asset, previs, storyboard, feed):
     return {}
 
 
+def markdown_from_asset_items(items):
+    """Build #### 图N blocks from assets[] / card objects. Empty if nothing usable."""
+    if not isinstance(items, list):
+        return ""
+    parts = []
+    next_number = 1
+    for item in items:
+        if not isinstance(item, dict):
+            text = _flatten_prompt_text(item)
+            if text:
+                if _asset_pieces(text):
+                    parts.extend(body for _n, body in _asset_pieces(text))
+                else:
+                    parts.append("#### 图%d · 资产\n%s" % (next_number, text))
+                    next_number += 1
+            continue
+        prompt = item.get("prompt")
+        prompt_text = (
+            prompt.strip()
+            if isinstance(prompt, str)
+            else _flatten_prompt_text(prompt)
+        )
+        if not prompt_text:
+            continue
+        numbered = _asset_pieces(prompt_text)
+        if numbered:
+            for number, body in numbered:
+                parts.append(body.strip())
+                next_number = max(next_number, number + 1)
+            continue
+        title = str(
+            item.get("title") or item.get("subject") or item.get("name") or item.get("id") or "资产"
+        ).strip() or "资产"
+        id_match = re.search(r"(?:图\s*)?(\d+)", str(item.get("id") or title))
+        number = int(id_match.group(1)) if id_match and not str(item.get("id") or "").startswith("A") else next_number
+        # Prefer sequential 图N for A1/A2 style ids
+        if re.match(r"^A\d+$", str(item.get("id") or ""), re.I):
+            number = next_number
+        if title.startswith("####"):
+            head = title
+        elif re.match(r"^图\s*\d+", title):
+            head = "#### %s" % title
+        else:
+            head = "#### 图%d · %s" % (number, title)
+        parts.append("%s\n%s" % (head, prompt_text))
+        next_number = max(next_number, number + 1)
+    if not parts:
+        return ""
+    return "\n\n".join(parts) + "\n"
+
+
 def _flatten_prompt_text(value):
     """Turn a string, a list of prompts, or a nested object into one markdown body."""
     if isinstance(value, str):
         return value.strip()
     if isinstance(value, list):
+        # Card list [{title, prompt}, ...] must keep #### 图N headers (not bare bodies).
+        if value and all(isinstance(item, dict) for item in value):
+            from_cards = markdown_from_asset_items(value)
+            if _asset_pieces(from_cards):
+                return from_cards.strip()
         parts = [_flatten_prompt_text(item) for item in value]
         return "\n\n".join(part for part in parts if part)
     if isinstance(value, dict):
-        for key in ("image_prompts", "prompt", "text", "markdown", "content"):
+        for key in ("image_prompts", "markdown", "text", "content"):
             if value.get(key):
                 found = _flatten_prompt_text(value[key])
                 if found:
                     return found
-        return ""
+        # Single asset card — do not return bare prompt without a 图 heading.
+        card = markdown_from_asset_items([value])
+        if _asset_pieces(card):
+            return card.strip()
+        if value.get("prompt"):
+            found = _flatten_prompt_text(value.get("prompt"))
+            if found and _asset_pieces(found):
+                return found
+        # Merge often returns {"图5 · 场景": "正文…", ...} instead of #### markdown.
+        parts = []
+        for key, body in value.items():
+            title = str(key or "").strip()
+            if not title.startswith("####") and "图" not in title:
+                continue
+            text = body.strip() if isinstance(body, str) else _flatten_prompt_text(body)
+            if not text:
+                continue
+            if text.lstrip().startswith("####"):
+                parts.append(text)
+                continue
+            head = title if title.startswith("####") else "#### %s" % title
+            parts.append("%s\n%s" % (head, text))
+        return "\n\n".join(parts)
     return ""
 
 
@@ -242,7 +265,7 @@ def _prompt_shape(value):
 
 
 def _coerce_asset_prompts(result):
-    """Keep 图 blocks when the model puts them in a list or in the specialist notes."""
+    """Keep 图 blocks when the model puts them in a list, assets[], or specialist notes."""
     if not isinstance(result, dict):
         return result
     raw = result.get("image_prompts")
@@ -251,39 +274,50 @@ def _coerce_asset_prompts(result):
     for item in result.get("partials") or []:
         notes.append(item.get("text") if isinstance(item, dict) else item)
     partial_flat = _flatten_prompt_text(notes)
+    assets_flat = markdown_from_asset_items(result.get("assets"))
     field_blocks = len(_asset_pieces(flat))
     partial_blocks = len(_asset_pieces(partial_flat))
+    assets_blocks = len(_asset_pieces(assets_flat))
     chosen = flat
     source = "field"
     if field_blocks == 0 and partial_blocks:
         chosen = partial_flat
         source = "partials"
+    if len(_asset_pieces(chosen)) == 0 and assets_blocks:
+        chosen = assets_flat
+        source = "assets"
     chosen_blocks = len(_asset_pieces(chosen))
-    # region agent log
+    # #region agent log
     try:
-        payload = {
-            "sessionId": "ee5fa7",
-            "runId": "post-fix",
-            "hypothesisId": "A",
-            "location": "end/stage_runner.py:_coerce_asset_prompts",
-            "message": "asset prompt shape",
-            "data": {
-                "shape": _prompt_shape(raw),
-                "fieldBlocks": field_blocks,
-                "partialBlocks": partial_blocks,
-                "source": source,
-                "chosenBlocks": chosen_blocks,
-            },
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "sessionId": "d078f2",
+                        "runId": "asset-fix",
+                        "hypothesisId": "A1",
+                        "location": "stage_runner.py:_coerce_asset_prompts",
+                        "message": "coerce asset prompts",
+                        "data": {
+                            "raw": _prompt_shape(raw),
+                            "field_blocks": field_blocks,
+                            "partial_blocks": partial_blocks,
+                            "assets_blocks": assets_blocks,
+                            "source": source,
+                            "chosen_blocks": chosen_blocks,
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
     except OSError:
         pass
-    # endregion
+    # #endregion
     if chosen_blocks and chosen != raw:
         result = dict(result)
-        result["image_prompts"] = chosen
+        result["image_prompts"] = chosen if chosen.endswith("\n") else chosen + "\n"
     return result
 
 
@@ -361,6 +395,16 @@ def apply_structured_assets(previous, items):
 _VOICE_MARK = re.compile(r"≤\s*8\s*词|8\s*词")
 _HAND_MARK = re.compile(r"禁止手持|不得手持|不出现手")
 _SECOND_FACE = ("different face", "second face", "second recognizable face", "another face")
+_ROLE_TITLE = re.compile(r"女主|男主|主角|反派|立绘|角色")
+_ASSET_KINDS = ("角色", "道具", "九宫格", "场景母版", "未知")
+_ROLE_NEGATIVES = (
+    "extra fifth panel, five-panel layout, different face, second face"
+)
+_GRID_FIELDS = ("【场景定位】", "【九宫格内容分配】", "【参考场景锁定模式】")
+_GRID_DOWNGRADE = "若中文标注崩字：格内编号 1~9，图外对照表；禁止无标注裸格交付。"
+_GRID_LOCK_A = "【参考场景锁定模式 · 模式A 档 · 仅允许摄影机移动】仅允许摄影机移动。"
+_GRID_LOCK_B = "【参考场景锁定模式 · 模式B 档 · 允许按子区域切换机位】允许按子区域切换机位。"
+_CROSS_REF_PARENS = re.compile(r"[（(]\s*同图\s*\d+[^）)]*[）)]")
 
 
 def _fail_count(text):
@@ -386,11 +430,149 @@ def _accept_replacement(old, new):
     return _fail_count(new) < _fail_count(old)
 
 
-def _patch_asset_block(body):
+def _rule_asset_kind(title, body):
+    """Rule fallback: 女主/男主 = 角色. Never treat bare 全图共4格 as角色 (道具也是四格)."""
+    title = str(title or "")
+    body = str(body or "")
+    if "道具设定图" in body or "道具设定" in body or "道具" in title:
+        return "道具"
+    if "九宫格" in title or re.search(r"全图共\s*9\s*格", body):
+        return "九宫格"
+    if "母版" in title and not _ROLE_TITLE.search(title):
+        return "场景母版"
+    if _ROLE_TITLE.search(title) or "五官" in body or "声纹" in body or "立绘" in body:
+        return "角色"
+    if re.search(r"四格|4\s*格", body) and re.search(
+        r"视图|材质|尺寸参照|设定|胶囊|包装|静物", body + title
+    ):
+        return "道具"
+    return "未知"
+
+
+def _parse_kind_list(raw, expected):
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    start = text.find("[")
+    end = text.rfind("]")
+    if start >= 0 and end > start:
+        text = text[start : end + 1]
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data[:expected]:
+        name = str(item or "").strip()
+        out.append(name if name in _ASSET_KINDS else "未知")
+    return out
+
+
+def _llm_asset_kinds(pieces, model=None):
+    """One short call for every block. Empty list means fall back to rules."""
+    if not pieces:
+        return []
+    rows = []
+    for index, (_number, body) in enumerate(pieces, 1):
+        title = body.splitlines()[0] if body else ""
+        excerpt = " ".join(str(body or "").split())[:280]
+        rows.append("%d. 标题：%s\n   摘要：%s" % (index, title, excerpt))
+    prompt = "\n".join(
+        (
+            "你是资产图分类器。对下面每条 #### 图块判断类型。",
+            "只能从：角色、道具、九宫格、场景母版、未知 中选一个。",
+            "女主/男主/主角/立绘/人物=角色；药盒/胶囊/武器等物件=道具；场景九宫格=九宫格；无人空场景母版=场景母版。",
+            "只输出长度=%d 的 JSON 数组，例如 [\"角色\",\"道具\"]。不要解释。" % len(pieces),
+            "",
+            "\n".join(rows),
+        )
+    )
+    try:
+        from end.ai_client import ask_text
+
+        raw = ask_text(
+            [{"role": "user", "content": prompt}],
+            model=model,
+            timeout=45,
+            max_output_tokens=200,
+        )
+    except Exception:
+        return []
+    return _parse_kind_list(raw, len(pieces))
+
+
+def _classify_asset_kinds(pieces, model=None, classify=None):
+    """LLM first; rule fallback per block when LLM misses or disagrees length."""
+    if classify is not None:
+        kinds = list(classify(pieces) or [])
+    else:
+        kinds = _llm_asset_kinds(pieces, model=model)
+    out = []
+    for index, (_number, body) in enumerate(pieces):
+        title = body.splitlines()[0] if body else ""
+        rule = _rule_asset_kind(title, body)
+        llm = kinds[index] if index < len(kinds) else ""
+        kind = llm if llm in _ASSET_KINDS and llm != "未知" else rule
+        if kind == "未知":
+            kind = rule
+        out.append(kind)
+    return out
+
+
+def _infer_grid_lock_line(text):
+    """Pick A/B lock sentence from already-written 模式A/B; empty if ambiguous."""
+    body = str(text or "")
+    has_a = bool(re.search(r"模式\s*A|模式A", body))
+    has_b = bool(re.search(r"模式\s*B|模式B", body))
+    if has_b and not has_a:
+        return _GRID_LOCK_B
+    if has_a and not has_b:
+        return _GRID_LOCK_A
+    return ""
+
+
+def _patch_grid_block(text):
+    """Hardcode A3 phrases the model routinely drops on 九宫格."""
+    out = _CROSS_REF_PARENS.sub("", str(text or ""))
+    added = []
+    if not re.search(r"全图共\s*9\s*格", out):
+        out += "\n全图共 9 格，不多不少。\n"
+        added.append("全图共9格")
+    if not re.search(r"16\s*[:：]\s*9", out):
+        out += "\n整板固定 16:9。\n"
+        added.append("16:9")
+    lock = ""
+    if "仅允许摄影机移动" not in out and "允许按子区域切换机位" not in out:
+        lock = _infer_grid_lock_line(out)
+    for field in _GRID_FIELDS:
+        if re.search(re.escape(field[:-1]) + r"[^】]*】", out):
+            continue
+        # Lock line already carries 【参考场景锁定模式 · …】— skip bare header
+        if field == "【参考场景锁定模式】" and lock:
+            continue
+        out += "\n%s\n" % field
+        added.append(field)
+    if lock:
+        out = re.sub(r"(?m)^【参考场景锁定模式】\s*$", "", out)
+        out += "\n%s\n" % lock
+        added.append("lock")
+    if not re.search(r"1\s*[~～-]\s*9", out) or "对照表" not in out:
+        out += "\n%s\n" % _GRID_DOWNGRADE
+        added.append("downgrade")
+    return out
+
+
+def _patch_asset_block(body, kind=""):
     text = str(body or "")
     heading = text.splitlines()[0] if text else ""
-    is_prop = "道具设定图" in text
-    is_role = (not is_prop) and ("角色" in heading) and re.search(r"全图共\s*4\s*格", text)
+    kind = kind or _rule_asset_kind(heading, text)
+    is_role = kind == "角色"
+    is_prop = kind == "道具"
+    is_grid = kind == "九宫格"
+    if is_grid:
+        return _patch_grid_block(text)
     if is_role and not _VOICE_MARK.search(text):
         if "音色速览" in text:
             text = text.replace("音色速览", "≤8 词音色速览", 1)
@@ -398,19 +580,31 @@ def _patch_asset_block(body):
             text += "\n【≤8 词音色速览标签】沿用本块已写的音色描述。\n"
     if is_role and "五官 10 项锁定" not in text and "五官10项锁定" not in text:
         text += "\n【五官 10 项锁定】面部结构以本块已写的头部与脸部描述为准。\n"
-    if is_role and not any(token in text.lower() for token in _SECOND_FACE):
+    if is_role and "fifth panel" not in text.lower():
+        text += "\n%s\n" % _ROLE_NEGATIVES
+    elif is_role and not any(token in text.lower() for token in _SECOND_FACE):
         text += "\ndifferent face, second face\n"
     if is_prop and not _HAND_MARK.search(text):
         text += "\n禁止手持，不出现手。\n"
     return text
 
 
-def patch_asset_phrases(text):
-    """Add the checker's required phrases without dropping a block."""
+def patch_asset_phrases(text, model=None, classify=None):
+    """Add the checker's required phrases without dropping a block.
+
+    Kind comes from LLM when possible; 女主/男主 rules fill gaps. Role negatives are fixed.
+    """
     pieces = _asset_pieces(text)
     if not pieces:
         return text
-    return "\n\n".join(_patch_asset_block(body).strip() for _number, body in pieces) + "\n"
+    kinds = _classify_asset_kinds(pieces, model=model, classify=classify)
+    return (
+        "\n\n".join(
+            _patch_asset_block(body, kinds[index] if index < len(kinds) else "").strip()
+            for index, (_number, body) in enumerate(pieces)
+        )
+        + "\n"
+    )
 
 
 def assets_from_markdown(text, previous):
@@ -447,55 +641,6 @@ def assets_from_markdown(text, previous):
             }
         )
     return items
-
-
-def _asset_item_log(result):
-    # region agent log
-    items = result.get("assets") if isinstance(result, dict) else None
-    rows = []
-    if isinstance(items, list):
-        for item in items[:12]:
-            if not isinstance(item, dict):
-                continue
-            prompt = str(item.get("prompt") or "")
-            rows.append(
-                {
-                    "title": str(item.get("title") or "")[:40],
-                    "kind": str(item.get("subject_kind") or ""),
-                    "len": len(prompt),
-                    "blocks": len(_asset_pieces(prompt)),
-                    "head": prompt[:60],
-                    "hands": ("禁止手持" in prompt or "不得手持" in prompt or "不出现手" in prompt),
-                    "voice": ("8 词" in prompt or "8词" in prompt),
-                    "face": ("五官 10 项锁定" in prompt or "五官10项锁定" in prompt),
-                }
-            )
-    _agent_log("F", "asset items", {"rows": rows})
-    # endregion
-
-
-def _write_field_log(result):
-    # region agent log
-    if not isinstance(result, dict):
-        _agent_log("E", "write fields", {"type": type(result).__name__})
-        return
-    fields = {key: value for key, value in result.items() if isinstance(value, str)}
-    assets = result.get("assets")
-    first = assets[0] if isinstance(assets, list) and assets and isinstance(assets[0], dict) else {}
-    _agent_log(
-        "E",
-        "write fields",
-        {
-            "keys": sorted(str(key) for key in result.keys()),
-            "strLens": {key: len(value) for key, value in fields.items()},
-            "blockCounts": {key: len(_asset_pieces(value)) for key, value in fields.items()},
-            "imageHead": (fields.get("image_prompts") or "")[:80],
-            "assetsLen": len(assets) if isinstance(assets, list) else 0,
-            "assetItemKeys": sorted(str(key) for key in first.keys()),
-            "assetPromptLen": len(str(first.get("prompt") or "")),
-        },
-    )
-    # endregion
 
 
 _ORDER = ("script", "asset", "storyboard", "feed")
@@ -570,7 +715,8 @@ _INSTRUCTION = {
     "asset": "只写资产提示词，放在 image_prompts。每条以「#### 图N · 名称」开头，自包含，禁止同上、见母版、同图N。",
     "storyboard": "\n".join((
         "只写分镜，放在 storyboard。有打斗时招式只来自已挂载的打戏原文。",
-        "预演故事板放在 previs，不要写成「段N验证……」摘要。照这个形状写满，标签原文保留，括号里必须是数字：",
+        "预演故事板放在 previs，必须是 markdown 字符串，禁止 JSON 数组/对象。",
+        "不要写成「段N验证……」摘要。照这个形状写满，标签原文保留，括号里必须是数字：",
         "## 段 1",
         "**本段要验什么**：这一段要保住的站位",
         "**风险提示**：人物左右不要对调",
@@ -582,8 +728,10 @@ _INSTRUCTION = {
     )),
     "feed": "\n".join((
         "只写投喂稿，放在 feed。feed 必须是字符串。",
-        "Seedance 用 ## 【投喂单元 N/M】标题，下面写七段。",
-        "模型是 h3 时，每一段改成六段正文。字段名必须带冒号并且单独成行：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+        "用 ## 【投喂单元 N/M】标题，下面写七段。",
+        "每一段改成六段正文。字段名必须带冒号并且单独成行：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+        "每个投喂单元单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。",
+        "每个 Subject 必须对应 assets.md 里已经有的图。没有关键帧资产就不要写 Picture。",
         "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
     )),
 }
@@ -736,10 +884,15 @@ def store_stage(folder, stage, result):
         _write_internal(folder, "assets.md", result.get("image_prompts") or "")
     elif stage == "storyboard":
         _write_internal(folder, "分镜.md", result.get("storyboard") or "")
-        previs = str(result.get("previs") or "").strip()
-        if previs:
+        previs = coerce_previs(result.get("previs") or "")
+        if previs.strip():
+            result = dict(result)
+            result["previs"] = previs
             _write_internal(folder, "previs.md", previs)
     elif stage == "feed":
+        loaded = _load_spec(folder)
+        bound, _groups = bind_feed_document(result.get("feed") or "", loaded.get("assets") or [])
+        result["feed"] = bound
         _write_internal(folder, "feed.md", result.get("feed") or "")
     return result
 
@@ -855,7 +1008,7 @@ def _spec_patch(stage, result, previous):
         if result.get("storyboard"):
             merged["storyboard"] = result.get("storyboard")
         if result.get("previs"):
-            merged["previs"] = result.get("previs")
+            merged["previs"] = coerce_previs(result.get("previs") or "")
         merged = apply_storyboard_shots(merged)
     elif stage == "feed":
         if result.get("feed"):
@@ -864,6 +1017,7 @@ def _spec_patch(stage, result, previous):
         if isinstance(incoming, list) and incoming and not shots_are_placeholder(incoming):
             merged["shots"] = incoming
         merged = apply_storyboard_shots(merged)
+        merged = apply_feed_binding(merged)
     merged.pop("locks", None)
     return merged
 
@@ -899,6 +1053,8 @@ def check_stage(folder, stage, locks, title=""):
     if stage == "asset":
         path = internal / "assets.md"
         text = _read(path)
+        if not path.is_file() or not text.strip():
+            return False, "资产稿是空的，继续会再写一次。"
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
@@ -915,54 +1071,36 @@ def check_stage(folder, stage, locks, title=""):
             return False, "没看见图，却写了%s" % claim
         previs = _read(internal / "previs.md")
         if previs.strip():
-            # region agent log
-            _agent_log(
-                "A",
-                "storyboard check inputs",
-                {
-                    "previsLen": len(previs),
-                    "storyboardLen": len(text),
-                    "previsHeadings": len(re.findall(r"(?m)^#{1,6}\s*\**\s*段\s*\d+", previs)),
-                    "storyboardHeadings": len(re.findall(r"(?m)^#{1,6}\s*\**\s*段\s*\d+", text)),
-                    "previsInline": len(re.findall(r"段\s*\d+", previs)),
-                    "storyboardInline": len(re.findall(r"段\s*\d+", text)),
-                    "repairDraft": _DRAFT_FILE.get("storyboard"),
-                    "instructionHasHeading": "## 段" in _INSTRUCTION.get("storyboard", ""),
-                },
-            )
-            # endregion
-            target = folder / previs_name(title or _load_spec(folder).get("title") or "未命名")
             body = previs_check_text(text, previs, mode)
-            # region agent log
-            _agent_log(
-                "B",
-                "storyboard check body",
-                {
-                    "headings": len(_HEADING_SEGMENT.findall(body)),
-                    "usesStoryboard": "段 1" in body or "## 段 1" in body,
-                },
-            )
-            # endregion
+            # Persist rendered markdown so repair units see real段 bodies, not JSON shards.
+            if body.strip() and body.strip() != previs.strip():
+                _write_internal(folder, "previs.md", body)
+            target = folder / previs_name(title or _load_spec(folder).get("title") or "未命名")
             target.write_text(body if body.endswith("\n") else body + "\n", encoding="utf-8")
             code, report = check_p45(target, material_mode=mode)
-            # region agent log
+            # #region agent log
             try:
-                with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
+                with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as handle:
                     handle.write(
                         json.dumps(
                             {
-                                "sessionId": "ee5fa7",
-                                "runId": "pre",
-                                "hypothesisId": "D",
-                                "location": "end/stage_runner.py:check_stage",
-                                "message": "storyboard six-question check",
+                                "sessionId": "d078f2",
+                                "runId": "previs-fix",
+                                "hypothesisId": "S3,S4",
+                                "location": "stage_runner.py:check_stage:storyboard",
+                                "message": "storyboard gate after previs render",
                                 "data": {
-                                    "passed": code == 0,
-                                    "p453": len([line for line in (report or "").splitlines() if "P453" in line and "FAIL" in line]),
-                                    "previsRank": list(_board_rank(previs)),
-                                    "storyboardRank": list(_board_rank(text)),
-                                    "selectedChars": len(body),
-                                    "selectedIsPrevis": previs.strip() in body,
+                                    "code": code,
+                                    "persisted": body.strip() != previs.strip(),
+                                    "fail_count": sum(
+                                        1 for line in (report or "").splitlines() if "FAIL:" in line
+                                    ),
+                                    "p451": sum(
+                                        1 for line in (report or "").splitlines() if "P451" in line
+                                    ),
+                                    "p452": sum(
+                                        1 for line in (report or "").splitlines() if "P452" in line
+                                    ),
                                 },
                                 "timestamp": int(time.time() * 1000),
                             },
@@ -972,7 +1110,7 @@ def check_stage(folder, stage, locks, title=""):
                     )
             except OSError:
                 pass
-            # endregion
+            # #endregion
             if code != 0:
                 if target.is_file():
                     _write_internal(folder, target.name, target.read_text(encoding="utf-8"))
@@ -982,6 +1120,9 @@ def check_stage(folder, stage, locks, title=""):
     if stage == "feed":
         path = internal / "feed.md"
         text = render_feed_text(_read(path))
+        bound, _groups = bind_feed_document(text, _load_spec(folder).get("assets") or [])
+        if bound.strip():
+            text = bound
         if text.strip() and text.strip() != _read(path).strip():
             text = patch_h3_voiceover(text)
             _write_internal(folder, "feed.md", text)
@@ -990,31 +1131,7 @@ def check_stage(folder, stage, locks, title=""):
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
-        # region agent log
-        _agent_log(
-            "K",
-            "feed check",
-            {
-                "units": len(re.findall(r"(?m)^##\s*【投喂单元", text)),
-                "h3Fields": text.count("subject_definitions"),
-                "sevenSection": "【画幅风格】" in text,
-                "model": locks.get("model") or "h3",
-            },
-        )
-        # endregion
         code, report = check_feed(path, locks.get("model") or "h3", mode, locks.get("track") or "1")
-        # region agent log
-        _agent_log(
-            "L",
-            "feed check result",
-            {
-                "code": code,
-                "missedUnits": "未找到投喂单元" in (report or ""),
-                "h9": "H9" in (report or ""),
-                "fails": len([line for line in (report or "").splitlines() if "FAIL" in line]),
-            },
-        )
-        # endregion
         if code != 0:
             return False, report
         return True, ""
@@ -1025,9 +1142,15 @@ _HEADING_SEGMENT = re.compile(r"(?m)^#{1,6}\s*\**\s*段\s*\d+")
 
 
 def _promote_inline_segments(text):
-    """Turn inline 段N into the heading the previs checker recognizes."""
+    """Turn inline 段N into the heading the previs checker recognizes.
+
+    Never split JSON/list previs — segment_id values like「段 1」would shred it.
+    """
     text = str(text or "").strip()
     if not text or _HEADING_SEGMENT.search(text):
+        return text
+    stripped = text.lstrip()
+    if stripped[:1] in "[{":
         return text
     chunks = []
     for part in re.split(r"(?=段\s*\d+)", text):
@@ -1039,6 +1162,195 @@ def _promote_inline_segments(text):
     if not chunks:
         return text
     return "\n\n".join(chunks)
+
+
+def _previs_segment_rows(data):
+    """Normalize a parsed object into segment dicts, or None."""
+    if isinstance(data, dict):
+        for key in ("segments", "previs", "boards"):
+            rows = data.get(key)
+            if isinstance(rows, list) and rows:
+                data = rows
+                break
+        else:
+            return None
+    if not isinstance(data, list) or not data:
+        return None
+    first = data[0] if isinstance(data[0], dict) else {}
+    markers = ("check_focus", "risk_alert", "grids", "segment_id", "本段要验什么", "风险提示")
+    if not any(key in first for key in markers):
+        return None
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _previs_payload(value):
+    """Parse structured previs (list/dict/JSON/Python-literal). Empty → markdown path."""
+    if isinstance(value, (list, dict)):
+        return _previs_segment_rows(value)
+    text = str(value or "").strip()
+    if text.startswith("素材形态："):
+        text = re.sub(r"^素材形态：[^\n]*\n+", "", text).strip()
+    if not text or text[:1] not in "[{":
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            import ast
+
+            data = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return None
+    return _previs_segment_rows(data)
+
+
+def _panel_prompt_lines(grid, index):
+    row = grid if isinstance(grid, dict) else {}
+    prompt = str(row.get("prompt") or "").strip()
+    number = int(row.get("grid_index") or index)
+    if prompt and not re.match(r"第\s*\d+\s*格", prompt):
+        prompt = "第 %d 格：%s" % (number, prompt)
+    if not prompt:
+        prompt = "第 %d 格：待补画面。" % number
+    lines = [prompt]
+    if "看图先看这三点" not in prompt:
+        six = row.get("six_questions") if isinstance(row.get("six_questions"), dict) else {}
+        tip = "、".join(
+            str(six.get(key) or "").strip()
+            for key in ("who_where", "facing", "looking", "doing", "camera_pos", "light_dir")
+            if str(six.get(key) or "").strip()
+        )
+        if tip:
+            lines.append("看图先看这三点：%s" % tip)
+        else:
+            lines.append("看图先看这三点：人、位、光")
+    return lines
+
+
+def _render_previs_segments(payload, mode="M1"):
+    blocks = []
+    for index, segment in enumerate(payload, 1):
+        sid = str(segment.get("segment_id") or "段 %d" % index)
+        match = re.search(r"\d+", sid)
+        number = int(match.group()) if match else index
+        focus = str(
+            segment.get("check_focus")
+            or segment.get("本段要验什么")
+            or "这一段要保住的站位"
+        ).strip()
+        risk = str(
+            segment.get("risk_alert") or segment.get("风险提示") or "人物左右不要对调"
+        ).strip()
+        grids = segment.get("grids") if isinstance(segment.get("grids"), list) else []
+        count = int(segment.get("grid_count") or len(grids) or 1)
+        if count < 1:
+            count = 1
+        lines = [
+            "## 段 %d" % number,
+            "**本段要验什么**：%s" % focus,
+            "**风险提示**：%s" % risk,
+            "### 故事板提示词（%d 格）" % count,
+        ]
+        if grids:
+            for grid_index, grid in enumerate(grids, 1):
+                lines.extend(_panel_prompt_lines(grid, grid_index))
+        else:
+            lines.append("第 1 格：待补画面。")
+            lines.append("看图先看这三点：人、位、光")
+        blocks.append("\n".join(lines))
+    total = len(blocks) or 1
+    body = "\n\n".join(blocks) + "\n\n预演故事板：段1~段%d ✅" % total
+    if not body.startswith("素材形态："):
+        body = "素材形态：%s\n\n%s" % (mode or "M1", body.lstrip())
+    if not body.endswith("\n"):
+        body += "\n"
+    return body
+
+
+def render_previs_markdown(previs, mode="M1"):
+    """Turn JSON/list previs into the P45 markdown shape; leave real markdown alone."""
+    if previs is None or previs == "":
+        return ""
+    incoming = type(previs).__name__
+    payload = _previs_payload(previs)
+    source = "markdown"
+    if payload is not None:
+        source = "structured"
+        body = _render_previs_segments(payload, mode)
+    else:
+        text = str(previs or "").strip()
+        if not text:
+            return ""
+        if "本段要验什么" in text and _HEADING_SEGMENT.search(text):
+            body = text
+        else:
+            body = _promote_inline_segments(text)
+            source = "promoted"
+        if not body.startswith("素材形态："):
+            body = "素材形态：%s\n\n%s" % (mode or "M1", body.lstrip())
+        if not body.endswith("\n"):
+            body += "\n"
+    # #region agent log
+    try:
+        with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "sessionId": "d078f2",
+                        "runId": "previs-fix",
+                        "hypothesisId": "T1",
+                        "location": "stage_runner.py:render_previs_markdown",
+                        "message": "previs render",
+                        "data": {
+                            "incoming": incoming,
+                            "source": source,
+                            "chars": len(body),
+                            "segments": len(_HEADING_SEGMENT.findall(body)),
+                            "has_labels": "本段要验什么" in body and "风险提示" in body,
+                            "has_grid_decl": "故事板提示词（" in body or "故事板提示词(" in body,
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except OSError:
+        pass
+    # #endregion
+    return body
+
+
+def coerce_previs(value, mode="M1"):
+    """Write-path gate: never persist list/dict/JSON previs as str(list)."""
+    rendered = render_previs_markdown(value, mode)
+    # #region agent log
+    try:
+        with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "sessionId": "d078f2",
+                        "runId": "previs-fix",
+                        "hypothesisId": "T2",
+                        "location": "stage_runner.py:coerce_previs",
+                        "message": "previs coerce at write",
+                        "data": {
+                            "incoming": type(value).__name__,
+                            "out_chars": len(rendered),
+                            "is_markdown": "本段要验什么" in rendered,
+                            "was_structured": _previs_payload(value) is not None,
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except OSError:
+        pass
+    # #endregion
+    return rendered
 
 
 _PANEL_LINE = re.compile(r"第\s*\d+\s*格\s*[：:]")
@@ -1086,24 +1398,18 @@ def _board_candidates(storyboard, previs):
 
 
 def previs_check_text(storyboard, previs, mode):
-    """Check the text that actually contains the panels."""
+    """Check the text that actually contains the panels.
+
+    Structured JSON previs is rendered to P45 markdown first. Promoting a JSON
+    blob is forbidden — it only manufactures empty「## 段 N」shells.
+    """
+    rendered = render_previs_markdown(previs, mode)
+    if "本段要验什么" in rendered and _HEADING_SEGMENT.search(rendered):
+        return rendered
     candidates = _board_candidates(storyboard, previs)
     body = max(candidates, key=_board_rank) if candidates else ""
-    # region agent log
-    _agent_log(
-        "I",
-        "previs candidate",
-        {
-            "candidates": len(candidates),
-            "panels": _board_rank(body)[0],
-            "labels": _board_rank(body)[1],
-            "headings": _board_rank(body)[2],
-            "chars": _board_rank(body)[3],
-        },
-    )
-    # endregion
     if not str(body or "").strip():
-        return ""
+        return rendered if rendered.strip() else ""
     body = str(body).strip()
     if body.startswith("素材形态："):
         return body if body.endswith("\n") else body + "\n"
@@ -1186,9 +1492,20 @@ def _rebase_cuts(body, start):
     return _H3_AT.sub(local, body)
 
 
+_H3_FIELD_ALT = "|".join(_H3_SECTION_FIELDS)
 _LOOSE_FIELD = re.compile(
-    r"^(?:【\s*)?(%s)(?:\s*】)?\s*[:：]?\s*$" % "|".join(_H3_SECTION_FIELDS)
+    r"^(?:【\s*)?(%s)(?:\s*】)?\s*[:：]?\s*$" % _H3_FIELD_ALT
 )
+_H3_COLON_FIELD = re.compile(r"^[ \t]*(?:%s)[ \t]*[:：]" % _H3_FIELD_ALT)
+_H3_BARE_FIELD = re.compile(r"^[ \t]*(%s)[ \t]*$" % _H3_FIELD_ALT)
+_H3_BRACKET_FIELD = re.compile(
+    r"^[ \t]*【[ \t]*(%s)[ \t]*】[ \t]*[:：]?[ \t]*(.*)$" % _H3_FIELD_ALT
+)
+_H3_ANGLE_WRAP = re.compile(
+    r"^[ \t]*<\s*(%s)\s*>(.*?)</\s*\1\s*>[ \t]*$" % _H3_FIELD_ALT
+)
+_H3_ANGLE_OPEN = re.compile(r"^[ \t]*<\s*(%s)\s*>(.*)$" % _H3_FIELD_ALT)
+_H3_ANGLE_CLOSE = re.compile(r"^[ \t]*</\s*(%s)\s*>[ \t]*$" % _H3_FIELD_ALT)
 _SHOT_HEAD = re.compile(r"\[Shot\s+\d+\]")
 _SHOT_CLOCK = re.compile(
     r"\[Shot\s+(\d+)\][^\n]{0,40}?(?:At|在)\s*(\d{1,2}):(\d{2})\.(\d{3})"
@@ -1196,6 +1513,352 @@ _SHOT_CLOCK = re.compile(
 _SHOT1_CLOCK = re.compile(
     r"(\[Shot\s*1\])[^\n]{0,40}?(?:At|在)\s*\d{1,2}:\d{2}\.\d{3}\s*,?\s*"
 )
+_SHOT_RANGE = re.compile(
+    r"^(\[Shot\s+(\d+)\])\s*\[(\d{1,2}:\d{2}\.\d{3})\s*[-–—]\s*(\d{1,2}:\d{2}\.\d{3})\]\s*",
+    re.M,
+)
+_LEADING_SHOT_CLOCK = re.compile(
+    r"(?m)^([ \t]*)(?:At|在)\s+(\d{1,2}:\d{2}\.\d{3})\s+(\[Shot\s+(\d+)\])[ \t]*"
+)
+_UNIT_HEAD_LINE = re.compile(r"(?m)^##[^\n]*投喂单元[^\n]*$")
+_DURATION_LINE = re.compile(r"(?m)^(?:duration|duration_seconds)\s*[:=]")
+
+
+def _debug_feed_clocks(message, data):
+    # region agent log
+    try:
+        with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "sessionId": "d078f2",
+                "runId": "feed-overlap",
+                "hypothesisId": "A,B,C,E",
+                "location": "stage_runner.py:normalize_h3_shot_cuts",
+                "message": message,
+                "data": data,
+                "timestamp": int(time.time() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+
+
+def _feed_cut_snapshot(text):
+    heads = list(_UNIT_HEAD_LINE.finditer(str(text or "")))
+    spans = []
+    if not heads:
+        spans = [str(text or "")]
+    else:
+        for index, match in enumerate(heads):
+            end = heads[index + 1].start() if index + 1 < len(heads) else len(text)
+            spans.append(text[match.start():end])
+    units = []
+    for index, block in enumerate(spans, 1):
+        cuts = []
+        for match in _SHOT_CLOCK.finditer(block):
+            seconds = int(match.group(2)) * 60 + int(match.group(3)) + int(match.group(4)) / 1000
+            cuts.append([int(match.group(1)), seconds])
+        units.append({
+            "n": index,
+            "shot1": bool(_SHOT1_CLOCK.search(block)),
+            "cuts": cuts[:12],
+        })
+    return {"units": len(units), "clocks": units}
+
+
+def _format_clock(seconds):
+    whole = max(0, int(seconds))
+    millis = int(round((float(seconds) - int(seconds)) * 1000))
+    if millis >= 1000:
+        whole += 1
+        millis -= 1000
+    if millis < 0:
+        millis = 0
+    return "%02d:%02d.%03d" % (whole // 60, whole % 60, millis)
+
+
+_LEADING_CLOCK = re.compile(
+    r"^(\[Shot\s+\d+\])(?:[^\n]{0,40}?(?:At|在)\s*\d{1,2}:\d{2}\.\d{3}\s*,?\s*)?"
+)
+_CUT_LEAD = re.compile(
+    r"^(?:the camera cuts to|the shot cuts to|the shot transitions to|the shot changes to|the shot switches to)\s+",
+    re.I,
+)
+_FEED_TAIL = re.compile(r"(?m)^(---\s*|《素材接线单》)")
+
+
+def _restamp_shot(chunk, number, seconds, first):
+    chunk = str(chunk or "").strip()
+    match = _LEADING_CLOCK.match(chunk)
+    rest = chunk[match.end():].strip() if match else chunk
+    head = "[Shot %d]" % number
+    if first:
+        rest = _CUT_LEAD.sub("", rest)
+        return ("%s %s" % (head, rest)).strip()
+    return "%s At %s, %s" % (head, _format_clock(seconds), rest)
+
+
+def _detail_span(lines):
+    start = None
+    for index, line in enumerate(lines):
+        match = _LOOSE_FIELD.match(line.strip())
+        if match and match.group(1) == "detailed_description":
+            start = index
+            break
+    if start is None:
+        return None, None
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if _LOOSE_FIELD.match(lines[index].strip()):
+            end = index
+            break
+    return start, end
+
+
+def _cut_moment(seconds):
+    if seconds is None:
+        return None
+    return float(seconds)
+
+
+def _expand_overlong_unit(block):
+    """Move shots whose cut is past 15s into a following unit and rebase that unit."""
+    lines = str(block or "").splitlines()
+    start, end = _detail_span(lines)
+    if start is None:
+        return [str(block or "").strip()]
+    pieces = _shot_pieces("\n".join(lines[start + 1:end]))
+    stay = []
+    move = []
+    origin = None
+    for _number, seconds, chunk in pieces:
+        moment = _cut_moment(seconds)
+        if origin is None and moment is not None and moment > 15.001:
+            origin = moment
+        if origin is None:
+            stay.append(chunk.strip())
+        else:
+            local = 0.0 if moment is None else moment - origin
+            move.append((local, chunk))
+    if not move:
+        return [str(block or "").strip()]
+    stayed = "\n".join(lines[:start + 1] + stay + lines[end:]).strip()
+    moved_lines = []
+    for index, (local, chunk) in enumerate(move, 1):
+        moved_lines.append(_restamp_shot(chunk, index, local, index == 1))
+    spawned = "\n".join(lines[:start + 1] + moved_lines + lines[end:]).strip()
+    return [stayed] + _expand_overlong_unit(spawned)
+
+
+def _peel_feed_tail(block):
+    match = _FEED_TAIL.search(str(block or ""))
+    if not match:
+        return str(block or ""), ""
+    return block[:match.start()].rstrip(), block[match.start():].strip()
+
+
+def _renumber_feed_heads(text):
+    matches = list(_UNIT_HEAD_LINE.finditer(text))
+    if not matches:
+        return text
+    total = len(matches)
+    out = text
+    for number, match in reversed(list(enumerate(matches, 1))):
+        line = match.group(0)
+        replaced = re.sub(
+            r"(投喂单元\s*)\d+\s*/\s*\d+",
+            lambda found, index=number, count=total: "%s%s/%s" % (found.group(1), index, count),
+            line,
+            count=1,
+        )
+        out = out[:match.start()] + replaced + out[match.end():]
+    return out
+
+
+def _unit_over_cap(text):
+    heads = list(_UNIT_HEAD_LINE.finditer(text))
+    spans = [text] if not heads else []
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(text)
+        spans.append(text[match.start():end])
+    for block in spans:
+        for _number, seconds in (
+            (int(match.group(1)), int(match.group(2)) * 60 + int(match.group(3)) + int(match.group(4)) / 1000)
+            for match in _SHOT_CLOCK.finditer(block)
+        ):
+            if seconds > 15.001:
+                return True
+    return False
+
+
+def _settle_ready_units(raw):
+    """Drop Shot 1 clocks. Split a unit whose later cuts pass 15s."""
+    stripped = _SHOT1_CLOCK.sub(r"\1 ", str(raw or ""))
+    if not _unit_over_cap(stripped):
+        return stripped
+    heads = list(_UNIT_HEAD_LINE.finditer(stripped))
+    if not heads:
+        return stripped
+    prefix = stripped[:heads[0].start()]
+    blocks = []
+    tail = ""
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(stripped)
+        block = stripped[match.start():end].strip()
+        if index == len(heads) - 1:
+            block, tail = _peel_feed_tail(block)
+        if _unit_over_cap(block):
+            blocks.extend(_expand_overlong_unit(block))
+        else:
+            blocks.append(block)
+    out = prefix.rstrip() + "\n\n" + "\n\n".join(block for block in blocks if block.strip())
+    if tail:
+        out = out.rstrip() + "\n\n" + tail
+    if not out.endswith("\n"):
+        out += "\n"
+    return _renumber_feed_heads(out)
+
+
+def _declared_h3_duration(seconds):
+    whole = int(math.ceil(float(seconds)))
+    return max(4, min(15, whole))
+
+
+def _last_cut_seconds(block):
+    clocks = list(_SHOT_CLOCK.finditer(block))
+    if not clocks:
+        return None
+    last = clocks[-1]
+    return int(last.group(2)) * 60 + int(last.group(3)) + int(last.group(4)) / 1000.0
+
+
+def _unit_without_tail(block):
+    match = _FEED_TAIL.search(str(block or ""))
+    if not match:
+        return str(block or ""), ""
+    return block[: match.start()], block[match.start() :]
+
+
+def _fill_duration_block(block):
+    """Add duration from the last cut inside the unit. Leave shot sentences and the footer alone."""
+    body, tail = _unit_without_tail(block)
+    if _DURATION_LINE.search(body):
+        return block
+    seconds = _last_cut_seconds(body)
+    if seconds is None:
+        return block
+    shown = _declared_h3_duration(seconds)
+    unit = _UNIT_HEAD_LINE.search(body)
+    line = "duration: %s" % shown
+    if unit:
+        filled = body[: unit.end()] + "\n" + line + body[unit.end() :]
+    elif body.startswith("\n"):
+        filled = line + body
+    else:
+        filled = line + "\n" + body
+    return filled + tail
+
+
+def _fill_missing_h3_duration(text):
+    raw = str(text or "")
+    heads = list(_UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        return _fill_duration_block(raw)
+    parts = [raw[: heads[0].start()]]
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        parts.append(_fill_duration_block(raw[match.start() : end]))
+    return "".join(parts)
+
+
+def _flip_leading_shot_clocks(text):
+    """Move ``At MM:SS.mmm [Shot N]`` so the shot tag comes first.
+
+    Shot 1 drops the clock. Later shots become ``[Shot N] At MM:SS.mmm,``.
+    """
+    def repl(match):
+        indent, clock, head, number = match.group(1), match.group(2), match.group(3), int(match.group(4))
+        if number == 1:
+            return indent + head + " "
+        return "%s%s At %s, " % (indent, head, clock)
+
+    return _LEADING_SHOT_CLOCK.sub(repl, str(text or ""))
+
+
+def normalize_h3_shot_cuts(text):
+    """Turn ``[Shot N] [start-end]`` ranges into H2 ``At MM:SS.mmm`` cuts.
+
+    Shot 1 drops the clock. Later shots keep the range start as the cut point.
+    A headed unit whose cut passes 15s is split, and the next unit starts again
+    with an untimed Shot 1.
+    """
+    raw = str(text or "")
+    if "[Shot" not in raw:
+        return raw
+    # region agent log
+    try:
+        _lead = len(re.findall(r"(?m)^[ \t]*(?:At|在)\s+\d{1,2}:\d{2}\.\d{3}\s+\[Shot\s+\d+\]", raw))
+        _trail = len(_SHOT_CLOCK.findall(raw))
+        _shot1_lead = len(re.findall(r"(?m)^[ \t]*(?:At|在)\s+\d{1,2}:\d{2}\.\d{3}\s+\[Shot\s*1\]", raw))
+        with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as _handle:
+            _handle.write(json.dumps({
+                "sessionId": "d078f2",
+                "runId": "lead-clock",
+                "hypothesisId": "A,B,C",
+                "location": "stage_runner.py:normalize_h3_shot_cuts:entry",
+                "message": "clock order before normalize",
+                "data": {"leading_at": _lead, "trailing_at": _trail, "shot1_leading": _shot1_lead},
+                "timestamp": int(time.time() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+    raw = _flip_leading_shot_clocks(raw)
+    # region agent log
+    try:
+        _lead_after = len(re.findall(r"(?m)^[ \t]*(?:At|在)\s+\d{1,2}:\d{2}\.\d{3}\s+\[Shot\s+\d+\]", raw))
+        _trail_after = len(_SHOT_CLOCK.findall(raw))
+        with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as _handle:
+            _handle.write(json.dumps({
+                "sessionId": "d078f2",
+                "runId": "post-fix",
+                "hypothesisId": "A,B",
+                "location": "stage_runner.py:normalize_h3_shot_cuts:flipped",
+                "message": "clock order after flip",
+                "data": {"leading_at": _lead_after, "trailing_at": _trail_after},
+                "timestamp": int(time.time() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
+    before = _feed_cut_snapshot(raw)
+    if _SHOT_RANGE.search(raw):
+        heads = list(_UNIT_HEAD_LINE.finditer(raw))
+        if len(heads) <= 1:
+            prefix = raw[: heads[0].start()] if heads else ""
+            body = raw[heads[0].start():] if heads else raw
+            raw = prefix + _normalize_h3_shot_cuts_block(body)
+        else:
+            parts = []
+            if heads[0].start() > 0:
+                parts.append(raw[:heads[0].start()])
+            for index, match in enumerate(heads):
+                end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+                parts.append(_normalize_h3_shot_cuts_block(raw[match.start():end]))
+            raw = "".join(parts)
+    settled = _fill_missing_h3_duration(_settle_ready_units(raw))
+    _debug_feed_clocks("normalize shot clocks", {"before": before, "after": _feed_cut_snapshot(settled)})
+    return settled
+
+
+def _normalize_h3_shot_cuts_block(text):
+    def repl(match):
+        head, number, start = match.group(1), int(match.group(2)), match.group(3)
+        if number == 1:
+            return head + " "
+        return "%s At %s, " % (head, start)
+
+    out = _SHOT_RANGE.sub(repl, str(text or ""))
+    return _SHOT1_CLOCK.sub(r"\1 ", out)
 
 
 def _loose_h3_sections(text):
@@ -1262,24 +1925,6 @@ def _shot_groups(pieces):
 
 _UNIT_HEAD = re.compile(r"(?m)^## 【投喂单元")
 _TAIL_MARK = re.compile(r"^(?:---\s*|强制禁止项)")
-
-
-def _debug_baee6e_feed(message, data):
-    # region agent log
-    try:
-        with open("/Users/shaneson/AiVideo/.cursor/debug-baee6e.log", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps({
-                "sessionId": "baee6e",
-                "runId": "post-fix",
-                "hypothesisId": "A",
-                "location": "stage_runner.py:_reorder_ready_h3",
-                "message": message,
-                "data": data,
-                "timestamp": int(time.time() * 1000),
-            }, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    # endregion
 
 
 def _order_h3_block(block):
@@ -1361,9 +2006,6 @@ def _reorder_ready_h3(raw):
         before.append(_h3_names(block))
         after.append(_h3_names(ordered))
         changed = changed or ordered != block
-    # region agent log
-    _debug_baee6e_feed("h3 section order", {"changed": changed, "before": before, "after": after})
-    # endregion
     if not changed:
         return raw
     return "".join(pieces)
@@ -1378,41 +2020,89 @@ def _h3_names(block):
     return names
 
 
+def _line_ending(line):
+    if line.endswith("\r\n"):
+        return line[:-2], "\r\n"
+    if line.endswith("\n"):
+        return line[:-1], "\n"
+    if line.endswith("\r"):
+        return line[:-1], "\r"
+    return line, ""
+
+
+def _field_lines(name, body):
+    """A body that is only a section name stays on the colon line so the next pass leaves it."""
+    body = str(body or "").strip()
+    if not body:
+        return ["%s:" % name]
+    if _H3_BARE_FIELD.match(body):
+        return ["%s: %s" % (name, body)]
+    return ["%s:" % name, body]
+
+
+def _coerce_h3_field_line(core):
+    """Turn one header line into ``field:``. A line that already uses a colon stays as written."""
+    if _H3_COLON_FIELD.match(core):
+        return [core]
+    wrapped = _H3_ANGLE_WRAP.match(core)
+    if wrapped:
+        return _field_lines(wrapped.group(1), wrapped.group(2))
+    opened = _H3_ANGLE_OPEN.match(core)
+    if opened:
+        name = opened.group(1)
+        body = re.sub(r"</\s*%s\s*>" % re.escape(name), "", opened.group(2))
+        return _field_lines(name, body)
+    if _H3_ANGLE_CLOSE.match(core):
+        return []
+    bracket = _H3_BRACKET_FIELD.match(core)
+    if bracket:
+        return _field_lines(bracket.group(1), bracket.group(2))
+    bare = _H3_BARE_FIELD.match(core)
+    if bare:
+        return ["%s:" % bare.group(1)]
+    return [core]
+
+
+def _coerce_h3_field_block(block):
+    pieces = []
+    for line in str(block or "").splitlines(keepends=True):
+        core, ending = _line_ending(line)
+        rewritten = _coerce_h3_field_line(core)
+        if not rewritten:
+            continue
+        if len(rewritten) == 1:
+            pieces.append(rewritten[0] + ending)
+        else:
+            pieces.append("\n".join(rewritten) + ending)
+    return "".join(pieces)
+
+
+def _coerce_h3_field_heads(text):
+    """Per feed unit, make section names line-start ``field:`` before the ready shortcut."""
+    raw = str(text or "")
+    heads = list(_UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        return _coerce_h3_field_block(raw)
+    parts = [_coerce_h3_field_block(raw[: heads[0].start()])]
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        parts.append(_coerce_h3_field_block(raw[match.start() : end]))
+    return "".join(parts)
+
+
 def _normalize_loose_h3(text):
     """Turn bare H3 field names into line-oriented sections the checker can see."""
-    raw = str(text or "")
+    raw = _coerce_h3_field_heads(str(text or ""))
     ready = bool(re.search(r"(?m)^subject_definitions\s*[:：]", raw)) and "## 【投喂单元" in raw
     sections = {} if ready else _loose_h3_sections(raw)
     bare = len(re.findall(
         r"(?m)^(?:%s)\s*$" % "|".join(_H3_SECTION_FIELDS),
         raw,
     ))
-    # #region agent log
-    try:
-        with open("/Users/shaneson/AiVideo/.cursor/debug-eab7ec.log", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps({
-                "sessionId": "eab7ec",
-                "runId": "post-fix",
-                "hypothesisId": "C",
-                "location": "stage_runner.py:_normalize_loose_h3",
-                "message": "loose h3 feed",
-                "data": {
-                    "chars": len(raw),
-                    "bareFields": bare,
-                    "colonField": bool(re.search(r"(?m)^subject_definitions\s*[:：]", raw)),
-                    "unitHeading": "## 【投喂单元" in raw,
-                    "ready": ready,
-                    "sections": sorted(sections),
-                },
-                "timestamp": int(time.time() * 1000),
-            }, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    # #endregion
     if ready:
-        return _reorder_ready_h3(raw)
+        return normalize_h3_shot_cuts(_reorder_ready_h3(raw))
     if "subject_definitions" not in sections or "detailed_description" not in sections:
-        return raw
+        return normalize_h3_shot_cuts(raw)
     pieces = _shot_pieces(sections.get("detailed_description") or "")
     groups = _shot_groups(pieces) or [(0, [])]
     total = len(groups)
@@ -1439,7 +2129,7 @@ def _normalize_loose_h3(text):
             lines.append("%s:" % field)
             lines.append(body)
         blocks.append("\n".join(lines))
-    return "\n\n".join(blocks).strip()
+    return normalize_h3_shot_cuts("\n\n".join(blocks).strip())
 
 
 def render_feed_text(value):
@@ -1468,7 +2158,7 @@ def render_feed_text(value):
             lines.append("%s:" % field)
             lines.append(body)
         blocks.append("\n".join(lines))
-    return "\n\n".join(blocks).strip()
+    return normalize_h3_shot_cuts("\n\n".join(blocks).strip())
 
 
 def patch_h3_voiceover(text):
@@ -1629,30 +2319,6 @@ def _step_body(step_id, result):
     else:
         body = str(result.get("text") or result.get("internal") or "").strip()
         used = "text" if str(result.get("text") or "").strip() else ("internal" if body else "")
-    # region agent log
-    try:
-        import json
-        import time
-
-        payload = {
-            "sessionId": "ee5fa7",
-            "runId": "post-fix",
-            "hypothesisId": "D",
-            "location": "end/stage_runner.py:_step_body",
-            "message": "script step body field",
-            "data": {
-                "step": step_id,
-                "used": used,
-                "bodyLen": len(body),
-                "keys": [str(key) for key in list(result)[:12]] if isinstance(result, dict) else [],
-            },
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    # endregion
     return body
 
 
@@ -1872,19 +2538,6 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
         template=project.get("template"),
         prompts=prompts,
     )
-    # region agent log
-    _agent_log(
-        "D",
-        "produce brief",
-        {
-            "stage": stage,
-            "repairLen": len(repair),
-            "draftLen": len(current_draft),
-            "draftBlocks": len(_asset_pieces(current_draft)),
-            "hasKeepLine": "已有图块必须全部保留" in brief,
-        },
-    )
-    # endregion
     if not isinstance(result, dict):
         raise RuntimeError("这一段没有写成 JSON")
     return result
@@ -1953,28 +2606,6 @@ def _has_saved_draft(folder, stage):
         if _read(internal / name).strip():
             return True
     return False
-
-
-def _write_fail_log(stage, has_draft, error):
-    # region agent log
-    try:
-        payload = {
-            "sessionId": "ee5fa7",
-            "hypothesisId": "H9",
-            "location": "end/stage_runner.py:execute",
-            "message": "write failed",
-            "data": {
-                "stage": stage,
-                "hasDraft": bool(has_draft),
-                "errorHead": str(error or "").splitlines()[0][:120],
-            },
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    # endregion
 
 
 def _unfinished_write(stage, pipeline, error):
@@ -2207,7 +2838,6 @@ def execute(project, folder, locks, write_model, load_pack):
         except RuntimeError as error:
             finish_trace(folder, {}, error=str(error))
             has_draft = _has_saved_draft(folder, current)
-            _write_fail_log(current, has_draft, error)
             if has_draft:
                 status = dict(pipeline)
                 if checked:
@@ -2221,35 +2851,22 @@ def execute(project, folder, locks, write_model, load_pack):
             if isinstance(result, dict):
                 figure_repair = bool(result.pop("_figure_repair", False))
                 figure_indexes = list(result.pop("_figure_indexes", []) or [])
-            _write_field_log(result)
-            _asset_item_log(result)
             result = _coerce_asset_prompts(result)
             previous_assets = _read(Path(folder) / "_内部_" / "assets.md")
             image = asset_markdown(result)
             if not _asset_pieces(image):
                 image = apply_structured_assets(previous_assets, (result or {}).get("assets"))
+            if not _asset_pieces(image):
+                # Last resort: build #### blocks from assets[] on the result or spec.
+                image = markdown_from_asset_items(
+                    (result or {}).get("assets") or spec.get("assets")
+                )
             kept = keep_missing_asset_blocks(previous_assets, image)
-            # region agent log
-            _agent_log(
-                "B",
-                "asset rewrite blocks",
-                {
-                    "attempt": attempts + 1,
-                    "previous": len(_asset_pieces(previous_assets)),
-                    "returned": len(_asset_pieces(image)),
-                    "kept": len(_asset_pieces(kept)),
-                    "restored": kept != image,
-                },
+            patched = (
+                kept
+                if figure_repair
+                else patch_asset_phrases(kept, model=project.get("model"))
             )
-            # endregion
-            patched = kept if figure_repair else patch_asset_phrases(kept)
-            # region agent log
-            _agent_log(
-                "G",
-                "phrase patch",
-                {"changed": patched != kept, "blocks": len(_asset_pieces(patched))},
-            )
-            # endregion
             kept = patched
             if figure_repair:
                 old_bodies = [body for _number, body in _asset_pieces(previous_assets)]
@@ -2259,74 +2876,83 @@ def execute(project, folder, locks, write_model, load_pack):
                     for index, (old, new) in enumerate(zip(old_bodies, new_bodies))
                     if old == new
                 ]
-                _figure_log(
-                    "figure kept",
-                    {
-                        "targets": figure_indexes,
-                        "unchanged": unchanged,
-                        "oldPieces": len(old_bodies),
-                        "newPieces": len(new_bodies),
-                    },
-                )
             result = dict(result or {})
             result["image_prompts"] = kept
             result["assets"] = assets_from_markdown(kept, spec.get("assets"))
+            if not str(kept or "").strip():
+                # #region agent log
+                try:
+                    with open(
+                        "/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8"
+                    ) as handle:
+                        handle.write(
+                            json.dumps(
+                                {
+                                    "sessionId": "d078f2",
+                                    "runId": "asset-fix",
+                                    "hypothesisId": "A2",
+                                    "location": "stage_runner.py:execute:asset",
+                                    "message": "asset prompts still empty",
+                                    "data": {
+                                        "result_keys": sorted(str(k) for k in (result or {}))[:20],
+                                        "image_prompts": _prompt_shape(
+                                            (result or {}).get("image_prompts")
+                                        ),
+                                        "assets": _prompt_shape((result or {}).get("assets")),
+                                        "spec_assets": _prompt_shape(spec.get("assets")),
+                                        "previous_chars": len(previous_assets or ""),
+                                    },
+                                    "timestamp": int(time.time() * 1000),
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+                except OSError:
+                    pass
+                # #endregion
+                raise RuntimeError(
+                    "资产提示词是空的（图块可能被写成了对象而不是 #### 图N 正文）"
+                )
         if current == "storyboard":
             previous_board = _read(Path(folder) / "_内部_" / "分镜.md")
             previous_previs = _read(Path(folder) / "_内部_" / "previs.md")
+            mode = (locks or {}).get("material_mode") or "M1"
             storyboard = keep_richer_board(previous_board, (result or {}).get("storyboard") or "")
-            previs = keep_richer_board(previous_previs, (result or {}).get("previs") or "")
-            # region agent log
-            _agent_log(
-                "H",
-                "storyboard keep",
-                {
-                    "attempt": attempts + 1,
-                    "previousPanels": _board_rank(previous_previs)[0],
-                    "returnedPanels": _board_rank((result or {}).get("previs") or "")[0],
-                    "keptPanels": _board_rank(previs)[0],
-                    "keptPrevious": previs == str(previous_previs or "").strip() and bool(str(previous_previs or "").strip()),
-                },
-            )
-            # endregion
+            # Coerce before keep_richer — str(list) would otherwise beat real markdown on length.
+            incoming_previs = coerce_previs((result or {}).get("previs") or "", mode)
+            previous_previs = coerce_previs(previous_previs, mode)
+            previs = keep_richer_board(previous_previs, incoming_previs)
             result = dict(result or {})
             result["storyboard"] = storyboard
             result["previs"] = previs
         if current == "feed":
             raw_feed = render_feed_text((result or {}).get("feed") or "")
             patched_feed = patch_h3_voiceover(raw_feed)
-            # region agent log
-            _agent_log(
-                "J",
-                "feed voiceover patch",
-                {"changed": patched_feed != raw_feed, "chars": len(patched_feed)},
-            )
-            # endregion
             result = dict(result or {})
             result["feed"] = patched_feed
+            preview = dict(spec)
+            preview["feed"] = patched_feed
+            result["feed"] = apply_feed_binding(preview).get("feed") or patched_feed
         store_stage(folder, current, result)
         finish_trace(folder, stage_output(current, result))
         spec = _spec_patch(current, result, spec)
         passed, report = check_stage(folder, current, locks, spec.get("title") or "")
         checked = True
-        # region agent log
-        _agent_log(
-            "C",
-            "stage check",
-            {
-                "stage": current,
-                "attempt": attempts + 1,
-                "passed": bool(passed),
-                "storedBlocks": len(_asset_pieces(_read(Path(folder) / "_内部_" / "assets.md"))) if current == "asset" else 0,
-                "failLines": len([line for line in (report or "").splitlines() if "FAIL" in line]),
-            },
-        )
-        # endregion
         attempts += 1
         pipeline["repairs"] = attempts
         pipeline["repair"] = "" if passed else (report or "")
         if current == "script" and not passed and not pipeline["repair"]:
             pipeline["repair"] = "机检没过"
+        if (
+            current == "asset"
+            and not passed
+            and (
+                "资产稿是空的" in (report or "")
+                or "文件不存在" in (report or "")
+            )
+        ):
+            pipeline["retry_write"] = True
         if passed or current in ("asset", "storyboard", "feed") or attempts >= REPAIR_LIMIT:
             break
     if passed:

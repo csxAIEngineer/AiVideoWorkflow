@@ -17,6 +17,7 @@ BOARD = SUITE / "short-drama-director" / "scripts" / "build_board_lite.py"
 
 
 _UNIT_HEAD = re.compile(r"(?m)^#{1,6}[^\n]*投喂单元[^\n]*$")
+_UNIT_CLAIM = re.compile(r"(?m)^(#{1,6}[^\n]*投喂单元\s*)(\d+)\s*/\s*(\d+)([^\n]*)$")
 _SUBJECT = re.compile(r"(?m)^subject_definitions\s*[:：]")
 
 
@@ -47,6 +48,53 @@ def delivery_units(feed):
     if subjects or "【画幅风格】" in raw or "【时间轴分镜】" in raw:
         return [raw]
     return []
+
+
+def feed_unit_claim(feed):
+    """``(actual_units, max_claimed_total)`` from ``## 投喂单元 N/M`` heads."""
+    units = delivery_units(feed)
+    claimed = 0
+    for match in _UNIT_CLAIM.finditer(str(feed or "")):
+        claimed = max(claimed, int(match.group(3)))
+    return len(units), claimed
+
+
+def feed_unit_mismatch(feed):
+    """Fail text when the heading promises more units than the body has."""
+    actual, claimed = feed_unit_claim(feed)
+    if claimed > actual >= 1:
+        return (
+            "[-] FAIL: 投喂单元标题写成 */%s，但正文只有 %s 个单元——"
+            "缺的段不要用分镜短句顶替；请补全六个字段的 H3 单元，"
+            "或把标题改成 %s/%s 后再出片"
+            % (claimed, actual, actual, actual)
+        )
+    return ""
+
+
+def align_feed_unit_headers(feed):
+    """Rewrite each unit head so N/M matches the blocks that are actually present."""
+    raw = str(feed or "")
+    units = delivery_units(raw)
+    if not units:
+        return raw
+    total = len(units)
+    blocks = []
+    for index, unit in enumerate(units, 1):
+        lines = unit.splitlines() or [""]
+        if _UNIT_HEAD.match(lines[0]):
+            match = _UNIT_CLAIM.match(lines[0])
+            if match:
+                lines[0] = "%s%s/%s%s" % (match.group(1), index, total, match.group(4))
+            else:
+                lines[0] = "## 【投喂单元 %s/%s】" % (index, total)
+        else:
+            lines.insert(0, "## 【投喂单元 %s/%s】" % (index, total))
+        blocks.append("\n".join(lines).strip())
+    out = "\n\n".join(blocks)
+    if raw.endswith("\n"):
+        out += "\n"
+    return out
 
 
 def is_full_delivery(text):
@@ -142,7 +190,6 @@ def validate_feed(path, aspect=""):
     segments = _feed_segments(text)
     if len(segments) <= 1:
         code, report = _run_validator(path, aspect)
-        _log_feed_check(path, 1 if segments else 0, [code])
         return code, report
     folder = Path(tempfile.mkdtemp(prefix="h3-feed-"))
     codes = []
@@ -159,40 +206,11 @@ def validate_feed(path, aspect=""):
         for target in folder.glob("*.md"):
             target.unlink()
         folder.rmdir()
-    _log_feed_check(path, len(segments), codes)
     if failures:
         return 1, "\n".join(failures)
     return 0, ""
 
 
-def _log_feed_check(path, segments, codes):
-    # #region agent log
-    try:
-        line = json.dumps(
-            {
-                "sessionId": "77976e",
-                "runId": "post-fix",
-                "hypothesisId": "F",
-                "location": "end/prompt_gate.py:validate_feed",
-                "message": "feed segments checked",
-                "data": {
-                    "file": Path(path).name,
-                    "segments": segments,
-                    "codes": codes,
-                },
-                "timestamp": int(time.time() * 1000),
-            },
-            ensure_ascii=False,
-        )
-        with open(
-            "/Users/shaneson/AiVideo/.cursor/debug-77976e.log",
-            "a",
-            encoding="utf-8",
-        ) as handle:
-            handle.write(line + "\n")
-    except Exception:
-        pass
-    # #endregion
 
 
 def build_board(markdown_path, html_path):

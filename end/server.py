@@ -296,7 +296,7 @@ def remember(project, status, stage, progress=None):
 def load_tasks(project):
     """Fill the task list from the saved spec when older rows have none."""
     if project.get("status") == "done" and project.get("stage") == "工作流已生成，可以下载":
-        project["stage"] = "提示词已写好。出片改为千问生图 / 万相出镜 / 本机拼接 / ffmpeg 烧字幕"
+        project["stage"] = "提示词已写好。出片改为千问生图 / MiniMax H3 出镜 / 本机拼接 / ffmpeg 烧字幕"
         write_project(project)
     if project.get("tasks"):
         return
@@ -758,6 +758,14 @@ def answer_gate(project, text):
             project["messages"] = messages
             write_project(project)
         return public_view(read_project(project["id"]) or project)
+    report_text = str(pipeline.get("report") or pipeline.get("repair") or "")
+    if not passed and (
+        "文件不存在" in report_text
+        or "资产稿是空的" in report_text
+        or "资产提示词是空的" in report_text
+    ):
+        # Missing assets.md cannot be figure-repaired; rewrite the whole stage.
+        pipeline["retry_write"] = True
     if not passed and pipeline.get("retry_write"):
         pipeline["action"] = "write"
         pipeline["retry_write"] = False

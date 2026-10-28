@@ -100,16 +100,19 @@ def classify(title, body):
 
     判定顺序有讲究：**道具必须先判**——道具也是四格版式，正文里同样写「全图共 4 格」，
     若先判角色会把全部道具块误当角色，报出一串「缺五官/缺声纹」的假 FAIL。
+    亦勿仅凭「全图共 4 格」判角色（胶囊/产品静物同样四格）。
     """
     if "道具设定图" in body or "道具设定" in body or "道具" in title:
         return "道具"
     if "九宫格" in title or re.search(r"全图共\s*9\s*格", body):
         return "九宫格"
-    if (re.search(r"全图共\s*4\s*格", body) or "立绘" in body
-            or "五官" in body or "声纹" in body
-            or re.search(r"[SABC]\s*级|男主|女主|主角|反派", title)):
+    # 角色：女主/男主等标题，或五官/声纹/立绘；勿仅凭四格声明
+    if ("立绘" in body or "五官" in body or "声纹" in body
+            or re.search(r"[SABC]\s*级|男主|女主|主角|反派|角色", title)):
         return "角色"
-    if re.search(r"四格|4\s*格", body) and re.search(r"视图|材质|尺寸参照|设定", body):
+    if re.search(r"四格|4\s*格", body) and re.search(
+        r"视图|材质|尺寸参照|设定|胶囊|包装|静物", body + title
+    ):
         return "道具"
     if "母版" in title or "无人空镜" in body:
         return "场景母版"
@@ -213,6 +216,7 @@ def main():
 
     errors, warns, stats = [], [], {}
     print(f"[i] 识别到 {len(blocks)} 个资产块（{os.path.basename(path)}）")
+    kind_rows = []
     for number, title, body in blocks:
         kind = classify(title, body)
         stats[kind] = stats.get(kind, 0) + 1
@@ -220,6 +224,9 @@ def main():
         errors.extend(block_errors)
         warns.extend(block_warns)
         state = "FAIL" if block_errors else "PASS"
+        kind_rows.append(
+            {"n": number, "kind": kind, "title": title[:40], "fifth_fail": any("fifth panel" in e for e in block_errors)}
+        )
         print(f"[{'x' if block_errors else '+'}] 图{number:<3} {kind:<5} {state}  {title[:40]}")
 
     if len(blocks) < min_blocks:

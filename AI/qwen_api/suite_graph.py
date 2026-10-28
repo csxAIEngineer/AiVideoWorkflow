@@ -509,7 +509,21 @@ def _flatten_prompt_text(value):
                 found = _flatten_prompt_text(value[key])
                 if found:
                     return found
-        return ""
+        # Title→body maps from merge must become #### 图N blocks, not "".
+        parts = []
+        for key, body in value.items():
+            title = str(key or "").strip()
+            if not title.startswith("####") and "图" not in title:
+                continue
+            text = body.strip() if isinstance(body, str) else _flatten_prompt_text(body)
+            if not text:
+                continue
+            if text.lstrip().startswith("####"):
+                parts.append(text)
+                continue
+            head = title if title.startswith("####") else "#### %s" % title
+            parts.append("%s\n%s" % (head, text))
+        return "\n\n".join(parts)
     return ""
 
 

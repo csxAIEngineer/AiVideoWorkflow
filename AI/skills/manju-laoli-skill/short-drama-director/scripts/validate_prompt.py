@@ -724,6 +724,29 @@ def validate_h3(text, mode="new"):
     if cuts and max(t for _, t in cuts) > H3_MAX_DUR + 0.001:
         issues.append(f"H3 最后切点 {max(t for _, t in cuts)}s > {H3_MAX_DUR}s（H3 单段硬上限 15s；"
                       "Seedance 2.5 的 15~30s 段必须再拆一刀）")
+    # region agent log
+    try:
+        import json as _json
+        import time as _time
+        with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as handle:
+            handle.write(_json.dumps({
+                "sessionId": "d078f2",
+                "runId": "feed-overlap",
+                "hypothesisId": "A,B,E",
+                "location": "validate_prompt.py:validate_h3",
+                "message": "h3 cuts in this body",
+                "data": {
+                    "cuts": [[number, stamp] for number, stamp in cuts[:16]],
+                    "clock_fails": [
+                        item for item in issues
+                        if "不得带时间戳" in item or "未严格递增" in item or "最后切点" in item
+                    ],
+                },
+                "timestamp": int(_time.time() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
 
     # H3 时长声明
     decl = None
@@ -748,6 +771,7 @@ def validate_h3(text, mode="new"):
                       "正文语言见下，2026-10-02 起一律英文）")
     _no_d = re.sub(r"<d>.*?</d>", "", text, flags=re.S)          # 台词/歌词保原语言，先摘除
     _no_d = re.sub(r"[\"“][^\"”\n]{0,60}[\"”]", "", _no_d)       # 双引号内画内文字保原语言，摘除
+    _no_d = re.sub(r"(?m)^[ \t]{0,3}#{1,6}(?:[ \t][^\n]*)?$", "", _no_d)  # ATX 标题（## 【投喂单元】）不算正文
     if is_ref and order:                                          # 仅审 H3 原生格式稿（七段式旧稿不套用）
         if H3_CJK.search(_no_d):
             warns.append("H4 正文出现中文——官方 base-en/ref-en 明文「Write all six rewrite sections in English」，"
@@ -4403,6 +4427,25 @@ def _self_test():
     _, warns, _ = validate_h3(h3_ok)
     if not any("H4" in w and "中文" in w for w in warns):
         print("FAIL self-test: H3 中文正文应报 H4 WARN（官方要求六段正文英文）", warns); ok = 0
+    # H4 标题中文不算正文；<d> 与引号画内文字仍不算。正文里的中文照报。
+    _h4_title = (
+        "## 【投喂单元 1/1】\n"
+        "subject_definitions:\n<Subject 1> is a woman.\n\n"
+        "summary:\nShe waits.\n\n"
+        "retention_analysis:\n<Subject 1>: fully_preserved - stays.\n\n"
+        "detailed_description:\n"
+        "[Shot 1] <Subject 1> stands. A sign reads \"告别\". "
+        "She says: <d>[Chinese] 留下。</d>\n"
+        "[Shot 2] At 00:04.000, the camera cuts to her face.\n\n"
+        "overall_soundscape:\nRoom tone.\n\n"
+        "non_diegetic_music:\nnone.\n"
+    )
+    _, warns, _ = validate_h3(_h4_title)
+    if any("H4" in w and "中文" in w for w in warns):
+        print("FAIL self-test: Markdown 标题、<d> 与引号画内文字不应报 H4", warns); ok = 0
+    _, warns, _ = validate_h3(_h4_title.replace("She waits.", "她在等。"))
+    if not any("H4" in w and "中文" in w for w in warns):
+        print("FAIL self-test: 去掉标题后正文中文仍应报 H4", warns); ok = 0
     # H2 中文「镜头切至」→ 切镜动词告警
     _, warns, _ = validate_h3(h3_ok)
     if not any("H2" in w and "切镜动词" in w for w in warns):
@@ -5453,27 +5496,46 @@ def _segment_is_feed(body):
     return sum(1 for column in FEED_COLUMNS_7 if column in body) >= 4
 
 
-SEG_HEAD_RE = re.compile(r"^#{1,6}[^\n]{0,60}?段\s*([0-9]+)\s*(?:[/／]\s*([0-9]+))?[^\n]*$", re.M)
+SEG_HEAD_RE = re.compile(
+    r"^#{1,6}[^\n]{0,80}?(?:投喂单元|段)\s*([0-9]+)\s*(?:[/／]\s*([0-9]+))?[^\n]*$",
+    re.M,
+)
 SEG_BRACKET_RE = re.compile(r"^[ \t]*【?[ \t]*段[ \t]*([0-9]+)[ \t]*(?:[/／][ \t]*([0-9]+))?[ \t]*】?[ \t]*$", re.M)
 
 
 def _split_feed_segments(text):
     """按「段」标题切分多段投喂稿。返回 [(标签, 正文), ...]；不足 2 段返回 []。
 
-    只认「段 + 数字」的标题形态（`### 段1/3`、`## 段2`、`【段3】`）或
-    `### 2.1 段1/3` 这类带序号的标题；不认正文里出现的「段」字。
+    只认「段 + 数字」或「投喂单元 N/M」标题（`### 段1/3`、`## 【投喂单元 1/4】`）。
+    不认正文里出现的「段」字。H3 每一段是一次独立生成，不能把各段切点收成一条轴。
     """
     marks = [(m.start(), m.group(1)) for m in SEG_HEAD_RE.finditer(text)]
     if len(marks) < 2:
         marks = [(m.start(), m.group(1)) for m in SEG_BRACKET_RE.finditer(text)]
-    if len(marks) < 2:
-        return []
     segs = []
-    for index, (pos, number) in enumerate(marks):
-        end = marks[index + 1][0] if index + 1 < len(marks) else len(text)
-        body = text[pos:end].strip()
-        if body:
-            segs.append((f"段{number}", body))
+    if len(marks) >= 2:
+        for index, (pos, number) in enumerate(marks):
+            end = marks[index + 1][0] if index + 1 < len(marks) else len(text)
+            body = text[pos:end].strip()
+            if body:
+                segs.append((f"段{number}", body))
+    # region agent log
+    try:
+        import json as _json
+        import time as _time
+        with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as handle:
+            handle.write(_json.dumps({
+                "sessionId": "d078f2",
+                "runId": "feed-overlap",
+                "hypothesisId": "D",
+                "location": "validate_prompt.py:_split_feed_segments",
+                "message": "feed segment split",
+                "data": {"segments": len(segs), "labels": [item[0] for item in segs[:8]]},
+                "timestamp": int(_time.time() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
     return segs
 
 
@@ -5485,9 +5547,11 @@ def finalize_checks(text, issues, warns, *, delivery=None, contract=False,
     #   投喂单元只该核 CT5-P4F（七段式）与 CT6-WIR（接线单），不该要求情绪锚点表/人物锚卡/故事板。
     _stage_markers = re.search(r"情绪锚点表|世界锚卡|人物锚卡|角色四格|九宫格|场面调度|连续性台账|故事板",
                                text)
+    _asset_pack = re.search(r"资产提示词|角色四格板|场景母版|九宫格提示词", text)
     _feed_units = text.count("【画幅风格】")
-    _is_feed_unit = (_feed_units >= 2
-                     and not re.search(r"资产提示词|角色四格板|场景母版|九宫格提示词", text))
+    # H3 六段式没有【画幅风格】。带 ## 且超过 1500 字时仍是投喂单元，不是整包项目。
+    _h3_feed = "subject_definitions" in text and "投喂单元" in text
+    _is_feed_unit = (not _asset_pack) and (_feed_units >= 2 or _h3_feed)
     project_doc = (bool(re.search(r"^#{1,3}\s+", text, re.M)) and len(text) > 1500
                    and not _is_feed_unit)
     # ★审计补丁P1：投喂单元按 feed-only 核销（只核 CT5-/CT6-WIR），

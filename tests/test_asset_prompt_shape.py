@@ -5,7 +5,13 @@ import unittest
 from pathlib import Path
 
 from end.repair_units import direction_labels, fill_block_gaps, units_for
-from end.stage_runner import _asset_pieces, _coerce_asset_prompts, _produce
+from end.stage_runner import (
+    _asset_pieces,
+    _coerce_asset_prompts,
+    _produce,
+    _rule_asset_kind,
+    patch_asset_phrases,
+)
 
 
 def _pass_role(number, title, marker):
@@ -46,6 +52,87 @@ class AssetPromptShapeTest(unittest.TestCase):
         )
         self.assertIn("图1", result["image_prompts"])
         self.assertEqual(len(_asset_pieces(result["image_prompts"])), 1)
+
+    def test_title_to_body_dict_becomes_markdown_blocks(self):
+        result = _coerce_asset_prompts(
+            {
+                "image_prompts": {
+                    "图5 · 现代公寓客厅（场景母版）": "16:9\n全图共 1 格\n客厅全景",
+                    "图6 · 现代公寓客厅（九宫格）": "16:9\n全图共 9 格\n九宫格",
+                },
+                "partials": [],
+            }
+        )
+        self.assertEqual(len(_asset_pieces(result["image_prompts"])), 2)
+        self.assertIn("#### 图5 · 现代公寓客厅（场景母版）", result["image_prompts"])
+
+    def test_list_of_title_prompt_cards_keeps_figure_headers(self):
+        result = _coerce_asset_prompts(
+            {
+                "image_prompts": [
+                    {"title": "女主_虚弱", "prompt": "全图共 4 格\n16:9\n声纹"},
+                    {"id": "A2", "title": "胶囊", "prompt": "道具设定图\n全图共 4 格"},
+                ],
+                "partials": [],
+            }
+        )
+        pieces = _asset_pieces(result["image_prompts"])
+        self.assertEqual(len(pieces), 2)
+        self.assertIn("#### 图1 · 女主_虚弱", result["image_prompts"])
+        self.assertIn("#### 图2 · 胶囊", result["image_prompts"])
+
+    def test_assets_array_fills_when_image_prompts_empty(self):
+        result = _coerce_asset_prompts(
+            {
+                "image_prompts": "",
+                "assets": [
+                    {"id": "A1", "title": "痛经胶囊", "prompt": "用户上传的素材，保持这张图。"},
+                ],
+                "partials": [],
+            }
+        )
+        self.assertEqual(len(_asset_pieces(result["image_prompts"])), 1)
+        self.assertIn("#### 图1 · 痛经胶囊", result["image_prompts"])
+
+    def test_rule_fallback_treats_nvzhu_as_role_and_hardcodes_negatives(self):
+        self.assertEqual(_rule_asset_kind("#### 图1 · 女主_战前虚弱态", "全图共 4 格\n"), "角色")
+        self.assertEqual(_rule_asset_kind("#### 图5 · 胶囊盒", "全图共 4 格\n"), "道具")
+        self.assertEqual(
+            _rule_asset_kind("#### 图7 · 铁棍", "道具设定图\n全图共 4 格\n"),
+            "道具",
+        )
+        patched = patch_asset_phrases(
+            "#### 图1 · 女主_战前虚弱态\n全图共 4 格\n声纹\n",
+            classify=lambda pieces: ["未知"] * len(pieces),
+        )
+        self.assertIn("fifth panel", patched.lower())
+        self.assertIn("different face", patched.lower())
+        self.assertIn("五官 10 项锁定", patched)
+
+    def test_llm_kinds_win_when_provided(self):
+        patched = patch_asset_phrases(
+            "#### 图5 · 奇怪标题\n全图共 4 格\n",
+            classify=lambda pieces: ["角色"],
+        )
+        self.assertIn("fifth panel", patched.lower())
+
+    def test_grid_hardcodes_lock_mode_and_strips_tongtu(self):
+        raw = "\n".join(
+            (
+                "#### 图4 · 客厅九宫格",
+                "16:9",
+                "【场景定位】客厅（同图3资产）。空间类型：室内。",
+                "【九宫格内容分配】模式B多子区域分配。",
+                "全图共 9 格",
+                "格内编号 1~9，图外对照表",
+            )
+        )
+        patched = patch_asset_phrases(raw, classify=lambda pieces: ["九宫格"])
+        self.assertNotIn("同图3", patched)
+        self.assertIn("【参考场景锁定模式", patched)
+        self.assertIn("允许按子区域切换机位", patched)
+        self.assertNotIn("仅允许摄影机移动", patched)
+
 
     def test_repair_rewrites_only_the_failed_figure(self):
         report = "\n".join(
@@ -156,13 +243,28 @@ class AssetPromptShapeTest(unittest.TestCase):
         self.assertNotIn("同上", units[1]["suggestion"])
         self.assertNotIn("甲块正文", units[1]["suggestion"])
 
-    def test_mode_sentences_are_not_chosen_for_the_user(self):
+    def test_mode_sentences_infer_from_mode_b_already_written(self):
+        body = "\n".join((
+            "#### 图5 · 客厅九宫格机位调度图",
+            "16:9",
+            "【场景定位】客厅",
+            "【九宫格内容分配】模式B 多子区域",
+            "【参考场景锁定模式】模式B，按子区域",
+            "全图共 9 格",
+            "格内编号 1~9，图外对照表",
+        ))
+        filled = fill_block_gaps(body)
+        self.assertNotIn("仅允许摄影机移动", filled)
+        self.assertIn("允许按子区域切换机位", filled)
+        # Mode already clear → no A/B buttons, only model rewrite if still failing
+        self.assertEqual(direction_labels(body), ["补上「允许按子区域切换机位」", "交给模型改这一块"])
+
+    def test_mode_sentences_ask_user_when_ambiguous(self):
         body = "\n".join((
             "#### 图5 · 客厅九宫格机位调度图",
             "16:9",
             "【场景定位】客厅",
             "【九宫格内容分配】逐格",
-            "【参考场景锁定模式】模式B，按子区域",
             "全图共 9 格",
             "格内编号 1~9，图外对照表",
         ))
@@ -171,7 +273,7 @@ class AssetPromptShapeTest(unittest.TestCase):
         self.assertNotIn("允许按子区域切换机位", filled)
         self.assertEqual(
             direction_labels(body),
-            ["仅允许摄影机移动", "允许按子区域切换机位", "交给模型改这一块"],
+            ["仅允许摄影机移动", "允许按子区域切换机位", "补上「【参考场景锁定模式】」", "交给模型改这一块"],
         )
         cross = "#### 图8 · 预演（场景母版）\n旧失败块\n同上\n16:9"
         self.assertEqual(direction_labels(cross), ["交给模型改这一块"])

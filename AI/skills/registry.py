@@ -106,6 +106,19 @@ def locks_ready(text):
     )
 
 
+# Outer reply is always one JSON object. These fields are markdown strings, not nested JSON.
+_MARKDOWN_FIELDS = (
+    "title、script、storyboard、image_prompts、feed、previs、intel、internal 是字符串。"
+    "字符串里是 markdown 正文，禁止再套 JSON 数组或对象。"
+    "image_prompts 用「#### 图N · 名称」；previs 用「## 段 N」；feed 用带冒号的分段正文。"
+)
+_ARRAY_FIELDS = (
+    "只有 assets、shots 是数组。"
+    "assets 每项含 id、title、prompt、depends_on、references、subject、subject_kind、view。"
+    "shots 每项含 id、duration、prompt、images、dialogue、narration。"
+)
+
+
 def json_shape(template=None, brief=""):
     step = script_step_id(brief)
     if step:
@@ -118,13 +131,12 @@ def json_shape(template=None, brief=""):
     body = "\n".join(
         [
             "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-            "title、script、storyboard、image_prompts、feed、previs、intel、internal 是字符串。",
-            "assets 数组，每项含 id、title、prompt、depends_on、references、subject、subject_kind、view。",
+            _MARKDOWN_FIELDS,
+            _ARRAY_FIELDS,
             "subject_kind 只能是 character、prop、location、other。view 写 single。",
             "全部图片都属于必须的 Image-Node。上传图只是参考，不是资产。",
             "要参考上传图时，references 填上传图 id，不要把上传图 id 写进 depends_on 或镜头 images。",
             "角色是一张脸加三格无脸全身。场景用九宫格。道具四格。",
-            "shots 数组，每项含 id、duration、prompt、images、dialogue、narration。",
             "duration 是整数秒。images 只列已经写在 Image-Node 里的生成资产 id。",
             "没有对白则 dialogue 为空字符串。没有旁白则 narration 为空字符串。",
             "提示词里禁止字幕、水印和乱码文字。正文不写人名、工作室名、影片名。",
@@ -408,22 +420,30 @@ _MERGE_SHAPE = {
     )),
     "script": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
+        _MARKDOWN_FIELDS,
         "正式剧本放在 script。标题放在 title。圆桌意见放在 internal。",
         "这一阶段用不到的字段不要写。",
     )),
     "asset": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-        "资产提示词放在 image_prompts。",
+        _MARKDOWN_FIELDS,
+        _ARRAY_FIELDS,
+        "资产提示词放在 image_prompts（字符串）。不要把图块写成数组。",
         "这一阶段用不到的字段不要写。",
     )),
     "storyboard": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-        "分镜放在 storyboard。预演故事板放在 previs。",
+        _MARKDOWN_FIELDS,
+        _ARRAY_FIELDS,
+        "分镜放在 storyboard（字符串）。预演故事板放在 previs（字符串，禁止 JSON 数组）。",
+        "镜头结构若要交，放在 shots 数组，不要塞进 storyboard 或 previs。",
         "这一阶段用不到的字段不要写。",
     )),
     "feed": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-        "投喂稿放在 feed。",
+        _MARKDOWN_FIELDS,
+        "投喂稿放在 feed（字符串）。不要写 segments 对象，不要写接口 JSON。",
+        "每个投喂单元单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。",
         "这一阶段用不到的字段不要写。",
     )),
     "qc": "\n".join((

@@ -172,7 +172,7 @@ class LockMachineTest(unittest.TestCase):
         self.assertEqual(question["id"], "aspect")
         self.assertNotIn("Seedance 2.5", question["options"])
         brief = lock_brief(locks)
-        self.assertIn("出镜：万相 3.0", brief)
+        self.assertIn("出镜：MiniMax H3", brief)
         self.assertNotIn("模型：h3", brief)
         self.assertIn("模型：h3", mount_header("script", locks, "", ""))
         kept = prepare_locks(_base_locks(model="2.0"), "12秒")
@@ -997,8 +997,12 @@ class MachineAndMountTest(unittest.TestCase):
         )
         self.assertIn("禁止手持", kept)
         self.assertNotIn("短提示", kept)
-        voiced = patch_asset_phrases("#### 图4 · 女主角色四格纯图板\n全图共 4 格。音色速览：soft\n")
+        voiced = patch_asset_phrases(
+            "#### 图4 · 女主角色四格纯图板\n全图共 4 格。音色速览：soft\n",
+            classify=lambda pieces: ["未知"] * len(pieces),
+        )
         self.assertIn("≤8 词音色速览", voiced)
+        self.assertIn("fifth panel", voiced.lower())
         rebuilt = assets_from_markdown(
             "#### 图1 · 胶囊道具设定图\n甲\n\n#### 图2 · 客厅场景母版\n乙\n",
             [{"id": "图1", "references": ["U1"], "title": "旧"}],
@@ -1061,6 +1065,33 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertIn("第 1 格：", _INSTRUCTION["storyboard"])
         self.assertIn("（1 格）", _INSTRUCTION["storyboard"])
         self.assertIn("六问", _INSTRUCTION["storyboard"])
+
+        from end.stage_runner import coerce_previs, render_previs_markdown
+
+        json_previs = "[{'segment_id': '段 1', 'check_focus': '站位', 'risk_alert': '勿对调', 'grid_count': 1, 'grids': [{'grid_index': 1, 'prompt': '第 1 格：人在门内。看图先看这三点：人、门、光'}]}]"
+        rendered = render_previs_markdown(json_previs, "M1")
+        self.assertIn("**本段要验什么**：站位", rendered)
+        self.assertIn("### 故事板提示词（1 格）", rendered)
+        self.assertNotIn("'check_focus'", rendered)
+        as_list = [
+            {
+                "segment_id": "段 1",
+                "check_focus": "站位",
+                "risk_alert": "勿对调",
+                "grid_count": 1,
+                "grids": [
+                    {
+                        "grid_index": 1,
+                        "prompt": "第 1 格：人在门内。看图先看这三点：人、门、光",
+                    }
+                ],
+            }
+        ]
+        coerced = coerce_previs(as_list, "M1")
+        self.assertIn("**本段要验什么**：站位", coerced)
+        self.assertNotIn("check_focus", coerced)
+        # The old bug: str(list) must never be what we persist.
+        self.assertNotEqual(coerced.strip(), str(as_list).strip())
 
         folder = Path(tempfile.mkdtemp())
         locks = _base_locks()
@@ -1202,6 +1233,201 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertIn("[Shot 1] She stands inside.", text)
         self.assertTrue(text.rstrip().endswith("强制禁止项：禁字幕。"))
         self.assertEqual(render_feed_text(text), text)
+
+    def test_h3_units_do_not_share_a_clock(self):
+        from end.gates import check_feed
+        from end.stage_runner import normalize_h3_shot_cuts
+
+        raw = "\n".join((
+            "## 【投喂单元 1/2】",
+            "subject_definitions:",
+            "<Subject 1> is a woman.",
+            "summary:",
+            "She waits.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved.",
+            "detailed_description:",
+            "[Shot 1] At 00:00.000, she sits on the sofa.",
+            "[Shot 2] At 00:05.000, the camera cuts to her face.",
+            "[Shot 3] At 00:08.000, the shot transitions to the door.",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+            "",
+            "## 【投喂单元 2/2】",
+            "subject_definitions:",
+            "<Subject 1> is a woman.",
+            "summary:",
+            "She stands.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved.",
+            "detailed_description:",
+            "[Shot 1] At 00:00.000, she stands up.",
+            "[Shot 2] At 00:04.000, the camera cuts closer.",
+            "[Shot 3] At 00:22.000, the shot changes to the window.",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+        ))
+        settled = normalize_h3_shot_cuts(raw)
+        self.assertNotIn("[Shot 1] At", settled)
+        self.assertEqual(settled.count("## 【投喂单元"), 3)
+        self.assertIn("## 【投喂单元 1/3】", settled)
+        self.assertIn("## 【投喂单元 3/3】", settled)
+        self.assertNotIn("00:22.000", settled)
+        self.assertIn("[Shot 2] At 00:05.000", settled)
+        self.assertIn("[Shot 3] At 00:08.000", settled)
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(raw, encoding="utf-8")
+        _code, report = check_feed(path, "h3", "M2", "1")
+        self.assertNotIn("未严格递增", report)
+        self.assertNotIn("不得带时间戳", report)
+        self.assertNotIn("最后切点", report)
+        stored = path.read_text(encoding="utf-8")
+        self.assertNotIn("[Shot 1] At", stored)
+        self.assertEqual(stored.count("## 【投喂单元"), 3)
+
+    def test_leading_clock_moves_behind_the_shot_tag(self):
+        raw = "\n".join((
+            "## 【投喂单元 1/1】",
+            "subject_definitions:",
+            "<Subject 1> is a woman.",
+            "summary:",
+            "She waits.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved.",
+            "detailed_description:",
+            "At 00:00.000 [Shot 1] 全景，她坐着。",
+            "At 00:04.000 [Shot 2] 中景，她抬头。",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+        ))
+        from end.stage_runner import normalize_h3_shot_cuts
+        settled = normalize_h3_shot_cuts(raw)
+        self.assertIn("[Shot 1] 全景，她坐着。", settled)
+        self.assertNotIn("At 00:00.000", settled)
+        self.assertIn("[Shot 2] At 00:04.000, 中景，她抬头。", settled)
+        self.assertNotIn("At 00:04.000 [Shot 2]", settled)
+
+    def test_h3_angle_and_bare_fields_are_colons_before_the_ready_shortcut(self):
+        raw = "\n".join((
+            "## 【投喂单元 1/2】",
+            "subject_definitions:",
+            "<Subject 1> is a woman standing indoors.",
+            "summary: She waits by the door.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved.",
+            "detailed_description:",
+            "[Shot 1] <Subject 1> stands inside.",
+            "[Shot 2] At 00:04.000, the camera cuts closer.",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "Soft pulse. " * 150,
+            "",
+            "## 【投喂单元 2/2】",
+            "subject_definitions:",
+            "<Subject 1> is a woman standing indoors.",
+            "【summary】",
+            "She leaves.",
+            "<retention_analysis>",
+            "<Subject 1>: fully_preserved.",
+            "</retention_analysis>",
+            "<detailed_description>",
+            "[Shot 1] <Subject 1> turns toward the door. The sign reads \"门\".",
+            "She says: <d>[Chinese] 走。</d>",
+            "[Shot 2] At 00:06.000, the camera cuts to the door.",
+            "</detailed_description>",
+            "【overall_soundscape】",
+            "Room tone.",
+            "non_diegetic_music",
+            "none.",
+        ))
+        text = render_feed_text(raw)
+        self.assertIn("summary: She waits by the door.", text)
+        self.assertIn("[Shot 2] At 00:06.000, the camera cuts to the door.", text)
+        self.assertIn("[Shot 1] <Subject 1> turns toward the door.", text)
+        self.assertIn("\nsummary:\nShe leaves.", text)
+        self.assertIn("\nretention_analysis:\n", text)
+        self.assertIn("\ndetailed_description:\n", text)
+        self.assertIn("\noverall_soundscape:\n", text)
+        self.assertIn("\nnon_diegetic_music:\n", text)
+        self.assertNotIn("<detailed_description>", text)
+        self.assertNotIn("</detailed_description>", text)
+        self.assertNotIn("<retention_analysis>", text)
+        self.assertNotIn("【summary】", text)
+        self.assertNotIn("【overall_soundscape】", text)
+        self.assertNotRegex(text, r"(?m)^non_diegetic_music$")
+        self.assertIn("duration: 4", text)
+        self.assertIn("duration: 6", text)
+        self.assertEqual(render_feed_text(text), text)
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(raw, encoding="utf-8")
+        code, report = check_prompt(path, "h3", "1")
+        self.assertEqual(code, 0, report)
+        self.assertNotIn("C31", report)
+        self.assertNotIn("H4 正文出现中文", report)
+        self.assertNotIn("情绪锚点", report)
+        self.assertNotIn("九宫格", report)
+        self.assertNotIn("接线单", report)
+        stored = path.read_text(encoding="utf-8")
+        self.assertNotIn("<detailed_description>", stored)
+        self.assertIn("duration: 6", stored)
+
+    def test_live_h3_feed_has_no_hard_failures(self):
+        source = ROOT / "data" / "web_projects" / "6c2ee3338c22" / "_内部_" / "feed.md"
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        code, report = check_prompt(path, "h3", "1")
+        self.assertEqual(code, 0, report)
+        self.assertNotIn("C31", report)
+        self.assertNotIn("情绪锚点", report)
+        self.assertNotIn("九宫格", report)
+        self.assertNotIn("接线单", report)
+        self.assertNotIn("H4 正文出现中文", report)
+        stored = path.read_text(encoding="utf-8")
+        self.assertNotIn("<detailed_description>", stored)
+        self.assertIn("[Shot 3] At 00:08.000, the shot transitions to an extreme close-up", stored)
+        for shown in ("duration: 5", "duration: 7", "duration: 8", "duration: 12"):
+            self.assertIn(shown, stored)
+
+    def test_h3_duration_follows_the_last_cut_and_skips_the_footer(self):
+        from end.stage_runner import normalize_h3_shot_cuts
+
+        raw = "\n".join((
+            "## 【投喂单元 1/1】",
+            "subject_definitions:",
+            "<Subject 1> is a woman.",
+            "detailed_description:",
+            "[Shot 1] [00:00.000-00:03.000] <Subject 1> sits.",
+            "[Shot 2] At 00:08.000, the camera cuts closer.",
+            "[Shot 3] At 00:04.500, the camera cuts to the door.",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+            "",
+            "---",
+            "[Shot 9] At 00:12.000, ignore this footer.",
+            "duration: 20",
+        ))
+        text = normalize_h3_shot_cuts(raw)
+        self.assertIn("duration: 5", text)
+        self.assertNotIn("duration: 4", text)
+        self.assertLess(text.index("duration: 5"), text.index("---"))
+        self.assertIn("duration: 20", text)
+        self.assertIn("[Shot 2] At 00:08.000", text)
+        self.assertIn("[Shot 3] At 00:04.500", text)
+        self.assertNotIn("[00:00.000-00:03.000]", text)
+        wrapped = "<summary>summary</summary>\n【detailed_description】detailed_description\n"
+        once = render_feed_text(wrapped)
+        self.assertIn("summary: summary", once)
+        self.assertIn("detailed_description: detailed_description", once)
+        self.assertEqual(render_feed_text(once), once)
 
 
 class DeliveryTest(unittest.TestCase):

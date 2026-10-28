@@ -36,30 +36,6 @@ def _autostart():
     return (os.environ.get("AIVIDEO_AI_AUTOSTART") or "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def _rpc_log(method, timeout, started, error_name):
-    # region agent log
-    if method != "write" and not error_name:
-        return
-    try:
-        payload = {
-            "sessionId": "ee5fa7",
-            "runId": "post-fix",
-            "hypothesisId": "H-wait",
-            "location": "end/ai_client.py:_post",
-            "message": "ai rpc finished",
-            "data": {
-                "method": method,
-                "timeout": timeout,
-                "elapsedMs": int((time.time() - started) * 1000),
-                "error": error_name,
-            },
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-    # endregion
 
 
 def _post(url, method, params, timeout):
@@ -83,13 +59,9 @@ def _post(url, method, params, timeout):
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")[:300]
-        _rpc_log(method, timeout, started, "HTTPError")
         raise RemoteError("AI 接口返回 %s：%s" % (error.code, detail), status=error.code)
     except (urllib.error.URLError, TimeoutError, OSError) as error:
-        _rpc_log(method, timeout, started, type(error).__name__)
         raise RemoteError("AI 服务没有响应：%s" % error)
-    if method == "write":
-        _rpc_log(method, timeout, started, "")
     if not isinstance(body, dict):
         raise RemoteError("AI 没有返回 JSON")
     if body.get("error"):
@@ -321,6 +293,23 @@ def write(brief, skill_pack, debug_dir=None, model=None, template=None, trace_pr
         },
         on_status=on_status,
     )
+
+
+def ask_text(messages, model=None, timeout=45, max_output_tokens=400):
+    """One short sync completion. Used by asset patch classification."""
+    result = call(
+        "text.ask",
+        {
+            "messages": messages or [],
+            "model": model or "",
+            "timeout": timeout,
+            "max_output_tokens": max_output_tokens,
+        },
+        timeout=max(float(timeout or 45) + 5, 20),
+    )
+    if isinstance(result, dict):
+        return str(result.get("text") or "").strip()
+    return str(result or "").strip()
 
 
 def read_upload(image_path, trace_prompts=None, on_status=None):

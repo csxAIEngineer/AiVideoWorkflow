@@ -330,6 +330,24 @@ def _qwen_text(messages, kind, provider):
     return call(messages, model=model, timeout=180, max_output_tokens=4000 if kind == "drill" else 16000)
 
 
+def text_ask(params):
+    """Short synchronous completion for local helpers (asset kind, etc.)."""
+    params = params or {}
+    messages = list(params.get("messages") or [])
+    if not messages:
+        raise ValueError("messages 不能为空")
+    provider = dict(params.get("provider") or {})
+    if params.get("model"):
+        provider["model"] = params.get("model")
+    model = normalize_model(provider.get("model"))
+    from AI.qwen_api.graph import generate_text
+
+    timeout = float(params.get("timeout") or 45)
+    tokens = int(params.get("max_output_tokens") or 400)
+    raw = generate_text(messages, model=model, timeout=timeout, max_output_tokens=tokens)
+    return {"text": str(raw or "").strip()}
+
+
 def llm_status(params):
     from AI.qwen_api.jobs import snapshot
 
@@ -381,6 +399,7 @@ def studio_write(params):
 
 METHODS = {
     "ping": ping,
+    "text.ask": text_ask,
     "catalog": catalog,
     "models.normalize": models_normalize,
     "models.label": models_label,

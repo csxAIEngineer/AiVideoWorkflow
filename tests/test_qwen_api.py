@@ -369,9 +369,12 @@ class QwenMediaTest(unittest.TestCase):
         self.assertEqual(captured["async"], "enable")
         body = captured["body"]
         self.assertEqual(body["model"], VIDEO_MODEL)
+        self.assertEqual(body["model"], "MiniMax/MiniMax-H3")
+        self.assertEqual(body["parameters"]["resolution"], "768P")
         self.assertEqual(body["parameters"]["ratio"], "21:9")
         self.assertEqual(body["parameters"]["duration"], 5)
-        self.assertEqual(body["parameters"]["prompt_extend"], False)
+        self.assertEqual(body["parameters"]["watermark"], False)
+        self.assertNotIn("prompt_extend", body["parameters"])
         self.assertNotIn("media", body["input"])
         self.assertNotIn(task.status, VIDEO_SUCCESS)
         self.assertNotIn(task.status, VIDEO_FAILURE)

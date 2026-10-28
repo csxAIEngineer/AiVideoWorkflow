@@ -450,7 +450,7 @@ def lock_brief(locks):
     locks = locks or {}
     model = str(locks.get("model") or "")
     if model in ("", "h3"):
-        model_line = "出镜：万相 3.0"
+        model_line = "出镜：MiniMax H3"
     else:
         model_line = "模型：%s" % model
     lines = [

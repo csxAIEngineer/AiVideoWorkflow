@@ -1,5 +1,6 @@
 """ComfyUI graphs for the web site: downloadable full graph, plus split cloud jobs."""
 
+import math
 import re
 from pathlib import Path
 
@@ -32,9 +33,54 @@ def _clamp_duration(value, dialogue=""):
     return MIN_SECONDS
 
 
+_FEED_CUT = re.compile(
+    r"\[Shot\s+\d+\][^\n]{0,40}?(?:At|在)\s*(\d{1,2}):(\d{2})\.(\d{3})"
+)
+
+
+def _duration_from_feed(prompt):
+    """H3 feed units declare length as ``duration: N``. One unit = one API call.
+
+    The machine check stamps ``duration:`` onto feed.md only. spec.json keeps the
+    same unit without that line, so a missing stamp falls back to the last cut.
+    """
+    text = str(prompt or "")
+    match = re.search(r"(?m)^duration\s*:\s*(\d+)\s*$", text)
+    if match:
+        try:
+            return _clamp_duration(int(match.group(1)))
+        except (TypeError, ValueError):
+            return None
+    clocks = list(_FEED_CUT.finditer(text))
+    if not clocks:
+        return None
+    last = clocks[-1]
+    seconds = int(last.group(1)) * 60 + int(last.group(2)) + int(last.group(3)) / 1000.0
+    return _clamp_duration(int(math.ceil(seconds)))
+
+
 def _safe_id(value, fallback):
     text = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(value or ""))
     return text[:40] or fallback
+
+
+def _first_shots_by_id(shots):
+    """One render/join entry per clip id.
+
+    Storyboard rows like S01-01 / S01-02 collapse to the same ``S01`` file path.
+    Keeping every row would concat the same mp4 multiple times in the final cut.
+    """
+    seen = set()
+    out = []
+    for shot in shots or []:
+        if not isinstance(shot, dict):
+            continue
+        shot_id = str(shot.get("id") or "")
+        if not shot_id or shot_id in seen:
+            continue
+        seen.add(shot_id)
+        out.append(shot)
+    return out
 
 
 def _is_upload_id(value):
@@ -123,8 +169,6 @@ def collect_steps(spec):
             images = [_safe_id(name, "") for name in (item.get("images") or [])]
             images = [name for name in images if name in known or _is_upload_id(name)][:MAX_SHOT_REFERENCES]
         prompt = str(item.get("prompt") or "").strip()
-        if index < len(units):
-            prompt = units[index]
         if not prompt:
             continue
         dialogue = str(item.get("dialogue") or "").strip()
@@ -147,21 +191,71 @@ def collect_steps(spec):
         if video_mode:
             shot["video_mode"] = video_mode
         shots.append(shot)
-    source = [item for item in (spec.get("shots") or []) if isinstance(item, dict)]
-    stand_in = not source or all(
-        str(item.get("prompt") or "").strip() in ("", "按这张资产图演这一镜") for item in source
-    )
-    if stand_in and len(units) > len(source):
-        template = shots[0] if shots else None
-        for index in range(len(source), len(units)):
-            shots.append({
-                "id": "S%02d" % (index + 1),
-                "duration": template["duration"] if template else MIN_SECONDS,
-                "prompt": units[index],
-                "dialogue": "",
-                "narration": "",
-                "images": list(template["images"]) if template else [],
-            })
+    # Clip files are keyed by id (clips/S01.mp4). Duplicate ids must not become
+    # duplicate concat inputs, or each segment plays back-to-back several times.
+    before_ids = [shot["id"] for shot in shots]
+    shots = _first_shots_by_id(shots)
+    if units:
+        # H3: one API call per feed unit. Never pad missing units with storyboard
+        # Chinese rows — that is what made MiniMax ignore the Ref2VA contract.
+        templates = shots
+        rebuilt = []
+        from end.board_shots import images_for_feed_unit
+
+        asset_rows = spec.get("assets") or []
+        for index, unit in enumerate(units):
+            template = templates[index] if index < len(templates) else (
+                templates[-1] if templates else {}
+            )
+            matched = [
+                name
+                for name in images_for_feed_unit(unit, asset_rows)
+                if name in known or _is_upload_id(name)
+            ]
+            feed_duration = _duration_from_feed(unit)
+            # region agent log
+            try:
+                import json as _json
+                import time as _time
+                with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as _handle:
+                    _handle.write(_json.dumps({
+                        "sessionId": "d078f2",
+                        "runId": "post-fix",
+                        "hypothesisId": "A,B,C,D",
+                        "location": "workflow_from_spec.py:collect_steps",
+                        "message": "shot duration choice",
+                        "data": {
+                            "index": index + 1,
+                            "feed_duration": feed_duration,
+                            "template_duration": (template or {}).get("duration"),
+                            "has_duration_line": bool(re.search(r"(?m)^duration\s*:", str(unit or ""))),
+                            "duration_lines": re.findall(r"(?m)^duration\s*:.*$", str(unit or ""))[:3],
+                            "unit_head": (str(unit or "").splitlines() or [""])[0][:80],
+                        },
+                        "timestamp": int(_time.time() * 1000),
+                    }, ensure_ascii=False) + "\n")
+            except OSError:
+                pass
+            # endregion
+            rebuilt.append(
+                {
+                    "id": _safe_id(
+                        (template or {}).get("id"),
+                        "S%02d" % (index + 1),
+                    ),
+                    "duration": feed_duration
+                    if feed_duration is not None
+                    else int((template or {}).get("duration") or MIN_SECONDS),
+                    "prompt": unit,
+                    "dialogue": str((template or {}).get("dialogue") or ""),
+                    "narration": str((template or {}).get("narration") or ""),
+                    "images": matched or list((template or {}).get("images") or []),
+                }
+            )
+            for key in ("end_image", "video_mode"):
+                if (template or {}).get(key):
+                    rebuilt[-1][key] = template[key]
+        shots = rebuilt
     return assets, shots
 
 
@@ -213,7 +307,7 @@ def task_plan(spec, soundtrack="off"):
                 "title": shot["id"],
                 "duration": shot["duration"],
                 "state": "pending",
-                "detail": "万相出镜",
+                "detail": "MiniMax H3 出镜",
             }
         )
     tasks.append(

@@ -2,7 +2,7 @@
 
 import unittest
 
-from end.board_shots import apply_storyboard_shots, shots_from_storyboard
+from end.board_shots import apply_feed_binding, apply_storyboard_shots, shots_from_storyboard
 from end.prompt_gate import feed_text
 from end.render_loop import delivery_prompt, image_prompt
 from end.server import _merge_spec
@@ -51,6 +51,7 @@ class HandoffTest(unittest.TestCase):
         assets, shots = collect_steps(_spec())
         self.assertEqual(image_prompt(assets[0]), BLOCK.strip())
         self.assertEqual(shots[0]["prompt"], UNIT.strip())
+        self.assertEqual(shots[0]["duration"], 8)
         sent = delivery_prompt(shots[0], [], 0, False, "first_frame")
         self.assertEqual(sent, UNIT.strip())
         self.assertNotIn("全程无字幕", sent)
@@ -72,6 +73,36 @@ class HandoffTest(unittest.TestCase):
         _assets, shots = collect_steps(spec)
         self.assertEqual([shot["prompt"] for shot in shots], [UNIT.strip(), UNIT_2.strip()])
         self.assertNotIn("中景", shots[1]["prompt"])
+
+    def test_duplicate_shot_ids_collapse_to_one_clip_each(self):
+        """S01-01/S01-02 become the same S01 file; join must not play it thrice."""
+        spec = _spec()
+        spec["shots"] = [
+            {"id": "S01", "duration": 4, "prompt": "a", "images": ["图1"]},
+            {"id": "S01", "duration": 4, "prompt": "b", "images": ["图1"]},
+            {"id": "S01", "duration": 4, "prompt": "c", "images": ["图1"]},
+            {"id": "S02", "duration": 4, "prompt": "d", "images": ["图1"]},
+        ]
+        _assets, shots = collect_steps(spec)
+        # One feed unit → one MiniMax call. Extra storyboard rows are not prompts.
+        self.assertEqual([shot["id"] for shot in shots], ["S01"])
+        self.assertEqual(shots[0]["prompt"], UNIT.strip())
+
+    def test_feed_units_never_pad_with_storyboard_chinese(self):
+        from end.prompt_gate import feed_unit_mismatch
+
+        spec = _spec()
+        spec["feed"] = UNIT.replace("1/1", "1/4")
+        spec["shots"] = [
+            {"id": "S01", "duration": 4, "prompt": "a", "images": ["图1"]},
+            {"id": "S02", "duration": 4, "prompt": "影兽闯入", "images": ["图1"]},
+        ]
+        self.assertIn("*/4", feed_unit_mismatch(spec["feed"]).replace(" ", "") or feed_unit_mismatch(spec["feed"]))
+        self.assertTrue(feed_unit_mismatch(spec["feed"]))
+        _assets, shots = collect_steps(spec)
+        self.assertEqual(len(shots), 1)
+        self.assertIn("subject_definitions", shots[0]["prompt"])
+        self.assertNotIn("影兽闯入", shots[0]["prompt"])
 
     def test_a_full_unit_already_on_the_shot_is_not_decorated(self):
         sent = delivery_prompt({"prompt": UNIT}, [], 1, True, "first_frame")
@@ -116,3 +147,49 @@ class HandoffTest(unittest.TestCase):
         spec["assets"][0]["prompt"] = edited
         assets, _shots = collect_steps(spec)
         self.assertEqual(assets[0]["prompt"], edited)
+
+    def test_feed_unit_binds_subject_stills_and_drops_picture(self):
+        feed = "\n".join((
+            "## 【投喂单元 1/1】",
+            "subject_definitions:",
+            "<Subject 1> (Female Protagonist): a woman in a pink dress.",
+            "<Subject 2> (Male Protagonist): a man in a blue shirt.",
+            "<Subject 3> (Environment): the female protagonist waits in a modern apartment living room.",
+            "<Picture 1>: the first keyframe of both people on the sofa.",
+            "summary:",
+            "reference generation",
+            "retention_analysis:",
+            "<Picture 1>: fully_preserved",
+            "detailed_description:",
+            "[Shot 1] <Subject 1> sits beside <Subject 2>. <Picture 1> stays in frame.",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+        ))
+        spec = {
+            "feed": feed,
+            "assets": [
+                {"id": "图1", "title": "客厅母版", "subject_kind": "location", "prompt": "客厅"},
+                {"id": "图2", "title": "客厅九宫格", "subject_kind": "location", "prompt": "九宫格"},
+                {"id": "图3", "title": "女主角色四格", "subject_kind": "character", "prompt": "女主"},
+                {"id": "图4", "title": "男主角色四格", "subject_kind": "character", "prompt": "男主"},
+                {"id": "A1", "title": "痛经胶囊", "subject_kind": "other", "prompt": "胶囊"},
+            ],
+            "shots": [{"id": "S01", "duration": 4, "prompt": "旧", "images": ["A1"]}],
+            "image_prompts": "#### 图1 · 客厅母版\n空房间。\n",
+        }
+        bound = apply_feed_binding(spec)
+        self.assertEqual(bound["shots"][0]["images"], ["图3", "图4", "图1", "图2"])
+        self.assertIn("<Subject 1> (图3)", bound["feed"])
+        self.assertIn("<Subject 2> (图4)", bound["feed"])
+        self.assertIn("<Subject 3> (图1)", bound["feed"])
+        self.assertNotIn("<Picture", bound["feed"])
+        self.assertIn("<Subject 1>: fully_preserved", bound["feed"])
+        self.assertNotIn("A1", bound["shots"][0]["images"])
+        again = apply_feed_binding(bound)
+        self.assertEqual(again["feed"], bound["feed"])
+        self.assertEqual(again["shots"][0]["images"], bound["shots"][0]["images"])
+        _assets, shots = collect_steps(spec)
+        self.assertEqual(shots[0]["images"], ["图3", "图4", "图1", "图2"])
+        self.assertIn("<Picture 1>", shots[0]["prompt"])

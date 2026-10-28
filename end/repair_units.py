@@ -14,7 +14,7 @@ _FIGURE_SUMMARY = re.compile(
 )
 _BOARD_SEG = re.compile(r"^#{1,6}\s*\**\s*段\s*(\d+)\b[^\n]*", re.M)
 _FEED_HEAD = re.compile(
-    r"^#{1,6}[^\n]{0,60}?段\s*([0-9]+)\s*(?:[/／]\s*([0-9]+))?[^\n]*$",
+    r"^#{1,6}[^\n]{0,80}?(?:投喂单元|段)\s*([0-9]+)\s*(?:[/／]\s*([0-9]+))?[^\n]*$",
     re.M,
 )
 _FEED_BRACKET = re.compile(
@@ -58,7 +58,15 @@ def failed_asset_targets(report, pieces):
 
 def repair_brief(stage, units):
     payload = json.dumps(units, ensure_ascii=False, indent=2)
-    return "%s\n阶段：%s\n失败项：\n%s\n" % (REPAIR_TASK, stage, payload)
+    brief = "%s\n阶段：%s\n失败项：\n%s\n" % (REPAIR_TASK, stage, payload)
+    suggestions = "\n".join(str(u.get("suggestion") or "") for u in (units or []))
+    if stage == "feed" and "H2" in suggestions:
+        brief += (
+            "\nH2 改法：禁止 [Shot N] [MM:SS.mmm-MM:SS.mmm] 区间时码。"
+            "写成 [Shot 1] 无时间戳；[Shot N] At MM:SS.mmm, the camera cuts to …；"
+            "单元头加 duration: 秒数（4–15）。\n"
+        )
+    return brief
 
 
 def units_for(stage, report, asset="", previs="", feed=""):
@@ -69,7 +77,8 @@ def units_for(stage, report, asset="", previs="", feed=""):
     if stage == "storyboard":
         return _segment_units("段", report, previs, whole_when_empty=True)
     if stage == "feed":
-        return _feed_units(report, feed)
+        units = _feed_units(report, feed)
+        return units
     return []
 
 
@@ -185,11 +194,25 @@ MODE_OPTIONS = ("仅允许摄影机移动", "允许按子区域切换机位")
 MODEL_OPTION = "交给模型改这一块"
 
 
+def _infer_lock_mode_phrase(text):
+    """When 模式A/B is already written, pick the matching lock sentence."""
+    body = str(text or "")
+    if any(_phrase_present(body, phrase) for phrase in MODE_OPTIONS):
+        return ""
+    has_a = bool(re.search(r"模式\s*A|模式A", body))
+    has_b = bool(re.search(r"模式\s*B|模式B", body))
+    if has_b and not has_a:
+        return MODE_OPTIONS[1]
+    if has_a and not has_b:
+        return MODE_OPTIONS[0]
+    return ""
+
+
 def _gap_lines(text, blob):
     """Phrases named by this block's own missing-field lines.
 
-    A1/A5/A7 lines are not inserts. The two lock-mode sentences are mutually
-    exclusive, so they are left for the user to choose.
+    A1/A5/A7 lines are not inserts. Lock-mode sentences are auto-picked when
+    模式A/B is already in the block; otherwise left for the user to choose.
     """
     extra = []
     for line in str(blob or "").splitlines():
@@ -218,6 +241,12 @@ def _gap_lines(text, blob):
             _add_phrase(text, extra, "格内编号 1~9，图外对照表")
         if "未禁手持" in line and not re.search(r"禁止手持|不得手持|不出现手", text):
             _add_phrase(text, extra, "禁止手持")
+        if MODE_MARK in line or (
+            "缺模板字段" in line and "参考场景锁定模式" in line
+        ):
+            inferred = _infer_lock_mode_phrase(text)
+            if inferred:
+                _add_phrase(text, extra, inferred)
     return extra
 
 
@@ -262,7 +291,11 @@ def direction_labels(body, lines=None):
     rows = list(lines if lines is not None else _block_reason_lines(text))
     blob = "\n".join(rows)
     labels = []
-    if MODE_MARK in blob and not any(_phrase_present(text, phrase) for phrase in MODE_OPTIONS):
+    if (
+        MODE_MARK in blob
+        and not any(_phrase_present(text, phrase) for phrase in MODE_OPTIONS)
+        and not _infer_lock_mode_phrase(text)
+    ):
         labels.extend(MODE_OPTIONS)
     for phrase in _gap_lines(text, blob):
         label = "补上「%s」" % phrase

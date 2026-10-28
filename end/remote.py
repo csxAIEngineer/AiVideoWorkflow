@@ -42,7 +42,7 @@ class RemoteVideoClient(object):
     def submit_video(
         self,
         text,
-        model="wan3.0-video",
+        model="MiniMax/MiniMax-H3",
         duration=4,
         aspect_ratio="",
         images=None,

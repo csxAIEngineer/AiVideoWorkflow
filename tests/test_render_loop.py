@@ -118,7 +118,7 @@ class FakeCR(object):
         self.polls = []
         self._n = 0
 
-    def submit_video(self, text, model="wan3.0-video", duration=4, aspect_ratio="9:16", images=None, idempotency_key=None, timeout=60):
+    def submit_video(self, text, model="MiniMax/MiniMax-H3", duration=4, aspect_ratio="9:16", images=None, idempotency_key=None, timeout=60):
         self.submits.append(
             {
                 "key": idempotency_key,
@@ -220,7 +220,7 @@ class RenderLoopTest(unittest.TestCase):
         variant = icreat.submits[0]
         self.assertIn("锁定同一张脸", variant["prompt"])
         self.assertEqual(variant["image"], ["https://cdn.example/A1.png"])
-        self.assertEqual(cr.submits[0]["model"], "wan3.0-video")
+        self.assertEqual(cr.submits[0]["model"], "MiniMax/MiniMax-H3")
         self.assertIsNone(cr.submits[0]["aspect_ratio"])
         self.assertEqual(cr.submits[0]["duration"], 5)
         self.assertEqual(cr.submits[0]["images"][0]["role"], "reference_image")
@@ -341,7 +341,7 @@ class RenderLoopTest(unittest.TestCase):
         )
         body = json.dumps(cr.submits)
         self.assertNotIn("uguu", body)
-        self.assertEqual(cr.submits[0]["model"], "wan3.0-video")
+        self.assertEqual(cr.submits[0]["model"], "MiniMax/MiniMax-H3")
         self.assertIsNone(cr.submits[0]["aspect_ratio"])
         self.assertEqual(cr.submits[0]["images"][0]["url"], hosted)
 
@@ -716,7 +716,7 @@ class RenderLoopTest(unittest.TestCase):
         cr = FakeCR()
         run_local_pipeline(ONE, self.work, project_id=project_id, icreat=icreat, cr=cr, sleeper=_noop_sleep)
         self.assertEqual(icreat.submits, [])
-        self.assertEqual(cr.submits[0]["model"], "wan3.0-video")
+        self.assertEqual(cr.submits[0]["model"], "MiniMax/MiniMax-H3")
         self.assertEqual([item["role"] for item in cr.submits[0]["images"]], ["first_frame"])
         self.assertEqual(cr.submits[0]["images"][0]["url"], "https://cdn.example/A1.png")
         self.assertNotIn("轮子在转", cr.submits[0]["text"])
@@ -833,7 +833,7 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(icreat.submits[1]["image"], ["https://cdn.example/img-1.png"])
         self.assertNotIn("https://cdn.example/U1.png", icreat.submits[1]["image"])
         video = cr.submits[0]
-        self.assertEqual(video["model"], "wan3.0-video")
+        self.assertEqual(video["model"], "MiniMax/MiniMax-H3")
         self.assertEqual(video["images"][0]["url"], "https://cdn.example/img-1.png")
         self.assertNotEqual(video["images"][0]["url"], "https://cdn.example/U1.png")
         self.assertIn("她在等最后一班车", video["text"])
@@ -846,7 +846,7 @@ class RenderLoopTest(unittest.TestCase):
         }
         cr = FakeCR()
         run_local_pipeline(text_spec, self.work, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep)
-        self.assertEqual(cr.submits[0]["model"], "wan3.0-video")
+        self.assertEqual(cr.submits[0]["model"], "MiniMax/MiniMax-H3")
         self.assertEqual(cr.submits[0]["aspect_ratio"], "9:16")
         self.assertFalse(cr.submits[0]["images"])
 
@@ -873,7 +873,7 @@ class RenderLoopTest(unittest.TestCase):
         cr = FakeCR()
         run_local_pipeline(end_spec, end_dir, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep)
         opened = cr.submits[0]
-        self.assertEqual(opened["model"], "wan3.0-video")
+        self.assertEqual(opened["model"], "MiniMax/MiniMax-H3")
         self.assertIsNone(opened["aspect_ratio"])
         self.assertEqual([item["role"] for item in opened["images"]], ["first_frame", "last_frame"])
         self.assertIn("从这张首帧的可见内容开始", opened["text"])
@@ -901,7 +901,7 @@ class RenderLoopTest(unittest.TestCase):
         run_local_pipeline(explicit_spec, explicit, icreat=icreat, cr=cr, sleeper=_noop_sleep)
         self.assertEqual(icreat.submits[0]["image"], ["https://cdn.example/U1.png"])
         chosen = cr.submits[0]
-        self.assertEqual(chosen["model"], "wan3.0-video")
+        self.assertEqual(chosen["model"], "MiniMax/MiniMax-H3")
         self.assertIsNone(chosen["aspect_ratio"])
         self.assertEqual(chosen["images"][0]["role"], "reference_image")
         self.assertEqual(chosen["images"][0]["url"], "https://cdn.example/img-1.png")

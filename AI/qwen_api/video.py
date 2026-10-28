@@ -1,16 +1,18 @@
-"""Wan 3.0 video. One model covers text, first frame, first-and-last, and reference.
+"""MiniMax H3 video via DashScope async video-synthesis.
 
-Submit to video-synthesis with X-DashScope-Async: enable.
+One model covers text, first frame, first-and-last, and reference.
+Submit with X-DashScope-Async: enable.
 SUCCEEDED becomes completed. FAILED becomes failed.
 Frame roles and reference roles stay in separate requests.
 """
 
 from AI.qwen_api.client import QwenClient, QwenError, error_text, extract_media_url
 
-VIDEO_MODEL = "wan3.0-video"
+VIDEO_MODEL = "MiniMax/MiniMax-H3"
 VIDEO_PATH = "/api/v1/services/aigc/video-generation/video-synthesis"
 ASYNC_HEADER = {"X-DashScope-Async": "enable"}
-# wan3.0-video documents these ratios, including 21:9. Anything else stays adaptive.
+VIDEO_RESOLUTION = "768P"
+# MiniMax H3 documents these ratios. Anything else stays adaptive.
 DOCUMENTED_RATIOS = {"adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
 FRAME_ROLES = frozenset(("first_frame", "last_frame"))
 REFERENCE_ROLES = frozenset(("reference_image", "reference_video", "reference_audio"))
@@ -104,9 +106,10 @@ class QwenVideoClient(object):
             "model": VIDEO_MODEL,
             "input": {"prompt": prompt},
             "parameters": {
+                "resolution": VIDEO_RESOLUTION,
                 "ratio": video_ratio(aspect_ratio),
                 "duration": video_duration(duration),
-                "prompt_extend": False,
+                "watermark": False,
             },
         }
         if media:

@@ -350,6 +350,10 @@ def _restore_output(folder, stage, output):
         if incoming and not shots_are_placeholder(incoming):
             spec["shots"] = incoming
         spec = apply_storyboard_shots(spec)
+        from end.board_shots import apply_feed_binding
+
+        spec = apply_feed_binding(spec)
+        _put_text(folder, "feed.md", spec.get("feed") or "")
     _save_spec(folder, spec)
 
 

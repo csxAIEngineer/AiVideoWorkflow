@@ -100,6 +100,52 @@ class StabilityTests(unittest.TestCase):
                 for warn in data['warnings']:
                     self.assertIn(warn, text)
 
+    def test_h3_feed_is_not_a_full_project(self):
+        text = "\n".join((
+            "## 【投喂单元 1/1】",
+            "subject_definitions:",
+            "<Subject 1> is a woman.",
+            "detailed_description:",
+            "[Shot 1] <Subject 1> stands.",
+            "padding " * 400,
+        ))
+        issues, _, _ = audit.audit_markdown(text, delivery="feed-only")
+        self.assertEqual(issues, [])
+        full, _, _ = audit.audit_markdown(text, delivery="full-project")
+        self.assertTrue(any(item.startswith("CT1-") for item in full))
+        self.path.write_text(text, encoding="utf-8")
+
+        def fake(*args, **kwargs):
+            return [], [], {"duration_s": 4, "shots": 1, "chars": len(text)}
+
+        with patch.object(validator, "validate_h3", side_effect=fake):
+            code, out = self.cli(validator, [str(self.path), "--model", "h3"])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("C31", out)
+        self.assertNotIn("情绪锚点", out)
+        self.assertNotIn("九宫格", out)
+        self.assertNotIn("接线单", out)
+
+    def test_h4_ignores_atx_headings_and_keeps_hash_words(self):
+        body = "\n".join((
+            "subject_definitions:",
+            "<Subject 1> is a woman.",
+            "summary:",
+            "She waits.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved - kept.",
+            "detailed_description:",
+            "[Shot 1] <Subject 1> stands.",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+        ))
+        _, titled, _ = validator.validate_h3("## 【投喂单元 1/1】\n" + body)
+        self.assertFalse(any("H4" in item and "中文" in item for item in titled))
+        _, hashed, _ = validator.validate_h3(body + "\n#门在墙上\n")
+        self.assertTrue(any("H4" in item and "中文" in item for item in hashed))
+
     def test_contract_fail_closed(self):
         self.path.write_text('【时间轴分镜】', encoding='utf-8')
         for fault in ('missing', 'exception'):

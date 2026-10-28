@@ -258,8 +258,16 @@ def audit_markdown(text, mode="auto", director=None, delivery=None):
             )
 
     # 5. CT5: P4 Feed blocks & segment boundary table
+    # H3 Ref2VA 的投喂主体是六段式，不是【时间轴分镜】+【站位声明】。
+    _h3_feed_body = (
+        "subject_definitions" in text
+        and "detailed_description" in text
+        and "投喂单元" in text
+    )
     if "【时间轴分镜】" in text and "【站位声明】" in text:
         passed.append("CT5-P4F P4 七段式投喂提示词主体在位")
+    elif _h3_feed_body:
+        passed.append("CT5-P4F H3 六段式投喂提示词主体在位")
     else:
         issues.append("CT5-P4F 缺失 P4 七段式投喂提示词主体")
 
@@ -296,9 +304,10 @@ def audit_markdown(text, mode="auto", director=None, delivery=None):
     # 6. CT6: P5 M1 Wiring Table & Continuity Ledger
     # 2026-10-14 修复（P2 级）：「只控制什么」放宽为「控制什么+不控制什么」等价变体
     # （「只控制什么」是「控制什么」的超集串，权威正主写法仍优先命中，不再因少一个「只」字误杀）。
+    _h3_feed_only = delivery == "feed-only" and _h3_feed_body and "【站位声明】" not in text
     if "素材接线单" in text and "控制什么" in text and "不控制什么" in text:
         passed.append("CT6-WIR M1《素材接线单》（含只控制什么/不控制什么）在位")
-    elif "M0" not in text[:400]:
+    elif "M0" not in text[:400] and not _h3_feed_only:
         issues.append("CT6-WIR 缺失 M1《素材接线单》（须含图号、引用段落、只控制什么、不控制什么，权威见 asset-delivery-modes.md）")
 
     if mode == "full":
@@ -389,10 +398,12 @@ def main():
 
     # ★审计补丁P1：CLI 自动识别「投喂单元」，否则一份纯投喂稿会被按项目交付包核销、
     #   一次误报 9 项（情绪锚点表/人物锚卡/调度/故事板/台账），与 validate_prompt 口径不一致。
-    if args.delivery is None and (txt.count("【画幅风格】") >= 2) and not re.search(
-            r"资产提示词|角色四格板|场景母版|九宫格提示词", txt):
+    _h3_feed = "subject_definitions" in txt and "投喂单元" in txt
+    if args.delivery is None and not re.search(
+            r"资产提示词|角色四格板|场景母版|九宫格提示词", txt) and (
+            txt.count("【画幅风格】") >= 2 or _h3_feed):
         args.delivery = "feed-only"
-        print("[i] 识别为「投喂单元」（≥2 组七段式、无资产模板段）→ 按 feed-only 核销（只核 CT5-/CT6-WIR）；"
+        print("[i] 识别为「投喂单元」（七段式≥2 或 H3 投喂单元，且无资产模板段）→ 按 feed-only 核销（只核 CT5-/CT6-WIR）；"
               "要做全项目核销请显式加 --delivery full-project")
     issues, warns, passed = audit_markdown(txt, mode=args.mode, director=args.director, delivery=args.delivery)
     print(f"=== 📋 全流程交付契约核销报告 ({os.path.basename(args.file)} | mode={args.mode}) ===")

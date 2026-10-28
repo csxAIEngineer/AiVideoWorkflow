@@ -20,26 +20,7 @@ from end.image_store import get_image_store
 ASPECT_RATIOS = ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
 
 
-def _agent_log(hypothesis_id, location, message, data):
-    # #region agent log
-    try:
-        payload = {
-            "sessionId": "caf74c",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open("/Users/shaneson/AiVideo/.cursor/debug-caf74c.log", "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # #endregion
-
-
 def _probe_media_url(url):
-    # #region agent log
     request = urllib.request.Request(str(url), headers={"Range": "bytes=0-15"})
     try:
         with urllib.request.urlopen(request, timeout=8) as response:
@@ -59,7 +40,6 @@ def _probe_media_url(url):
             except Exception:
                 body = ""
         return {"status": getattr(error, "code", None), "error": str(error)[:180], "body": body}
-    # #endregion
 
 MAX_ATTEMPTS = 5
 IMAGE_POLL_SEC = 4
@@ -736,6 +716,16 @@ def burn_joined_subtitles(joined, ass_path, burner=None, source=None):
 def join_clips(clips, target, joiner=None, aspect=""):
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Same clip path twice means the same generated file plays twice in a row.
+    unique = []
+    seen = set()
+    for clip in clips or []:
+        key = str(Path(clip).resolve()) if Path(clip).exists() else str(clip)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(clip)
+    clips = unique
     if len(clips) == 1:
         source = Path(clips[0])
         if source.resolve() != target.resolve():
@@ -903,7 +893,7 @@ def assign_dialogues(spec, shots):
 
 
 VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
-VIDEO_MODEL = "wan3.0-video"
+VIDEO_MODEL = "MiniMax/MiniMax-H3"
 VIDEO_MODE_MODELS = {mode: VIDEO_MODEL for mode in VIDEO_MODES}
 FRAME_OPENING = "从这张首帧的可见内容开始，主体、材质和构图保持一致，只做本镜写的光影和轻微运镜。"
 
@@ -1508,21 +1498,6 @@ class RenderContext(object):
                 return self.reload_step(step_id, kind)
             if status in failure:
                 message = getattr(current, "error", "") or status
-                # #region agent log
-                raw = getattr(current, "raw", None)
-                _agent_log(
-                    "C",
-                    "render_loop.py:run_remote",
-                    "remote task failed",
-                    {
-                        "step_id": step_id,
-                        "kind": kind,
-                        "status": status,
-                        "error": str(message or "")[:500],
-                        "raw": raw if isinstance(raw, dict) else str(raw)[:800],
-                    },
-                )
-                # #endregion
                 self.on_remote_failure(step_id, kind, label, str(message or status))
                 seen = None
                 continue
@@ -2051,7 +2026,7 @@ def run_local_pipeline(
     if images_only:
         ctx.emit("Debug：开始生图", "images", assets[0]["id"], "running")
     else:
-        steps = "千问生图 / 万相出镜 / 本机拼接"
+        steps = "千问生图 / MiniMax H3 出镜 / 本机拼接"
         if soundtrack_enabled(mode):
             steps += " / 千问旁白"
         steps += " / ffmpeg 烧字幕"
@@ -2183,25 +2158,6 @@ def run_local_pipeline(
                 soundtrack=ctx.soundtrack,
                 template=ctx.template,
             )
-            # #region agent log
-            _agent_log(
-                "A",
-                "render_loop.py:video_submit",
-                "video submit media",
-                {
-                    "shot_id": current.get("id"),
-                    "mode": mode,
-                    "duration": current.get("duration"),
-                    "images": asset_ids,
-                    "user_ids": user_ids,
-                    "media": [
-                        {"role": item.get("role"), "url": item.get("url"), "probe": _probe_media_url(item.get("url"))}
-                        for item in (media or [])
-                    ],
-                    "prompt_len": len(text or ""),
-                },
-            )
-            # #endregion
             _remember_video_mode(ctx, shot_id, mode)
             # Only text-to-video accepts aspect_ratio. Image and reference follow the input image.
             if mode == "text" and not ctx.aspect:

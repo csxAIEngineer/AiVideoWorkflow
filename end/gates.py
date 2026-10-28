@@ -13,7 +13,7 @@ VALIDATOR = SUITE / "short-drama-director" / "scripts" / "validate_prompt.py"
 P45_CHECK = SUITE / "sd-storyboard-engine" / "scripts" / "check_p45.py"
 BOARD = SUITE / "short-drama-director" / "scripts" / "build_board_lite.py"
 
-_SEGMENT = re.compile(r"段\s*(\d+)")
+_SEGMENT = re.compile(r"(?:投喂单元|段)\s*(\d+)")
 _VERIFY = ("已核验", "与资产图册一致")
 
 
@@ -63,38 +63,10 @@ def _prepare_h3_feed(path, text):
     """A bare subject_definitions line is still an H3 feed. Give it a colon before checking."""
     if "subject_definitions" not in str(text or ""):
         return text
-    from end.stage_runner import render_feed_text
+    from end.stage_runner import normalize_h3_shot_cuts, render_feed_text
 
-    rendered = render_feed_text(text)
+    rendered = normalize_h3_shot_cuts(render_feed_text(text))
     bare = bool(re.search(r"(?m)^[ \t]*subject_definitions[ \t]*$", str(text or "")))
-    # region agent log
-    try:
-        import json as _json
-        import time as _time
-
-        with open("/Users/shaneson/AiVideo/.cursor/debug-eab7ec.log", "a", encoding="utf-8") as handle:
-            handle.write(
-                _json.dumps(
-                    {
-                        "sessionId": "eab7ec",
-                        "runId": "post-fix",
-                        "hypothesisId": "C",
-                        "location": "end/gates.py:_prepare_h3_feed",
-                        "message": "subject_definitions shape",
-                        "data": {
-                            "bare": bare,
-                            "colon": "subject_definitions:" in str(text or ""),
-                            "changed": rendered.strip() != str(text or "").strip(),
-                        },
-                        "timestamp": int(_time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except OSError:
-        pass
-    # endregion
     if rendered.strip() and rendered.strip() != str(text or "").strip():
         Path(path).write_text(rendered.strip() + "\n", encoding="utf-8")
         return rendered
@@ -110,35 +82,12 @@ def check_feed(path, model, mode, track):
     if (model or "h3") == "h3":
         text = _prepare_h3_feed(path, text)
     routed = feed_uses_h3(text, model)
-    # region agent log
-    try:
-        import json as _json
-        import time as _time
-
-        with open("/Users/shaneson/AiVideo/.cursor/debug-ee5fa7.log", "a", encoding="utf-8") as handle:
-            handle.write(
-                _json.dumps(
-                    {
-                        "sessionId": "ee5fa7",
-                        "hypothesisId": "H10",
-                        "location": "end/gates.py:check_feed",
-                        "message": "feed check route",
-                        "data": {
-                            "model": model or "",
-                            "h3": bool(routed),
-                            "bracket": "【subject_definitions】" in text,
-                            "colon": "subject_definitions:" in text,
-                        },
-                        "timestamp": int(_time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except OSError:
-        pass
-    # endregion
     if routed:
+        from end.prompt_gate import feed_unit_mismatch
+
+        mismatch = feed_unit_mismatch(text)
+        if mismatch:
+            return 1, mismatch
         code, report = check_prompt(path, model or "h3", track or "1")
         kept = [line for line in (report or "").splitlines() if "C31 " not in line]
         return code, "\n".join(kept).strip()

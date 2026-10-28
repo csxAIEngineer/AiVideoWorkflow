@@ -74,7 +74,7 @@ def repl(config, provider_name, template):
             return
         if line == "/help":
             print("先问清楚再写。确认之后按当前模版写提示词。")
-            print("/template 切换模版。默认是漫剧，出镜锁定万相 3.0。")
+            print("/template 切换模版。默认是漫剧，出镜锁定 MiniMax H3。")
             print("锁定之后这里只写提示词和看板。出图出片回到页面按钮。")
             print("/skills   /provider qwen")
             print("/reset 清空本轮对话    /save 文件路径")
