@@ -228,6 +228,44 @@ body {
   font-size: 13px;
 }
 
+.style-picker {
+  gap: 12px;
+}
+
+.style-select {
+  width: 100%;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+  padding: 12px 14px;
+  border: 1px solid #e3e3e8;
+  border-radius: 16px;
+  background: #fff;
+  color: var(--text);
+}
+
+.style-note {
+  padding: 14px 16px;
+  border: 1px solid #e3e3e8;
+  border-radius: 16px;
+  background: #fff;
+  line-height: 1.6;
+}
+
+.style-note p {
+  margin: 0 0 6px;
+}
+
+.style-note p:last-child {
+  margin: 0;
+}
+
+.style-look,
+.style-grade {
+  color: #5c5c66;
+  font-size: 13px;
+}
+
 .choice-start {
   width: auto;
   min-width: 220px;

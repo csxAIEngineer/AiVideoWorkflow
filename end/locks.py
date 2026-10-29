@@ -250,13 +250,14 @@ def _question(name, kind, reply, options, cards=None):
 
 def style_question(cards):
     cards = [card for card in (cards or []) if card.get("title")]
-    options = [card["title"] for card in cards]
-    if STYLE_RECOMMEND not in options:
-        options.append(STYLE_RECOMMEND)
+    options = [STYLE_RECOMMEND]
+    for card in cards:
+        if card["title"] not in options:
+            options.append(card["title"])
     return _question(
         "style",
         "cards",
-        "导演风格卡锁定，选定即冻结。卡里可以选择导演名。交给视频模型的正文不写人名、工作室名、影片名。",
+        "导演风格卡锁定，选定即冻结。下拉里可以选择全部导演。交给视频模型的正文不写人名、工作室名、影片名。",
         options,
         cards,
     )
@@ -425,10 +426,18 @@ def _seam_code(option):
     return {"① 末帧定格承接": "1", "② 换机位硬切": "2", "③ 空镜过渡": "3", "④ 技巧型转场": "4"}[option]
 
 
+def _recommend_card(cards):
+    cards = list(cards or [])
+    if any("recommended" in item for item in cards):
+        marked = [item for item in cards if item.get("recommended")]
+        return marked[0] if marked else None
+    return cards[0] if cards else None
+
+
 def _apply_style(updated, picked, cards):
     cards = list(cards or [])
     if picked == STYLE_RECOMMEND:
-        card = cards[0] if cards else None
+        card = _recommend_card(cards)
         look = _visual_phrase(card) if card else ""
         if not look:
             look = "自然光，写实肤色，浅景深"
@@ -486,35 +495,115 @@ def corpus(brief, messages):
     return "\n".join(part for part in parts if part)
 
 
-def load_style_cards(text, limit=4):
-    """Candidate cards from the skill recommender. The user still has to pick one."""
-    root = Path(__file__).resolve().parents[1]
-    path = (
-        root
+_GRADE_LABEL = {
+    "A": "落地度 A，可以直接用",
+    "B": "落地度 B，需要特定写法",
+    "C": "落地度 C，视频模型难稳定呈现",
+}
+_CATALOG_HEADING = re.compile(r"^##\s*(?:[一二三四五六七八九十]+、)?(.+?)(?:（\d+）)?\s*$")
+
+
+def _skill_root():
+    return (
+        Path(__file__).resolve().parents[1]
         / "AI"
         / "skills"
         / "manju-laoli-skill"
         / "short-drama-director"
-        / "scripts"
-        / "style-lock-recommend.py"
     )
+
+
+def _catalog_cards():
+    path = _skill_root() / "references" / "style-bible" / "director-style-catalog-74.md"
     if not path.is_file():
         return []
+    group = ""
+    cards = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        heading = _CATALOG_HEADING.match(line)
+        if heading:
+            group = heading.group(1).strip()
+            continue
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 5 or not cells[0].isdigit():
+            continue
+        title = cells[1].replace("**", "").strip()
+        grade = cells[3]
+        cards.append(
+            {
+                "id": str(int(cells[0])),
+                "title": title,
+                "group": group,
+                "blurb": cells[2],
+                "grade": grade,
+                "grade_label": _GRADE_LABEL.get(grade, grade),
+                "look": cells[4],
+                "recommended": False,
+            }
+        )
+    return cards
+
+
+def _style_head(title):
+    return re.sub(r"（[^）]*）", "", str(title or "")).strip()
+
+
+def _match_catalog_card(name, cards):
+    raw = " ".join(re.sub(r"⚠️C", "", str(name or "")).split())
+    if not raw:
+        return None
+    for card in cards:
+        if card.get("title") == raw:
+            return card
+    heads = [card for card in cards if _style_head(card.get("title")) == raw]
+    if len(heads) == 1:
+        return heads[0]
+    if raw.endswith("动画向"):
+        base = raw[: -len("动画向")]
+        hits = [
+            card
+            for card in cards
+            if "动画向" in str(card.get("title")) and _style_head(card.get("title")) == base
+        ]
+        if len(hits) == 1:
+            return hits[0]
+    tail = [card for card in cards if _style_head(card.get("title")).endswith("·" + raw)]
+    if len(tail) == 1:
+        return tail[0]
+    prefix = [card for card in cards if _style_head(card.get("title")).startswith(raw + "·")]
+    if len(prefix) == 1:
+        return prefix[0]
+    return None
+
+
+def _recommend_module():
+    path = _skill_root() / "scripts" / "style-lock-recommend.py"
+    if not path.is_file():
+        return None
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("style_lock_recommend", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def load_style_cards(text, limit=None):
+    """Every catalog style, with the genre recommendation marked separately."""
+    del limit
+    cards = _catalog_cards()
+    module = _recommend_module()
+    if module is None or not cards:
+        return cards
     _combat, _why, _vfx, pool, _excluded, _route = module.recommend(str(text or ""))
-    cards = []
-    for num, name, _fight, _fx, native, look, warn in pool[:limit]:
-        cards.append(
-            {
-                "id": str(num),
-                "title": str(name),
-                "look": str(look),
-                "warn": str(warn),
-                "native": str(native),
-            }
-        )
-    return cards
+    if not pool:
+        return cards
+    matched = _match_catalog_card(pool[0][1], cards)
+    if matched is None:
+        return cards
+    return [
+        dict(card, recommended=card["title"] == matched["title"])
+        for card in cards
+    ]

@@ -16,6 +16,7 @@ from end.locks import (
     absorb_model_output,
     apply_selection,
     blank_locks,
+    load_style_cards,
     lock_brief,
     pending_question,
     prepare_locks,
@@ -192,6 +193,44 @@ class LockMachineTest(unittest.TestCase):
         self.assertEqual(updated["style_source"], "王家卫")
         self.assertNotIn("王家卫", lock_brief(updated))
         self.assertIn("霓虹暖黄", lock_brief(updated))
+
+    def test_style_dropdown_lists_the_catalog_and_keeps_the_genre_pick(self):
+        from end.locks import _catalog_cards, _match_catalog_card, _recommend_module
+
+        cards = load_style_cards("都市情感，无打斗")
+        titles = [card["title"] for card in cards]
+        self.assertEqual(len(cards), 74)
+        for name in ("张艺谋", "徐克", "国漫3D仙侠（玄机/凡人/仙逆系）", "皮克斯（工作室）"):
+            self.assertIn(name, titles)
+        self.assertEqual(sum(1 for card in cards if card.get("recommended")), 1)
+        self.assertEqual(cards[0]["title"], "张艺谋")
+        self.assertFalse(cards[0]["recommended"])
+        question = style_question(cards)
+        self.assertEqual(question["options"][0], "按你的推荐走")
+        locks = prepare_locks(_base_locks(), "时长：12秒")
+        updated, error = apply_selection(locks, question, "按你的推荐走", cards=question["cards"])
+        self.assertEqual(error, "")
+        self.assertEqual(updated["style_source"], "王家卫")
+        self.assertIn("抽帧残影", updated["style_look"])
+        self.assertNotIn("王家卫", updated["style_look"])
+        self.assertNotIn("王家卫", lock_brief(updated))
+        chosen, error = apply_selection(locks, question, "张艺谋", cards=question["cards"])
+        self.assertEqual(error, "")
+        self.assertEqual(chosen["style_source"], "张艺谋")
+        self.assertIn("极高饱和色块", chosen["style_look"])
+        self.assertNotIn("张艺谋", chosen["style_look"])
+        xianxia = load_style_cards("15秒玄幻仙侠打斗对决，有法术特效")
+        marked = [card for card in xianxia if card.get("recommended")]
+        self.assertEqual(len(marked), 1)
+        self.assertIn("国漫3D仙侠", marked[0]["title"])
+        module = _recommend_module()
+        catalog = _catalog_cards()
+        missing = [
+            name
+            for _num, name, _fight, _fx, _native, _look, _warn in module.STYLES
+            if _match_catalog_card(name, catalog) is None
+        ]
+        self.assertEqual(missing, [])
 
     def test_model_payload_cannot_rewrite_locks(self):
         folder = Path(tempfile.mkdtemp())
@@ -1463,6 +1502,7 @@ class PageTest(unittest.TestCase):
         self.assertIn('kind === "multi"', app)
         self.assertIn('type = "checkbox"', app)
         self.assertIn('kind === "cards"', app)
+        self.assertIn("style-select", app)
         self.assertIn("按你的推荐走", app)
         self.assertIn('current.status === "gate"', app)
         self.assertIn('sendText("继续")', app)

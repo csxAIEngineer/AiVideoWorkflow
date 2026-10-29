@@ -817,8 +817,8 @@ function onResumeClick() {
 }
 
 function syncChoiceDisabled() {
-  document.querySelectorAll("#thread button.choice").forEach((button) => {
-    button.disabled = !!sending;
+  document.querySelectorAll("#thread button.choice, #thread select.style-select").forEach((control) => {
+    control.disabled = !!sending;
   });
 }
 
@@ -850,33 +850,93 @@ function multiChoices(options) {
   return list;
 }
 
+function styleNote(card, lead) {
+  const note = document.createElement("div");
+  note.className = "style-note";
+  if (lead) {
+    const line = document.createElement("p");
+    line.className = "style-lead";
+    line.textContent = lead;
+    note.append(line);
+  }
+  if (card && card.blurb) {
+    const blurb = document.createElement("p");
+    blurb.className = "style-blurb";
+    blurb.textContent = card.blurb;
+    note.append(blurb);
+  }
+  if (card && card.look) {
+    const look = document.createElement("p");
+    look.className = "style-look";
+    look.textContent = card.look;
+    note.append(look);
+  }
+  if (card && card.grade_label) {
+    const grade = document.createElement("p");
+    grade.className = "style-grade";
+    grade.textContent = card.grade_label;
+    note.append(grade);
+  }
+  return note;
+}
+
 function styleChoices(message) {
   const list = document.createElement("div");
-  list.className = "choices style-cards";
-  (message.cards || []).forEach((card) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "choice style-card";
-    const title = document.createElement("b");
-    title.textContent = card.title || "";
-    const look = document.createElement("span");
-    look.textContent = card.look || "";
-    button.append(title, look);
-    button.addEventListener("click", () => {
-      if (sending) return;
-      sendText(card.title || "");
+  list.className = "choices style-picker";
+  const cards = message.cards || [];
+  const recommended = cards.find((card) => card.recommended) || null;
+  const select = document.createElement("select");
+  select.className = "style-select";
+  select.setAttribute("aria-label", "导演风格");
+  const recommendOption = document.createElement("option");
+  recommendOption.value = "按你的推荐走";
+  recommendOption.textContent = "按你的推荐走";
+  recommendOption.selected = true;
+  select.append(recommendOption);
+  const groups = [];
+  cards.forEach((card) => {
+    const name = card.group || "导演风格";
+    let group = groups.find((item) => item.name === name);
+    if (!group) {
+      group = { name: name, items: [] };
+      groups.push(group);
+    }
+    group.items.push(card);
+  });
+  groups.forEach((group) => {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = group.name;
+    group.items.forEach((card) => {
+      const option = document.createElement("option");
+      option.value = card.title || "";
+      option.textContent = card.title || "";
+      optgroup.append(option);
     });
-    list.append(button);
+    select.append(optgroup);
   });
-  const recommend = document.createElement("button");
-  recommend.type = "button";
-  recommend.className = "choice";
-  recommend.textContent = "按你的推荐走";
-  recommend.addEventListener("click", () => {
-    if (sending) return;
-    sendText("按你的推荐走");
+  const noteHost = document.createElement("div");
+  function show(title) {
+    const card = title === "按你的推荐走"
+      ? recommended
+      : cards.find((item) => item.title === title);
+    const lead = title === "按你的推荐走" && card
+      ? "这支片子推荐：" + card.title
+      : "";
+    const next = styleNote(card, lead);
+    noteHost.replaceChildren(...next.childNodes);
+    noteHost.className = "style-note";
+  }
+  show(select.value);
+  select.addEventListener("change", () => show(select.value));
+  const submit = document.createElement("button");
+  submit.type = "button";
+  submit.className = "choice";
+  submit.textContent = "继续";
+  submit.addEventListener("click", () => {
+    if (sending || !select.value) return;
+    sendText(select.value);
   });
-  list.append(recommend);
+  list.append(select, noteHost, submit);
   return list;
 }
 
