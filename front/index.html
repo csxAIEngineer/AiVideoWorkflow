@@ -91,10 +91,10 @@
               <option value="prod">千问：生产</option>
             </select>
           </label>
-          <label id="minimax-video-label" class="model-picker" title="云端走当前千问环境的 MiniMax。本地 MiniMax-H3 默认 http://127.0.0.1:8765，需要本机 H3 服务已启动。">
+          <label id="minimax-video-label" class="model-picker" title="云端仍是 768P。本地是快速预览：512 画面、内部 320、22 帧、4 步。默认 http://127.0.0.1:8765。本机 h3-local-api 收到 preset=fast 后按这个规格生成。">
             <select id="minimax-video" aria-label="出镜">
               <option value="cloud">出镜：云端 MiniMax</option>
-              <option value="local">出镜：本地 MiniMax-H3</option>
+              <option value="local">出镜：本地快速预览</option>
             </select>
           </label>
           <label class="soundtrack-picker" title="拼接之后按每镜旁白合成声音">
@@ -121,6 +121,6 @@
     </form>
   </main>
   <script src="/rpc.js?v=1"></script>
-    <script src="/app.js?v=62"></script>
+    <script src="/app.js?v=64"></script>
 </body>
 </html>
