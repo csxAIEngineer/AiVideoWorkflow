@@ -12,6 +12,8 @@ const debugIntentEl = document.querySelector("#debug-intent");
 const soundtrackEl = document.querySelector("#soundtrack");
 const modelEl = document.querySelector("#model");
 const qwenEnvEl = document.querySelector("#qwen-env");
+const minimaxVideoEl = document.querySelector("#minimax-video");
+const minimaxVideoLabel = document.querySelector("#minimax-video-label");
 const templateEl = document.querySelector("#template");
 const modelFoot = document.querySelector("#model-foot");
 
@@ -2696,6 +2698,7 @@ async function loadConfig() {
     if (qwenEnvEl && (config.qwen_env === "prod" || config.qwen_env === "test")) {
       qwenEnvEl.value = config.qwen_env;
     }
+    showMinimaxChoice(config);
   } catch (_error) {
     serverDebugDefault = false;
   }
@@ -2710,6 +2713,31 @@ if (qwenEnvEl) {
       if (saved && (saved.qwen_env === "prod" || saved.qwen_env === "test")) {
         qwenEnvEl.value = saved.qwen_env;
       }
+    } catch (_error) {
+      await loadConfig();
+    }
+  });
+}
+
+function showMinimaxChoice(config) {
+  if (!config) return;
+  if (minimaxVideoEl && (config.minimax_video === "local" || config.minimax_video === "cloud")) {
+    minimaxVideoEl.value = config.minimax_video;
+  }
+  const base = config.minimax_base_url || "http://127.0.0.1:8765";
+  const title =
+    "云端走当前千问环境的 MiniMax。本地 MiniMax-H3 使用 " +
+    base +
+    "，需要本机 H3 服务已启动。";
+  if (minimaxVideoLabel) minimaxVideoLabel.title = title;
+}
+
+if (minimaxVideoEl) {
+  minimaxVideoEl.addEventListener("change", async () => {
+    const choice = minimaxVideoEl.value;
+    try {
+      const saved = await rpc("config.set_minimax_video", { minimax_video: choice });
+      showMinimaxChoice(saved);
     } catch (_error) {
       await loadConfig();
     }

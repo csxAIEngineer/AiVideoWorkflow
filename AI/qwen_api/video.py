@@ -4,9 +4,25 @@ One model covers text, first frame, first-and-last, and reference.
 Submit with X-DashScope-Async: enable.
 SUCCEEDED becomes completed. FAILED becomes failed.
 Frame roles and reference roles stay in separate requests.
+
+Cloud uses the current Qwen host. Local uses MINIMAX_H3_BASE_URL
+(default http://127.0.0.1:8765) when the page or MINIMAX_VIDEO selects local.
+The submit, poll, and download calls stay the same. Bearer may be a dummy.
 """
 
-from AI.qwen_api.client import QwenClient, QwenError, error_text, extract_media_url
+import os
+from pathlib import Path
+
+from AI.qwen_api.client import (
+    QwenClient,
+    QwenError,
+    error_text,
+    extract_media_url,
+    load_dotenv,
+    qwen_api_key,
+    qwen_choice_path,
+    resolve_qwen_host,
+)
 
 VIDEO_MODEL = "MiniMax/MiniMax-H3"
 VIDEO_PATH = "/api/v1/services/aigc/video-generation/video-synthesis"
@@ -17,6 +33,85 @@ DOCUMENTED_RATIOS = {"adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
 FRAME_ROLES = frozenset(("first_frame", "last_frame"))
 REFERENCE_ROLES = frozenset(("reference_image", "reference_video", "reference_audio"))
 MEDIA_ROLES = FRAME_ROLES | REFERENCE_ROLES
+DEFAULT_LOCAL_VIDEO_URL = "http://127.0.0.1:8765"
+LOCAL_DUMMY_KEY = "local"
+_CHOICE_FILE = "minimax_video"
+_HOST_SUFFIXES = ("/compatible-mode/v1", "/api/v1")
+_MODE_ALIASES = {
+    "cloud": "cloud",
+    "qwen": "cloud",
+    "dashscope": "cloud",
+    "云端": "cloud",
+    "local": "local",
+    "localhost": "local",
+    "本地": "local",
+}
+
+
+def normalize_minimax_video(value):
+    """cloud or local. Empty when the value is not one of those names."""
+    return _MODE_ALIASES.get(str(value or "").strip().lower(), "")
+
+
+def minimax_choice_path(env_path=None):
+    """data/minimax_video beside .env. Without .env, the process working directory."""
+    if env_path is not None:
+        candidate = Path(env_path)
+        if not candidate.is_file():
+            return None
+        return candidate.parent / "data" / _CHOICE_FILE
+    qwen_path = qwen_choice_path(None)
+    if qwen_path is not None:
+        return qwen_path.parent / _CHOICE_FILE
+    return Path.cwd() / "data" / _CHOICE_FILE
+
+
+def saved_minimax_video(env_path=None):
+    path = minimax_choice_path(env_path)
+    if path is None or not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    lines = text.splitlines()
+    first = lines[0] if lines else ""
+    return normalize_minimax_video(first)
+
+
+def active_minimax_video(env_path=None):
+    """cloud or local. A saved page choice wins over MINIMAX_VIDEO."""
+    saved = saved_minimax_video(env_path)
+    if saved:
+        return saved
+    named = normalize_minimax_video(os.environ.get("MINIMAX_VIDEO", ""))
+    return named or "cloud"
+
+
+def local_video_base_url():
+    """Local H3 host. MINIMAX_H3_BASE_URL overrides the localhost default."""
+    explicit = str(os.environ.get("MINIMAX_H3_BASE_URL") or "").strip().rstrip("/")
+    if not explicit:
+        return DEFAULT_LOCAL_VIDEO_URL
+    for suffix in _HOST_SUFFIXES:
+        if explicit.endswith(suffix):
+            explicit = explicit[: -len(suffix)].rstrip("/")
+    return explicit or DEFAULT_LOCAL_VIDEO_URL
+
+
+def local_video_api_key():
+    """Bearer for the local server. Unset sends a dummy the server may ignore."""
+    explicit = str(os.environ.get("MINIMAX_H3_API_KEY") or "").strip()
+    return explicit or LOCAL_DUMMY_KEY
+
+
+def video_client_identity(env_path=None):
+    """Host and bearer the default QwenVideoClient would use."""
+    load_dotenv(env_path)
+    if active_minimax_video(env_path) == "local":
+        return local_video_base_url(), local_video_api_key()
+    key, _var = qwen_api_key(env_path)
+    return resolve_qwen_host(env_path), key
 
 
 def map_video_status(status):
@@ -84,8 +179,20 @@ def _media(images):
 
 
 class QwenVideoClient(object):
-    def __init__(self, client=None, api_key=None, opener=None, base_url=None):
-        self.client = client or QwenClient(api_key=api_key, opener=opener, base_url=base_url)
+    def __init__(self, client=None, api_key=None, opener=None, base_url=None, env_path=None):
+        if client is not None:
+            self.client = client
+            return
+        load_dotenv(env_path)
+        if active_minimax_video(env_path) == "local":
+            self.client = QwenClient(
+                api_key=local_video_api_key() if api_key is None else api_key,
+                opener=opener,
+                base_url=local_video_base_url() if base_url is None else base_url,
+                env_path=env_path,
+            )
+            return
+        self.client = QwenClient(api_key=api_key, opener=opener, base_url=base_url, env_path=env_path)
 
     def submit_video(
         self,

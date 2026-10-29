@@ -13,7 +13,14 @@ from AI.qwen_api.audio import MUSIC_UNAVAILABLE, synthesize
 from AI.qwen_api.client import DEFAULT_BASE_URL, QwenClient, QwenError
 from AI.qwen_api.graph import bind_trace_prompts, generate_text, log_prompt, understand_text
 from AI.qwen_api.image import IMAGE_MODEL, IMAGE_PATH, ImageTask, QwenImageClient
-from AI.qwen_api.video import VIDEO_MODEL, VIDEO_PATH, QwenVideoClient, VideoTask
+from AI.qwen_api.video import (
+    DEFAULT_LOCAL_VIDEO_URL,
+    LOCAL_DUMMY_KEY,
+    VIDEO_MODEL,
+    VIDEO_PATH,
+    QwenVideoClient,
+    VideoTask,
+)
 from end.render_loop import IMAGE_FAILURE, IMAGE_SUCCESS, VIDEO_FAILURE, VIDEO_SUCCESS
 
 HOST = "https://maas.qianwenaiapi.com"
@@ -404,6 +411,117 @@ class QwenMediaTest(unittest.TestCase):
             client.submit_video("海", duration=3)
         with self.assertRaises(QwenError):
             client.submit_video("海", duration=16)
+
+    def test_local_minimax_uses_localhost_and_cloud_stays_on_qwen(self):
+        root = Path(tempfile.mkdtemp())
+        (root / ".env").write_text("QWEN_API_KEY=test-key\n", encoding="utf-8")
+        data = root / "data"
+        data.mkdir()
+        (data / "qwen_env").write_text("prod\n", encoding="utf-8")
+        (data / "minimax_video").write_text("local\n", encoding="utf-8")
+        captured, opener = self._capture(
+            {"output": {"task_id": "vid-local", "task_status": "PENDING"}}
+        )
+        env = {
+            "QWEN_API_KEY": "",
+            "TOKE_PLAN_QWEN_API_KEY": "plan-key",
+            "QWEN_ENV": "test",
+            "QWEN_BASE_URL": "https://custom.example",
+            "MINIMAX_VIDEO": "cloud",
+            "MINIMAX_H3_BASE_URL": "",
+            "MINIMAX_H3_API_KEY": "",
+        }
+        with patch.dict(os.environ, env):
+            local = QwenVideoClient(opener=opener, env_path=root / ".env")
+            task = local.submit_video(
+                "海面亮起来",
+                duration=6,
+                aspect_ratio="16:9",
+                images=[{"role": "reference_image", "url": "https://cdn.example/ref.png"}],
+            )
+            submit_url = captured["url"]
+            submit_async = captured["async"]
+            body = dict(captured["body"])
+            local.poll("vid-local")
+            poll_url = captured["url"]
+            image_host = QwenClient(env_path=root / ".env")
+        self.assertEqual(local.client.base_url, DEFAULT_LOCAL_VIDEO_URL)
+        self.assertEqual(local.client.api_key, LOCAL_DUMMY_KEY)
+        self.assertEqual(submit_url, DEFAULT_LOCAL_VIDEO_URL + VIDEO_PATH)
+        self.assertEqual(submit_async, "enable")
+        self.assertEqual(poll_url, DEFAULT_LOCAL_VIDEO_URL + "/api/v1/tasks/vid-local")
+        self.assertEqual(body["model"], "MiniMax/MiniMax-H3")
+        self.assertEqual(body["parameters"]["duration"], 6)
+        self.assertEqual(body["parameters"]["ratio"], "16:9")
+        self.assertEqual(body["parameters"]["resolution"], "768P")
+        self.assertEqual(body["parameters"]["watermark"], False)
+        self.assertEqual(body["input"]["media"], [{"type": "reference_image", "url": "https://cdn.example/ref.png"}])
+        self.assertEqual(task.poll_url, DEFAULT_LOCAL_VIDEO_URL + "/api/v1/tasks/vid-local")
+        self.assertEqual(image_host.base_url, "https://token-plan.maas.qianwenaiapi.com")
+        self.assertEqual(image_host.api_key, "plan-key")
+
+        (data / "minimax_video").write_text("cloud\n", encoding="utf-8")
+        with patch.dict(os.environ, env):
+            cloud = QwenVideoClient(env_path=root / ".env")
+        self.assertEqual(cloud.client.base_url, "https://token-plan.maas.qianwenaiapi.com")
+        self.assertEqual(cloud.client.api_key, "plan-key")
+
+    def test_minimax_env_sets_local_host_when_the_page_has_not_chosen(self):
+        root = Path(tempfile.mkdtemp())
+        (root / ".env").write_text(
+            "QWEN_API_KEY=test-key\nMINIMAX_VIDEO=local\n"
+            "MINIMAX_H3_BASE_URL=http://127.0.0.1:9000/api/v1\n"
+            "MINIMAX_H3_API_KEY=secret\n",
+            encoding="utf-8",
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "QWEN_API_KEY": "test-key",
+                "MINIMAX_VIDEO": "",
+                "MINIMAX_H3_BASE_URL": "",
+                "MINIMAX_H3_API_KEY": "",
+                "QWEN_ENV": "prod",
+                "QWEN_BASE_URL": "https://custom.example",
+            },
+        ):
+            client = QwenVideoClient(env_path=root / ".env")
+        self.assertEqual(client.client.base_url, "http://127.0.0.1:9000")
+        self.assertEqual(client.client.api_key, "secret")
+
+    def test_video_rpc_client_follows_the_page_choice(self):
+        from AI import api as ai_api
+
+        root = Path(tempfile.mkdtemp())
+        (root / "data").mkdir()
+        (root / "data" / "minimax_video").write_text("local\n", encoding="utf-8")
+        previous = os.getcwd()
+        ai_api._VIDEO = None
+        try:
+            os.chdir(root)
+            with patch.dict(
+                os.environ,
+                {
+                    "QWEN_API_KEY": "test-key",
+                    "TOKE_PLAN_QWEN_API_KEY": "",
+                    "QWEN_ENV": "test",
+                    "QWEN_BASE_URL": "",
+                    "MINIMAX_VIDEO": "cloud",
+                    "MINIMAX_H3_BASE_URL": "",
+                    "MINIMAX_H3_API_KEY": "",
+                },
+            ):
+                local = ai_api._video_client()
+                self.assertEqual(local.client.base_url, DEFAULT_LOCAL_VIDEO_URL)
+                self.assertEqual(local.client.api_key, LOCAL_DUMMY_KEY)
+                (root / "data" / "minimax_video").write_text("cloud\n", encoding="utf-8")
+                cloud = ai_api._video_client()
+                self.assertEqual(cloud.client.base_url, HOST)
+                self.assertEqual(cloud.client.api_key, "test-key")
+                self.assertIsNot(cloud, local)
+        finally:
+            os.chdir(previous)
+            ai_api._VIDEO = None
 
     def test_speech_downloads_and_music_is_refused(self):
         seen = []
