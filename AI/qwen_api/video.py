@@ -34,6 +34,24 @@ FRAME_ROLES = frozenset(("first_frame", "last_frame"))
 REFERENCE_ROLES = frozenset(("reference_image", "reference_video", "reference_audio"))
 MEDIA_ROLES = FRAME_ROLES | REFERENCE_ROLES
 DEFAULT_LOCAL_VIDEO_URL = "http://127.0.0.1:8765"
+# Local preview only. Cloud bodies omit these. h3-local-api must treat
+# parameters.preset == "fast" as this h3 argv, instead of 768P and --seconds:
+# --width 512 --height 512 --render-width 320 --render-height 320
+# --frames 22 --steps 4 --layers 50 --reuse 1 --ssd-streaming
+# Unknown parameter fields are ignored by the server today, and resolution
+# must stay 768P or that server rejects the submit. Keep the cloud fields.
+LOCAL_FAST_PARAMETERS = {
+    "preset": "fast",
+    "width": 512,
+    "height": 512,
+    "render_width": 320,
+    "render_height": 320,
+    "frames": 22,
+    "steps": 4,
+    "layers": 50,
+    "reuse": 1,
+    "ssd_streaming": True,
+}
 LOCAL_DUMMY_KEY = "local"
 _CHOICE_FILE = "minimax_video"
 _HOST_SUFFIXES = ("/compatible-mode/v1", "/api/v1")
@@ -180,11 +198,13 @@ def _media(images):
 
 class QwenVideoClient(object):
     def __init__(self, client=None, api_key=None, opener=None, base_url=None, env_path=None):
+        self.local = False
         if client is not None:
             self.client = client
             return
         load_dotenv(env_path)
         if active_minimax_video(env_path) == "local":
+            self.local = True
             self.client = QwenClient(
                 api_key=local_video_api_key() if api_key is None else api_key,
                 opener=opener,
@@ -209,15 +229,18 @@ class QwenVideoClient(object):
         if not prompt:
             raise QwenError("出镜提示词是空的")
         media = _media(images)
+        parameters = {
+            "resolution": VIDEO_RESOLUTION,
+            "ratio": video_ratio(aspect_ratio),
+            "duration": video_duration(duration),
+            "watermark": False,
+        }
+        if self.local:
+            parameters.update(LOCAL_FAST_PARAMETERS)
         body = {
             "model": VIDEO_MODEL,
             "input": {"prompt": prompt},
-            "parameters": {
-                "resolution": VIDEO_RESOLUTION,
-                "ratio": video_ratio(aspect_ratio),
-                "duration": video_duration(duration),
-                "watermark": False,
-            },
+            "parameters": parameters,
         }
         if media:
             body["input"]["media"] = media
