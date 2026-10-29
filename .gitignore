@@ -8,6 +8,7 @@ DemoAnalyse/runs/
 data/web_projects/
 data/workbuddy_prompts/
 data/qwen_env
+data/minimax_video
 data/*.db
 data/*.db-journal
 data/*.db-wal

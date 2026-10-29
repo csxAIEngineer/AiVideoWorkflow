@@ -793,7 +793,8 @@ a.download,
 
 .model-picker select,
 .template-picker select,
-.soundtrack-picker select {
+.soundtrack-picker select,
+#minimax-video {
   border: 1px solid #e3e3e8;
   border-radius: 999px;
   background: #f6f6f8;
@@ -803,6 +804,10 @@ a.download,
   line-height: 1.4;
   padding: 4px 10px;
   max-width: 220px;
+}
+
+#minimax-video {
+  max-width: 260px;
 }
 
 .template-picker select {

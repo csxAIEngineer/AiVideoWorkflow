@@ -195,12 +195,11 @@ def _image_client():
 
 def _video_client():
     global _VIDEO
-    from AI.qwen_api.client import load_dotenv, qwen_api_key, resolve_qwen_host
-    from AI.qwen_api.video import QwenVideoClient
+    from AI.qwen_api.client import load_dotenv
+    from AI.qwen_api.video import QwenVideoClient, video_client_identity
 
     load_dotenv()
-    host = resolve_qwen_host()
-    key, _var = qwen_api_key()
+    host, key = video_client_identity()
     if _VIDEO is None or _client_host(_VIDEO) != host or _client_key(_VIDEO) != key:
         _VIDEO = QwenVideoClient()
     return _VIDEO

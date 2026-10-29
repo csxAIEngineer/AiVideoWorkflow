@@ -1959,6 +1959,7 @@ def _request_project(params):
 
 
 def rpc_config(_params):
+    from end.minimax_video import local_base_url, read_minimax_video
     from end.qwen_env import read_qwen_env
     from end.trace import trace_enabled
 
@@ -1968,6 +1969,8 @@ def rpc_config(_params):
         "debug_trace": trace_enabled(),
         "debug_trace_env": "AIVIDEO_DEBUG_TRACE",
         "qwen_env": read_qwen_env(),
+        "minimax_video": read_minimax_video(),
+        "minimax_base_url": local_base_url(),
         "model": default_model(),
         "models": model_choices(),
         "template": normalize_template(None),
@@ -1983,6 +1986,16 @@ def rpc_set_qwen_env(params):
     except ValueError as error:
         raise RpcError(400, str(error))
     return {"qwen_env": name}
+
+
+def rpc_set_minimax_video(params):
+    from end.minimax_video import local_base_url, write_minimax_video
+
+    try:
+        name = write_minimax_video((params or {}).get("minimax_video"))
+    except ValueError as error:
+        raise RpcError(400, str(error))
+    return {"minimax_video": name, "minimax_base_url": local_base_url()}
 
 
 def rpc_list_projects(_params):
@@ -2325,6 +2338,8 @@ def rpc_call(method, params):
         return rpc_config(params)
     if method == "config.set_qwen_env":
         return rpc_set_qwen_env(params)
+    if method == "config.set_minimax_video":
+        return rpc_set_minimax_video(params)
     if method == "projects.list":
         return rpc_list_projects(params)
     if method == "projects.get":

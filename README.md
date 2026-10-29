@@ -37,9 +37,24 @@ python3 front/studio/chat.py
 
 文本和意图用 `qwen3.8-flash`，走兼容模式 `/compatible-mode/v1` 的 Responses API。意图图只调用函数 `submit_intent`。请求带 `enable_thinking: false`，并且不传 `reasoning.effort`。带上 `low` 时仍会返回推理 token。解析仍用 `AI/script.py` 的 `parse_drill_text`。
 
-读图用 `qwen3.8-flash`，请求带 `enable_thinking: false`。生产 Token Plan 不提供 `qwen3.8-omni-flash`。生图用 `wan2.7-image`：没有参考图是文生图，有参考图是同一模型的图生图。Token Plan 没有 `qwen-image-3.0`。万相不接受 `prompt_extend`，无参考图时关闭 `thinking_mode`，`watermark` 关闭。出镜用 `MiniMax/MiniMax-H3`，一个模型覆盖文生、首帧、首尾帧和参考素材，`resolution` 为 `768P`，`watermark` 关闭。`16:9`、`9:16`、`21:9` 原样传入，其它比例用 `adaptive`。旁白用 `qwen-audio-3.0-tts-flash`，音色默认 `longanhuan_v3.6`，可用 `QWEN_TTS_VOICE` 覆盖。没有对等的器乐模型，`audio.compose` 直接失败，不再请求别的供应商。
+读图用 `qwen3.8-flash`，请求带 `enable_thinking: false`。生产 Token Plan 不提供 `qwen3.8-omni-flash`。生图用 `wan2.7-image`：没有参考图是文生图，有参考图是同一模型的图生图。Token Plan 没有 `qwen-image-3.0`。万相不接受 `prompt_extend`，无参考图时关闭 `thinking_mode`，`watermark` 关闭。出镜用 `MiniMax/MiniMax-H3`，一个模型覆盖文生、首帧、首尾帧和参考素材，`resolution` 为 `768P`，`watermark` 关闭。`16:9`、`9:16`、`21:9` 原样传入，其它比例用 `adaptive`。云端出镜走当前千问主机。页面选「出镜：本地 MiniMax-H3」时，同一套提交和查询改打本机，见下一节。旁白用 `qwen-audio-3.0-tts-flash`，音色默认 `longanhuan_v3.6`，可用 `QWEN_TTS_VOICE` 覆盖。没有对等的器乐模型，`audio.compose` 直接失败，不再请求别的供应商。
 
 生图和出镜都带 `X-DashScope-Async: enable` 提交，再用 `GET /api/v1/tasks/{task_id}` 查状态。生图把 `PENDING` / `RUNNING` 看成 `IN_PROGRESS`，`SUCCEEDED` 保持不变。出镜把 `SUCCEEDED` 看成 `completed`，`FAILED` 看成 `failed`。轮询节奏仍由 End 掌握。
+
+## 本地 MiniMax-H3
+
+出镜可以不走千问，改打本机上的 MiniMax-H3。文本、生图、读图和旁白仍用上面的千问环境。
+
+页面「出镜」选「本地 MiniMax-H3」，或在没选过页面时设 `MINIMAX_VIDEO=local`。页面选择写到 `data/minimax_video`，优先于环境变量。选「云端 MiniMax」时行为与原来一致：提交到当前千问测试或生产主机上的 `MiniMax/MiniMax-H3`。
+
+本地默认 `http://127.0.0.1:8765`，用 `MINIMAX_H3_BASE_URL` 改。AI 进程向这个地址发和云端相同的两步：
+
+- `POST /api/v1/services/aigc/video-generation/video-synthesis`，头 `X-DashScope-Async: enable`
+- `GET /api/v1/tasks/{task_id}`
+
+成片仍是对结果里的视频地址做一次普通下载。时长、画幅和素材角色的规则不变。
+
+本机需要已经有一个实现这两条路径的 H3 服务在听。没配 `MINIMAX_H3_API_KEY` 时请求带 `Authorization: Bearer local`，服务端可以不校验。Docker 里的 AI 容器访问不到宿主机的 `127.0.0.1`，把 `MINIMAX_H3_BASE_URL` 指到容器能访问的地址。
 
 ```python
 from AI.qwen_api.image import QwenImageClient
