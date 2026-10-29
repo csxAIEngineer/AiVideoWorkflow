@@ -65,7 +65,7 @@ python3 front/studio/chat.py
 | `reuse` | `1` |
 | `ssd_streaming` | `true` |
 
-`h3-local-api` 看到 `preset` 为 `fast` 时应按上表生成，用 `--frames 22` 而不是把 `duration` 当成 `--seconds`，并用 512 / 内部 320 代替 768P 画布。`steps`、`layers`、`reuse` 覆盖服务进程的默认值。现在的服务会忽略这些多余字段，并且不接受 `768P` 以外的 `resolution`，所以请求里仍保留 `768P` 和原时长，避免直接被拒绝。素材角色规则不变。
+本机 `h3-local-api` 接受 `parameters.preset` 为 `fast`。它仍检查 `768P`、已知画幅和 4–15 秒，但不用它们选画布和片长。没有单独覆盖时，生成就是上表：512 画面、内部 320、22 帧（约 0.92 秒）、4 步、50 层、`reuse` 1，并带 `--ssd-streaming`。请求里的 `steps` 可以替换 4，`width` / `height` 可以替换 512，`frames` 可以替换 22；内部 320 只加在 512 正方输出上。快速预览固定 50 层和 `--reuse 1`。素材角色规则不变。
 
 成片仍是对结果里的视频地址做一次普通下载。本机需要已经有一个实现这两条路径的 H3 服务在听。没配 `MINIMAX_H3_API_KEY` 时请求带 `Authorization: Bearer local`，服务端可以不校验。Docker 里的 AI 容器访问不到宿主机的 `127.0.0.1`，把 `MINIMAX_H3_BASE_URL` 指到容器能访问的地址。
 

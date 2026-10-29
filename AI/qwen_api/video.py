@@ -34,12 +34,12 @@ FRAME_ROLES = frozenset(("first_frame", "last_frame"))
 REFERENCE_ROLES = frozenset(("reference_image", "reference_video", "reference_audio"))
 MEDIA_ROLES = FRAME_ROLES | REFERENCE_ROLES
 DEFAULT_LOCAL_VIDEO_URL = "http://127.0.0.1:8765"
-# Local preview only. Cloud bodies omit these. h3-local-api must treat
-# parameters.preset == "fast" as this h3 argv, instead of 768P and --seconds:
+# Local preview only. Cloud bodies omit these. h3-local-api accepts
+# parameters.preset == "fast" and runs this argv. It still checks 768P, ratio,
+# and duration 4–15, but those do not choose the canvas or length:
 # --width 512 --height 512 --render-width 320 --render-height 320
 # --frames 22 --steps 4 --layers 50 --reuse 1 --ssd-streaming
-# Unknown parameter fields are ignored by the server today, and resolution
-# must stay 768P or that server rejects the submit. Keep the cloud fields.
+# Keep the cloud fields so that check passes.
 LOCAL_FAST_PARAMETERS = {
     "preset": "fast",
     "width": 512,
