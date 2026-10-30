@@ -14,9 +14,9 @@ from AI.qwen_api.client import DEFAULT_BASE_URL, QwenClient, QwenError
 from AI.qwen_api.graph import bind_trace_prompts, generate_text, log_prompt, understand_text
 from AI.qwen_api.image import IMAGE_MODEL, IMAGE_PATH, ImageTask, QwenImageClient
 from AI.qwen_api.video import (
+    LOCAL_DEFAULT_PARAMETERS,
     DEFAULT_LOCAL_VIDEO_URL,
     LOCAL_DUMMY_KEY,
-    LOCAL_FAST_PARAMETERS,
     VIDEO_MODEL,
     VIDEO_PATH,
     QwenVideoClient,
@@ -460,8 +460,15 @@ class QwenMediaTest(unittest.TestCase):
         self.assertEqual(body["parameters"]["resolution"], "768P")
         self.assertEqual(body["parameters"]["watermark"], False)
         self.assertEqual(body["parameters"]["resolution"], "768P")
-        for key, value in LOCAL_FAST_PARAMETERS.items():
+        for key, value in LOCAL_DEFAULT_PARAMETERS.items():
             self.assertEqual(body["parameters"][key], value)
+        self.assertNotIn("frames", body["parameters"])
+        self.assertNotIn("steps", body["parameters"])
+        self.assertNotIn("layers", body["parameters"])
+        self.assertNotIn("reuse", body["parameters"])
+        self.assertNotIn("ssd_streaming", body["parameters"])
+        self.assertNotIn("render_width", body["parameters"])
+        self.assertNotIn("render_height", body["parameters"])
         self.assertEqual(body["input"]["media"], [{"type": "reference_image", "url": "https://cdn.example/ref.png"}])
         self.assertEqual(task.poll_url, DEFAULT_LOCAL_VIDEO_URL + "/api/v1/tasks/vid-local")
         self.assertEqual(image_host.base_url, "https://token-plan.maas.qianwenaiapi.com")

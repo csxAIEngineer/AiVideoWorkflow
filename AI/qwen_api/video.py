@@ -34,24 +34,17 @@ FRAME_ROLES = frozenset(("first_frame", "last_frame"))
 REFERENCE_ROLES = frozenset(("reference_image", "reference_video", "reference_audio"))
 MEDIA_ROLES = FRAME_ROLES | REFERENCE_ROLES
 DEFAULT_LOCAL_VIDEO_URL = "http://127.0.0.1:8765"
-# Local preview only. Cloud bodies omit these. h3-local-api accepts
-# parameters.preset == "fast" and runs this argv. It still checks 768P, ratio,
-# and duration 4–15, but those do not choose the canvas or length:
-# --width 512 --height 512 --render-width 320 --render-height 320
-# --frames 22 --steps 4 --layers 50 --reuse 1 --ssd-streaming
-# Keep the cloud fields so that check passes.
-LOCAL_FAST_PARAMETERS = {
+# Local default = modified fast: preset:fast quality knobs (4 steps,
+# 50 layers, reuse 1), but 256 square canvas (lowest supported; 128
+# unsupported) and no frames so h3-local-api uses --seconds from duration.
+# API field resolution stays "768P" (server rejects other labels).
+LOCAL_DEFAULT_PARAMETERS = {
     "preset": "fast",
-    "width": 512,
-    "height": 512,
-    "render_width": 320,
-    "render_height": 320,
-    "frames": 22,
-    "steps": 4,
-    "layers": 50,
-    "reuse": 1,
-    "ssd_streaming": True,
+    "width": 256,
+    "height": 256,
 }
+# Alias kept for call sites that still name LOCAL_FAST_PARAMETERS.
+LOCAL_FAST_PARAMETERS = dict(LOCAL_DEFAULT_PARAMETERS)
 LOCAL_DUMMY_KEY = "local"
 _CHOICE_FILE = "minimax_video"
 _HOST_SUFFIXES = ("/compatible-mode/v1", "/api/v1")
@@ -236,7 +229,7 @@ class QwenVideoClient(object):
             "watermark": False,
         }
         if self.local:
-            parameters.update(LOCAL_FAST_PARAMETERS)
+            parameters.update(LOCAL_DEFAULT_PARAMETERS)
         body = {
             "model": VIDEO_MODEL,
             "input": {"prompt": prompt},

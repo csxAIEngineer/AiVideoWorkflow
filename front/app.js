@@ -2726,9 +2726,9 @@ function showMinimaxChoice(config) {
   }
   const base = config.minimax_base_url || "http://127.0.0.1:8765";
   const title =
-    "云端仍是 768P。本地 MiniMax-H3 是快速预览（512 画面、内部 320、22 帧、4 步），地址 " +
+    "云端仍是 768P。本地 MiniMax-H3 是快速预览（256 正方画面，片长用这一镜的时长，preset=fast），地址 " +
     base +
-    "。本机 h3-local-api 收到 preset=fast 后按这个规格生成。";
+    "。";
   if (minimaxVideoLabel) minimaxVideoLabel.title = title;
 }
 
