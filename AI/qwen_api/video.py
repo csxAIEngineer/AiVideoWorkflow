@@ -7,7 +7,14 @@ Frame roles and reference roles stay in separate requests.
 
 Cloud uses the current Qwen host. Local uses MINIMAX_H3_BASE_URL
 (default http://127.0.0.1:8765) when the page or MINIMAX_VIDEO selects local.
-The submit, poll, and download calls stay the same. Bearer may be a dummy.
+This deployment sets that variable to OmniRef Ref2VA (FastH3-Omni-FP8).
+Submit, poll, and download stay on the same DashScope paths. Bearer may be
+a dummy; the local server ignores it.
+
+Local OmniRef requires at least one reference_image or reference_video.
+reference_audio may ride along with those. first_frame, last_frame, and
+text-only submits are rejected before the request. Cloud still accepts
+text, frames, and references.
 """
 
 import os
@@ -34,14 +41,13 @@ FRAME_ROLES = frozenset(("first_frame", "last_frame"))
 REFERENCE_ROLES = frozenset(("reference_image", "reference_video", "reference_audio"))
 MEDIA_ROLES = FRAME_ROLES | REFERENCE_ROLES
 DEFAULT_LOCAL_VIDEO_URL = "http://127.0.0.1:8765"
-# Local default = modified fast: preset:fast quality knobs (4 steps,
-# 50 layers, reuse 1), but 256 square canvas (lowest supported; 128
-# unsupported) and no frames so h3-local-api uses --seconds from duration.
-# API field resolution stays "768P" (server rejects other labels).
+# Visual roles OmniRef will start a job from. Audio alone is not enough.
+LOCAL_VISUAL_REFERENCE_ROLES = frozenset(("reference_image", "reference_video"))
+# OmniRef accepts preset and does not switch step count because of it.
+# Leave width and height unset. An explicit pair replaces the default canvas
+# (short edge 480; 16:9 is 832×480). Frames stay unset. resolution stays "768P".
 LOCAL_DEFAULT_PARAMETERS = {
     "preset": "fast",
-    "width": 256,
-    "height": 256,
 }
 # Alias kept for call sites that still name LOCAL_FAST_PARAMETERS.
 LOCAL_FAST_PARAMETERS = dict(LOCAL_DEFAULT_PARAMETERS)
@@ -189,6 +195,22 @@ def _media(images):
     return media
 
 
+def _require_local_references(media):
+    """OmniRef Ref2VA: a reference image or video, never a Trim frame role."""
+    if any(item["type"] in FRAME_ROLES for item in media):
+        raise QwenError(
+            "本地 OmniRef Ref2VA 不接受 first_frame 和 last_frame，"
+            "请使用 reference_image、reference_video 或 reference_audio"
+        )
+    if any(item["type"] in LOCAL_VISUAL_REFERENCE_ROLES for item in media):
+        return media
+    if any(item["type"] == "reference_audio" for item in media):
+        raise QwenError(
+            "本地 OmniRef Ref2VA 的 reference_audio 需要同时提供 reference_image 或 reference_video"
+        )
+    raise QwenError("本地 OmniRef Ref2VA 至少需要一条 reference_image 或 reference_video")
+
+
 class QwenVideoClient(object):
     def __init__(self, client=None, api_key=None, opener=None, base_url=None, env_path=None):
         self.local = False
@@ -222,6 +244,8 @@ class QwenVideoClient(object):
         if not prompt:
             raise QwenError("出镜提示词是空的")
         media = _media(images)
+        if self.local:
+            media = _require_local_references(media)
         parameters = {
             "resolution": VIDEO_RESOLUTION,
             "ratio": video_ratio(aspect_ratio),

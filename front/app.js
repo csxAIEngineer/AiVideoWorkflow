@@ -2724,9 +2724,9 @@ function showMinimaxChoice(config) {
   if (minimaxVideoEl && (config.minimax_video === "local" || config.minimax_video === "cloud")) {
     minimaxVideoEl.value = config.minimax_video;
   }
-  const base = config.minimax_base_url || "http://127.0.0.1:8765";
+  const base = config.minimax_base_url || "http://121.196.162.203:8765";
   const title =
-    "云端仍是 768P。本地 MiniMax-H3 是快速预览（256 正方画面，片长用这一镜的时长，preset=fast），地址 " +
+    "云端仍是 768P。本地是 OmniRef Ref2VA（模型 MiniMax/MiniMax-H3，至少一条 reference_image 或 reference_video，不传宽高时 16:9 为 832×480，片长用这一镜的 duration），地址 " +
     base +
     "。";
   if (minimaxVideoLabel) minimaxVideoLabel.title = title;
