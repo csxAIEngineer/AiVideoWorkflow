@@ -411,6 +411,16 @@ class QwenMediaTest(unittest.TestCase):
                 ],
             )
         self.assertIn("不能同时使用首尾帧和参考素材", str(mixed.exception))
+        captured, opener = self._capture({"output": {"task_id": "vid-ref", "task_status": "PENDING"}})
+        QwenVideoClient(client=_client(opener)).submit_video(
+            "海",
+            images=[{"role": "reference_image", "url": "https://cdn.example/ref.png"}],
+        )
+        self.assertEqual(
+            captured["body"]["input"]["media"],
+            [{"type": "reference_image", "url": "https://cdn.example/ref.png"}],
+        )
+        self.assertNotIn("preset", captured["body"]["parameters"])
         with self.assertRaises(QwenError):
             client.submit_video("海", duration=3)
         with self.assertRaises(QwenError):
@@ -441,17 +451,34 @@ class QwenMediaTest(unittest.TestCase):
                 "海面亮起来",
                 duration=6,
                 aspect_ratio="16:9",
-                images=[{"role": "first_frame", "url": "https://cdn.example/ref.png"}],
+                images=[
+                    {"role": "reference_image", "url": "https://cdn.example/ref.png"},
+                    {"role": "reference_audio", "url": "https://cdn.example/ref.mp3"},
+                ],
             )
-            with self.assertRaises(QwenError) as rejected:
+            with self.assertRaises(QwenError) as frames:
                 local.submit_video(
                     "海面亮起来",
                     duration=6,
-                    images=[{"role": "reference_image", "url": "https://cdn.example/ref.png"}],
+                    images=[{"role": "first_frame", "url": "https://cdn.example/ref.png"}],
+                )
+            with self.assertRaises(QwenError) as text_only:
+                local.submit_video("海面亮起来", duration=6)
+            with self.assertRaises(QwenError) as audio_only:
+                local.submit_video(
+                    "海面亮起来",
+                    duration=6,
+                    images=[{"role": "reference_audio", "url": "https://cdn.example/ref.mp3"}],
                 )
             submit_url = captured["url"]
             submit_async = captured["async"]
             body = dict(captured["body"])
+            local.submit_video(
+                "海面亮起来",
+                duration=6,
+                images=[{"role": "reference_video", "url": "https://cdn.example/ref.mp4"}],
+            )
+            video_media = captured["body"]["input"]["media"]
             local.poll("vid-local")
             poll_url = captured["url"]
             image_host = QwenClient(env_path=root / ".env")
@@ -470,7 +497,9 @@ class QwenMediaTest(unittest.TestCase):
             self.assertEqual(body["parameters"][key], value)
         self.assertNotIn("width", body["parameters"])
         self.assertNotIn("height", body["parameters"])
-        self.assertIn("reference_image", str(rejected.exception))
+        self.assertIn("first_frame", str(frames.exception))
+        self.assertIn("reference_image", str(text_only.exception))
+        self.assertIn("reference_audio", str(audio_only.exception))
         self.assertNotIn("frames", body["parameters"])
         self.assertNotIn("steps", body["parameters"])
         self.assertNotIn("layers", body["parameters"])
@@ -478,7 +507,14 @@ class QwenMediaTest(unittest.TestCase):
         self.assertNotIn("ssd_streaming", body["parameters"])
         self.assertNotIn("render_width", body["parameters"])
         self.assertNotIn("render_height", body["parameters"])
-        self.assertEqual(body["input"]["media"], [{"type": "first_frame", "url": "https://cdn.example/ref.png"}])
+        self.assertEqual(
+            body["input"]["media"],
+            [
+                {"type": "reference_image", "url": "https://cdn.example/ref.png"},
+                {"type": "reference_audio", "url": "https://cdn.example/ref.mp3"},
+            ],
+        )
+        self.assertEqual(video_media, [{"type": "reference_video", "url": "https://cdn.example/ref.mp4"}])
         self.assertEqual(task.poll_url, DEFAULT_LOCAL_VIDEO_URL + "/api/v1/tasks/vid-local")
         self.assertEqual(image_host.base_url, "https://token-plan.maas.qianwenaiapi.com")
         self.assertEqual(image_host.api_key, "plan-key")
