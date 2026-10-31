@@ -55,6 +55,10 @@ def write_minimax_video(value, root=None):
 
 def local_base_url():
     """Host the page shows for local H3. The AI client applies the same default."""
+    if "MINIMAX_H3_BASE_URL" not in os.environ:
+        from AI.qwen_api.client import load_dotenv
+
+        load_dotenv()
     explicit = str(os.environ.get("MINIMAX_H3_BASE_URL") or "").strip().rstrip("/")
     if not explicit:
         return DEFAULT_LOCAL_BASE_URL

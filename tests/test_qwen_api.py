@@ -441,8 +441,14 @@ class QwenMediaTest(unittest.TestCase):
                 "海面亮起来",
                 duration=6,
                 aspect_ratio="16:9",
-                images=[{"role": "reference_image", "url": "https://cdn.example/ref.png"}],
+                images=[{"role": "first_frame", "url": "https://cdn.example/ref.png"}],
             )
+            with self.assertRaises(QwenError) as rejected:
+                local.submit_video(
+                    "海面亮起来",
+                    duration=6,
+                    images=[{"role": "reference_image", "url": "https://cdn.example/ref.png"}],
+                )
             submit_url = captured["url"]
             submit_async = captured["async"]
             body = dict(captured["body"])
@@ -462,6 +468,9 @@ class QwenMediaTest(unittest.TestCase):
         self.assertEqual(body["parameters"]["resolution"], "768P")
         for key, value in LOCAL_DEFAULT_PARAMETERS.items():
             self.assertEqual(body["parameters"][key], value)
+        self.assertNotIn("width", body["parameters"])
+        self.assertNotIn("height", body["parameters"])
+        self.assertIn("reference_image", str(rejected.exception))
         self.assertNotIn("frames", body["parameters"])
         self.assertNotIn("steps", body["parameters"])
         self.assertNotIn("layers", body["parameters"])
@@ -469,7 +478,7 @@ class QwenMediaTest(unittest.TestCase):
         self.assertNotIn("ssd_streaming", body["parameters"])
         self.assertNotIn("render_width", body["parameters"])
         self.assertNotIn("render_height", body["parameters"])
-        self.assertEqual(body["input"]["media"], [{"type": "reference_image", "url": "https://cdn.example/ref.png"}])
+        self.assertEqual(body["input"]["media"], [{"type": "first_frame", "url": "https://cdn.example/ref.png"}])
         self.assertEqual(task.poll_url, DEFAULT_LOCAL_VIDEO_URL + "/api/v1/tasks/vid-local")
         self.assertEqual(image_host.base_url, "https://token-plan.maas.qianwenaiapi.com")
         self.assertEqual(image_host.api_key, "plan-key")
@@ -508,12 +517,13 @@ class QwenMediaTest(unittest.TestCase):
 
         root = Path(tempfile.mkdtemp())
         (root / "data").mkdir()
+        (root / ".env").write_text("QWEN_API_KEY=test-key\n", encoding="utf-8")
         (root / "data" / "minimax_video").write_text("local\n", encoding="utf-8")
         previous = os.getcwd()
         ai_api._VIDEO = None
         try:
             os.chdir(root)
-            with patch.dict(
+            with patch("AI.qwen_api.client._find_env", return_value=root / ".env"), patch.dict(
                 os.environ,
                 {
                     "QWEN_API_KEY": "test-key",

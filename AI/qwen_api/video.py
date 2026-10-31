@@ -7,7 +7,8 @@ Frame roles and reference roles stay in separate requests.
 
 Cloud uses the current Qwen host. Local uses MINIMAX_H3_BASE_URL
 (default http://127.0.0.1:8765) when the page or MINIMAX_VIDEO selects local.
-The submit, poll, and download calls stay the same. Bearer may be a dummy.
+This deployment sets that variable to the FastH3 Trim host. The submit,
+poll, and download calls stay the same. Bearer may be a dummy; Trim ignores it.
 """
 
 import os
@@ -34,14 +35,12 @@ FRAME_ROLES = frozenset(("first_frame", "last_frame"))
 REFERENCE_ROLES = frozenset(("reference_image", "reference_video", "reference_audio"))
 MEDIA_ROLES = FRAME_ROLES | REFERENCE_ROLES
 DEFAULT_LOCAL_VIDEO_URL = "http://127.0.0.1:8765"
-# Local default = modified fast: preset:fast quality knobs (4 steps,
-# 50 layers, reuse 1), but 256 square canvas (lowest supported; 128
-# unsupported) and no frames so h3-local-api uses --seconds from duration.
-# API field resolution stays "768P" (server rejects other labels).
+# FastH3 Trim accepts preset and does not switch to the old 4-step path.
+# Leave width and height unset. An explicit pair replaces the Trim canvas
+# (short edge 480; 16:9 is 832×480). Frames stay unset so duration maps
+# onto Trim's 24 fps lattice. resolution stays "768P".
 LOCAL_DEFAULT_PARAMETERS = {
     "preset": "fast",
-    "width": 256,
-    "height": 256,
 }
 # Alias kept for call sites that still name LOCAL_FAST_PARAMETERS.
 LOCAL_FAST_PARAMETERS = dict(LOCAL_DEFAULT_PARAMETERS)
@@ -222,6 +221,10 @@ class QwenVideoClient(object):
         if not prompt:
             raise QwenError("出镜提示词是空的")
         media = _media(images)
+        if self.local and any(item["type"] in REFERENCE_ROLES for item in media):
+            raise QwenError(
+                "本地 FastH3 Trim 只接受文生、首帧和尾帧，不接受 reference_image、reference_video、reference_audio"
+            )
         parameters = {
             "resolution": VIDEO_RESOLUTION,
             "ratio": video_ratio(aspect_ratio),

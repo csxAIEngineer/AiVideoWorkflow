@@ -74,15 +74,24 @@ GET /api/v1/tasks/{task_id}
 
 任务完成后，对结果里的视频地址发一次普通 `GET`，超时 300 秒，存到 `outputs/clips/<镜头id>.mp4`。这不是 MiniMax 的另一个业务接口。
 
-## 本地 MiniMax-H3
+## 本地 MiniMax-H3（FastH3 Trim）
 
-页面「出镜」选本地时，上面三步改打 `http://127.0.0.1:8765`，可用 `MINIMAX_H3_BASE_URL` 改。没配 `MINIMAX_H3_API_KEY` 时鉴权是 `Authorization: Bearer local`。
+页面「出镜」选本地时，上面三步改打 `MINIMAX_H3_BASE_URL`。本仓库是 `http://121.196.162.203:8765`。没设变量时回退到 `http://127.0.0.1:8765`。没配 `MINIMAX_H3_API_KEY` 时鉴权是 `Authorization: Bearer local`。Trim 不校验这个头，`X-DashScope-Async` 也可以不带。
 
-请求体在云端四个字段之外再带：
+模型名必须是 `MiniMax/MiniMax-H3`（`MiniMax-H3` 或 `FastVideo/FastVideo-FastH3-Trim…` 服务端也认，客户端固定发全名）。
+
+请求体在云端四个字段之外再带 `preset: fast`。不传 `width`、`height`、`frames`、`steps`。
 
 | 参数 | 取值 |
 |---|---|
-| `preset` | `fast` |
-| `width` / `height` | `256` / `256` |
+| `model` | `MiniMax/MiniMax-H3` |
+| `input.prompt` | 必填 |
+| `parameters.duration` | 必填，整数 4–15。缺了返回 400 `parameters.duration is required` |
+| `parameters.resolution` | 固定 `768P`。这是标签，不是 768p 像素 |
+| `parameters.ratio` | 与云端相同。不传宽高时，16:9 由服务画成 832×480，短边 480 |
+| `preset` | `fast`。服务接受，仍走 8 步 Trim，不改画布 |
+| `width` / `height` | 不传。成对传入且是 32 的倍数时会盖掉 832×480 |
 
-不传 `frames`。片长仍是 `duration`。`resolution` 仍是 `768P`。
+提交返回 `output.task_id` 和 `output.task_status`（`PENDING`）。轮询同一结构。`SUCCEEDED` 时 `output.video_url` 是 `http://<host>/api/v1/videos/<task_id>.mp4`，`usage.size` 形如 `832*480`。`FAILED` 时错误在 `output.code` 和 `output.message`。
+
+文生、`first_frame`、`last_frame` 可以提交。`reference_image`、`reference_video`、`reference_audio` 客户端直接拒绝，服务端也会 400。
