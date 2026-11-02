@@ -4,17 +4,26 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AiVideo</title>
-  <link rel="stylesheet" href="/styles.css?v=37" />
+  <link rel="stylesheet" href="/styles.css?v=39" />
 </head>
 <body>
   <aside class="sidebar">
     <button id="new-chat" class="new-chat" type="button">开启新对话</button>
+    <div id="side-tabs" class="side-tabs hidden" role="tablist" aria-label="左侧">
+      <button id="side-docs" class="seg on" type="button">文档</button>
+      <button id="side-history" class="seg" type="button">历史</button>
+    </div>
+    <nav id="doc-nav" class="doc-nav hidden" aria-label="项目文档"></nav>
     <div id="history" class="history"></div>
     <div id="model-foot" class="sidebar-foot">Qwen3.8 Flash · 本机出片</div>
   </aside>
   <main class="main">
     <section id="empty" class="empty" aria-hidden="true"></section>
     <div id="stage-bar" class="stage-bar hidden">
+      <div class="stage-switch" role="tablist" aria-label="中心视图">
+        <button id="view-canvas" class="seg on" type="button">画布</button>
+        <button id="view-preview" class="seg" type="button">预览</button>
+      </div>
       <div class="stage-zoom">
         <button id="zoom-out" type="button" aria-label="缩小">−</button>
         <button id="zoom-in" type="button" aria-label="放大">+</button>
@@ -30,11 +39,18 @@
       <button id="dock-toggle" class="dock-toggle" type="button">调试</button>
     </div>
     <div id="work-body" class="work-body">
+      <div id="stage-center" class="stage-center hidden">
       <div id="canvas-wrap" class="canvas-wrap hidden">
         <div id="canvas" class="canvas">
           <svg id="canvas-edges" class="canvas-edges" xmlns="http://www.w3.org/2000/svg"></svg>
           <div id="canvas-nodes"></div>
         </div>
+      </div>
+      <div id="preview-pane" class="preview-pane hidden">
+        <div id="preview-stage" class="preview-stage"></div>
+        <p id="preview-empty" class="preview-empty">还没有可以预览的片子</p>
+      </div>
+      <div id="shot-strip" class="shot-strip" aria-label="镜头"></div>
       </div>
       <div id="chat-column" class="chat-column">
         <section id="thread" class="thread hidden"></section>
@@ -119,6 +135,6 @@
     </div>
   </main>
   <script src="/rpc.js?v=1"></script>
-    <script src="/app.js?v=65"></script>
+    <script src="/app.js?v=67"></script>
 </body>
 </html>

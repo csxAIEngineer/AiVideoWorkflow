@@ -23,6 +23,14 @@ const canvasEl = document.querySelector("#canvas");
 const canvasNodes = document.querySelector("#canvas-nodes");
 const canvasSvg = document.querySelector("#canvas-edges");
 const debugDock = document.querySelector("#debug-dock");
+const stageCenter = document.querySelector("#stage-center");
+const previewPane = document.querySelector("#preview-pane");
+const previewStage = document.querySelector("#preview-stage");
+const previewEmpty = document.querySelector("#preview-empty");
+const shotStrip = document.querySelector("#shot-strip");
+const docNav = document.querySelector("#doc-nav");
+const sideTabs = document.querySelector("#side-tabs");
+const stageZoom = document.querySelector(".stage-zoom");
 
 let projects = [];
 let current = null;
@@ -34,6 +42,9 @@ let sending = false;
 let surface = "canvas";
 let surfaceLock = "";
 let surfaced = "";
+let centerView = "canvas";
+let previewShotId = "";
+let sideTab = "docs";
 let canvasSig = "";
 let canvasEdges = [];
 let view = { x: 48, y: 48, scale: 1 };
@@ -1064,9 +1075,34 @@ function settleSurface(project) {
   surface = key.indexOf("canvas:") === 0 ? "canvas" : "chat";
 }
 
+function syncCenter() {
+  const workflow = !!(main && main.classList.contains("workflow"));
+  const preview = workflow && centerView === "preview";
+  if (stageCenter) stageCenter.classList.toggle("hidden", !workflow);
+  if (canvasWrap) canvasWrap.classList.toggle("hidden", !workflow || preview);
+  if (previewPane) previewPane.classList.toggle("hidden", !preview);
+  if (shotStrip) shotStrip.classList.toggle("hidden", !workflow);
+  if (stageZoom) stageZoom.classList.toggle("hidden", preview);
+  const canvasBtn = document.querySelector("#view-canvas");
+  const previewBtn = document.querySelector("#view-preview");
+  if (canvasBtn) canvasBtn.classList.toggle("on", workflow && !preview);
+  if (previewBtn) previewBtn.classList.toggle("on", preview);
+}
+
+function syncSideMode() {
+  const workflow = !!(main && main.classList.contains("workflow"));
+  if (sideTabs) sideTabs.classList.toggle("hidden", !workflow);
+  const docs = workflow && sideTab !== "history";
+  if (docNav) docNav.classList.toggle("hidden", !docs);
+  if (history) history.classList.toggle("hidden", docs);
+  const docsBtn = document.querySelector("#side-docs");
+  const historyBtn = document.querySelector("#side-history");
+  if (docsBtn) docsBtn.classList.toggle("on", docs);
+  if (historyBtn) historyBtn.classList.toggle("on", workflow && !docs);
+}
+
 function hideWorkflow() {
   if (stageBar) stageBar.classList.add("hidden");
-  if (canvasWrap) canvasWrap.classList.add("hidden");
   if (debugDock) {
     debugDock.classList.add("hidden");
     debugDock.classList.remove("open");
@@ -1074,14 +1110,17 @@ function hideWorkflow() {
   const dockToggle = document.querySelector("#dock-toggle");
   if (dockToggle) dockToggle.classList.remove("on");
   if (main) main.classList.remove("workflow");
+  syncCenter();
+  syncSideMode();
 }
 
 function showWorkflow() {
   if (stageBar) stageBar.classList.remove("hidden");
   if (debugDock) debugDock.classList.remove("hidden");
-  if (canvasWrap) canvasWrap.classList.remove("hidden");
   if (thread) thread.classList.remove("hidden");
   if (main) main.classList.add("workflow");
+  syncCenter();
+  syncSideMode();
   syncControlButtons(current);
 }
 
@@ -1093,6 +1132,8 @@ function renderThread(options) {
     surfaceLock = "";
     surfaced = "";
     canvasSig = "";
+    centerView = "canvas";
+    previewShotId = "";
     hideWorkflow();
     empty.classList.remove("hidden");
     thread.classList.add("hidden");
@@ -1115,6 +1156,9 @@ function renderThread(options) {
   thread.classList.remove("hidden");
   paintTranscript(opts, false);
   syncCanvas(current);
+  syncDocNav(current);
+  syncShotStrip(current);
+  syncPreview(current);
   syncDock(current);
   refreshLogs();
   syncComposer();
@@ -1325,6 +1369,10 @@ async function openProject(id) {
     surfaceLock = "";
     surfaced = "";
     canvasSig = "";
+    centerView = "canvas";
+    previewShotId = "";
+    syncDocNav.sig = "";
+    syncShotStrip.sig = "";
   }
   showProjectModel(current);
   showProjectTemplate(current);
@@ -2617,6 +2665,276 @@ function onWheel(event) {
   zoomAt(view.scale * factor, event.clientX, event.clientY);
 }
 
+function docHeading(text) {
+  const heading = document.createElement("h4");
+  heading.textContent = text;
+  return heading;
+}
+
+function docButton(label, onClick, key) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "doc-link";
+  button.textContent = label;
+  if (key) button.dataset.doc = key;
+  button.addEventListener("click", () => {
+    onClick();
+    markDocLink(button);
+  });
+  return button;
+}
+
+function markDocLink(node) {
+  if (!docNav || !node) return;
+  docNav.querySelectorAll(".doc-link, .doc-material").forEach((el) => {
+    el.classList.toggle("on", el === node);
+  });
+}
+
+function docFiles(project) {
+  const box = document.createElement("div");
+  if (project.board_url) {
+    const link = document.createElement("a");
+    link.className = "download";
+    link.href = project.board_url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = "打开看板";
+    box.append(link);
+  }
+  if (project.has_spec) {
+    const spec = document.createElement("a");
+    spec.className = "download";
+    spec.href = "/media/projects/" + project.id + "/spec";
+    spec.textContent = "下载 spec.json";
+    box.append(spec);
+  }
+  (project.debug_files || []).forEach((key) => {
+    const link = document.createElement("a");
+    link.className = "download";
+    link.href = "/media/projects/" + project.id + "/debug/" + key;
+    link.textContent = DEBUG_FILE_LABELS[key] || key;
+    box.append(link);
+  });
+  return box.childElementCount ? box : null;
+}
+
+function docSignature(project) {
+  const materials = (project.materials || []).map((item) => [item.id, item.title, item.url, item.narration].join(":")).join("|");
+  const assets = (project.assets || []).map((item) => item.id).join(",");
+  return [
+    project.id,
+    project.brief || "",
+    materials,
+    assets,
+    project.board_url || "",
+    project.has_spec ? "1" : "",
+    (project.debug_files || []).join(","),
+  ].join("\u0001");
+}
+
+function syncDocNav(project) {
+  if (!docNav || !project) return;
+  const sig = docSignature(project);
+  if (sig === syncDocNav.sig && docNav.childElementCount) return;
+  syncDocNav.sig = sig;
+  docNav.replaceChildren();
+  const materials = project.materials || [];
+  if (materials.length) {
+    docNav.append(docHeading("素材"));
+    materials.forEach((item) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "doc-material";
+      if (item.url) {
+        const img = document.createElement("img");
+        img.src = item.url;
+        img.alt = item.title || item.id || "";
+        row.append(img);
+      } else {
+        const hold = document.createElement("span");
+        hold.className = "doc-hold";
+        hold.textContent = item.id || "";
+        row.append(hold);
+      }
+      const text = document.createElement("span");
+      const name = document.createElement("b");
+      name.textContent = item.title || item.id || "素材";
+      text.append(name);
+      if (item.narration) {
+        text.append(document.createElement("br"));
+        const note = document.createElement("small");
+        note.textContent = item.narration;
+        text.append(note);
+      }
+      row.append(text);
+      row.addEventListener("click", () => {
+        const asset = (project.assets || []).find((entry) => entry.id === item.id);
+        focusCanvasField("image", asset ? "asset:" + asset.id : "");
+        markDocLink(row);
+      });
+      docNav.append(row);
+    });
+  }
+  docNav.append(docHeading("文稿"));
+  if (project.brief) {
+    docNav.append(docButton("简报", () => {
+      const note = docNav.querySelector(".doc-brief");
+      if (note) note.hidden = false;
+    }));
+    const note = document.createElement("p");
+    note.className = "doc-brief";
+    note.textContent = project.brief;
+    docNav.append(note);
+  }
+  docNav.append(docButton("提示词", () => focusCanvasField("script", "script"), "script"));
+  docNav.append(docButton("分镜", () => focusCanvasField("storyboard", "storyboard"), "storyboard"));
+  const files = docFiles(project);
+  if (files) {
+    docNav.append(docHeading("文件"));
+    docNav.append(files);
+  }
+}
+
+function focusCanvasField(nodeId, fieldKey) {
+  centerView = "canvas";
+  syncCenter();
+  requestAnimationFrame(() => {
+    const node = nodeById(nodeId);
+    if (!node) return;
+    document.querySelectorAll(".wf-node.nav-focus").forEach((el) => el.classList.remove("nav-focus"));
+    node.classList.add("nav-focus");
+    const x = Number(node.dataset.x) || 0;
+    const y = Number(node.dataset.y) || 0;
+    const width = node.offsetWidth || 280;
+    const height = node.offsetHeight || 160;
+    if (canvasWrap && canvasWrap.clientWidth) {
+      const scale = view.scale || 1;
+      view.x = (canvasWrap.clientWidth - width * scale) / 2 - x * scale;
+      view.y = (canvasWrap.clientHeight - height * scale) / 2 - y * scale;
+      applyView();
+    }
+    if (!fieldKey) return;
+    let field = null;
+    node.querySelectorAll("[data-field]").forEach((el) => {
+      if (el.dataset.field === fieldKey) field = el;
+    });
+    if (!field) return;
+    field.focus({ preventScroll: true });
+    const scroller = field.closest(".wf-assets");
+    if (!scroller) return;
+    const fieldBox = field.getBoundingClientRect();
+    const box = scroller.getBoundingClientRect();
+    if (fieldBox.top < box.top || fieldBox.bottom > box.bottom) {
+      scroller.scrollTop += fieldBox.top - box.top - 8;
+    }
+  });
+}
+
+function shotThumbUrl(project, shot) {
+  const ids = (shot && shot.images) || [];
+  for (let index = 0; index < ids.length; index += 1) {
+    const url = imageUrlFor(project, ids[index]);
+    if (url) return url;
+  }
+  return shot ? imageUrlFor(project, shot.id) : "";
+}
+
+function previewUrl(project) {
+  if (!project) return "";
+  if (previewShotId) return clipUrlFor(project, previewShotId) || "";
+  if (project.video_url) return project.video_url;
+  const shots = project.shots || [];
+  for (let index = 0; index < shots.length; index += 1) {
+    const url = clipUrlFor(project, shots[index].id);
+    if (url) return url;
+  }
+  return "";
+}
+
+function syncPreview(project) {
+  if (!previewStage || !project) return;
+  const url = previewUrl(project);
+  if (previewEmpty) {
+    previewEmpty.textContent = previewShotId ? "这一镜还没有片子" : "还没有可以预览的片子";
+    previewEmpty.classList.toggle("hidden", !!url);
+  }
+  if (!url) {
+    previewStage.replaceChildren();
+    return;
+  }
+  const existing = previewStage.querySelector("video");
+  if (existing && existing.dataset.url === url) return;
+  previewStage.replaceChildren(makeVideo(url));
+}
+
+function shotStripSignature(project) {
+  const shots = (project.shots || []).map((shot) => [
+    shot.id,
+    shot.duration,
+    (shot.images || []).join(","),
+    shotThumbUrl(project, shot),
+    clipUrlFor(project, shot.id) ? "1" : "",
+  ].join(":")).join("|");
+  return [project.id, project.video_url || "", shots, previewShotId, centerView].join("\u0001");
+}
+
+function shotChip(shot) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "shot-chip";
+  const film = !!shot.film;
+  const selected = film ? !previewShotId : previewShotId === shot.id;
+  button.classList.toggle("on", selected && centerView === "preview");
+  const url = film || !current ? "" : shotThumbUrl(current, shot);
+  if (url) {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = shot.id || "";
+    img.draggable = false;
+    button.append(img);
+  } else {
+    const hold = document.createElement("span");
+    hold.className = "shot-hold";
+    button.append(hold);
+  }
+  const name = document.createElement("b");
+  name.textContent = film ? "成片" : (shot.id || "镜头");
+  button.append(name);
+  if (!film && shot.duration != null && shot.duration !== "") {
+    const time = document.createElement("small");
+    time.textContent = shot.duration + " 秒";
+    button.append(time);
+  }
+  button.addEventListener("click", () => {
+    previewShotId = film ? "" : shot.id;
+    centerView = "preview";
+    syncCenter();
+    if (!current) return;
+    syncShotStrip(current);
+    syncPreview(current);
+  });
+  return button;
+}
+
+function syncShotStrip(project) {
+  if (!shotStrip || !project) return;
+  const sig = shotStripSignature(project);
+  if (sig === syncShotStrip.sig && shotStrip.childElementCount) return;
+  syncShotStrip.sig = sig;
+  shotStrip.replaceChildren();
+  if (project.video_url) shotStrip.append(shotChip({ id: "", film: true }));
+  const shots = project.shots || [];
+  if (!shots.length && !project.video_url) {
+    const empty = document.createElement("p");
+    empty.className = "shot-empty";
+    empty.textContent = "还没有镜头";
+    shotStrip.append(empty);
+    return;
+  }
+  shots.forEach((shot) => shotStrip.append(shotChip(shot)));
+}
+
 function bindCanvas() {
   if (!canvasWrap || canvasWrap.dataset.bound) return;
   canvasWrap.dataset.bound = "1";
@@ -2659,6 +2977,34 @@ function bindCanvas() {
       dockToggle.classList.toggle("on", debugDock.classList.contains("open"));
     });
   }
+  const docsTab = document.querySelector("#side-docs");
+  const historyTab = document.querySelector("#side-history");
+  if (docsTab) docsTab.addEventListener("click", () => {
+    sideTab = "docs";
+    syncSideMode();
+  });
+  if (historyTab) historyTab.addEventListener("click", () => {
+    sideTab = "history";
+    syncSideMode();
+  });
+  const viewCanvasBtn = document.querySelector("#view-canvas");
+  const viewPreviewBtn = document.querySelector("#view-preview");
+  if (viewCanvasBtn) viewCanvasBtn.addEventListener("click", () => {
+    centerView = "canvas";
+    syncCenter();
+    if (current && workflowMode(current)) {
+      syncCanvas(current);
+      syncShotStrip(current);
+    }
+  });
+  if (viewPreviewBtn) viewPreviewBtn.addEventListener("click", () => {
+    centerView = "preview";
+    syncCenter();
+    if (current && workflowMode(current)) {
+      syncPreview(current);
+      syncShotStrip(current);
+    }
+  });
 }
 
 bindCanvas();
