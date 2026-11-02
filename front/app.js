@@ -23,8 +23,6 @@ const canvasEl = document.querySelector("#canvas");
 const canvasNodes = document.querySelector("#canvas-nodes");
 const canvasSvg = document.querySelector("#canvas-edges");
 const debugDock = document.querySelector("#debug-dock");
-const viewCanvasBtn = document.querySelector("#view-canvas");
-const viewChatBtn = document.querySelector("#view-chat");
 
 let projects = [];
 let current = null;
@@ -39,7 +37,7 @@ let surfaced = "";
 let canvasSig = "";
 let canvasEdges = [];
 let view = { x: 48, y: 48, scale: 1 };
-const canvasMinScale = 0.55;
+const canvasMinScale = 0.25;
 let pendingSaves = new Set();
 const pointer = { mode: "" };
 let draftMaterials = [];
@@ -1027,6 +1025,7 @@ function workflowMode(project) {
   return !!project.script;
 }
 
+// Home hints only. Workflow keeps the canvas and the chat column together.
 function chatHome(project) {
   if (!project) return false;
   const status = project.status;
@@ -1059,41 +1058,30 @@ function surfaceKey(project) {
 
 function settleSurface(project) {
   const key = surfaceKey(project);
-  if (key !== surfaced) {
-    const previous = surfaced;
-    surfaced = key;
-    if (key.indexOf("canvas:") === 0) {
-      surface = "canvas";
-      surfaceLock = "";
-      return;
-    }
-    if (key.indexOf("chat:") === 0 && surfaceLock !== "canvas") {
-      surface = "chat";
-      return;
-    }
-    if (key.indexOf("other:") === 0 && previous.indexOf("chat:") === 0) {
-      surface = "chat";
-      surfaceLock = "";
-      return;
-    }
-  }
-  if (key.indexOf("chat:") === 0 && surfaceLock !== "canvas") surface = "chat";
-  else if (key.indexOf("canvas:") === 0 && surfaceLock !== "chat") surface = "canvas";
+  if (key === surfaced) return;
+  surfaced = key;
+  surfaceLock = "";
+  surface = key.indexOf("canvas:") === 0 ? "canvas" : "chat";
 }
 
 function hideWorkflow() {
   if (stageBar) stageBar.classList.add("hidden");
   if (canvasWrap) canvasWrap.classList.add("hidden");
-  if (debugDock) debugDock.classList.add("hidden");
+  if (debugDock) {
+    debugDock.classList.add("hidden");
+    debugDock.classList.remove("open");
+  }
+  const dockToggle = document.querySelector("#dock-toggle");
+  if (dockToggle) dockToggle.classList.remove("on");
+  if (main) main.classList.remove("workflow");
 }
 
 function showWorkflow() {
   if (stageBar) stageBar.classList.remove("hidden");
   if (debugDock) debugDock.classList.remove("hidden");
-  const chat = surface === "chat";
-  if (canvasWrap) canvasWrap.classList.toggle("hidden", chat);
-  if (viewCanvasBtn) viewCanvasBtn.classList.toggle("on", !chat);
-  if (viewChatBtn) viewChatBtn.classList.toggle("on", chat);
+  if (canvasWrap) canvasWrap.classList.remove("hidden");
+  if (thread) thread.classList.remove("hidden");
+  if (main) main.classList.add("workflow");
   syncControlButtons(current);
 }
 
@@ -1124,9 +1112,8 @@ function renderThread(options) {
     return;
   }
   showWorkflow();
-  const chat = surface === "chat";
-  thread.classList.toggle("hidden", !chat);
-  if (chat) paintTranscript(opts, false);
+  thread.classList.remove("hidden");
+  paintTranscript(opts, false);
   syncCanvas(current);
   syncDock(current);
   refreshLogs();
@@ -2325,20 +2312,18 @@ function syncCanvas(project) {
   } else {
     patchCanvas(project);
   }
-  if (surface !== "chat") {
-    if (fittedSig !== canvasSig) {
-      requestAnimationFrame(() => {
-        if (canvasWrap.classList.contains("hidden") || !canvasWrap.clientWidth) return;
-        if (!canvasNodes.dataset.custom) {
-          if (!spreadColumns()) return;
-        }
-        drawEdges(canvasEdges);
-        fitCanvas();
-        fittedSig = canvasSig;
-      });
-    } else {
+  if (fittedSig !== canvasSig) {
+    requestAnimationFrame(() => {
+      if (!canvasWrap || canvasWrap.classList.contains("hidden") || !canvasWrap.clientWidth) return;
+      if (!canvasNodes.dataset.custom) {
+        if (!spreadColumns()) return;
+      }
       drawEdges(canvasEdges);
-    }
+      fitCanvas();
+      fittedSig = canvasSig;
+    });
+  } else {
+    drawEdges(canvasEdges);
   }
 }
 
@@ -2658,20 +2643,6 @@ function bindCanvas() {
       fitCanvas();
     });
   });
-  if (viewCanvasBtn) {
-    viewCanvasBtn.addEventListener("click", () => {
-      surface = "canvas";
-      surfaceLock = "canvas";
-      renderThread();
-    });
-  }
-  if (viewChatBtn) {
-    viewChatBtn.addEventListener("click", () => {
-      surface = "chat";
-      surfaceLock = canvasHome(current) ? "chat" : "";
-      renderThread();
-    });
-  }
   document.querySelectorAll(".js-pause").forEach((button) => {
     button.addEventListener("click", () => postControl("pause"));
   });
@@ -2683,7 +2654,10 @@ function bindCanvas() {
   });
   const dockToggle = document.querySelector("#dock-toggle");
   if (dockToggle && debugDock) {
-    dockToggle.addEventListener("click", () => debugDock.classList.toggle("open"));
+    dockToggle.addEventListener("click", () => {
+      debugDock.classList.toggle("open");
+      dockToggle.classList.toggle("on", debugDock.classList.contains("open"));
+    });
   }
 }
 

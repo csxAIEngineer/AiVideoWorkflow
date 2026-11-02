@@ -1,11 +1,12 @@
 :root {
   color-scheme: light;
-  --bg: #ffffff;
-  --side: #f7f7f8;
-  --line: #ececec;
+  --bg: #fbf7f1;
+  --side: #f3eee6;
+  --line: #e6dfd4;
   --text: #1f1f1f;
-  --muted: #8b8b8b;
-  --bubble: #f4f4f5;
+  --muted: #8a8176;
+  --bubble: #f4efe6;
+  --paper: #fffdfb;
   --accent: #4d6bfe;
 }
 
@@ -61,7 +62,7 @@ body {
 }
 
 .item-row.active,
-.item-row:hover { background: #ececef; }
+.item-row:hover { background: #e8e0d4; }
 
 .item {
   flex: 1;
@@ -118,6 +119,7 @@ body {
   display: flex;
   flex-direction: column;
   position: relative;
+  background: var(--bg);
 }
 
 .empty {
@@ -930,10 +932,59 @@ a.download {
   flex: 1;
   min-height: 0;
   display: flex;
+  flex-direction: row;
+  align-items: stretch;
   position: relative;
+  overflow: hidden;
 }
 
-.main.fresh .work-body { display: none; }
+.chat-column {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: transparent;
+}
+
+.chat-column .thread {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.main.workflow .chat-column {
+  flex: 0 0 380px;
+  width: 380px;
+  background: var(--paper);
+  border-left: 1px solid var(--line);
+}
+
+.main.workflow .chat-column .thread {
+  padding: 16px 0 8px;
+}
+
+.main.workflow .chat-column .wrap {
+  width: calc(100% - 20px);
+}
+
+.main.workflow .chat-column .composer {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  flex: none;
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  box-shadow: 0 -6px 16px rgba(80, 60, 30, 0.04);
+}
+
+.main.fresh .chat-column {
+  justify-content: center;
+  background: transparent;
+  border: 0;
+}
 
 .stage-bar {
   display: flex;
@@ -942,12 +993,11 @@ a.download {
   gap: 8px 12px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--line);
-  background: #fff;
+  background: var(--paper);
 }
 
 .stage-bar.hidden { display: none; }
 
-.stage-switch,
 .stage-zoom,
 .stage-controls,
 .dock-actions {
@@ -988,7 +1038,7 @@ a.download {
   min-width: 3em;
 }
 
-.dock-toggle { display: none; }
+.dock-toggle { display: inline-flex; }
 
 .canvas-wrap {
   flex: 1;
@@ -997,9 +1047,9 @@ a.download {
   position: relative;
   overflow: hidden;
   background:
-    linear-gradient(#ececf1 1px, transparent 1px),
-    linear-gradient(90deg, #ececf1 1px, transparent 1px),
-    #f7f7f8;
+    linear-gradient(#e7e1d6 1px, transparent 1px),
+    linear-gradient(90deg, #e7e1d6 1px, transparent 1px),
+    #f7f3ec;
   background-size: 24px 24px;
   cursor: grab;
   touch-action: none;
@@ -1222,13 +1272,22 @@ a.download {
 }
 
 .debug-dock {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
   width: 320px;
-  flex: none;
+  z-index: 5;
   overflow: auto;
   border-left: 1px solid var(--line);
-  background: #fff;
+  background: var(--paper);
   padding: 14px 14px 28px;
+  transform: translateX(105%);
+  transition: transform 0.18s ease;
+  box-shadow: -8px 0 24px rgba(80, 60, 30, 0.08);
 }
+
+.debug-dock.open { transform: none; }
 
 .dock-head {
   display: flex;
@@ -1317,21 +1376,28 @@ a.download {
 }
 
 @media (max-width: 900px) {
-  .dock-toggle { display: inline-flex; }
+  .main.workflow .work-body { flex-direction: column; }
+  .main.workflow .canvas-wrap {
+    flex: 1 1 46vh;
+    min-height: 240px;
+  }
+  .main.workflow .chat-column {
+    flex: 1 1 auto;
+    width: auto;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
   .debug-dock {
-    position: absolute;
     left: 0;
     right: 0;
-    bottom: 0;
+    top: auto;
     width: auto;
     height: min(52vh, 440px);
     border-left: 0;
     border-top: 1px solid var(--line);
     border-radius: 16px 16px 0 0;
-    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 -10px 30px rgba(80, 60, 30, 0.08);
     transform: translateY(110%);
-    z-index: 6;
-    transition: transform 0.18s ease;
   }
   .debug-dock.open { transform: none; }
 }
