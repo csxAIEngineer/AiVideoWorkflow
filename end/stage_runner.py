@@ -9,8 +9,15 @@ from pathlib import Path
 
 from end.board_shots import apply_feed_binding, apply_storyboard_shots, bind_feed_document, shots_are_placeholder
 from end.delivery import internal_dir, list_deliverables, previs_name, publish
-from end.gates import check_asset_blocks, check_feed, check_p45, check_prompt, unverified_claim
-from end.intake import enrich_brief, intake_note, load_intake
+from end.gates import (
+    check_asset_blocks,
+    check_feed,
+    check_p45,
+    check_prompt,
+    invented_upload_claim,
+    unverified_claim,
+)
+from end.intake import enrich_brief, load_intake, writer_upload_block
 from end.locks import lock_brief
 
 _ASSET_HEAD = re.compile(r"^(#{2,6})\s*\*{0,2}\s*图\s*(\d+)\b", re.M)
@@ -712,7 +719,7 @@ _SCRIPT_CHAIN = {
 _INSTRUCTION = {
     "recon": "只写《对标情报卡》，放在 intel。这是来源，不是事实。不要写剧本。",
     "script": "只写剧本，放在 script。过程稿放在 internal。不要改锁。",
-    "asset": "只写资产提示词，放在 image_prompts。每条以「#### 图N · 名称」开头，自包含，禁止同上、见母版、同图N。",
+    "asset": "只写资产提示词，放在 image_prompts。每条以「#### 图N · 名称」开头，自包含，禁止同上、见母版、同图N。上传图按读图挂到已有资产的 references：产品、包装、药品挂道具图，人物挂对应角色图，不要另造同名资产。",
     "storyboard": "\n".join((
         "只写分镜，放在 storyboard。有打斗时招式只来自已挂载的打戏原文。",
         "预演故事板放在 previs，必须是 markdown 字符串，禁止 JSON 数组/对象。",
@@ -1081,6 +1088,9 @@ def check_stage(folder, stage, locks, title=""):
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
+        invented = invented_upload_claim(text, load_intake(folder))
+        if invented:
+            return False, invented
         return True, ""
     if stage == "asset":
         path = internal / "assets.md"
@@ -1090,6 +1100,9 @@ def check_stage(folder, stage, locks, title=""):
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
+        invented = invented_upload_claim(text, load_intake(folder))
+        if invented:
+            return False, invented
         code, report = check_asset_blocks(path)
         if code != 0:
             return False, report
@@ -1101,6 +1114,9 @@ def check_stage(folder, stage, locks, title=""):
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
+        invented = invented_upload_claim(text, load_intake(folder))
+        if invented:
+            return False, invented
         previs = _read(internal / "previs.md")
         if previs.strip():
             body = previs_check_text(text, previs, mode)
@@ -2406,9 +2422,9 @@ def _script_brief(project, folder, locks, only, pipeline, step_id, previous):
         story = str((project or {}).get("brief") or "").strip()
         if story:
             lines.extend(["", "用户原文", story])
-        note = intake_note(load_intake(folder))
-        if note:
-            lines.extend(["", note])
+        block = writer_upload_block(load_intake(folder))
+        if block:
+            lines.extend(["", block])
     elif step_id != "1":
         lines.extend(["", "上一步正文", previous or "（上一步还没有正文）"])
     if step_id in ("5", "6") and (revise or repair or rewriting):
@@ -2495,9 +2511,6 @@ def _script_suite_brief(project, folder, locks, only, pipeline):
         story = str((project or {}).get("brief") or "").strip()
         if story:
             lines.extend(["", "用户原文", story])
-        note = intake_note(load_intake(folder))
-        if note:
-            lines.extend(["", note])
     else:
         draft = _read(Path(folder) / "_内部_" / "剧本.md").strip()
         if draft:
@@ -2509,6 +2522,9 @@ def _script_suite_brief(project, folder, locks, only, pipeline):
                 kept.append("%s\n%s" % (label, body))
         if kept:
             lines.extend(["", "已有剧本链", "\n\n".join(kept)])
+    block = writer_upload_block(load_intake(folder))
+    if block:
+        lines.extend(["", block])
     return "\n".join(line for line in lines if line is not None).strip()
 
 
@@ -2542,6 +2558,7 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
             if previs_draft:
                 current_draft = (current_draft + "\n\n预演故事板：\n" + previs_draft).strip()
     task_line = _TASK_LINE.get(stage, "")
+    upload_block = writer_upload_block(load_intake(folder))
     debug = bool((project.get("progress") or {}).get("debug_llm"))
     debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
     if (repair or repair_choices) and stage in ("asset", "storyboard", "feed"):
@@ -2570,6 +2587,7 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
                 _REPAIR_FIELD.get(stage, ""),
                 "精修要求：\n" + note if note else "",
                 _locked_reference("上一阶段正文", carried),
+                upload_block,
                 "再确认：只改机检点名的失败项。锁定参考整段保留，不要为它另写一批。",
             )
             if part
@@ -2583,6 +2601,7 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
                 lock_brief(locks),
                 _user_story_block(stage, story, current_draft),
                 stage_instruction(stage, locks),
+                upload_block,
                 "当前这一稿：\n" + current_draft if current_draft else "",
                 "精修要求：\n" + note if note else "",
                 "上一阶段正文：\n" + carried if carried else "",
