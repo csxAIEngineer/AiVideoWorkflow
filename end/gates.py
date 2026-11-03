@@ -125,3 +125,48 @@ def unverified_claim(text, mode):
         if phrase in raw:
             return phrase
     return ""
+
+
+_UPLOAD_TOKEN = re.compile(r"\bU\d+\b")
+_UPLOAD_CITE = ("照片", "上传", "素材", "产品图", "已入库", "肖像", "参考图", "人像")
+
+
+def invented_upload_ids(text, items):
+    """Upload ids cited in prose that are not on the intake list.
+
+    Real intake ids are U1, U2, … U0 is never assigned. Longer tokens such as
+    U01 are only flagged when the nearby words treat them as an uploaded still.
+    """
+    known = set()
+    for item in items or []:
+        if isinstance(item, dict) and item.get("id"):
+            known.add(str(item.get("id")))
+    found = []
+    raw = str(text or "")
+    for match in _UPLOAD_TOKEN.finditer(raw):
+        token = match.group(0)
+        if token in known or token in found:
+            continue
+        if not re.fullmatch(r"U\d{1,2}", token):
+            continue
+        window = raw[max(0, match.start() - 16) : match.end() + 8]
+        cited = any(word in window for word in _UPLOAD_CITE)
+        if cited or re.fullmatch(r"U\d", token):
+            found.append(token)
+    return found
+
+
+def invented_upload_claim(text, items):
+    bad = invented_upload_ids(text, items)
+    if not bad:
+        return ""
+    listed = "、".join(
+        "%s %s" % (item.get("id"), item.get("title") or "")
+        for item in (items or [])
+        if isinstance(item, dict) and item.get("id")
+    ) or "（没有上传图）"
+    return (
+        "写了没有上传的图 %s。已上传只有：%s。"
+        "不要编造上传编号，读图是产品或包装时不要写成人物照片。"
+        % ("、".join(bad), listed)
+    )

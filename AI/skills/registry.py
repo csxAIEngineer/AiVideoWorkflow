@@ -136,6 +136,7 @@ def json_shape(template=None, brief=""):
             "subject_kind 只能是 character、prop、location、other。view 写 single。",
             "全部图片都属于必须的 Image-Node。上传图只是参考，不是资产。",
             "要参考上传图时，references 填上传图 id，不要把上传图 id 写进 depends_on 或镜头 images。",
+            "读图是产品、包装、药品或道具时，references 挂到 subject_kind 为 prop 的资产；读图是人物时挂到对应的 character。不要另造和上传图同名的资产，产品图不要写「保持这张图里的人和场景」。references 不要出现简报里没有的上传图 id。",
             "角色是一张脸加三格无脸全身。场景用九宫格。道具四格。",
             "duration 是整数秒。images 只列已经写在 Image-Node 里的生成资产 id。",
             "没有对白则 dialogue 为空字符串。没有旁白则 narration 为空字符串。",
