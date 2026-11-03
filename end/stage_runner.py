@@ -1397,14 +1397,46 @@ def _board_rank(text):
     return (panels, labels, headings, len(raw.strip()))
 
 
+def _board_fail_count(text):
+    """P45 error rows. None when the checker cannot be run."""
+    import tempfile
+
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix="-预演故事板.md", encoding="utf-8", delete=False
+    )
+    name = handle.name
+    try:
+        body = str(text or "")
+        handle.write(body if body.endswith("\n") else body + "\n")
+        handle.close()
+        _code, report = check_p45(name)
+    except (OSError, RuntimeError):
+        return None
+    finally:
+        try:
+            Path(name).unlink()
+        except OSError:
+            pass
+    return sum(1 for line in (report or "").splitlines() if "FAIL:" in line)
+
+
 def keep_richer_board(previous, new):
-    """Keep a real panel board when a later rewrite comes back as a summary."""
+    """Keep a real panel board when a later rewrite comes back as a summary.
+
+    A shorter repair that clears machine-check FAILs replaces the longer board.
+    """
     previous = str(previous or "").strip()
     new = str(new or "").strip()
-    old_panels, old_labels, old_headings, old_len = _board_rank(previous)
-    new_panels, new_labels, new_headings, new_len = _board_rank(new)
     if not previous:
         return new
+    if not new:
+        return previous
+    old_fails = _board_fail_count(previous)
+    new_fails = _board_fail_count(new)
+    if old_fails is not None and new_fails is not None and new_fails != old_fails:
+        return new if new_fails < old_fails else previous
+    old_panels, old_labels, old_headings, old_len = _board_rank(previous)
+    new_panels, new_labels, new_headings, new_len = _board_rank(new)
     if new_panels > old_panels:
         return new
     if new_panels == old_panels and new_panels > 0 and new_labels >= old_labels:

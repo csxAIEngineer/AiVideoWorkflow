@@ -73,6 +73,21 @@ def _prepare_h3_feed(path, text):
     return text
 
 
+def _drop_hidden_c31(code, report):
+    """C31 lines are not shown. They must not keep a failing exit by themselves.
+
+    Repair builds units from FAIL lines. Stripping C31 and still returning 1
+    leaves a gate with no row to edit, so the same failure comes back.
+    """
+    lines = [line for line in str(report or "").splitlines() if "C31 " not in line]
+    kept = "\n".join(lines).strip()
+    if code != 1:
+        return code, kept
+    if any("FAIL" in line for line in lines):
+        return 1, kept
+    return 0, kept
+
+
 def check_feed(path, model, mode, track):
     text = ""
     try:
@@ -89,8 +104,7 @@ def check_feed(path, model, mode, track):
         if mismatch:
             return 1, mismatch
         code, report = check_prompt(path, model or "h3", track or "1")
-        kept = [line for line in (report or "").splitlines() if "C31 " not in line]
-        return code, "\n".join(kept).strip()
+        return _drop_hidden_c31(code, report)
     return check_gate(path, model, mode)
 
 
@@ -105,7 +119,7 @@ def check_prompt(path, model, track):
     args = [str(path), "--model", model or "h3", "--track", str(track or "1")]
     if segment_count(text) >= 2:
         args.append("--by-segment")
-    return run_script(VALIDATOR, args)
+    return _drop_hidden_c31(*run_script(VALIDATOR, args))
 
 
 def check_p45(path, segments=None, material_mode="M1"):

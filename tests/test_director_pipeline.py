@@ -1098,6 +1098,18 @@ class MachineAndMountTest(unittest.TestCase):
         summary = "段1验证客厅。段2验证门口。"
         self.assertEqual(keep_richer_board(rich, summary), rich)
         self.assertIn("第 1 格", keep_richer_board(summary, rich))
+        longer = "## 段 1\n第 1 格：她站着。\n" + ("多余说明，没有六问。\n" * 30)
+        shorter = "\n".join((
+            "## 段 1",
+            "**本段要验什么**：站位",
+            "**风险提示**：左右别换",
+            "### 故事板提示词（1 格）",
+            "第 1 格：她站在门内，身体朝门，视线看向门外，手抬着，镜头在侧面，光从门内照来。",
+            "看图先看这三点：人、门、光",
+            "预演故事板：段1~段1 ✅",
+        ))
+        self.assertLess(len(shorter), len(longer))
+        self.assertEqual(keep_richer_board(longer, shorter), shorter)
         checked = previs_check_text(summary, "段 1\n" + rich, "M2")
         self.assertIn("第 1 格", checked)
         self.assertNotIn("验证客厅", checked)
@@ -1153,6 +1165,36 @@ class MachineAndMountTest(unittest.TestCase):
         stored = (folder / "_内部_" / "previs.md").read_text(encoding="utf-8")
         self.assertIn("第 1 格", stored)
         self.assertNotIn("验证客厅", stored)
+
+    def test_c31_alone_does_not_keep_a_failing_exit_once_its_lines_are_hidden(self):
+        from end.repair_units import units_for
+
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(
+            "## 【投喂单元 1/1】\nsubject_definitions:\n<Subject 1> a woman.\n",
+            encoding="utf-8",
+        )
+        only_c31 = "\n".join((
+            "[+] 时长4s | model=h3",
+            "[-] FAIL: C31 CT6-WIR 缺失 M1《素材接线单》",
+            "[-] 1 error(s)",
+        ))
+        with patch("end.gates.run_script", return_value=(1, only_c31)):
+            code, shown = check_feed(path, "h3", "M1", "1")
+        self.assertEqual(code, 0)
+        self.assertNotIn("C31", shown)
+        self.assertEqual(units_for("feed", shown, feed=path.read_text(encoding="utf-8")), [])
+        mixed = only_c31 + "\n[-] FAIL: H1 Ref2VA 缺段"
+        with patch("end.gates.run_script", return_value=(1, mixed)):
+            code, shown = check_feed(path, "h3", "M1", "1")
+        self.assertEqual(code, 1)
+        self.assertIn("H1", shown)
+        self.assertNotIn("C31", shown)
+        self.assertTrue(units_for("feed", shown, feed=path.read_text(encoding="utf-8")))
+        with patch("end.gates.run_script", return_value=(1, only_c31)):
+            code, shown = check_prompt(path, "h3", "1")
+        self.assertEqual(code, 0)
+        self.assertNotIn("C31", shown)
 
     def test_h3_feed_is_not_rejected_for_missing_seven_section_units(self):
         folder = Path(tempfile.mkdtemp())

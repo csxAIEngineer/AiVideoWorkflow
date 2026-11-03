@@ -11,11 +11,13 @@ from end.repair_units import apply_repairs, repair_brief, units_for
 class _Model(object):
     def __init__(self, empty_first=False):
         self.users = []
+        self.systems = []
         self.calls = []
         self.empty_first = empty_first
 
     def complete(self, messages, model, max_tokens, timeout, kind=None, effort=None):
         self.users.append(messages[-1]["content"])
+        self.systems.append(messages[0]["content"])
         self.calls.append((max_tokens, timeout))
 
         class Reply(object):
@@ -55,6 +57,26 @@ class RepairGraphTest(unittest.TestCase):
         model = _Model()
         run_repair(brief, model, model_name="qwen3.8-flash")
         self.assertEqual(model.calls, [(16000, 1200)])
+        system = model.systems[0]
+        for bit in (
+            "## 段 N",
+            "本段要验什么",
+            "风险提示",
+            "故事板提示词",
+            "第 1 格",
+            "看图先看这三点",
+            "谁在哪",
+            "朝哪",
+            "看哪",
+            "做什么",
+            "镜头在哪",
+            "光从哪来",
+        ):
+            self.assertIn(bit, system)
+        asset = repair_brief("asset", [{"id": "图-0", "label": "图1", "suggestion": "缺一句", "body": "旧块"}])
+        asset_model = _Model()
+        run_repair(asset, asset_model, model_name="qwen3.8-flash")
+        self.assertNotIn("本段要验什么", asset_model.systems[0])
 
     def test_empty_asset_repair_retries_once_at_4000(self):
         brief = repair_brief("asset", [{"id": "图-0", "label": "图1", "suggestion": "缺一句", "body": "旧块"}])
