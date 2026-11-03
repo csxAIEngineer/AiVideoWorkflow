@@ -21,11 +21,14 @@ schema and the same defaults. Final render passes mode=generate. Omitting
 mode does the same. MINIMAX_VIDEO_PREVIEW_PARAMETERS and
 MINIMAX_VIDEO_GENERATE_PARAMETERS are JSON objects that override fields
 on that set. ratio and duration stay empty in the set so each shot fills
-them, unless that mode's JSON sets them.
+them, unless that mode's JSON sets them. url and model on the same object
+choose the video-synthesis host and the request model. Empty url keeps the
+current Qwen host or MINIMAX_H3_BASE_URL. Empty model keeps MiniMax/MiniMax-H3.
 """
 
 import json
 import os
+import urllib.parse
 from pathlib import Path
 
 from AI.qwen_api.client import (
@@ -34,6 +37,7 @@ from AI.qwen_api.client import (
     error_text,
     extract_media_url,
     load_dotenv,
+    normalize_host,
     qwen_api_key,
     qwen_choice_path,
     resolve_qwen_host,
@@ -61,7 +65,12 @@ LOCAL_DEFAULT_PARAMETERS = {
 LOCAL_FAST_PARAMETERS = dict(LOCAL_DEFAULT_PARAMETERS)
 # Both modes store this shape. null ratio and duration mean "use this shot".
 # preset is part of the set and is written only on the local request.
+# url and model are not DashScope parameter fields. null url keeps the
+# client host. model defaults to VIDEO_MODEL.
 SUBMIT_PARAMETER_KEYS = ("resolution", "ratio", "duration", "watermark", "preset")
+MODE_TARGET_KEYS = ("url", "model")
+MODE_CONFIG_KEYS = SUBMIT_PARAMETER_KEYS + MODE_TARGET_KEYS
+_REQUEST_SKIP_KEYS = frozenset(SUBMIT_PARAMETER_KEYS) | frozenset(MODE_TARGET_KEYS)
 PREVIEW_PARAMETERS_ENV = "MINIMAX_VIDEO_PREVIEW_PARAMETERS"
 GENERATE_PARAMETERS_ENV = "MINIMAX_VIDEO_GENERATE_PARAMETERS"
 _PARAMETER_ENV = {
@@ -84,6 +93,8 @@ def _default_submit_parameters():
         "duration": None,
         "watermark": False,
         "preset": LOCAL_DEFAULT_PARAMETERS["preset"],
+        "url": None,
+        "model": VIDEO_MODEL,
     }
 
 
@@ -239,6 +250,41 @@ def _text_parameter(field, value):
     raise QwenError("parameters.%s 必须是非空字符串" % field)
 
 
+def _blank_target(value):
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def video_submit_target(mode, fallback_url):
+    """Host and model for one submit.
+
+    An empty url keeps fallback_url (the Qwen host, or MINIMAX_H3_BASE_URL
+    when the page selected local). An empty model keeps VIDEO_MODEL.
+    """
+    spec = video_mode_parameters(mode)
+    raw_url = spec.get("url")
+    if _blank_target(raw_url):
+        base = str(fallback_url or "").rstrip("/")
+    else:
+        if not isinstance(raw_url, str) or not raw_url.strip().startswith(("http://", "https://")):
+            raise QwenError("url 必须是 http 或 https 地址")
+        base = normalize_host(raw_url.strip())
+    raw_model = spec.get("model")
+    if _blank_target(raw_model):
+        model = VIDEO_MODEL
+    else:
+        if not isinstance(raw_model, str):
+            raise QwenError("model 必须是非空字符串")
+        model = raw_model.strip()
+    return base, model
+
+
+def _poll_host(url):
+    parsed = urllib.parse.urlsplit(str(url or "").strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+    return "%s://%s" % (parsed.scheme, parsed.netloc)
+
+
 def _watermark(value):
     if isinstance(value, bool):
         return value
@@ -258,7 +304,8 @@ def build_video_parameters(mode, aspect_ratio, duration, local):
     Cloud sends resolution, ratio, duration, and watermark. Local then
     update()s LOCAL_DEFAULT_PARAMETERS and writes this mode's preset.
     A JSON override replaces fields on the selected mode after that merge.
-    preset is left off the cloud body. Extra override keys are sent as-is.
+    preset is left off the cloud body. url and model stay off this object.
+    Extra override keys are sent as-is.
     """
     spec = video_mode_parameters(mode)
     if spec.get("ratio") is None:
@@ -279,7 +326,7 @@ def build_video_parameters(mode, aspect_ratio, duration, local):
         parameters.update(LOCAL_DEFAULT_PARAMETERS)
         parameters["preset"] = _text_parameter("preset", spec.get("preset"))
     for key, value in spec.items():
-        if key in SUBMIT_PARAMETER_KEYS or value is None:
+        if key in _REQUEST_SKIP_KEYS or value is None:
             continue
         parameters[key] = value
     return parameters
@@ -367,7 +414,11 @@ class QwenVideoClient(object):
         timeout=180,
         mode=None,
     ):
-        """Submit one clip. mode is preview or generate. Omitted mode is generate."""
+        """Submit one clip. mode is preview or generate. Omitted mode is generate.
+
+        The caller model is ignored. The mode config supplies the body model,
+        and VIDEO_MODEL when that field is empty.
+        """
         del model, idempotency_key
         prompt = str(text or "").strip()
         if not prompt:
@@ -375,16 +426,23 @@ class QwenVideoClient(object):
         media = _media(images)
         if self.local:
             media = _require_local_references(media)
+        base_url, model_name = video_submit_target(mode, self.client.base_url)
         parameters = build_video_parameters(mode, aspect_ratio, duration, self.local)
         body = {
-            "model": VIDEO_MODEL,
+            "model": model_name,
             "input": {"prompt": prompt},
             "parameters": parameters,
         }
         if media:
             body["input"]["media"] = media
-        data = self.client.request("POST", VIDEO_PATH, body, timeout=timeout, headers=ASYNC_HEADER)
-        task = self._finish(VideoTask(data), "")
+        data = self.client.request(
+            "POST",
+            base_url + VIDEO_PATH,
+            body,
+            timeout=timeout,
+            headers=ASYNC_HEADER,
+        )
+        task = self._finish(VideoTask(data), "", base_url)
         if not task.id:
             raise QwenError("千问出镜没有返回任务号")
         return task
@@ -393,9 +451,17 @@ class QwenVideoClient(object):
         task_id = getattr(task, "id", "") or ""
         return self.poll(task_id, timeout=timeout, previous=task)
 
-    def poll(self, task_id, timeout=60, previous=None):
-        data = self.client.get_task(task_id, timeout=timeout)
-        updated = self._finish(VideoTask(data), task_id)
+    def poll(self, task_id, timeout=60, previous=None, poll_url=None):
+        url = str(poll_url or "").strip()
+        if not url and previous is not None:
+            url = str(getattr(previous, "poll_url", "") or "").strip()
+        if url.startswith(("http://", "https://")):
+            data = self.client.request("GET", url, None, timeout=timeout)
+            host = _poll_host(url) or self.client.base_url
+        else:
+            data = self.client.get_task(task_id, timeout=timeout)
+            host = self.client.base_url
+        updated = self._finish(VideoTask(data), task_id, host)
         if previous is not None and not updated.poll_url:
             updated.poll_url = getattr(previous, "poll_url", "") or updated.poll_url
         return updated
@@ -404,9 +470,10 @@ class QwenVideoClient(object):
         url = task if isinstance(task, str) else (getattr(task, "url", "") or "")
         return self.client.download(url, dest, timeout=timeout)
 
-    def _finish(self, task, task_id):
+    def _finish(self, task, task_id, base_url=None):
         if not task.id:
             task.id = str(task_id or "")
+        host = str(base_url or self.client.base_url).rstrip("/")
         if task.id and not task.poll_url:
-            task.poll_url = self.client.base_url + "/api/v1/tasks/" + task.id
+            task.poll_url = host + "/api/v1/tasks/" + task.id
         return task

@@ -19,9 +19,9 @@ from AI.qwen_api.video import (
     LOCAL_DEFAULT_PARAMETERS,
     DEFAULT_LOCAL_VIDEO_URL,
     LOCAL_DUMMY_KEY,
+    MODE_CONFIG_KEYS,
     PREVIEW_PARAMETERS,
     PREVIEW_PARAMETERS_ENV,
-    SUBMIT_PARAMETER_KEYS,
     VIDEO_MODEL,
     VIDEO_PATH,
     QwenVideoClient,
@@ -598,12 +598,14 @@ class QwenMediaTest(unittest.TestCase):
     def test_preview_and_generate_defaults_match_legacy_submit(self):
         self.assertIsNot(PREVIEW_PARAMETERS, GENERATE_PARAMETERS)
         self.assertEqual(PREVIEW_PARAMETERS, GENERATE_PARAMETERS)
-        self.assertEqual(tuple(PREVIEW_PARAMETERS), SUBMIT_PARAMETER_KEYS)
+        self.assertEqual(tuple(PREVIEW_PARAMETERS), MODE_CONFIG_KEYS)
         self.assertEqual(PREVIEW_PARAMETERS["resolution"], "768P")
         self.assertIsNone(PREVIEW_PARAMETERS["ratio"])
         self.assertIsNone(PREVIEW_PARAMETERS["duration"])
         self.assertIs(PREVIEW_PARAMETERS["watermark"], False)
         self.assertEqual(PREVIEW_PARAMETERS["preset"], LOCAL_DEFAULT_PARAMETERS["preset"])
+        self.assertIsNone(PREVIEW_PARAMETERS["url"])
+        self.assertEqual(PREVIEW_PARAMETERS["model"], VIDEO_MODEL)
         images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
         with patch.dict(os.environ, {PREVIEW_PARAMETERS_ENV: "", GENERATE_PARAMETERS_ENV: ""}):
             self.assertEqual(video_mode_parameters(None), dict(PREVIEW_PARAMETERS))
@@ -611,8 +613,10 @@ class QwenMediaTest(unittest.TestCase):
             self.assertEqual(video_mode_parameters("生成"), video_mode_parameters("preview"))
             self.assertEqual(video_mode_parameters("预览"), video_mode_parameters("generate"))
             captured, client = self._mode_client(False)
-            client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9")
+            client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", model="caller-model")
             omitted = dict(captured["body"]["parameters"])
+            omitted_url = captured["url"]
+            omitted_model = captured["body"]["model"]
             client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", mode="generate")
             explicit = dict(captured["body"]["parameters"])
             client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", mode="preview")
@@ -634,6 +638,10 @@ class QwenMediaTest(unittest.TestCase):
         self.assertEqual(explicit, legacy)
         self.assertEqual(preview, legacy)
         self.assertNotIn("preset", omitted)
+        self.assertNotIn("url", omitted)
+        self.assertNotIn("model", omitted)
+        self.assertEqual(omitted_url, HOST + VIDEO_PATH)
+        self.assertEqual(omitted_model, VIDEO_MODEL)
         self.assertEqual(local_omitted, local_generate)
         self.assertEqual(local_preview, local_generate)
         self.assertEqual(local_generate["ratio"], "16:9")
@@ -658,8 +666,12 @@ class QwenMediaTest(unittest.TestCase):
         with patch.dict(os.environ, env):
             preview_spec = video_mode_parameters("preview")
             generate_spec = video_mode_parameters("generate")
-            self.assertEqual(tuple(preview_spec), SUBMIT_PARAMETER_KEYS)
-            self.assertEqual(set(generate_spec), set(SUBMIT_PARAMETER_KEYS) | {"seed"})
+            self.assertEqual(tuple(preview_spec), MODE_CONFIG_KEYS)
+            self.assertEqual(set(generate_spec), set(MODE_CONFIG_KEYS) | {"seed"})
+            self.assertIsNone(preview_spec["url"])
+            self.assertEqual(preview_spec["model"], VIDEO_MODEL)
+            self.assertIsNone(generate_spec["url"])
+            self.assertEqual(generate_spec["model"], VIDEO_MODEL)
             self.assertEqual(preview_spec["resolution"], "1080P")
             self.assertEqual(generate_spec["resolution"], "768P")
             self.assertEqual(video_mode_parameters("预览")["resolution"], "1080P")
@@ -703,6 +715,8 @@ class QwenMediaTest(unittest.TestCase):
         self.assertIs(cloud_generate["watermark"], True)
         self.assertEqual(cloud_generate["seed"], 7)
         self.assertNotIn("preset", cloud_generate)
+        self.assertNotIn("url", cloud_generate)
+        self.assertNotIn("model", cloud_generate)
         self.assertEqual(cloud_omitted, cloud_generate)
         self.assertEqual(local_preview["resolution"], "1080P")
         self.assertEqual(local_preview["ratio"], "1:1")
@@ -741,6 +755,14 @@ class QwenMediaTest(unittest.TestCase):
             with self.assertRaises(QwenError) as short:
                 client.submit_video("海", duration=6, mode="generate")
         self.assertIn("4 到 15", str(short.exception))
+        with patch.dict(os.environ, {PREVIEW_PARAMETERS_ENV: '{"url": "ftp://preview.example"}', GENERATE_PARAMETERS_ENV: ""}):
+            with self.assertRaises(QwenError) as bad_url:
+                client.submit_video("海", mode="preview")
+        self.assertIn("url", str(bad_url.exception))
+        with patch.dict(os.environ, {GENERATE_PARAMETERS_ENV: '{"model": 1}', PREVIEW_PARAMETERS_ENV: ""}):
+            with self.assertRaises(QwenError) as bad_model:
+                client.submit_video("海", mode="generate")
+        self.assertIn("model", str(bad_model.exception))
 
     def test_video_submit_rpc_defaults_to_generate_parameters(self):
         from AI import api as ai_api
@@ -773,6 +795,90 @@ class QwenMediaTest(unittest.TestCase):
         self.assertEqual(preview["resolution"], "1080P")
         self.assertEqual(preview["duration"], 5)
         self.assertNotIn("preset", preview)
+        self.assertEqual(captured["body"]["model"], VIDEO_MODEL)
+        self.assertEqual(captured["url"], HOST + VIDEO_PATH)
+
+    def test_mode_url_and_model_stay_on_that_set(self):
+        from AI import api as ai_api
+
+        images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
+        env = {
+            PREVIEW_PARAMETERS_ENV: json.dumps(
+                {"url": "http://preview.example:8765/api/v1", "model": "MiniMax-H3-preview"}
+            ),
+            GENERATE_PARAMETERS_ENV: json.dumps(
+                {"url": "https://generate.example/compatible-mode/v1", "model": "MiniMax/MiniMax-H3-gen"}
+            ),
+        }
+        with patch.dict(os.environ, env):
+            captured, cloud = self._mode_client(False)
+            cloud_captured = captured
+            preview_task = cloud.submit_video(
+                "海面亮起来",
+                duration=5,
+                aspect_ratio="16:9",
+                mode="preview",
+                model="caller-model",
+            )
+            preview_url = captured["url"]
+            preview_model = captured["body"]["model"]
+            preview_parameters = dict(captured["body"]["parameters"])
+            generate_task = cloud.submit_video(
+                "海面亮起来",
+                duration=5,
+                aspect_ratio="16:9",
+                mode="generate",
+            )
+            generate_url = captured["url"]
+            generate_model = captured["body"]["model"]
+            cloud.poll(preview_task.id, poll_url=preview_task.poll_url)
+            preview_poll = captured["url"]
+            cloud.poll(generate_task.id, previous=generate_task)
+            generate_poll = captured["url"]
+            captured, local = self._mode_client(True)
+            local.submit_video(
+                "海面亮起来",
+                duration=6,
+                images=images,
+                mode="preview",
+            )
+            local_url = captured["url"]
+            local_body = dict(captured["body"])
+            with patch.object(ai_api, "_video_client", return_value=cloud):
+                ai_api.video_submit(
+                    {
+                        "text": "海面亮起来",
+                        "duration": 5,
+                        "aspect_ratio": "16:9",
+                        "mode": "preview",
+                        "model": "other-model",
+                    }
+                )
+                rpc_url = cloud_captured["url"]
+                rpc_model = cloud_captured["body"]["model"]
+                polled = ai_api.video_poll(
+                    {"task_id": preview_task.id, "poll_url": preview_task.poll_url}
+                )
+                rpc_poll = cloud_captured["url"]
+        self.assertEqual(preview_url, "http://preview.example:8765" + VIDEO_PATH)
+        self.assertEqual(preview_model, "MiniMax-H3-preview")
+        self.assertNotIn("url", preview_parameters)
+        self.assertNotIn("model", preview_parameters)
+        self.assertEqual(preview_parameters["resolution"], "768P")
+        self.assertEqual(preview_task.poll_url, "http://preview.example:8765/api/v1/tasks/vid-mode")
+        self.assertEqual(generate_url, "https://generate.example" + VIDEO_PATH)
+        self.assertEqual(generate_model, "MiniMax/MiniMax-H3-gen")
+        self.assertEqual(generate_task.poll_url, "https://generate.example/api/v1/tasks/vid-mode")
+        self.assertEqual(preview_poll, preview_task.poll_url)
+        self.assertEqual(generate_poll, generate_task.poll_url)
+        self.assertEqual(local_url, preview_url)
+        self.assertEqual(local_body["model"], "MiniMax-H3-preview")
+        self.assertEqual(local_body["parameters"]["preset"], "fast")
+        self.assertNotIn("url", local_body["parameters"])
+        self.assertEqual(rpc_url, preview_url)
+        self.assertEqual(rpc_model, "MiniMax-H3-preview")
+        self.assertEqual(rpc_poll, preview_task.poll_url)
+        self.assertEqual(polled["poll_url"], preview_task.poll_url)
 
     def test_remote_video_submit_passes_mode(self):
         from end.remote import RemoteVideoClient

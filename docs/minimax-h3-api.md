@@ -41,7 +41,7 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 }
 ```
 
-没有参考素材时不传 `input.media`。调用方传入的 `model` 和 `idempotency_key` 在发出前被丢掉，请求体里的模型名始终是 `MiniMax/MiniMax-H3`。
+没有参考素材时不传 `input.media`。调用方传入的 `model` 和 `idempotency_key` 在发出前被丢掉。请求体里的模型名默认是 `MiniMax/MiniMax-H3`。某一套模式的 JSON 写了 `model` 时用那个名字。
 
 | 参数 | 实际取值 |
 |---|---|
@@ -51,16 +51,16 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 | `ratio` | 纯文生时用锁定画幅 `16:9`、`9:16` 或 `21:9`。带图时传入空值，客户端写成 `adaptive`。文档里的比例还有 `4:3`、`1:1`、`3:4`，其它值也会变成 `adaptive` |
 | `prompt` | 投喂稿正文。带首帧时再追加「从这张首帧开始」和无字幕约束 |
 
-`preview` 和 `generate` 各有一套参数，字段相同：`resolution`、`ratio`、`duration`、`watermark`、`preset`。默认两套一样。`ratio` 和 `duration` 留空时用这一镜的画幅和秒数。出片固定传 `mode=generate`。`video.submit` 不传 `mode`、或传空字符串时，也按 `generate` 组装，请求体与上面的示例一致。调试要换一套时传 `mode=preview`（也认 `预览` / `生成`）。
+`preview` 和 `generate` 各有一套配置，字段相同：`resolution`、`ratio`、`duration`、`watermark`、`preset`、`url`、`model`。默认两套一样。`ratio` 和 `duration` 留空时用这一镜的画幅和秒数。`url` 留空时，云端用当前千问主机，本地用 `MINIMAX_H3_BASE_URL`。`model` 留空时仍是 `MiniMax/MiniMax-H3`。`url` 和 `model` 不进入 `parameters`。出片固定传 `mode=generate`。`video.submit` 不传 `mode`、或传空字符串时，也按 `generate` 组装，请求体与上面的示例一致。调试要换一套时传 `mode=preview`（也认 `预览` / `生成`）。
 
 覆盖写在环境变量里，值是 JSON 对象，只写要改的字段：
 
 ```
-MINIMAX_VIDEO_PREVIEW_PARAMETERS={"resolution":"768P","watermark":false,"preset":"fast"}
-MINIMAX_VIDEO_GENERATE_PARAMETERS={"duration":8,"preset":"quality"}
+MINIMAX_VIDEO_PREVIEW_PARAMETERS={"resolution":"768P","watermark":false,"preset":"fast","url":"http://127.0.0.1:8765","model":"MiniMax/MiniMax-H3"}
+MINIMAX_VIDEO_GENERATE_PARAMETERS={"duration":8,"preset":"quality","model":"MiniMax/MiniMax-H3"}
 ```
 
-没写的字段保持默认。`preset` 只合并进本地请求。云端示例仍是上面四个字段。页面「预览」播放的是已经落盘的成片，不切换这套参数。
+没写的字段保持默认。`preset` 只合并进本地请求。云端示例仍是上面四个字段。提交后的轮询地址是这次 `url` 上的 `/api/v1/tasks/{task_id}`。鉴权仍用当前出镜客户端的 Bearer。页面「预览」播放的是已经落盘的成片，不切换这套参数。
 
 `media[].type` 由这一镜的模式决定。一次请求不能同时带首尾帧和参考素材。
 
@@ -89,7 +89,7 @@ GET /api/v1/tasks/{task_id}
 
 页面「出镜」选本地时，上面三步改打 `MINIMAX_H3_BASE_URL`。本仓库是 `http://121.196.162.203:8765`，进程是 `local_api --mode ref2va`，权重是 FastH3-Omni-FP8。没设变量时回退到 `http://127.0.0.1:8765`。没配 `MINIMAX_H3_API_KEY` 时鉴权是 `Authorization: Bearer local`。服务不校验这个头，`X-DashScope-Async` 也可以不带。客户端仍会带上。
 
-模型名客户端固定发 `MiniMax/MiniMax-H3`。服务端也认短名 `MiniMax-H3`。别的名字返回 400 `model must be MiniMax/MiniMax-H3`。
+模型名默认发 `MiniMax/MiniMax-H3`。这一套配置写了 `model` 时改发那个名字。服务端也认短名 `MiniMax-H3`。别的名字返回 400 `model must be MiniMax/MiniMax-H3`。主机同样可以由这一套的 `url` 覆盖；不写时仍是 `MINIMAX_H3_BASE_URL`。
 
 请求体在云端四个字段之外再带 `preset: fast`。`preset` 取当前 `preview` 或 `generate` 那一套，默认是 `fast`。不传 `width`、`height`、`frames`、`steps`。
 

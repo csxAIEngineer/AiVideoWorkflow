@@ -269,7 +269,11 @@ def video_submit(params):
 
 def video_poll(params):
     params = params or {}
-    updated = _video_client().poll(params.get("task_id") or "", timeout=int(params.get("timeout") or 60))
+    updated = _video_client().poll(
+        params.get("task_id") or "",
+        timeout=int(params.get("timeout") or 60),
+        poll_url=params.get("poll_url") or "",
+    )
     return _video(updated)
 
 
