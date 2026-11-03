@@ -557,7 +557,7 @@ def _begin_writing(project):
     if pipeline.get("accepted"):
         folder = project_dir(project["id"])
         pipeline, _action = accept_pipeline(pipeline, read_locks(folder))
-        label = "独立质检" if pipeline.get("action") == "finish" else "下一段"
+        label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
         _enqueue_stage(project, pipeline, label)
         return public_view(read_project(project["id"]) or project)
     pipeline = initial_pipeline(detect_only(project.get("brief") or ""))
@@ -839,7 +839,7 @@ def answer_gate(project, text):
             project["progress"] = progress
             return _ask_lock(project, _open_question(locks, project.get("brief") or ""))
     pipeline, _action = accept_pipeline(pipeline, locks)
-    label = "独立质检" if pipeline.get("action") == "finish" else "下一段"
+    label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
     _enqueue_stage(project, pipeline, label)
     return public_view(read_project(project["id"]) or project)
 

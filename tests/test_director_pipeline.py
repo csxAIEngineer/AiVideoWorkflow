@@ -1468,6 +1468,63 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertIn("detailed_description: detailed_description", once)
         self.assertEqual(render_feed_text(once), once)
 
+    def test_h3_feed_contract_and_advisory_qc_stay_off_the_ready_path(self):
+        from end.stage_runner import advisory_qc_enabled, stage_instruction
+
+        h3 = stage_instruction("feed", {"model": "h3"})
+        self.assertNotIn("写七段", h3)
+        self.assertIn("subject_definitions:", h3)
+        self.assertIn("六段正文一律英文", h3)
+        self.assertIn("<d>[Chinese]", h3)
+        seedance = stage_instruction("feed", {"model": "2.5"})
+        self.assertIn("下面写七段", seedance)
+        self.assertNotIn("<d>[Chinese]", seedance)
+
+        folder = Path(tempfile.mkdtemp())
+        internal = folder / "_内部_"
+        internal.mkdir()
+        (internal / "feed.md").write_text("subject_definitions:\nhello\n", encoding="utf-8")
+        locks = _base_locks(delivery="2")
+        project = {
+            "template": "short-drama-director",
+            "model": "qwen3.8-flash",
+            "title": "雨夜",
+            "progress": {
+                "pipeline": {
+                    "action": "finish",
+                    "current": "feed",
+                    "accepted": ["script", "asset", "storyboard", "feed"],
+                }
+            },
+        }
+        calls = []
+
+        def writer(brief, skill_pack, debug_dir=None, model=None, template=None, trace_prompts=None):
+            calls.append(brief or "")
+            return {"text": "质检意见"}
+
+        with patch("end.stage_runner.check_prompt", return_value=(0, "PASSED")):
+            ready = execute(project, folder, locks, writer, lambda *args, **kwargs: "")
+        self.assertEqual(ready["progress"]["phase"], "prompts_ready")
+        self.assertFalse(any("任务：独立质检" in call for call in calls))
+        self.assertFalse((internal / "质检.md").is_file())
+
+        calls.clear()
+        with patch.dict("os.environ", {"AIVIDEO_ADVISORY_QC": "1"}):
+            self.assertTrue(advisory_qc_enabled())
+            with patch("end.stage_runner.check_prompt", return_value=(0, "PASSED")):
+                execute(project, folder, locks, writer, lambda *args, **kwargs: "")
+        self.assertTrue(any("任务：独立质检" in call for call in calls))
+        self.assertIn("质检意见", (internal / "质检.md").read_text(encoding="utf-8"))
+
+        with patch("end.stage_runner.check_prompt", return_value=(1, "[-] FAIL: H1 缺段")):
+            failed = execute(project, folder, locks, writer, lambda *args, **kwargs: "")
+        self.assertEqual(failed["stage"], "投喂机检")
+        self.assertEqual(failed["progress"]["phase"], "gate_machine")
+        self.assertIn("投喂机检没过", failed["message"]["content"])
+        self.assertNotIn("独立质检", failed["stage"])
+        self.assertNotIn("独立质检", failed["message"]["content"])
+
 
 class DeliveryTest(unittest.TestCase):
     def test_public_package_is_at_most_three_and_skips_internal(self):
@@ -1498,7 +1555,7 @@ class PageTest(unittest.TestCase):
     def test_page_stops_on_gates_and_renders_seam_and_style(self):
         app = (ROOT / "front" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "front" / "styles.css").read_text(encoding="utf-8")
-        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "独立质检", "离线看板"]', app)
+        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "离线看板"]', app)
         self.assertIn('kind === "multi"', app)
         self.assertIn('type = "checkbox"', app)
         self.assertIn('kind === "cards"', app)

@@ -55,7 +55,7 @@ let draftMaterials = [];
 let seamKept = new Set();
 const MAX_MATERIALS = 8;
 
-const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "独立质检", "离线看板"];
+const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "离线看板"];
 const DEBUG_FILE_LABELS = {
   skill_pack: "Skill 规则",
   system_prompt: "System Prompt",

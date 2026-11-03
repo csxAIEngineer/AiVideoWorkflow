@@ -728,13 +728,22 @@ _INSTRUCTION = {
     )),
     "feed": "\n".join((
         "只写投喂稿，放在 feed。feed 必须是字符串。",
-        "用 ## 【投喂单元 N/M】标题，下面写七段。",
-        "每一段改成六段正文。字段名必须带冒号并且单独成行：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+        "用 ## 【投喂单元 N/M】标题。每一段只写六段英文正文。",
+        "不要使用七段式栏名（【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】）。",
+        "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+        "六段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
         "每个投喂单元单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。",
         "每个 Subject 必须对应 assets.md 里已经有的图。没有关键帧资产就不要写 Picture。",
         "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
     )),
 }
+
+_FEED_SEEDANCE = "\n".join((
+    "只写投喂稿，放在 feed。feed 必须是字符串。",
+    "用 ## 【投喂单元 N/M】标题，下面写七段：【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】。",
+    "每个投喂单元单独计时，单段不超过该模型上限。",
+    "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
+))
 
 
 def detect_only(text):
@@ -815,13 +824,31 @@ def mount_header(stage, locks, carried, only):
     return "\n".join(lines)
 
 
+def stage_instruction(stage, locks=None):
+    """H3 feed is six English sections. Seedance keeps the seven-section sheet."""
+    if stage != "feed":
+        return _INSTRUCTION.get(stage, "")
+    model = str((locks or {}).get("model") or "h3").lower()
+    if model == "h3":
+        return _INSTRUCTION["feed"]
+    return _FEED_SEEDANCE
+
+
+def advisory_qc_enabled():
+    """P5 质检.md is advisory. Render never reads it. Default off so prompts_ready skips that suite."""
+    import os
+
+    raw = (os.environ.get("AIVIDEO_ADVISORY_QC") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def stage_brief(stage, locks, carried):
     return "\n\n".join(
         part
         for part in (
             mount_header(stage, locks, carried, ""),
             lock_brief(locks),
-            _INSTRUCTION.get(stage, ""),
+            stage_instruction(stage, locks),
             "上一阶段正文：" if carried else "",
             carried,
         )
@@ -930,12 +957,15 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
     if passed and stage == "storyboard":
         return "分镜门。继续之后才写投喂稿。", ["继续"]
     if passed and stage == "feed":
-        return "投喂前。闸门已过。继续就做质检和交付。", ["继续"]
+        return "投喂前。闸门已过。继续就做投喂机检并交付。", ["继续"]
     tail = (report or "").strip()
     if len(tail) > 1200:
         tail = tail[-1200:]
     if stage in ("asset", "storyboard", "feed"):
-        reply = "机检没过。根据建议修改会按下面这些项改。"
+        if stage == "feed":
+            reply = "投喂机检没过。根据建议修改会按下面这些项改。"
+        else:
+            reply = "机检没过。根据建议修改会按下面这些项改。"
         if tail:
             reply = reply + "\n" + tail
         options = [ASSET_REVISE]
@@ -959,8 +989,10 @@ def gate_result(stage, passed, report, pipeline, has_draft=False):
     tries = int((pipeline or {}).get("repairs") or 0)
     reply, options = _gate_copy(stage, passed, report, tries, has_draft=has_draft)
     phase = _GATE_PHASE.get(stage, "gate_fail")
-    if not passed and stage == "feed" and (pipeline or {}).get("check") == "qc":
-        phase = "gate_fail"
+    label = _GATE_LABEL.get(stage, "停在门上")
+    if not passed and str((pipeline or {}).get("check") or "") == "machine":
+        phase = "gate_machine"
+        label = "投喂机检"
     stored = dict(pipeline or {})
     stored.update(
         {
@@ -973,7 +1005,7 @@ def gate_result(stage, passed, report, pipeline, has_draft=False):
     return {
         "terminal": "gate",
         "status": "gate",
-        "stage": "独立质检" if phase == "gate_fail" else _GATE_LABEL.get(stage, "停在门上"),
+        "stage": label,
         "progress": {
             "percent": _PERCENT.get(stage, 50),
             "phase": phase,
@@ -2518,7 +2550,7 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
                 task_line,
                 lock_brief(locks),
                 _user_story_block(stage, story, current_draft),
-                _INSTRUCTION.get(stage, ""),
+                stage_instruction(stage, locks),
                 "当前这一稿：\n" + current_draft if current_draft else "",
                 "精修要求：\n" + note if note else "",
                 "上一阶段正文：\n" + carried if carried else "",
@@ -2551,13 +2583,14 @@ def _finish(folder, locks, pipeline):
         code, report = check_prompt(feed_path, locks.get("model") or "h3", locks.get("track") or "1")
         if code != 0:
             failed = dict(pipeline or {})
-            failed["check"] = "qc"
+            failed["check"] = "machine"
             failed["current"] = "feed"
             return gate_result("feed", False, report, failed)
         claim = unverified_claim(_read(feed_path), locks.get("material_mode"))
         if claim:
             failed = dict(pipeline or {})
-            failed["check"] = "qc"
+            failed["check"] = "machine"
+            failed["current"] = "feed"
             return gate_result("feed", False, "没看见图，却写了%s" % claim, failed)
     title = spec.get("title") or "未命名"
     previs_file = folder / previs_name(title)
@@ -2769,7 +2802,8 @@ def _side_note(project, folder, locks, write_model, task_line, filename, label, 
 
 
 def _done(project, folder, locks, pipeline, write_model):
-    _side_note(project, folder, locks, write_model, "任务：独立质检", "质检.md", "独立质检", "qc")
+    if advisory_qc_enabled():
+        _side_note(project, folder, locks, write_model, "任务：独立质检", "质检.md", "独立质检", "qc")
     if str((locks or {}).get("delivery") or "") in ("1", "3"):
         _side_note(project, folder, locks, write_model, "任务：离线看板", "看板说明.md", "离线看板", "board")
     return _finish(folder, locks, pipeline)

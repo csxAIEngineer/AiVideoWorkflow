@@ -359,7 +359,7 @@ def load_skill_pack(template=None, context="", stage="P4"):
         files = [item for item in files if item.startswith(only)]
         adapter = "short-drama-director/references/h3-adapter.md"
         if only.startswith("sd-feed-engine/") and route["model"] == "h3" and adapter not in files:
-            files.append(adapter)
+            files.insert(0, adapter)
         if not files:
             raise RuntimeError("缺少子技能 %s" % only)
     chunks = []
@@ -455,6 +455,11 @@ _MERGE_SHAPE = {
         "看板说明放在 text。不要写 HTML。",
     )),
 }
+_H3_FEED_CONTRACT = "\n".join((
+    "模型是 H3。feed 只写六段英文正文。",
+    "字段名必须单独成行并带冒号，顺序固定：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+    "不要使用七段式栏名。六段正文一律英文。对白写成 <d>[Chinese] 原文</d>。画面内文字保留原语言。",
+))
 _NODE_SHAPE = "\n".join((
     "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
     "只写这些原文要求落到本阶段产物里的内容，放在 text。",
@@ -663,9 +668,11 @@ def skill_node_prompt(relative, repair=False):
     return cohort_prompt([relative], repair=repair)
 
 
-def merge_prompt(task):
+def merge_prompt(task, brief=""):
     """Director chapters plus the task's output shape. No specialist originals."""
     shape = _MERGE_SHAPE.get(task) or _MERGE_SHAPE["script"]
+    if task == "feed" and parse_route(brief, "P4").get("model") == "h3":
+        shape = shape + "\n" + _H3_FEED_CONTRACT
     return "\n\n".join((
         "# 总控 %s" % _DIRECTOR_FILE,
         director_for_merge(),
