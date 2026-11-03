@@ -1,34 +1,68 @@
 {
-  "_comment": "出镜登记示例。复制为 data/video_catalog.json 后再改。data/video_catalog.json 不入库。缺文件、空对象、或没写的字段都用内置默认：平台 qwen / omniref，模型 minimax-h3（请求体 MiniMax/MiniMax-H3），参数档 preview 与 generate 相同。页面云端/本地仍看 data/minimax_video。密钥放 .env，不要写进这个文件。以 _ 开头的键只是说明，运行时会丢掉。",
+  "_comment": "出镜登记示例。复制为 data/video_catalog.json 后，preview 走 token-plan 上的 wan3.0-video、480P，generate 走同一平台和模型、720P。data/video_catalog.json 不入库。缺这个文件时仍用内置默认：页面云端/本地 + minimax-h3。MiniMax-H3、qwen、omniref 都还在，没有删。密钥放 .env 的 TOKE_PLAN_QWEN_API_KEY，不要写进这个文件。以 _ 开头的键只是说明。",
   "platforms": {
-    "_comment": "平台管主机、鉴权、协议和素材规则，不含模型名和参数。auth 用 qwen、local、client 或 env。env 时 key_env 是 .env 里的变量名。adapter 默认 dashscope。emit_local_defaults 为 true 时才把 preset 放进请求，内置只有 omniref。",
-    "_example": {
-      "studio": {
-        "adapter": "dashscope",
-        "host": "https://studio.example",
-        "auth": "env",
-        "key_env": "STUDIO_VIDEO_KEY",
-        "media": "open",
-        "emit_local_defaults": false
-      }
+    "_comment": "token-plan 固定生产主机 https://token-plan.maas.qianwenaiapi.com 和 TOKE_PLAN_QWEN_API_KEY。qwen 与 omniref 是内置平台，这里重复写出来是为了留档，不改变它们。",
+    "qwen": {
+      "adapter": "dashscope",
+      "host": "qwen",
+      "auth": "qwen",
+      "media": "open",
+      "emit_local_defaults": false
+    },
+    "omniref": {
+      "adapter": "dashscope",
+      "host": "minimax_h3",
+      "auth": "local",
+      "media": "reference",
+      "emit_local_defaults": true
+    },
+    "token-plan": {
+      "adapter": "dashscope",
+      "host": "token-plan",
+      "auth": "token-plan",
+      "media": "open",
+      "emit_local_defaults": false
     }
   },
   "models": {
-    "_comment": "模型只有请求体里的 id。同一 id 可以接到不同平台，参数不写在这里。",
-    "_example": {
-      "studio-take": {
-        "id": "studio/take-1"
-      }
+    "_comment": "wan3.0-video 是叠加的模型。minimax-h3 仍保留。duration_* 和 emit 不进请求体。wan3 不发送 watermark 和 preset。prompt_extend 只有参数档写了才发送。",
+    "minimax-h3": {
+      "id": "MiniMax/MiniMax-H3",
+      "duration_min": 4,
+      "duration_max": 15,
+      "emit": ["resolution", "ratio", "duration", "watermark", "preset"]
+    },
+    "wan3.0-video": {
+      "id": "wan3.0-video",
+      "duration_min": 2,
+      "duration_max": 30,
+      "duration_extra": [-1],
+      "emit": ["resolution", "ratio", "duration", "prompt_extend"]
     }
   },
   "profiles": {
-    "_comment": "参数档。只写要覆盖的字段。ratio 和 duration 不写就用这一镜的画幅和秒数。url、model、platform 不要写在这里。",
-    "preview": {},
-    "generate": {}
+    "_comment": "preview / generate 切到 wan3 的分辨率。minimax 保留原来的 768P 参数档，改路线时还能用。ratio、duration 不写就用这一镜；带图时调用方传入空画幅，客户端写成 adaptive。",
+    "preview": {
+      "resolution": "480P"
+    },
+    "generate": {
+      "resolution": "720P"
+    },
+    "minimax": {
+      "resolution": "768P",
+      "watermark": false,
+      "preset": "fast"
+    }
   },
   "routes": {
-    "_comment": "把某一档绑到平台和模型。platform 留空则跟随页面上的云端或本地。model 可以是上面的登记名，也可以直接写请求体 id。url 可改这一档的主机。",
-    "preview": {},
-    "generate": {}
+    "_comment": "当前 preview 和 generate 都走 token-plan + wan3.0-video。改回 MiniMax：platform 写 qwen 或 omniref，model 写 minimax-h3，并把 mode 指到 minimax 这一档，或把 preview/generate 的 resolution 改回 768P。",
+    "preview": {
+      "platform": "token-plan",
+      "model": "wan3.0-video"
+    },
+    "generate": {
+      "platform": "token-plan",
+      "model": "wan3.0-video"
+    }
   }
 }

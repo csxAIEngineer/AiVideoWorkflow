@@ -19,6 +19,8 @@ from AI.qwen_api.client import QwenError, normalize_host, qwen_api_key, resolve_
 
 DEFAULT_MODEL_KEY = "minimax-h3"
 DEFAULT_MODEL_ID = "MiniMax/MiniMax-H3"
+WAN_MODEL_KEY = "wan3.0-video"
+WAN_MODEL_ID = "wan3.0-video"
 DASH_SCOPE_SUBMIT_PATH = "/api/v1/services/aigc/video-generation/video-synthesis"
 DASH_SCOPE_TASK_PREFIX = "/api/v1/tasks/"
 
@@ -97,6 +99,7 @@ class SubmissionPlan(object):
         self.task_prefix = task_prefix
         self.url_override = url_override
         self.explicit = explicit
+        self.model = {}
 
 
 def default_profile():
@@ -221,15 +224,43 @@ def parameter_profiles(env_path=None):
     return table
 
 
+def _builtin_models():
+    """Model records carry the request id and which parameter keys they accept.
+
+    duration_min/max and duration_extra are the shot-length check. They are
+    not DashScope parameters. MiniMax stays 4–15. wan3.0-video is 2–30 or -1.
+    """
+    return {
+        DEFAULT_MODEL_KEY: {
+            "id": DEFAULT_MODEL_ID,
+            "duration_min": 4,
+            "duration_max": 15,
+            "emit": ["resolution", "ratio", "duration", "watermark", "preset"],
+        },
+        WAN_MODEL_KEY: {
+            "id": WAN_MODEL_ID,
+            "duration_min": 2,
+            "duration_max": 30,
+            "duration_extra": [-1],
+            "emit": ["resolution", "ratio", "duration", "prompt_extend"],
+        },
+    }
+
+
 def models(env_path=None):
-    """Model key -> {id}. The id is the request body model. No parameters."""
-    table = {DEFAULT_MODEL_KEY: {"id": DEFAULT_MODEL_ID}}
+    """Model key -> record. The id is the request body model. No host."""
+    table = _builtin_models()
     for name, value in _section(_load_catalog(env_path), "models").items():
         if isinstance(value, str) and value.strip():
-            table[str(name)] = {"id": value.strip()}
+            base = dict(table.get(name) or {})
+            base["id"] = value.strip()
+            table[str(name)] = base
             continue
         if isinstance(value, dict) and isinstance(value.get("id"), str) and value.get("id").strip():
-            table[str(name)] = {"id": value.get("id").strip()}
+            base = dict(table.get(name) or {})
+            base.update(_plain(value))
+            base["id"] = str(base.get("id") or "").strip()
+            table[str(name)] = base
             continue
         raise QwenError("%s 的 models.%s 需要 id" % (CATALOG_LABEL, name))
     return table
@@ -250,6 +281,13 @@ def _builtin_platforms():
             "auth": "local",
             "media": "reference",
             "emit_local_defaults": True,
+        },
+        "token-plan": {
+            "adapter": "dashscope",
+            "host": "token-plan",
+            "auth": "token-plan",
+            "media": "open",
+            "emit_local_defaults": False,
         },
     }
 
@@ -321,17 +359,25 @@ def normalize_profile(value, env_path=None):
     raise QwenError("出镜提交模式只能是 preview 或 generate")
 
 
-def resolve_model_id(token, env_path=None):
-    """Registry key or a raw model id. Parameters are not consulted."""
+def lookup_model(token, env_path=None):
+    """Registry key or a raw model id. The record does not include a host."""
+    table = models(env_path)
     if token is None or (isinstance(token, str) and not token.strip()):
-        return DEFAULT_MODEL_ID
+        return dict(table[DEFAULT_MODEL_KEY])
     if not isinstance(token, str):
         raise QwenError("model 必须是非空字符串")
     text = token.strip()
-    found = models(env_path).get(text)
-    if found:
-        return found["id"]
-    return text
+    if text in table:
+        return dict(table[text])
+    for record in table.values():
+        if record.get("id") == text:
+            return dict(record)
+    return {"id": text}
+
+
+def resolve_model_id(token, env_path=None):
+    """Request body model string for a registry key or a raw id."""
+    return lookup_model(token, env_path=env_path)["id"]
 
 
 def profile_parameters(name, env_path=None):
@@ -356,6 +402,10 @@ def _platform_host(platform):
         return normalize_host(host)
     if host == "qwen":
         return resolve_qwen_host()
+    if host == "token-plan":
+        from AI.qwen_api.client import QWEN_ENVS
+
+        return QWEN_ENVS["prod"]
     if host == "minimax_h3":
         from AI.qwen_api.video import local_video_base_url
 
@@ -371,6 +421,11 @@ def _platform_key(platform, fallback_key):
         key, var = qwen_api_key()
         if not key:
             raise QwenError("未配置 %s" % var)
+        return key
+    if auth == "token-plan":
+        key = str(os.environ.get("TOKE_PLAN_QWEN_API_KEY") or "").strip()
+        if not key:
+            raise QwenError("未配置 TOKE_PLAN_QWEN_API_KEY")
         return key
     if auth == "local":
         from AI.qwen_api.video import local_video_api_key
@@ -440,10 +495,11 @@ def resolve_plan(mode, local, fallback_url, fallback_key, env_path=None):
     if override:
         base = normalize_host(override)
     submit_path, headers, task_prefix = _binding(platform)
-    return SubmissionPlan(
+    chosen = lookup_model(route.get("model"), env_path=env_path)
+    plan = SubmissionPlan(
         profile=name,
         platform=platform_name,
-        model_id=resolve_model_id(route.get("model"), env_path=env_path),
+        model_id=chosen["id"],
         base_url=base,
         api_key=api_key,
         parameters=parameters,
@@ -455,6 +511,8 @@ def resolve_plan(mode, local, fallback_url, fallback_key, env_path=None):
         url_override=override if override else None,
         explicit=bool(explicit),
     )
+    plan.model = chosen
+    return plan
 
 
 def platform_credentials(name, env_path=None):

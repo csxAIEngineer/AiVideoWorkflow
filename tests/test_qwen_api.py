@@ -312,6 +312,7 @@ class QwenMediaTest(unittest.TestCase):
         def opener(request, timeout=None):
             captured["url"] = request.full_url
             captured["async"] = request.get_header("X-dashscope-async")
+            captured["authorization"] = request.get_header("Authorization")
             if request.data:
                 captured["body"] = json.loads(request.data.decode("utf-8"))
             return _Body(json.dumps(payload))
@@ -996,20 +997,64 @@ class QwenMediaTest(unittest.TestCase):
         finally:
             unregister_adapter("probe")
 
-    def test_example_catalog_file_keeps_builtin_defaults(self):
+    def test_example_catalog_selects_wan3_and_keeps_minimax(self):
+        from AI.qwen_api.client import QWEN_ENVS
         from AI.qwen_api.video_catalog import video_registry
 
         example = Path(__file__).resolve().parents[1] / "data" / "video_catalog.example.json"
         env_path = self._catalog(raw=example.read_text(encoding="utf-8"))
-        registry = video_registry(env_path)
-        self.assertEqual(set(registry["platforms"]), {"qwen", "omniref"})
-        self.assertEqual(registry["models"]["minimax-h3"]["id"], VIDEO_MODEL)
-        self.assertEqual(registry["profiles"]["preview"]["resolution"], "768P")
-        self.assertEqual(registry["profiles"]["preview"]["watermark"], False)
-        self.assertEqual(registry["profiles"]["generate"], registry["profiles"]["preview"])
-        self.assertEqual(registry["routes"]["generate"]["model"], "minimax-h3")
-        self.assertEqual(registry["routes"]["preview"]["platform"], "")
-        self.assertIsNone(registry["routes"]["preview"]["url"])
+        images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
+        with patch.dict(os.environ, {"TOKE_PLAN_QWEN_API_KEY": "plan-key"}):
+            registry = video_registry(env_path)
+            self.assertEqual(set(registry["platforms"]), {"qwen", "omniref", "token-plan"})
+            self.assertEqual(registry["models"]["minimax-h3"]["id"], "MiniMax/MiniMax-H3")
+            self.assertEqual(registry["models"]["wan3.0-video"]["id"], "wan3.0-video")
+            self.assertEqual(registry["profiles"]["minimax"]["resolution"], "768P")
+            self.assertIs(registry["profiles"]["minimax"]["watermark"], False)
+            self.assertEqual(registry["profiles"]["minimax"]["preset"], "fast")
+            self.assertEqual(registry["profiles"]["preview"]["resolution"], "480P")
+            self.assertEqual(registry["profiles"]["generate"]["resolution"], "720P")
+            self.assertEqual(registry["routes"]["preview"]["platform"], "token-plan")
+            self.assertEqual(registry["routes"]["preview"]["model"], "wan3.0-video")
+            self.assertEqual(registry["routes"]["generate"]["platform"], "token-plan")
+            self.assertEqual(registry["routes"]["generate"]["model"], "wan3.0-video")
+            captured, client = self._mode_client(False, env_path)
+            preview = client.submit_video("海面亮起来", duration=2, aspect_ratio="16:9", mode="preview")
+            preview_body = dict(captured["body"])
+            preview_url = captured["url"]
+            preview_auth = captured["authorization"]
+            client.submit_video(
+                "海面亮起来",
+                duration=30,
+                aspect_ratio=None,
+                images=images,
+                mode="generate",
+            )
+            generate_body = dict(captured["body"])
+            client.submit_video("海面亮起来", duration=-1, aspect_ratio="9:16", mode="generate")
+            negative = dict(captured["body"]["parameters"])
+            with self.assertRaises(QwenError) as too_short:
+                client.submit_video("海面亮起来", duration=1, mode="preview")
+        self.assertEqual(preview_url, QWEN_ENVS["prod"] + VIDEO_PATH)
+        self.assertEqual(preview_auth, "Bearer plan-key")
+        self.assertEqual(preview.platform, "token-plan")
+        self.assertEqual(preview_body["model"], "wan3.0-video")
+        self.assertEqual(preview_body["parameters"]["resolution"], "480P")
+        self.assertEqual(preview_body["parameters"]["ratio"], "16:9")
+        self.assertEqual(preview_body["parameters"]["duration"], 2)
+        self.assertNotIn("watermark", preview_body["parameters"])
+        self.assertNotIn("preset", preview_body["parameters"])
+        self.assertNotIn("prompt_extend", preview_body["parameters"])
+        self.assertEqual(generate_body["model"], "wan3.0-video")
+        self.assertEqual(generate_body["parameters"]["resolution"], "720P")
+        self.assertEqual(generate_body["parameters"]["ratio"], "adaptive")
+        self.assertEqual(generate_body["parameters"]["duration"], 30)
+        self.assertNotIn("watermark", generate_body["parameters"])
+        self.assertNotIn("preset", generate_body["parameters"])
+        self.assertEqual(negative["duration"], -1)
+        self.assertEqual(negative["resolution"], "720P")
+        self.assertIn("2 到 30", str(too_short.exception))
+        self.assertIn("-1", str(too_short.exception))
 
     def test_remote_video_submit_passes_mode(self):
         from end.remote import RemoteVideoClient

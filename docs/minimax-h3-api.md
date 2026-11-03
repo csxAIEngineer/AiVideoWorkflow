@@ -80,6 +80,18 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 
 协议默认是 DashScope 异步 video-synthesis。另一种提交协议通过注册适配器接入，不必改提交函数里的分支。
 
+## wan3.0-video（token-plan）
+
+`data/video_catalog.example.json` 在保留 MiniMax-H3、`qwen`、`omniref` 和 `minimax` 参数档的同时，把 `preview` / `generate` 的路线改到平台 `token-plan`、模型 `wan3.0-video`。复制为 `data/video_catalog.json` 后生效。主机是现有生产千问 `https://token-plan.maas.qianwenaiapi.com`，Bearer 用 `TOKE_PLAN_QWEN_API_KEY`。
+
+| 档 | resolution | 模型 |
+|---|---|---|
+| `preview` | `480P` | `wan3.0-video` |
+| `generate` | `720P` | `wan3.0-video` |
+| `minimax` | `768P`，并保留 `watermark: false` 与 `preset: fast` | 仍登记为 `minimax-h3`，路线不指向它 |
+
+请求体字段是 `resolution`、`ratio`、`duration`。`duration` 为 2–30，或 `-1`。`prompt_extend` 不默认写上。带图时 `ratio` 仍是 `adaptive`。没有 `data/video_catalog.json` 时，出片仍走原来的 MiniMax-H3。官方说明见 https://platform.qianwenai.com/docs/developer-guides/video-generation/wan30-video 。
+
 `media[].type` 由这一镜的模式决定。一次请求不能同时带首尾帧和参考素材。
 
 | 模式 | 何时使用 | `media` |

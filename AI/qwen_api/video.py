@@ -190,13 +190,41 @@ def video_ratio(aspect):
     return "adaptive"
 
 
-def video_duration(duration):
+def video_duration(duration, model=None):
+    """Shot length for the selected model.
+
+    MiniMax stays 4–15. A model record may set duration_min, duration_max,
+    and duration_extra (wan3.0-video uses 2–30 or -1).
+    """
+    record = model or {}
+    has_bounds = "duration_min" in record or "duration_max" in record
+    lo = int(record.get("duration_min", 4))
+    hi = int(record.get("duration_max", 15))
+    extra = []
+    for item in record.get("duration_extra") or []:
+        try:
+            extra.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    if extra:
+        message = "duration 必须是 %s 到 %s 的整数，或 %s" % (
+            lo,
+            hi,
+            "、".join(str(item) for item in extra),
+        )
+    else:
+        message = "duration 必须是 %s 到 %s 的整数" % (lo, hi)
+    if not has_bounds and not extra:
+        message = "duration 必须是 4 到 15 的整数"
+        lo, hi = 4, 15
     try:
         seconds = int(duration)
     except (TypeError, ValueError):
-        raise QwenError("duration 必须是 4 到 15 的整数")
-    if seconds < 4 or seconds > 15:
-        raise QwenError("duration 必须是 4 到 15 的整数")
+        raise QwenError(message)
+    if seconds in extra:
+        return seconds
+    if seconds < lo or seconds > hi:
+        raise QwenError(message)
     return seconds
 
 
@@ -255,32 +283,59 @@ def _watermark(value):
 
 
 def build_video_parameters(mode, aspect_ratio, duration, local, env_path=None):
-    """Wire parameters for one profile. Platform decides whether preset is sent."""
+    """Wire parameters for one profile. The model decides which keys are sent."""
     plan = resolve_plan(mode, local=local, fallback_url="", fallback_key="", env_path=env_path)
-    return wire_parameters(plan.parameters, plan.emit_local_defaults, aspect_ratio, duration)
+    return wire_parameters(
+        plan.parameters,
+        plan.emit_local_defaults,
+        aspect_ratio,
+        duration,
+        allowed=plan.model.get("emit"),
+        model=plan.model,
+    )
 
 
-def wire_parameters(spec, emit_local_defaults, aspect_ratio, duration):
-    """Fill ratio and duration from the shot. Route fields never enter the body."""
+# Keys the model emit list can turn on or off. Other profile fields still pass through.
+_EMIT_KEYS = frozenset(("resolution", "ratio", "duration", "watermark", "preset", "prompt_extend"))
+
+
+def _allows(allowed, key):
+    if allowed is None or key in allowed:
+        return True
+    return key not in _EMIT_KEYS
+
+
+def wire_parameters(spec, emit_local_defaults, aspect_ratio, duration, allowed=None, model=None):
+    """Fill ratio and duration from the shot. Route fields never enter the body.
+
+    allowed is the model emit list. MiniMax sends watermark and, on OmniRef,
+    preset. wan3.0-video sends resolution, ratio, duration, and prompt_extend
+    only when that field is present on the profile.
+    """
     if spec.get("ratio") is None:
         ratio = video_ratio(aspect_ratio)
     else:
         ratio = video_ratio(spec.get("ratio"))
     if spec.get("duration") is None:
-        seconds = video_duration(duration)
+        seconds = video_duration(duration, model)
     else:
-        seconds = video_duration(spec.get("duration"))
-    parameters = {
-        "resolution": _text_parameter("resolution", spec.get("resolution")),
-        "ratio": ratio,
-        "duration": seconds,
-        "watermark": _watermark(spec.get("watermark")),
-    }
+        seconds = video_duration(spec.get("duration"), model)
+    parameters = {}
+    if _allows(allowed, "resolution"):
+        parameters["resolution"] = _text_parameter("resolution", spec.get("resolution"))
+    if _allows(allowed, "ratio"):
+        parameters["ratio"] = ratio
+    if _allows(allowed, "duration"):
+        parameters["duration"] = seconds
+    if _allows(allowed, "watermark") and spec.get("watermark") is not None:
+        parameters["watermark"] = _watermark(spec.get("watermark"))
     if emit_local_defaults:
         parameters.update(LOCAL_DEFAULT_PARAMETERS)
         parameters["preset"] = _text_parameter("preset", spec.get("preset"))
     for key, value in spec.items():
         if key in _REQUEST_SKIP_KEYS or value is None:
+            continue
+        if not _allows(allowed, key):
             continue
         parameters[key] = value
     return parameters
@@ -376,7 +431,14 @@ class QwenVideoClient(object):
             env_path=self.env_path,
         )
         enforce_media(media, plan.media)
-        parameters = wire_parameters(plan.parameters, plan.emit_local_defaults, aspect_ratio, duration)
+        parameters = wire_parameters(
+            plan.parameters,
+            plan.emit_local_defaults,
+            aspect_ratio,
+            duration,
+            allowed=plan.model.get("emit"),
+            model=plan.model,
+        )
         body = {
             "model": plan.model_id,
             "input": {"prompt": prompt},
