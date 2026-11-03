@@ -2047,7 +2047,11 @@ function spreadColumns() {
   const measured = [];
   columns.forEach((column) => {
     if (!column) return;
-    column.sort((a, b) => (Number(a.dataset.row) || 0) - (Number(b.dataset.row) || 0));
+    column.sort((a, b) => {
+      const byHeight = (b.offsetHeight || 0) - (a.offsetHeight || 0);
+      if (byHeight) return byHeight;
+      return (Number(a.dataset.row) || 0) - (Number(b.dataset.row) || 0);
+    });
     let width = 0;
     let contentH = 0;
     column.forEach((el) => {
@@ -2071,17 +2075,14 @@ function spreadColumns() {
   const fit = Math.min(viewW / Math.max(naturalW, 1), viewH / Math.max(naturalH, 1));
   if (fit >= canvasMinScale && naturalH > 0 && naturalW / naturalH < viewW / viewH && measured.length > 1) {
     gapX = Math.max(minGapX, (naturalH * (viewW / viewH) - contentW) / (measured.length - 1));
-  } else if (fit >= canvasMinScale && naturalH > 0 && naturalW / naturalH > viewW / viewH) {
-    const targetH = naturalW / (viewW / viewH);
-    const tallest = measured.reduce((best, col) => {
-      return col.contentH + minGapY * col.gaps > best.contentH + minGapY * best.gaps ? col : best;
-    });
-    if (tallest.gaps > 0) gapY = Math.max(minGapY, (targetH - tallest.contentH) / tallest.gaps);
   }
+  const columnHeights = measured.map((col) => col.contentH + gapY * col.gaps);
+  const rowH = columnHeights.reduce((max, height) => Math.max(max, height), 0);
   let x = pad;
-  measured.forEach((col) => {
-    let y = pad;
-    col.column.forEach((el) => {
+  measured.forEach((col, index) => {
+    let y = pad + (rowH - columnHeights[index]) / 2;
+    col.column.forEach((el, row) => {
+      el.dataset.row = String(row);
       placeNode(el, x, y);
       y += el.offsetHeight + gapY;
     });
