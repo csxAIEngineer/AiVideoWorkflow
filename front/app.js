@@ -44,7 +44,7 @@ let surfaceLock = "";
 let surfaced = "";
 let centerView = "canvas";
 let previewShotId = "";
-let sideTab = "docs";
+let sideTab = "history";
 let canvasSig = "";
 let canvasEdges = [];
 let view = { x: 48, y: 48, scale: 1 };
@@ -1089,6 +1089,16 @@ function syncCenter() {
   if (previewBtn) previewBtn.classList.toggle("on", preview);
 }
 
+function setMenuOpen(open) {
+  const menu = document.querySelector("#app-menu");
+  const toggle = document.querySelector("#menu-toggle");
+  if (menu) menu.classList.toggle("open", !!open);
+  if (toggle) {
+    toggle.classList.toggle("on", !!open);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+}
+
 function syncSideMode() {
   const workflow = !!(main && main.classList.contains("workflow"));
   if (sideTabs) sideTabs.classList.toggle("hidden", !workflow);
@@ -1359,6 +1369,7 @@ async function refreshList() {
 }
 
 async function openProject(id) {
+  setMenuOpen(false);
   const switching = !current || current.id !== id;
   try {
     current = await rpc("projects.get", { id: id });
@@ -1408,6 +1419,7 @@ function watch() {
 }
 
 newChat.addEventListener("click", () => {
+  setMenuOpen(false);
   current = null;
   otherOpen = false;
   clearDraftMaterials();
@@ -2797,6 +2809,7 @@ function syncDocNav(project) {
 }
 
 function focusCanvasField(nodeId, fieldKey) {
+  setMenuOpen(false);
   centerView = "canvas";
   syncCenter();
   requestAnimationFrame(() => {
@@ -2975,6 +2988,24 @@ function bindCanvas() {
     dockToggle.addEventListener("click", () => {
       debugDock.classList.toggle("open");
       dockToggle.classList.toggle("on", debugDock.classList.contains("open"));
+    });
+  }
+  const menuToggle = document.querySelector("#menu-toggle");
+  const appMenu = document.querySelector("#app-menu");
+  if (menuToggle) {
+    menuToggle.addEventListener("click", () => {
+      const menu = document.querySelector("#app-menu");
+      setMenuOpen(!(menu && menu.classList.contains("open")));
+    });
+  }
+  document.addEventListener("click", (event) => {
+    if (!appMenu || !appMenu.classList.contains("open")) return;
+    if (appMenu.contains(event.target) || (menuToggle && menuToggle.contains(event.target))) return;
+    setMenuOpen(false);
+  });
+  if (appMenu) {
+    appMenu.addEventListener("click", (event) => {
+      if (event.target.closest(".item, a")) setMenuOpen(false);
     });
   }
   const docsTab = document.querySelector("#side-docs");

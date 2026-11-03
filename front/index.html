@@ -9,25 +9,23 @@
       if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
     } catch (_error) {}
   </script>
-  <link rel="stylesheet" href="/styles.css?v=40" />
+  <link rel="stylesheet" href="/styles.css?v=41" />
 </head>
 <body>
-  <aside class="sidebar">
-    <button id="new-chat" class="new-chat" type="button">开启新对话</button>
-    <div id="side-tabs" class="side-tabs hidden" role="tablist" aria-label="左侧">
-      <button id="side-docs" class="seg on" type="button">文档</button>
-      <button id="side-history" class="seg" type="button">历史</button>
+  <aside id="app-menu" class="sidebar" aria-label="项目菜单">
+    <div id="side-tabs" class="side-tabs hidden" role="tablist" aria-label="菜单">
+      <button id="side-history" class="seg on" type="button">历史</button>
+      <button id="side-docs" class="seg" type="button">文档</button>
     </div>
-    <nav id="doc-nav" class="doc-nav hidden" aria-label="项目文档"></nav>
     <div id="history" class="history"></div>
-    <div class="sidebar-foot">
-      <div id="model-foot">Qwen3.8 Flash · 本机出片</div>
-      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换到浅色">浅色</button>
-    </div>
+    <nav id="doc-nav" class="doc-nav hidden" aria-label="项目文档"></nav>
+    <div id="model-foot" class="sidebar-foot">Qwen3.8 Flash · 本机出片</div>
   </aside>
   <main class="main">
-    <section id="empty" class="empty" aria-hidden="true"></section>
-    <div id="stage-bar" class="stage-bar hidden">
+    <header id="app-bar" class="app-bar">
+      <button id="menu-toggle" class="menu-toggle" type="button" aria-expanded="false" aria-controls="app-menu">菜单</button>
+      <button id="new-chat" class="new-chat" type="button">新对话</button>
+      <div id="stage-bar" class="stage-bar hidden">
       <div class="stage-switch" role="tablist" aria-label="中心视图">
         <button id="view-canvas" class="seg on" type="button">画布</button>
         <button id="view-preview" class="seg" type="button">预览</button>
@@ -46,6 +44,9 @@
       </div>
       <button id="dock-toggle" class="dock-toggle" type="button">调试</button>
     </div>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换到浅色">浅色</button>
+    </header>
+    <section id="empty" class="empty" aria-hidden="true"></section>
     <div id="work-body" class="work-body">
       <div id="stage-center" class="stage-center hidden">
       <div id="canvas-wrap" class="canvas-wrap hidden">
@@ -143,6 +144,6 @@
     </div>
   </main>
   <script src="/rpc.js?v=1"></script>
-    <script src="/app.js?v=68"></script>
+    <script src="/app.js?v=69"></script>
 </body>
 </html>

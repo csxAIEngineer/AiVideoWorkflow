@@ -26,14 +26,57 @@ body {
 }
 
 .sidebar {
-  width: 260px;
-  flex: none;
-  background: var(--side);
-  border-right: 1px solid var(--line);
-  display: flex;
+  position: fixed;
+  z-index: 20;
+  top: 58px;
+  left: 12px;
+  width: min(300px, calc(100vw - 24px));
+  max-height: min(72vh, 640px);
+  display: none;
   flex-direction: column;
-  padding: 16px 12px;
+  padding: 12px;
+  background: var(--side);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
 }
+
+.sidebar.open { display: flex; }
+
+.sidebar .history,
+.sidebar .doc-nav { min-height: 0; }
+
+.app-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.app-bar .stage-bar {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.app-bar .new-chat,
+.menu-toggle {
+  flex: none;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+}
+
+.menu-toggle.on { border-color: var(--accent); color: var(--accent); }
+
+.app-bar .theme-toggle { margin-left: auto; }
 
 .new-chat {
   height: 40px;
@@ -202,10 +245,6 @@ body {
 }
 
 .sidebar-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
   color: var(--muted);
   font-size: 12px;
   padding: 8px 4px 0;
@@ -213,6 +252,7 @@ body {
 
 #model-foot { min-width: 0; }
 
+.menu-toggle,
 .theme-toggle {
   flex: none;
   border: 1px solid var(--line);
@@ -635,7 +675,6 @@ a.download,
 
 @media (max-width: 720px) {
   body { flex-direction: column; }
-  .sidebar { width: 100%; max-height: 168px; }
   .job-steps { flex-wrap: wrap; }
   .job-steps li { flex: 1 1 40%; }
   .task { display: block; }
