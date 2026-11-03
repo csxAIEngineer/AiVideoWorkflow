@@ -3144,5 +3144,44 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") setSettingsOpen(false);
 });
 
+function refitCanvas() {
+  requestAnimationFrame(() => {
+    if (!canvasWrap || canvasWrap.classList.contains("hidden") || !canvasWrap.clientWidth) return;
+    if (!canvasNodes.dataset.custom && !spreadColumns()) return;
+    drawEdges(canvasEdges);
+    fitCanvas();
+  });
+}
+
+function setChatOpen(open) {
+  if (main) main.classList.toggle("chat-collapsed", !open);
+  const button = document.querySelector("#chat-toggle");
+  if (button) {
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    button.setAttribute("aria-label", open ? "收起对话" : "展开对话");
+    const mark = button.querySelector(".chat-toggle-mark");
+    if (mark) mark.textContent = open ? "›" : "‹";
+    const label = button.querySelector(".chat-toggle-label");
+    if (label) label.textContent = open ? "收起" : "对话";
+  }
+  if (!open) setSettingsOpen(false);
+  try {
+    localStorage.setItem("aivideo.chat_open", open ? "1" : "0");
+  } catch (_error) {}
+  refitCanvas();
+}
+
+let chatOpen = false;
+try {
+  chatOpen = localStorage.getItem("aivideo.chat_open") === "1";
+} catch (_error) {}
+setChatOpen(chatOpen);
+const chatToggle = document.querySelector("#chat-toggle");
+if (chatToggle) {
+  chatToggle.addEventListener("click", () => {
+    setChatOpen(!!(main && main.classList.contains("chat-collapsed")));
+  });
+}
+
 loadConfig();
 refreshList();

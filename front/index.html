@@ -9,7 +9,7 @@
       if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
     } catch (_error) {}
   </script>
-  <link rel="stylesheet" href="/styles.css?v=42" />
+  <link rel="stylesheet" href="/styles.css?v=43" />
 </head>
 <body>
   <aside id="app-menu" class="sidebar" aria-label="项目菜单">
@@ -62,6 +62,10 @@
       <div id="shot-strip" class="shot-strip" aria-label="镜头"></div>
       </div>
       <div id="chat-column" class="chat-column">
+        <button id="chat-toggle" class="chat-toggle" type="button" aria-expanded="false" aria-controls="thread">
+          <span class="chat-toggle-mark" aria-hidden="true">‹</span>
+          <span class="chat-toggle-label">对话</span>
+        </button>
         <section id="thread" class="thread hidden"></section>
           <form id="composer" class="composer">
           <div class="composer-main">
@@ -149,6 +153,6 @@
     </div>
   </main>
   <script src="/rpc.js?v=1"></script>
-    <script src="/app.js?v=71"></script>
+    <script src="/app.js?v=72"></script>
 </body>
 </html>

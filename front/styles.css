@@ -1300,6 +1300,51 @@ a.download {
   border-left: 1px solid var(--line);
 }
 
+.chat-toggle { display: none; }
+
+.main.workflow .chat-toggle {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.main.workflow .chat-toggle:hover { color: var(--text); }
+
+.main.workflow.chat-collapsed .chat-column {
+  flex: 0 0 44px;
+  width: 44px;
+}
+
+.main.workflow.chat-collapsed .thread,
+.main.workflow.chat-collapsed .composer {
+  display: none;
+}
+
+.main.workflow.chat-collapsed .chat-toggle {
+  flex: 1;
+  height: auto;
+  flex-direction: column;
+  justify-content: center;
+  border-bottom: 0;
+  padding: 12px 0;
+}
+
+.main.workflow.chat-collapsed .chat-toggle-label {
+  writing-mode: vertical-rl;
+  letter-spacing: 0.18em;
+}
+
 .main.workflow .chat-column .thread {
   padding: 16px 0 8px;
 }
@@ -1733,6 +1778,14 @@ a.download {
     width: auto;
     border-left: 0;
     border-top: 1px solid var(--line);
+  }
+  .main.workflow.chat-collapsed .chat-column {
+    flex: 0 0 44px;
+    width: auto;
+  }
+  .main.workflow.chat-collapsed .chat-toggle-label {
+    writing-mode: horizontal-tb;
+    letter-spacing: 0;
   }
   .debug-dock {
     left: 0;
