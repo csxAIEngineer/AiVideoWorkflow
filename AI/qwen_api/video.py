@@ -16,17 +16,18 @@ reference_audio may ride along with those. first_frame, last_frame, and
 text-only submits are rejected before the request. Cloud still accepts
 text, frames, and references.
 
-Submit parameters come in two sets, preview and generate. They share one
-schema and the same defaults. Final render passes mode=generate. Omitting
-mode does the same. MINIMAX_VIDEO_PREVIEW_PARAMETERS and
-MINIMAX_VIDEO_GENERATE_PARAMETERS are JSON objects that override fields
-on that set. ratio and duration stay empty in the set so each shot fills
-them, unless that mode's JSON sets them. url and model on the same object
-choose the video-synthesis host and the request model. Empty url keeps the
-current Qwen host or MINIMAX_H3_BASE_URL. Empty model keeps MiniMax/MiniMax-H3.
+Platform, model id, and parameter profile are separate registries in
+AI.qwen_api.video_catalog. preview and generate are profiles. qwen and
+omniref are platforms. MiniMax/MiniMax-H3 is a model id. A route binds
+one profile to one platform and one model. Omitting the profile selects
+generate. An empty route keeps this client's host and MiniMax/MiniMax-H3.
+
+MINIMAX_VIDEO_PREVIEW_PARAMETERS and MINIMAX_VIDEO_GENERATE_PARAMETERS
+still override that profile. url, model, and platform in those objects
+are route fields. VIDEO_PLATFORMS, VIDEO_MODELS, VIDEO_PROFILES, and
+VIDEO_ROUTES add further platforms, model ids, profiles, and bindings.
 """
 
-import json
 import os
 import urllib.parse
 from pathlib import Path
@@ -37,14 +38,23 @@ from AI.qwen_api.client import (
     error_text,
     extract_media_url,
     load_dotenv,
-    normalize_host,
     qwen_api_key,
     qwen_choice_path,
     resolve_qwen_host,
 )
+from AI.qwen_api.video_catalog import (
+    DEFAULT_MODEL_ID,
+    DASH_SCOPE_SUBMIT_PATH,
+    GENERATE_PARAMETERS_ENV,
+    PREVIEW_PARAMETERS_ENV,
+    describe_profile,
+    enforce_media,
+    platform_credentials,
+    resolve_plan,
+)
 
-VIDEO_MODEL = "MiniMax/MiniMax-H3"
-VIDEO_PATH = "/api/v1/services/aigc/video-generation/video-synthesis"
+VIDEO_MODEL = DEFAULT_MODEL_ID
+VIDEO_PATH = DASH_SCOPE_SUBMIT_PATH
 ASYNC_HEADER = {"X-DashScope-Async": "enable"}
 VIDEO_RESOLUTION = "768P"
 # MiniMax H3 documents these ratios. Anything else stays adaptive.
@@ -63,43 +73,28 @@ LOCAL_DEFAULT_PARAMETERS = {
 }
 # Alias kept for call sites that still name LOCAL_FAST_PARAMETERS.
 LOCAL_FAST_PARAMETERS = dict(LOCAL_DEFAULT_PARAMETERS)
-# Both modes store this shape. null ratio and duration mean "use this shot".
-# preset is part of the set and is written only on the local request.
-# url and model are not DashScope parameter fields. null url keeps the
-# client host. model defaults to VIDEO_MODEL.
+# Parameter profiles share this shape. url and model are route fields, not
+# DashScope parameters. The legacy view below still shows them so older
+# callers can read one dict per profile.
 SUBMIT_PARAMETER_KEYS = ("resolution", "ratio", "duration", "watermark", "preset")
 MODE_TARGET_KEYS = ("url", "model")
 MODE_CONFIG_KEYS = SUBMIT_PARAMETER_KEYS + MODE_TARGET_KEYS
-_REQUEST_SKIP_KEYS = frozenset(SUBMIT_PARAMETER_KEYS) | frozenset(MODE_TARGET_KEYS)
-PREVIEW_PARAMETERS_ENV = "MINIMAX_VIDEO_PREVIEW_PARAMETERS"
-GENERATE_PARAMETERS_ENV = "MINIMAX_VIDEO_GENERATE_PARAMETERS"
-_PARAMETER_ENV = {
-    "preview": PREVIEW_PARAMETERS_ENV,
-    "generate": GENERATE_PARAMETERS_ENV,
-}
-_SUBMIT_MODE_ALIASES = {
-    "preview": "preview",
-    "预览": "preview",
-    "generate": "generate",
-    "生成": "generate",
-}
+_REQUEST_SKIP_KEYS = frozenset(SUBMIT_PARAMETER_KEYS) | frozenset(("url", "model", "platform"))
 
 
-def _default_submit_parameters():
-    """One copy of the shared schema. preview and generate start equal."""
-    return {
-        "resolution": VIDEO_RESOLUTION,
-        "ratio": None,
-        "duration": None,
-        "watermark": False,
-        "preset": LOCAL_DEFAULT_PARAMETERS["preset"],
-        "url": None,
-        "model": VIDEO_MODEL,
-    }
+def _legacy_profile_view():
+    """Parameter profile plus empty route fields. preview and generate start equal."""
+    from AI.qwen_api.video_catalog import default_profile
+
+    view = default_profile()
+    view["preset"] = LOCAL_DEFAULT_PARAMETERS["preset"]
+    view["url"] = None
+    view["model"] = VIDEO_MODEL
+    return view
 
 
-PREVIEW_PARAMETERS = _default_submit_parameters()
-GENERATE_PARAMETERS = _default_submit_parameters()
+PREVIEW_PARAMETERS = _legacy_profile_view()
+GENERATE_PARAMETERS = _legacy_profile_view()
 LOCAL_DUMMY_KEY = "local"
 _CHOICE_FILE = "minimax_video"
 _HOST_SUFFIXES = ("/compatible-mode/v1", "/api/v1")
@@ -208,39 +203,20 @@ def video_duration(duration):
 
 
 def normalize_video_submit_mode(value):
-    """preview or generate. Empty selects generate, the historical submit."""
-    text = str(value or "").strip().lower()
-    if not text:
-        return "generate"
-    name = _SUBMIT_MODE_ALIASES.get(text, "")
-    if not name:
-        raise QwenError("出镜提交模式只能是 preview 或 generate")
-    return name
+    """Profile name. Empty selects generate, the historical submit."""
+    from AI.qwen_api.video_catalog import normalize_profile
 
-
-def _parameter_override(mode_name):
-    """JSON object from the mode's env var. Missing or blank means no override."""
-    env_name = _PARAMETER_ENV[mode_name]
-    raw = os.environ.get(env_name)
-    if raw is None:
-        return {}
-    text = str(raw).strip()
-    if not text:
-        return {}
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        raise QwenError("%s 必须是 JSON 对象" % env_name)
-    if not isinstance(parsed, dict):
-        raise QwenError("%s 必须是 JSON 对象" % env_name)
-    return parsed
+    return normalize_profile(value)
 
 
 def video_mode_parameters(mode=None):
-    """Configured parameters for preview or generate, before this shot is filled in."""
-    name = normalize_video_submit_mode(mode)
-    spec = dict(PREVIEW_PARAMETERS if name == "preview" else GENERATE_PARAMETERS)
-    spec.update(_parameter_override(name))
+    """Legacy combined view: profile fields plus that profile's route url and model."""
+    from AI.qwen_api.video_catalog import resolve_model_id
+
+    _name, parameters, route = describe_profile(mode)
+    spec = dict(parameters)
+    spec["url"] = route.get("url") if route.get("url") else None
+    spec["model"] = resolve_model_id(route.get("model"))
     return spec
 
 
@@ -250,32 +226,10 @@ def _text_parameter(field, value):
     raise QwenError("parameters.%s 必须是非空字符串" % field)
 
 
-def _blank_target(value):
-    return value is None or (isinstance(value, str) and not value.strip())
-
-
-def video_submit_target(mode, fallback_url):
-    """Host and model for one submit.
-
-    An empty url keeps fallback_url (the Qwen host, or MINIMAX_H3_BASE_URL
-    when the page selected local). An empty model keeps VIDEO_MODEL.
-    """
-    spec = video_mode_parameters(mode)
-    raw_url = spec.get("url")
-    if _blank_target(raw_url):
-        base = str(fallback_url or "").rstrip("/")
-    else:
-        if not isinstance(raw_url, str) or not raw_url.strip().startswith(("http://", "https://")):
-            raise QwenError("url 必须是 http 或 https 地址")
-        base = normalize_host(raw_url.strip())
-    raw_model = spec.get("model")
-    if _blank_target(raw_model):
-        model = VIDEO_MODEL
-    else:
-        if not isinstance(raw_model, str):
-            raise QwenError("model 必须是非空字符串")
-        model = raw_model.strip()
-    return base, model
+def video_submit_target(mode, fallback_url, local=False, fallback_key=""):
+    """Host and model id for one submit. The parameter profile is chosen separately."""
+    plan = resolve_plan(mode, local=local, fallback_url=fallback_url, fallback_key=fallback_key)
+    return plan.base_url, plan.model_id
 
 
 def _poll_host(url):
@@ -299,15 +253,13 @@ def _watermark(value):
 
 
 def build_video_parameters(mode, aspect_ratio, duration, local):
-    """Request parameters for one submit.
+    """Wire parameters for one profile. Platform decides whether preset is sent."""
+    plan = resolve_plan(mode, local=local, fallback_url="", fallback_key="")
+    return wire_parameters(plan.parameters, plan.emit_local_defaults, aspect_ratio, duration)
 
-    Cloud sends resolution, ratio, duration, and watermark. Local then
-    update()s LOCAL_DEFAULT_PARAMETERS and writes this mode's preset.
-    A JSON override replaces fields on the selected mode after that merge.
-    preset is left off the cloud body. url and model stay off this object.
-    Extra override keys are sent as-is.
-    """
-    spec = video_mode_parameters(mode)
+
+def wire_parameters(spec, emit_local_defaults, aspect_ratio, duration):
+    """Fill ratio and duration from the shot. Route fields never enter the body."""
     if spec.get("ratio") is None:
         ratio = video_ratio(aspect_ratio)
     else:
@@ -322,7 +274,7 @@ def build_video_parameters(mode, aspect_ratio, duration, local):
         "duration": seconds,
         "watermark": _watermark(spec.get("watermark")),
     }
-    if local:
+    if emit_local_defaults:
         parameters.update(LOCAL_DEFAULT_PARAMETERS)
         parameters["preset"] = _text_parameter("preset", spec.get("preset"))
     for key, value in spec.items():
@@ -370,19 +322,8 @@ def _media(images):
 
 
 def _require_local_references(media):
-    """OmniRef Ref2VA: a reference image or video, never a Trim frame role."""
-    if any(item["type"] in FRAME_ROLES for item in media):
-        raise QwenError(
-            "本地 OmniRef Ref2VA 不接受 first_frame 和 last_frame，"
-            "请使用 reference_image、reference_video 或 reference_audio"
-        )
-    if any(item["type"] in LOCAL_VISUAL_REFERENCE_ROLES for item in media):
-        return media
-    if any(item["type"] == "reference_audio" for item in media):
-        raise QwenError(
-            "本地 OmniRef Ref2VA 的 reference_audio 需要同时提供 reference_image 或 reference_video"
-        )
-    raise QwenError("本地 OmniRef Ref2VA 至少需要一条 reference_image 或 reference_video")
+    """OmniRef Ref2VA media rules. The reference policy owns the message text."""
+    return enforce_media(media, "reference")
 
 
 class QwenVideoClient(object):
@@ -414,35 +355,42 @@ class QwenVideoClient(object):
         timeout=180,
         mode=None,
     ):
-        """Submit one clip. mode is preview or generate. Omitted mode is generate.
+        """Submit one clip. mode selects a parameter profile. Omitted mode is generate.
 
-        The caller model is ignored. The mode config supplies the body model,
-        and VIDEO_MODEL when that field is empty.
+        The caller model is ignored. The route supplies the model id and the
+        platform supplies the host, bearer, and protocol.
         """
         del model, idempotency_key
         prompt = str(text or "").strip()
         if not prompt:
             raise QwenError("出镜提示词是空的")
         media = _media(images)
-        if self.local:
-            media = _require_local_references(media)
-        base_url, model_name = video_submit_target(mode, self.client.base_url)
-        parameters = build_video_parameters(mode, aspect_ratio, duration, self.local)
+        plan = resolve_plan(
+            mode,
+            local=self.local,
+            fallback_url=self.client.base_url,
+            fallback_key=self.client.api_key,
+        )
+        enforce_media(media, plan.media)
+        parameters = wire_parameters(plan.parameters, plan.emit_local_defaults, aspect_ratio, duration)
         body = {
-            "model": model_name,
+            "model": plan.model_id,
             "input": {"prompt": prompt},
             "parameters": parameters,
         }
         if media:
             body["input"]["media"] = media
-        data = self.client.request(
+        transport = self._transport(plan.api_key, plan.base_url)
+        data = transport.request(
             "POST",
-            base_url + VIDEO_PATH,
+            plan.base_url + plan.submit_path,
             body,
             timeout=timeout,
-            headers=ASYNC_HEADER,
+            headers=plan.headers,
         )
-        task = self._finish(VideoTask(data), "", base_url)
+        task = self._finish(VideoTask(data), "", plan.base_url, plan.task_prefix)
+        if plan.explicit:
+            task.platform = plan.platform
         if not task.id:
             raise QwenError("千问出镜没有返回任务号")
         return task
@@ -451,29 +399,68 @@ class QwenVideoClient(object):
         task_id = getattr(task, "id", "") or ""
         return self.poll(task_id, timeout=timeout, previous=task)
 
-    def poll(self, task_id, timeout=60, previous=None, poll_url=None):
+    def poll(self, task_id, timeout=60, previous=None, poll_url=None, platform_name=None):
         url = str(poll_url or "").strip()
         if not url and previous is not None:
             url = str(getattr(previous, "poll_url", "") or "").strip()
+        platform = str(platform_name or "").strip()
+        if not platform and previous is not None:
+            platform = str(getattr(previous, "platform", "") or "")
+        client = self.for_platform(platform).client if platform else self.client
         if url.startswith(("http://", "https://")):
-            data = self.client.request("GET", url, None, timeout=timeout)
-            host = _poll_host(url) or self.client.base_url
+            data = client.request("GET", url, None, timeout=timeout)
+            host = _poll_host(url) or client.base_url
         else:
-            data = self.client.get_task(task_id, timeout=timeout)
-            host = self.client.base_url
+            data = client.get_task(task_id, timeout=timeout)
+            host = client.base_url
         updated = self._finish(VideoTask(data), task_id, host)
-        if previous is not None and not updated.poll_url:
+        if url.startswith(("http://", "https://")) and not str((data or {}).get("poll_url") or ""):
+            updated.poll_url = url
+        elif previous is not None and not updated.poll_url:
             updated.poll_url = getattr(previous, "poll_url", "") or updated.poll_url
+        if platform:
+            updated.platform = platform
         return updated
+
+    def for_platform(self, name):
+        """A client whose bearer matches that platform. The same client when it already does."""
+        if not str(name or "").strip():
+            return self
+        host, key = platform_credentials(name)
+        if not key or key == self.client.api_key:
+            return self
+        other = QwenVideoClient(
+            client=QwenClient(
+                api_key=key,
+                base_url=host or self.client.base_url,
+                opener=getattr(self.client, "_opener", None),
+            )
+        )
+        other.local = self.local
+        return other
+
+    def _transport(self, api_key, base_url):
+        if not api_key or api_key == self.client.api_key:
+            return self.client
+        return QwenClient(
+            api_key=api_key,
+            base_url=base_url or self.client.base_url,
+            opener=getattr(self.client, "_opener", None),
+        )
 
     def download_video(self, task, dest, timeout=300):
         url = task if isinstance(task, str) else (getattr(task, "url", "") or "")
         return self.client.download(url, dest, timeout=timeout)
 
-    def _finish(self, task, task_id, base_url=None):
+    def _finish(self, task, task_id, base_url=None, task_prefix=None):
         if not task.id:
             task.id = str(task_id or "")
         host = str(base_url or self.client.base_url).rstrip("/")
+        prefix = task_prefix or "/api/v1/tasks/"
+        if not prefix.startswith("/"):
+            prefix = "/" + prefix
+        if not prefix.endswith("/"):
+            prefix += "/"
         if task.id and not task.poll_url:
-            task.poll_url = host + "/api/v1/tasks/" + task.id
+            task.poll_url = host + prefix + task.id
         return task

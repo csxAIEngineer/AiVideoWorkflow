@@ -60,7 +60,18 @@ MINIMAX_VIDEO_PREVIEW_PARAMETERS={"resolution":"768P","watermark":false,"preset"
 MINIMAX_VIDEO_GENERATE_PARAMETERS={"duration":8,"preset":"quality","model":"MiniMax/MiniMax-H3"}
 ```
 
-没写的字段保持默认。`preset` 只合并进本地请求。云端示例仍是上面四个字段。提交后的轮询地址是这次 `url` 上的 `/api/v1/tasks/{task_id}`。鉴权仍用当前出镜客户端的 Bearer。页面「预览」播放的是已经落盘的成片，不切换这套参数。
+没写的字段保持默认。`preset` 只在平台声明 `emit_local_defaults` 时进入请求，默认只有 `omniref`。云端示例仍是上面四个字段。提交后的轮询地址跟这次主机走。页面「预览」播放的是已经落盘的成片，不切换这套参数。
+
+平台、模型、参数档是三套登记，提交时各取一个：
+
+| 登记 | 默认 | 环境变量 |
+|---|---|---|
+| 平台 | 页面选本地时是 `omniref`，否则是 `qwen`。管主机、Bearer、协议、素材规则 | `VIDEO_PLATFORMS` |
+| 模型 | `minimax-h3`，请求体 id 为 `MiniMax/MiniMax-H3`。不含参数 | `VIDEO_MODELS` |
+| 参数档 | `preview` 与 `generate` 相同 | `VIDEO_PROFILES` |
+| 路线 | 把某一档绑到平台和模型。不写平台时用页面上的云端或本地 | `VIDEO_ROUTES` |
+
+`MINIMAX_VIDEO_PREVIEW_PARAMETERS` 和 `MINIMAX_VIDEO_GENERATE_PARAMETERS` 仍可用。参数字段并进对应参数档；`url`、`model`、`platform` 并进这一档的路线。同一条路线里再写 `VIDEO_ROUTES` 时，路线字段以 `VIDEO_ROUTES` 为准。协议默认是 DashScope 异步 video-synthesis。另一种提交协议通过注册适配器接入，不必改提交函数里的分支。
 
 `media[].type` 由这一镜的模式决定。一次请求不能同时带首尾帧和参考素材。
 

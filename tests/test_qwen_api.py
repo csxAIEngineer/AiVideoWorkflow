@@ -880,6 +880,98 @@ class QwenMediaTest(unittest.TestCase):
         self.assertEqual(rpc_poll, preview_task.poll_url)
         self.assertEqual(polled["poll_url"], preview_task.poll_url)
 
+    def test_platform_model_and_profile_combine_independently(self):
+        from AI.qwen_api.video_catalog import register_adapter, unregister_adapter, video_registry
+
+        class ProbeAdapter(object):
+            name = "probe"
+            submit_path = "/probe/submit"
+            headers = {"X-Probe": "yes"}
+            task_prefix = "/probe/tasks/"
+
+        register_adapter(ProbeAdapter())
+        images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
+        env = {
+            "VIDEO_MODELS": json.dumps({"studio-take": {"id": "studio/take-1"}}),
+            "VIDEO_PROFILES": json.dumps(
+                {"preview": {"watermark": True}, "generate": {"resolution": "1080P"}}
+            ),
+            "VIDEO_PLATFORMS": json.dumps(
+                {
+                    "studio": {
+                        "adapter": "probe",
+                        "host": "https://studio.example",
+                        "auth": "client",
+                        "media": "open",
+                        "emit_local_defaults": False,
+                    }
+                }
+            ),
+            "VIDEO_ROUTES": json.dumps(
+                {
+                    "preview": {"platform": "studio", "model": "studio-take"},
+                    "generate": {"platform": "omniref", "model": "minimax-h3", "url": "http://generate.example:8765"},
+                }
+            ),
+            PREVIEW_PARAMETERS_ENV: "",
+            GENERATE_PARAMETERS_ENV: "",
+            "MINIMAX_H3_API_KEY": "",
+        }
+        seen = {}
+
+        def opener(request, timeout=None):
+            seen["url"] = request.full_url
+            seen["probe"] = request.get_header("X-probe")
+            seen["authorization"] = request.get_header("Authorization")
+            if request.data:
+                seen["body"] = json.loads(request.data.decode("utf-8"))
+            return _Body(json.dumps({"output": {"task_id": "vid-mode", "task_status": "PENDING"}}))
+
+        try:
+            with patch.dict(os.environ, env):
+                registry = video_registry()
+                self.assertIn("dashscope", registry["adapters"])
+                self.assertIn("probe", registry["adapters"])
+                self.assertEqual(registry["models"]["minimax-h3"]["id"], VIDEO_MODEL)
+                self.assertEqual(registry["models"]["studio-take"]["id"], "studio/take-1")
+                self.assertNotIn("model", registry["profiles"]["preview"])
+                self.assertNotIn("url", registry["profiles"]["generate"])
+                self.assertIs(registry["profiles"]["preview"]["watermark"], True)
+                self.assertEqual(registry["profiles"]["generate"]["resolution"], "1080P")
+                self.assertEqual(registry["profiles"]["preview"]["resolution"], "768P")
+                client = QwenVideoClient(client=_client(opener))
+                preview = client.submit_video("海面亮起来", duration=5, aspect_ratio="16:9", mode="preview")
+                preview_url = seen["url"]
+                preview_probe = seen["probe"]
+                preview_body = dict(seen["body"])
+                client.submit_video(
+                    "海面亮起来",
+                    duration=6,
+                    aspect_ratio="16:9",
+                    images=images,
+                    mode="generate",
+                )
+                generate_url = seen["url"]
+                generate_auth = seen["authorization"]
+                generate_body = dict(seen["body"])
+            self.assertEqual(preview_url, "https://studio.example/probe/submit")
+            self.assertEqual(preview_probe, "yes")
+            self.assertEqual(preview_body["model"], "studio/take-1")
+            self.assertIs(preview_body["parameters"]["watermark"], True)
+            self.assertEqual(preview_body["parameters"]["resolution"], "768P")
+            self.assertNotIn("preset", preview_body["parameters"])
+            self.assertEqual(preview.poll_url, "https://studio.example/probe/tasks/vid-mode")
+            self.assertEqual(preview.platform, "studio")
+            self.assertEqual(generate_url, "http://generate.example:8765" + VIDEO_PATH)
+            self.assertEqual(generate_body["model"], VIDEO_MODEL)
+            self.assertEqual(generate_body["parameters"]["resolution"], "1080P")
+            self.assertEqual(generate_body["parameters"]["preset"], "fast")
+            self.assertIs(generate_body["parameters"]["watermark"], False)
+            self.assertEqual(generate_auth, "Bearer local")
+            self.assertNotEqual(preview_body["model"], generate_body["model"])
+        finally:
+            unregister_adapter("probe")
+
     def test_remote_video_submit_passes_mode(self):
         from end.remote import RemoteVideoClient
 

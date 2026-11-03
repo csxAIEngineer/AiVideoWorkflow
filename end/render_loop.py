@@ -1301,6 +1301,9 @@ class RenderContext(object):
             step["remote_task_id"] = remote_id
             if poll_url:
                 step["poll_url"] = poll_url
+            platform = str(getattr(task, "platform", "") or "").strip()
+            if platform:
+                step["video_platform"] = platform
             step["status"] = "running"
             step["kind"] = kind
             self.write_locked()
@@ -1923,14 +1926,15 @@ def _reference_url(info, project_id=""):
 
 
 class _VideoHandle(object):
-    def __init__(self, task_id, poll_url):
+    def __init__(self, task_id, poll_url, platform=""):
         self.id = task_id
         self.poll_url = poll_url or ""
+        self.platform = platform or ""
         self.status = "submitted"
 
 
-def _video_handle(task_id, poll_url):
-    return _VideoHandle(task_id, poll_url)
+def _video_handle(task_id, poll_url, platform=""):
+    return _VideoHandle(task_id, poll_url, platform)
 
 
 class LayoutAudio(object):
@@ -2178,7 +2182,9 @@ def run_local_pipeline(
 
         def poll(task_id, shot_id=shot_id):
             step = ctx.reload_step(shot_id, "video")
-            return cr.poll_video(_video_handle(task_id, step.get("poll_url") or ""))
+            return cr.poll_video(
+                _video_handle(task_id, step.get("poll_url") or "", step.get("video_platform") or "")
+            )
 
         def download(task, path):
             temporary = Path(str(path) + ".part")

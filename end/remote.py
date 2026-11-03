@@ -11,6 +11,7 @@ class RemoteTask(object):
         self.url = data.get("url") or ""
         self.error = data.get("error") or ""
         self.poll_url = data.get("poll_url") or ""
+        self.platform = data.get("platform") or ""
 
 
 class RemoteImageClient(object):
@@ -68,17 +69,15 @@ class RemoteVideoClient(object):
         )
 
     def poll_video(self, task, timeout=60):
-        return RemoteTask(
-            call(
-                "video.poll",
-                {
-                    "task_id": getattr(task, "id", "") or "",
-                    "poll_url": getattr(task, "poll_url", "") or "",
-                    "timeout": timeout,
-                },
-                timeout=int(timeout or 60) + 30,
-            )
-        )
+        payload = {
+            "task_id": getattr(task, "id", "") or "",
+            "poll_url": getattr(task, "poll_url", "") or "",
+            "timeout": timeout,
+        }
+        platform = str(getattr(task, "platform", "") or "").strip()
+        if platform:
+            payload["platform"] = platform
+        return RemoteTask(call("video.poll", payload, timeout=int(timeout or 60) + 30))
 
     def download_video(self, task, dest, timeout=300):
         result = call(

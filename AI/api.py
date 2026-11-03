@@ -221,6 +221,7 @@ def _video(task):
         "poll_url": getattr(task, "poll_url", "") or "",
         "url": getattr(task, "url", "") or "",
         "error": getattr(task, "error", "") or "",
+        "platform": getattr(task, "platform", "") or "",
     }
 
 
@@ -269,10 +270,15 @@ def video_submit(params):
 
 def video_poll(params):
     params = params or {}
-    updated = _video_client().poll(
+    platform = str(params.get("platform") or "").strip()
+    client = _video_client()
+    if platform:
+        client = client.for_platform(platform)
+    updated = client.poll(
         params.get("task_id") or "",
         timeout=int(params.get("timeout") or 60),
         poll_url=params.get("poll_url") or "",
+        platform_name=platform,
     )
     return _video(updated)
 
