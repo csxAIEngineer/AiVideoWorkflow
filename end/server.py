@@ -764,6 +764,7 @@ def answer_gate(project, text):
         or "资产稿是空的" in report_text
         or "资产提示词是空的" in report_text
         or "投喂稿是空的" in report_text
+        or "预演故事板是空的" in report_text
     ):
         # Missing assets.md cannot be figure-repaired; rewrite the whole stage.
         pipeline["retry_write"] = True

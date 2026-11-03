@@ -101,6 +101,32 @@ class RepairGraphTest(unittest.TestCase):
         self.assertIn("补上六问", applied["previs"])
         self.assertIn("通过的段不要动", applied["previs"])
 
+    def test_named_failure_does_not_pull_neighbor_segments(self):
+        previs = "\n\n".join((
+            "## 段 1\n失败段正文",
+            "## 段 2\n通过的邻居不要进修复",
+            "## 段 3\n另一段邻居",
+        ))
+        report = "FAIL: P453 段1 第1格缺六问\nFAIL: P454 术语没有段号"
+        units = units_for("storyboard", report, previs=previs)
+        self.assertEqual([unit["id"] for unit in units], ["段-1"])
+        brief = repair_brief("storyboard", units)
+        self.assertIn("失败段正文", brief)
+        self.assertNotIn("通过的邻居不要进修复", brief)
+        self.assertNotIn("另一段邻居", brief)
+
+    def test_loose_marker_repairs_only_the_unit_that_contains_it(self):
+        feed = "\n\n".join((
+            "## 【投喂单元 1/2】\nsubject_definitions:\nclean unit",
+            "## 【投喂单元 2/2】\nsubject_definitions:\n【画幅风格】 leaked",
+        ))
+        report = "FAIL: H8 七段式栏名泄漏 【画幅风格】"
+        units = units_for("feed", report, feed=feed)
+        self.assertEqual([unit["number"] for unit in units], [2])
+        brief = repair_brief("feed", units)
+        self.assertIn("leaked", brief)
+        self.assertNotIn("clean unit", brief)
+
 
 if __name__ == "__main__":
     unittest.main()

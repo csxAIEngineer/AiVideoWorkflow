@@ -259,6 +259,44 @@ class DirectorDbTest(unittest.TestCase):
             conn.close()
         self.tmp.cleanup()
 
+    def test_blank_previs_revise_asks_for_a_full_write(self):
+        make_project(
+            "p-empty-previs",
+            status="gate",
+            progress={
+                "percent": 62,
+                "phase": "gate_storyboard",
+                "message": "预演故事板没写出来。",
+                "lock_machine": True,
+                "pipeline": {
+                    "only": "",
+                    "accepted": ["script", "asset"],
+                    "current": "storyboard",
+                    "action": "wait",
+                    "passed": False,
+                    "report": "预演故事板是空的",
+                    "repair": "预演故事板是空的",
+                    "check": "",
+                },
+                "question": {
+                    "id": "storyboard",
+                    "kind": "single",
+                    "reply": "预演故事板是空的",
+                    "options": ["根据建议修改"],
+                    "cards": [],
+                },
+            },
+        )
+        seen = {}
+
+        def capture(_project, pipeline, _label):
+            seen["pipeline"] = dict(pipeline)
+
+        with patch("end.server._enqueue_stage", capture):
+            answer_gate(read_project("p-empty-previs"), "根据建议修改")
+        self.assertEqual(seen["pipeline"]["action"], "write")
+        self.assertFalse(seen["pipeline"].get("repair"))
+
     def test_empty_feed_revise_asks_for_a_full_write(self):
         make_project(
             "p-empty-feed",
@@ -1111,6 +1149,82 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertIn("分镜正文", calls[0])
         self.assertIn("预演正文", calls[0])
         self.assertIn("subject_definitions", (empty_internal / "feed.md").read_text(encoding="utf-8"))
+
+    def test_blank_previs_fails_the_storyboard_gate_and_rewrites_from_the_board(self):
+        folder = Path(tempfile.mkdtemp())
+        internal = folder / "_内部_"
+        internal.mkdir()
+        (internal / "分镜.md").write_text("分镜正文 L01 她进门。\n", encoding="utf-8")
+        project = {
+            "template": "short-drama-director",
+            "model": "qwen3.8-flash",
+            "brief": "药盒",
+            "progress": {
+                "pipeline": {
+                    "action": "write",
+                    "current": "storyboard",
+                    "accepted": ["script", "asset"],
+                    "only": "",
+                }
+            },
+        }
+        empty = execute(
+            project,
+            folder,
+            _base_locks(),
+            lambda *_a, **_k: {"storyboard": "分镜正文 L01 她进门。", "previs": "没有段"},
+            lambda *_a, **_k: "pack",
+        )
+        self.assertFalse(empty["progress"]["pipeline"]["passed"])
+        self.assertEqual(empty["progress"]["pipeline"]["report"], "预演故事板是空的")
+        self.assertTrue(empty["progress"]["pipeline"]["retry_write"])
+        self.assertIn("再写一版", empty["message"]["content"])
+        self.assertNotIn("先用这一稿继续", empty["message"]["options"])
+
+        calls = []
+
+        def rewrite(brief, *_args, **_kwargs):
+            calls.append(brief)
+            return {
+                "storyboard": "分镜正文 L01 她进门。",
+                "previs": "\n".join((
+                    "## 段 1",
+                    "**本段要验什么**：站位",
+                    "**风险提示**：左右别换",
+                    "### 故事板提示词（1 格）",
+                    "第 1 格：她站在门内，身体朝门，视线看向门外，手抬着，镜头在侧面，光从门内照来。",
+                    "看图先看这三点：人、门、光",
+                    "预演故事板：段1~段1 ✅",
+                )),
+            }
+
+        execute(
+            {
+                "template": "short-drama-director",
+                "model": "qwen3.8-flash",
+                "brief": "药盒",
+                "progress": {
+                    "pipeline": {
+                        "action": "rewrite",
+                        "current": "storyboard",
+                        "accepted": ["script", "asset"],
+                        "passed": False,
+                        "report": "预演故事板是空的",
+                        "repair": "预演故事板是空的",
+                        "only": "",
+                    }
+                },
+            },
+            folder,
+            _base_locks(),
+            rewrite,
+            lambda *_a, **_k: "pack",
+        )
+        self.assertTrue(calls)
+        self.assertIn("任务：分镜", calls[0])
+        self.assertNotIn("任务：建议修补", calls[0])
+        self.assertIn("分镜正文", calls[0])
+        self.assertIn("## 段 1", (internal / "previs.md").read_text(encoding="utf-8"))
 
     def test_asset_repair_keeps_blocks_the_model_left_out(self):
         folder = Path(tempfile.mkdtemp())

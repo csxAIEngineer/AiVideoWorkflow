@@ -976,6 +976,11 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
             "投喂稿没写出来。根据建议修改会按分镜和资产再写一版。",
             [ASSET_REVISE],
         )
+    if stage == "storyboard" and str(report or "").strip() == "预演故事板是空的":
+        return (
+            "预演故事板没写出来。根据建议修改会按分镜再写一版。",
+            [ASSET_REVISE],
+        )
     if stage in ("asset", "storyboard", "feed"):
         if stage == "feed":
             reply = "投喂机检没过。根据建议修改会按下面这些项改。"
@@ -1126,6 +1131,8 @@ def check_stage(folder, stage, locks, title=""):
         if invented:
             return False, invented
         previs = _read(internal / "previs.md")
+        if previs_is_blank(previs):
+            return False, "预演故事板是空的"
         if previs.strip():
             body = previs_check_text(text, previs, mode)
             # Persist rendered markdown so repair units see real段 bodies, not JSON shards.
@@ -1195,6 +1202,19 @@ def check_stage(folder, stage, locks, title=""):
 
 
 _HEADING_SEGMENT = re.compile(r"(?m)^#{1,6}\s*\**\s*段\s*\d+")
+_PANEL_MARK = re.compile(r"第\s*\d+\s*格")
+
+
+def previs_is_blank(text):
+    """No segment heading and no panel line. Whitespace and summary stubs count as empty."""
+    raw = str(text or "").strip()
+    if not raw:
+        return True
+    if _HEADING_SEGMENT.search(raw):
+        return False
+    if _PANEL_MARK.search(raw):
+        return False
+    return True
 
 
 def _promote_inline_segments(text):
@@ -2598,7 +2618,13 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
     debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
     feed_file = _read(Path(folder) / "_内部_" / "feed.md")
     empty_feed_report = stage == "feed" and not feed_file.strip() and "投喂稿是空的" in repair and "FAIL" not in repair
-    if empty_feed_report:
+    blank_previs_report = (
+        stage == "storyboard"
+        and previs_is_blank(_read(Path(folder) / "_内部_" / "previs.md"))
+        and "预演故事板是空的" in repair
+        and "FAIL" not in repair
+    )
+    if empty_feed_report or blank_previs_report:
         repair = ""
         repair_choices = {}
     if (repair or repair_choices) and stage in ("asset", "storyboard", "feed"):
@@ -3079,6 +3105,8 @@ def execute(project, folder, locks, write_model, load_pack):
         ):
             pipeline["retry_write"] = True
         if current == "feed" and not passed and str(report or "").strip() == "投喂稿是空的":
+            pipeline["retry_write"] = True
+        if current == "storyboard" and not passed and str(report or "").strip() == "预演故事板是空的":
             pipeline["retry_write"] = True
         if passed or current in ("asset", "storyboard", "feed") or attempts >= REPAIR_LIMIT:
             break
