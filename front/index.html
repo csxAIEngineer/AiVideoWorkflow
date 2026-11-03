@@ -1,10 +1,15 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AiVideo</title>
-  <link rel="stylesheet" href="/styles.css?v=39" />
+  <script>
+    try {
+      if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
+    } catch (_error) {}
+  </script>
+  <link rel="stylesheet" href="/styles.css?v=40" />
 </head>
 <body>
   <aside class="sidebar">
@@ -15,7 +20,10 @@
     </div>
     <nav id="doc-nav" class="doc-nav hidden" aria-label="项目文档"></nav>
     <div id="history" class="history"></div>
-    <div id="model-foot" class="sidebar-foot">Qwen3.8 Flash · 本机出片</div>
+    <div class="sidebar-foot">
+      <div id="model-foot">Qwen3.8 Flash · 本机出片</div>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换到浅色">浅色</button>
+    </div>
   </aside>
   <main class="main">
     <section id="empty" class="empty" aria-hidden="true"></section>
@@ -135,6 +143,6 @@
     </div>
   </main>
   <script src="/rpc.js?v=1"></script>
-    <script src="/app.js?v=67"></script>
+    <script src="/app.js?v=68"></script>
 </body>
 </html>

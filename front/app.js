@@ -3064,5 +3064,27 @@ if (minimaxVideoEl) {
   });
 }
 
+function applyTheme(theme) {
+  const next = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  const button = document.querySelector("#theme-toggle");
+  if (!button) return;
+  const toLight = next === "dark";
+  button.textContent = toLight ? "浅色" : "深色";
+  button.setAttribute("aria-label", toLight ? "切换到浅色" : "切换到深色");
+}
+
+applyTheme(document.documentElement.dataset.theme === "light" ? "light" : "dark");
+const themeToggle = document.querySelector("#theme-toggle");
+if (themeToggle) {
+  themeToggle.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    try {
+      localStorage.setItem("aivideo.theme", next);
+    } catch (_error) {}
+    applyTheme(next);
+  });
+}
+
 loadConfig();
 refreshList();

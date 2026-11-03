@@ -202,10 +202,30 @@ body {
 }
 
 .sidebar-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   color: var(--muted);
   font-size: 12px;
-  padding: 8px;
+  padding: 8px 4px 0;
 }
+
+#model-foot { min-width: 0; }
+
+.theme-toggle {
+  flex: none;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
 
 .main {
   flex: 1;
@@ -1625,4 +1645,195 @@ a.download {
     transform: translateY(110%);
   }
   .debug-dock.open { transform: none; }
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c0c0e;
+  --side: #141416;
+  --line: #2c2c31;
+  --text: #eceae6;
+  --muted: #a39e96;
+  --bubble: #232328;
+  --paper: #161618;
+  --accent: #aebbe8;
+}
+
+html[data-theme="dark"] .composer.bare {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .new-chat,
+html[data-theme="dark"] .side-tabs button,
+html[data-theme="dark"] .choice,
+html[data-theme="dark"] .seam-option,
+html[data-theme="dark"] .style-select,
+html[data-theme="dark"] .style-note,
+html[data-theme="dark"] .job,
+html[data-theme="dark"] .composer,
+html[data-theme="dark"] .shot-chip,
+html[data-theme="dark"] .wf-node,
+html[data-theme="dark"] .wf-asset,
+html[data-theme="dark"] .stage-bar button,
+html[data-theme="dark"] .dock-actions button,
+html[data-theme="dark"] .render-controls button,
+html[data-theme="dark"] .model-picker select,
+html[data-theme="dark"] .template-picker select,
+html[data-theme="dark"] .soundtrack-picker select,
+html[data-theme="dark"] #minimax-video {
+  background: #1c1c20;
+  color: var(--text);
+  border-color: #34343a;
+}
+
+html[data-theme="dark"] .side-tabs button.on,
+html[data-theme="dark"] .stage-bar button.on,
+html[data-theme="dark"] .shot-chip.on,
+html[data-theme="dark"] .choice-rec {
+  background: #22283a;
+  border-color: #4a5680;
+  color: var(--accent);
+}
+
+html[data-theme="dark"] .item-row.active,
+html[data-theme="dark"] .item-row:hover,
+html[data-theme="dark"] .doc-link:hover,
+html[data-theme="dark"] .doc-material:hover,
+html[data-theme="dark"] .doc-link.on,
+html[data-theme="dark"] .doc-material.on {
+  background: #2a2a30;
+}
+
+html[data-theme="dark"] .canvas-wrap,
+html[data-theme="dark"] .preview-pane {
+  background-color: #101012;
+  background-image:
+    linear-gradient(#2a2a30 1px, transparent 1px),
+    linear-gradient(90deg, #2a2a30 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select,
+html[data-theme="dark"] input,
+html[data-theme="dark"] .wf-node textarea,
+html[data-theme="dark"] .material-card textarea {
+  color: var(--text);
+  border-color: #34343a;
+}
+
+html[data-theme="dark"] .wf-node textarea,
+html[data-theme="dark"] .material-card textarea,
+html[data-theme="dark"] .style-select {
+  background: #141416;
+}
+
+html[data-theme="dark"] .md pre,
+html[data-theme="dark"] .md code,
+html[data-theme="dark"] .dock-log,
+html[data-theme="dark"] .prompt-table th,
+html[data-theme="dark"] .job-steps li,
+html[data-theme="dark"] .job-calls li,
+html[data-theme="dark"] .job-bar,
+html[data-theme="dark"] .wf-hold,
+html[data-theme="dark"] .shot-hold,
+html[data-theme="dark"] .doc-hold,
+html[data-theme="dark"] .doc-material img,
+html[data-theme="dark"] .still-grid img,
+html[data-theme="dark"] .wf-still,
+html[data-theme="dark"] .material-card img,
+html[data-theme="dark"] .material-strip img {
+  background: #1a1a1e;
+  color: var(--muted);
+  border-color: #2c2c31;
+}
+
+html[data-theme="dark"] .prompt-table td,
+html[data-theme="dark"] .task,
+html[data-theme="dark"] .dock-tasks li,
+html[data-theme="dark"] .dock-events li {
+  border-color: #2c2c31;
+}
+
+html[data-theme="dark"] .md blockquote,
+html[data-theme="dark"] .wf-read,
+html[data-theme="dark"] .job-log li,
+html[data-theme="dark"] .task-detail,
+html[data-theme="dark"] .task-duration,
+html[data-theme="dark"] .task-state,
+html[data-theme="dark"] .doc-brief,
+html[data-theme="dark"] .doc-material small,
+html[data-theme="dark"] .choice-other,
+html[data-theme="dark"] .style-card span,
+html[data-theme="dark"] .style-look,
+html[data-theme="dark"] .style-grade,
+html[data-theme="dark"] .dock-elapsed,
+html[data-theme="dark"] .dock-message,
+html[data-theme="dark"] .job-elapsed,
+html[data-theme="dark"] .prompt-table th {
+  color: #c8c2b8;
+}
+
+html[data-theme="dark"] .job-steps li.done,
+html[data-theme="dark"] .job-calls .done,
+html[data-theme="dark"] .task-ready .task-state,
+html[data-theme="dark"] .task-done .task-state {
+  background: #1a2e24;
+  color: #8dcea8;
+}
+
+html[data-theme="dark"] .job-steps li.current,
+html[data-theme="dark"] .job-calls .current,
+html[data-theme="dark"] .task-running .task-state {
+  background: #1c2233;
+  color: var(--accent);
+}
+
+html[data-theme="dark"] .job-steps li.paused,
+html[data-theme="dark"] .task-retrying .task-state,
+html[data-theme="dark"] .task-paused .task-state {
+  background: #332a18;
+  color: #e2c07a;
+}
+
+html[data-theme="dark"] .job-steps li.failed,
+html[data-theme="dark"] .job-calls .failed,
+html[data-theme="dark"] .task-error .task-state,
+html[data-theme="dark"] .error,
+html[data-theme="dark"] .item-delete:hover {
+  background: #3a2220;
+  color: #f0a8a2;
+}
+
+html[data-theme="dark"] .debug-note,
+html[data-theme="dark"] .wf-view {
+  background: #1c2233;
+  color: #c5d0ea;
+}
+
+html[data-theme="dark"] .job-bar-label { color: var(--text); }
+
+html[data-theme="dark"] .canvas-edges path { stroke: #4a5166; }
+
+html[data-theme="dark"] .wf-node,
+html[data-theme="dark"] .composer,
+html[data-theme="dark"] .debug-dock {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+html[data-theme="dark"] .preview-stage video,
+html[data-theme="dark"] .wf-node video,
+html[data-theme="dark"] .clip-card video {
+  background: #000;
+}
+
+html[data-theme="dark"] .choice-tag { color: #141416; }
+
+html[data-theme="dark"] #send:disabled { background: #3a3a40; }
+
+html[data-theme="dark"] mark {
+  background: #5a4a20;
+  color: inherit;
 }
