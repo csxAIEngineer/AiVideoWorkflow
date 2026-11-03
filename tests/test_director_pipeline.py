@@ -259,6 +259,46 @@ class DirectorDbTest(unittest.TestCase):
             conn.close()
         self.tmp.cleanup()
 
+    def test_empty_feed_revise_asks_for_a_full_write(self):
+        make_project(
+            "p-empty-feed",
+            status="gate",
+            progress={
+                "percent": 76,
+                "phase": "gate_feed",
+                "message": "投喂机检没过。根据建议修改会按下面这些项改。",
+                "lock_machine": True,
+                "pipeline": {
+                    "only": "",
+                    "accepted": ["script", "asset", "storyboard"],
+                    "current": "feed",
+                    "action": "wait",
+                    "passed": False,
+                    "report": "投喂稿是空的",
+                    "repair": "投喂稿是空的",
+                    "check": "",
+                },
+                "question": {
+                    "id": "feed",
+                    "kind": "single",
+                    "reply": "投喂机检没过。根据建议修改会按下面这些项改。\n投喂稿是空的",
+                    "options": ["根据建议修改"],
+                    "cards": [],
+                },
+            },
+        )
+        seen = {}
+
+        def capture(_project, pipeline, label):
+            seen["pipeline"] = dict(pipeline)
+            seen["label"] = label
+
+        with patch("end.server._enqueue_stage", capture):
+            answer_gate(read_project("p-empty-feed"), "根据建议修改")
+        self.assertEqual(seen["pipeline"]["action"], "write")
+        self.assertFalse(seen["pipeline"].get("repair"))
+        self.assertNotEqual(seen["pipeline"].get("action"), "rewrite")
+
     def test_first_question_is_the_track_options(self):
         make_project("p-lock", brief="海外剧 玄幻打斗", status="drilling")
         run_lock_turn("p-lock")
@@ -980,6 +1020,97 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertFalse(outcome["progress"]["pipeline"]["passed"])
         self.assertEqual(outcome["message"]["options"], ["继续"])
         self.assertIn("没写完", outcome["message"]["content"])
+
+    def test_feed_text_field_is_kept_and_an_empty_feed_is_rewritten(self):
+        folder = Path(tempfile.mkdtemp())
+        internal = folder / "_内部_"
+        internal.mkdir()
+        (internal / "分镜.md").write_text("分镜正文 L01 她拿起药盒。\n", encoding="utf-8")
+        (internal / "previs.md").write_text("## 段 1\n预演正文\n", encoding="utf-8")
+        (internal / "assets.md").write_text("#### 图1 · 药盒\n16:9\n", encoding="utf-8")
+        draft = "\n".join((
+            "## 【投喂单元 1/1】",
+            "subject_definitions:",
+            "<Subject 1> is a medicine box on a table.",
+            "summary:",
+            "The box sits in warm light.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved.",
+            "detailed_description:",
+            "[Shot 1] <Subject 1> rests on the table.",
+            "overall_soundscape:",
+            "Quiet room tone.",
+            "non_diegetic_music:",
+            "A soft pulse.",
+        ))
+        project = {
+            "template": "short-drama-director",
+            "model": "qwen3.8-flash",
+            "brief": "药盒",
+            "progress": {
+                "pipeline": {
+                    "action": "write",
+                    "current": "feed",
+                    "accepted": ["script", "asset", "storyboard"],
+                    "only": "",
+                }
+            },
+        }
+
+        def writer(brief, *_args, **_kwargs):
+            return {"text": draft}
+
+        kept = execute(project, folder, _base_locks(), writer, lambda *_a, **_k: "pack")
+        stored = (internal / "feed.md").read_text(encoding="utf-8")
+        self.assertIn("subject_definitions", stored)
+        self.assertNotEqual(kept["progress"]["pipeline"].get("report"), "投喂稿是空的")
+
+        empty_dir = Path(tempfile.mkdtemp())
+        empty_internal = empty_dir / "_内部_"
+        empty_internal.mkdir()
+        (empty_internal / "分镜.md").write_text("分镜正文\n", encoding="utf-8")
+        (empty_internal / "previs.md").write_text("预演正文\n", encoding="utf-8")
+        empty = execute(
+            project,
+            empty_dir,
+            _base_locks(),
+            lambda *_a, **_k: {},
+            lambda *_a, **_k: "pack",
+        )
+        self.assertEqual(empty["progress"]["pipeline"]["report"], "投喂稿是空的")
+        self.assertTrue(empty["progress"]["pipeline"]["retry_write"])
+        self.assertIn("再写一版", empty["message"]["content"])
+        self.assertFalse((empty_internal / "feed.md").is_file())
+
+        calls = []
+
+        def rewrite(brief, *_args, **_kwargs):
+            calls.append(brief)
+            return {"feed": draft}
+
+        again_project = {
+            "template": "short-drama-director",
+            "model": "qwen3.8-flash",
+            "brief": "药盒",
+            "progress": {
+                "pipeline": {
+                    "action": "rewrite",
+                    "current": "feed",
+                    "accepted": ["script", "asset", "storyboard"],
+                    "passed": False,
+                    "report": "投喂稿是空的",
+                    "repair": "投喂稿是空的",
+                    "only": "",
+                }
+            },
+        }
+        execute(again_project, empty_dir, _base_locks(), rewrite, lambda *_a, **_k: "pack")
+        self.assertTrue(calls)
+        self.assertIn("任务：提示词封装", calls[0])
+        self.assertNotIn("任务：建议修补", calls[0])
+        self.assertIn("分镜正文", calls[0])
+        self.assertIn("预演正文", calls[0])
+        self.assertIn("subject_definitions", (empty_internal / "feed.md").read_text(encoding="utf-8"))
 
     def test_asset_repair_keeps_blocks_the_model_left_out(self):
         folder = Path(tempfile.mkdtemp())

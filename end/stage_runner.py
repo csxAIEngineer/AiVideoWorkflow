@@ -893,6 +893,9 @@ def carried_text(folder, stage):
         board = _read(internal / "分镜.md")
         if board:
             chunks.append(board)
+        previs = _read(internal / "previs.md")
+        if previs:
+            chunks.append(previs)
     return "\n\n".join(chunks)
 
 
@@ -968,6 +971,11 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
     tail = (report or "").strip()
     if len(tail) > 1200:
         tail = tail[-1200:]
+    if stage == "feed" and str(report or "").strip() == "投喂稿是空的":
+        return (
+            "投喂稿没写出来。根据建议修改会按分镜和资产再写一版。",
+            [ASSET_REVISE],
+        )
     if stage in ("asset", "storyboard", "feed"):
         if stage == "feed":
             reply = "投喂机检没过。根据建议修改会按下面这些项改。"
@@ -2212,6 +2220,33 @@ def _normalize_loose_h3(text):
     return normalize_h3_shot_cuts("\n\n".join(blocks).strip())
 
 
+def _looks_like_feed_text(text):
+    raw = str(text or "")
+    return (
+        "subject_definitions" in raw
+        or "投喂单元" in raw
+        or "【时间轴分镜】" in raw
+    )
+
+
+def feed_from_result(result):
+    """The feed draft, even when the merge put the six sections in text."""
+    result = result if isinstance(result, dict) else {}
+    rendered = render_feed_text(result.get("feed") or "")
+    if _looks_like_feed_text(rendered) or rendered.strip():
+        if rendered.strip():
+            return rendered
+    candidates = [result.get("text"), result.get("internal")]
+    for item in result.get("partials") or []:
+        if isinstance(item, dict):
+            candidates.append(item.get("text"))
+    for candidate in candidates:
+        rendered_alt = render_feed_text(candidate or "")
+        if _looks_like_feed_text(rendered_alt):
+            return rendered_alt
+    return rendered
+
+
 def render_feed_text(value):
     """Write an H3 segment object as one six-section block per segment."""
     payload = _feed_payload(value)
@@ -2561,6 +2596,11 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
     upload_block = writer_upload_block(load_intake(folder))
     debug = bool((project.get("progress") or {}).get("debug_llm"))
     debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
+    feed_file = _read(Path(folder) / "_内部_" / "feed.md")
+    empty_feed_report = stage == "feed" and not feed_file.strip() and "投喂稿是空的" in repair and "FAIL" not in repair
+    if empty_feed_report:
+        repair = ""
+        repair_choices = {}
     if (repair or repair_choices) and stage in ("asset", "storyboard", "feed"):
         return _repair_with_graph(
             folder,
@@ -3012,7 +3052,7 @@ def execute(project, folder, locks, write_model, load_pack):
             result["storyboard"] = storyboard
             result["previs"] = previs
         if current == "feed":
-            raw_feed = render_feed_text((result or {}).get("feed") or "")
+            raw_feed = feed_from_result(result)
             patched_feed = patch_h3_voiceover(raw_feed)
             result = dict(result or {})
             result["feed"] = patched_feed
@@ -3037,6 +3077,8 @@ def execute(project, folder, locks, write_model, load_pack):
                 or "文件不存在" in (report or "")
             )
         ):
+            pipeline["retry_write"] = True
+        if current == "feed" and not passed and str(report or "").strip() == "投喂稿是空的":
             pipeline["retry_write"] = True
         if passed or current in ("asset", "storyboard", "feed") or attempts >= REPAIR_LIMIT:
             break
