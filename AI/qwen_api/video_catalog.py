@@ -5,10 +5,10 @@ id, and one parameter profile. None of the three stores the other two.
 preview and generate are profiles. qwen and omniref are platforms. The
 MiniMax-H3 id is a model. Routes name which pair a profile uses.
 
-Add a protocol by register_adapter. Add a host, model id, profile, or
-route in data/video_catalog.json beside the process .env. See
-data/video_catalog.example.json. A missing file or a missing field keeps
-the built-in default. API keys stay in .env.
+Add a protocol by register_adapter. Hosts, model ids, profiles, and
+routes are in config/video_catalog.json at the repository root. That
+file is the shipped configuration. A missing field keeps the built-in
+value. API keys stay in .env.
 """
 
 import json
@@ -25,7 +25,8 @@ DASH_SCOPE_SUBMIT_PATH = "/api/v1/services/aigc/video-generation/video-synthesis
 DASH_SCOPE_TASK_PREFIX = "/api/v1/tasks/"
 
 CATALOG_FILE = "video_catalog.json"
-CATALOG_LABEL = "data/video_catalog.json"
+CATALOG_DIR = "config"
+CATALOG_LABEL = "config/video_catalog.json"
 
 _PROFILE_ALIASES = {
     "preview": "preview",
@@ -113,11 +114,16 @@ def default_profile():
     }
 
 
-def catalog_root(env_path=None):
-    """Project root whose data/video_catalog.json is read.
+def repo_root():
+    """Repository root. video_catalog.py lives in AI/qwen_api/."""
+    return Path(__file__).resolve().parents[2]
 
-    An explicit env_path that is not a file or directory does not fall
-    through to the repo, so tests can opt out of a local catalog.
+
+def catalog_root(env_path=None):
+    """Project root whose config/video_catalog.json is read.
+
+    No env_path means the repository file. An explicit path that is not a
+    file or directory does not fall through, so a test can opt out.
     """
     if env_path is not None:
         candidate = Path(env_path)
@@ -126,19 +132,14 @@ def catalog_root(env_path=None):
         if candidate.is_dir():
             return candidate
         return None
-    from AI.qwen_api.client import qwen_choice_path
-
-    choice = qwen_choice_path(None)
-    if choice is None:
-        return Path.cwd()
-    return choice.parent.parent
+    return repo_root()
 
 
 def catalog_path(env_path=None):
     root = catalog_root(env_path)
     if root is None:
         return None
-    return root / "data" / CATALOG_FILE
+    return root / CATALOG_DIR / CATALOG_FILE
 
 
 def _load_catalog(env_path=None):

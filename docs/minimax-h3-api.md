@@ -53,7 +53,7 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 
 `preview` 和 `generate` 各有一套配置，字段相同：`resolution`、`ratio`、`duration`、`watermark`、`preset`、`url`、`model`。默认两套一样。`ratio` 和 `duration` 留空时用这一镜的画幅和秒数。`url` 留空时，云端用当前千问主机，本地用 `MINIMAX_H3_BASE_URL`。`model` 留空时仍是 `MiniMax/MiniMax-H3`。`url` 和 `model` 不进入 `parameters`。出片固定传 `mode=generate`。`video.submit` 不传 `mode`、或传空字符串时，也按 `generate` 组装，请求体与上面的示例一致。调试要换一套时传 `mode=preview`（也认 `预览` / `生成`）。
 
-覆盖写在 `data/video_catalog.json`，和 `data/qwen_env`、`data/minimax_video` 放在一起。复制 `data/video_catalog.example.json` 再改。这个文件不入库。缺文件，或某个字段没写，就用内置默认。密钥仍放在 `.env`，不要写进 JSON。
+覆盖写在仓库里的 `config/video_catalog.json`，进程直接读这一份。缺字段时用内置默认。密钥仍放在 `.env`，不要写进 JSON。页面上的千问环境和出镜云端/本地仍是 `data/qwen_env`、`data/minimax_video`。
 
 ```json
 {
@@ -71,7 +71,7 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 
 平台、模型、参数档是三套登记，提交时各取一个。都以 `_` 开头的键只是说明。
 
-| 登记 | 默认 | `data/video_catalog.json` 里的键 |
+| 登记 | 没写进 JSON 时 | `config/video_catalog.json` 里的键 |
 |---|---|---|
 | 平台 | 页面选本地时是 `omniref`，否则是 `qwen`。管主机、Bearer、协议、素材规则 | `platforms` |
 | 模型 | `minimax-h3`，请求体 id 为 `MiniMax/MiniMax-H3`。不含参数 | `models` |
@@ -82,7 +82,7 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 
 ## wan3.0-video（token-plan）
 
-`data/video_catalog.example.json` 在保留 MiniMax-H3、`qwen`、`omniref` 和 `minimax` 参数档的同时，把 `preview` / `generate` 的路线改到平台 `token-plan`、模型 `wan3.0-video`。复制为 `data/video_catalog.json` 后生效。主机是现有生产千问 `https://token-plan.maas.qianwenaiapi.com`，Bearer 用 `TOKE_PLAN_QWEN_API_KEY`。
+`config/video_catalog.json` 在保留 MiniMax-H3、`qwen`、`omniref` 和 `minimax` 参数档的同时，把 `preview` / `generate` 的路线定在平台 `token-plan`、模型 `wan3.0-video`。这是仓库里的正式文件，不用再复制。主机是现有生产千问 `https://token-plan.maas.qianwenaiapi.com`，Bearer 用 `TOKE_PLAN_QWEN_API_KEY`。
 
 | 档 | resolution | 模型 |
 |---|---|---|
@@ -90,7 +90,7 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 | `generate` | `720P` | `wan3.0-video` |
 | `minimax` | `768P`，并保留 `watermark: false` 与 `preset: fast` | 仍登记为 `minimax-h3`，路线不指向它 |
 
-请求体字段是 `resolution`、`ratio`、`duration`。`duration` 为 2–30，或 `-1`。`prompt_extend` 不默认写上。带图时 `ratio` 仍是 `adaptive`。没有 `data/video_catalog.json` 时，出片仍走原来的 MiniMax-H3。官方说明见 https://platform.qianwenai.com/docs/developer-guides/video-generation/wan30-video 。
+请求体字段是 `resolution`、`ratio`、`duration`。`duration` 为 2–30，或 `-1`。`prompt_extend` 不默认写上。带图时 `ratio` 仍是 `adaptive`。官方说明见 https://platform.qianwenai.com/docs/developer-guides/video-generation/wan30-video 。
 
 `media[].type` 由这一镜的模式决定。一次请求不能同时带首尾帧和参考素材。
 

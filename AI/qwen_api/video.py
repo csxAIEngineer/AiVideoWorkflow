@@ -22,9 +22,8 @@ omniref are platforms. MiniMax/MiniMax-H3 is a model id. A route binds
 one profile to one platform and one model. Omitting the profile selects
 generate. An empty route keeps this client's host and MiniMax/MiniMax-H3.
 
-Overrides live in data/video_catalog.json next to .env. See
-data/video_catalog.example.json. A missing file keeps these defaults.
-API keys stay in .env.
+The shipped routes are config/video_catalog.json. A missing field keeps
+the built-in value. API keys stay in .env.
 """
 
 import os

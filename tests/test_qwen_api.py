@@ -370,7 +370,8 @@ class QwenMediaTest(unittest.TestCase):
 
     def test_video_keeps_documented_ratios_and_separates_roles(self):
         captured, opener = self._capture({"output": {"task_id": "vid-1", "task_status": "PENDING"}})
-        task = QwenVideoClient(client=_client(opener)).submit_video(
+        bare = self._catalog()
+        task = QwenVideoClient(client=_client(opener), env_path=bare).submit_video(
             "海面亮起来",
             model="minimax-h3-text-to-video",
             duration=5,
@@ -396,7 +397,7 @@ class QwenMediaTest(unittest.TestCase):
         self.assertNotIn(task.status, VIDEO_FAILURE)
 
         captured, opener = self._capture({"output": {"task_id": "vid-2", "task_status": "SUCCEEDED", "video_url": "https://cdn.example/a.mp4"}})
-        done = QwenVideoClient(client=_client(opener)).submit_video("海", aspect_ratio=None, images=[{"role": "first_frame", "url": "https://cdn.example/a.png"}, {"role": "last_frame", "url": "https://cdn.example/b.png"}])
+        done = QwenVideoClient(client=_client(opener), env_path=bare).submit_video("海", aspect_ratio=None, images=[{"role": "first_frame", "url": "https://cdn.example/a.png"}, {"role": "last_frame", "url": "https://cdn.example/b.png"}])
         self.assertIn(done.status, VIDEO_SUCCESS)
         self.assertEqual(done.url, "https://cdn.example/a.mp4")
         self.assertEqual(captured["body"]["parameters"]["ratio"], "adaptive")
@@ -406,7 +407,7 @@ class QwenMediaTest(unittest.TestCase):
         self.assertIn(failed.status, VIDEO_FAILURE)
         self.assertEqual(VideoTask({"id": "v", "status": "completed", "data": [{"url": "https://cdn.example/old.mp4"}]}).status, "completed")
 
-        client = QwenVideoClient(client=_client(lambda request, timeout=None: _Body("{}")))
+        client = QwenVideoClient(client=_client(lambda request, timeout=None: _Body("{}")), env_path=bare)
         with self.assertRaises(QwenError) as mixed:
             client.submit_video(
                 "海",
@@ -417,7 +418,7 @@ class QwenMediaTest(unittest.TestCase):
             )
         self.assertIn("不能同时使用首尾帧和参考素材", str(mixed.exception))
         captured, opener = self._capture({"output": {"task_id": "vid-ref", "task_status": "PENDING"}})
-        QwenVideoClient(client=_client(opener)).submit_video(
+        QwenVideoClient(client=_client(opener), env_path=bare).submit_video(
             "海",
             images=[{"role": "reference_image", "url": "https://cdn.example/ref.png"}],
         )
@@ -590,12 +591,12 @@ class QwenMediaTest(unittest.TestCase):
 
     def _catalog(self, payload=None, raw=None):
         root = Path(tempfile.mkdtemp())
-        (root / "data").mkdir()
+        (root / "config").mkdir()
         env_file = root / ".env"
         env_file.write_text("", encoding="utf-8")
         if raw is not None or payload is not None:
             text = raw if raw is not None else json.dumps(payload, ensure_ascii=False)
-            (root / "data" / "video_catalog.json").write_text(text, encoding="utf-8")
+            (root / "config" / "video_catalog.json").write_text(text, encoding="utf-8")
         return env_file
 
     def _mode_client(self, local, env_path=None):
@@ -997,15 +998,16 @@ class QwenMediaTest(unittest.TestCase):
         finally:
             unregister_adapter("probe")
 
-    def test_example_catalog_selects_wan3_and_keeps_minimax(self):
+    def test_shipped_catalog_selects_wan3_and_keeps_minimax(self):
         from AI.qwen_api.client import QWEN_ENVS
-        from AI.qwen_api.video_catalog import video_registry
+        from AI.qwen_api.video_catalog import catalog_path, video_registry
 
-        example = Path(__file__).resolve().parents[1] / "data" / "video_catalog.example.json"
-        env_path = self._catalog(raw=example.read_text(encoding="utf-8"))
+        shipped = Path(__file__).resolve().parents[1] / "config" / "video_catalog.json"
+        self.assertEqual(catalog_path(None), shipped)
+        self.assertTrue(shipped.is_file())
         images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
         with patch.dict(os.environ, {"TOKE_PLAN_QWEN_API_KEY": "plan-key"}):
-            registry = video_registry(env_path)
+            registry = video_registry()
             self.assertEqual(set(registry["platforms"]), {"qwen", "omniref", "token-plan"})
             self.assertEqual(registry["models"]["minimax-h3"]["id"], "MiniMax/MiniMax-H3")
             self.assertEqual(registry["models"]["wan3.0-video"]["id"], "wan3.0-video")
@@ -1018,7 +1020,7 @@ class QwenMediaTest(unittest.TestCase):
             self.assertEqual(registry["routes"]["preview"]["model"], "wan3.0-video")
             self.assertEqual(registry["routes"]["generate"]["platform"], "token-plan")
             self.assertEqual(registry["routes"]["generate"]["model"], "wan3.0-video")
-            captured, client = self._mode_client(False, env_path)
+            captured, client = self._mode_client(False)
             preview = client.submit_video("海面亮起来", duration=2, aspect_ratio="16:9", mode="preview")
             preview_body = dict(captured["body"])
             preview_url = captured["url"]
