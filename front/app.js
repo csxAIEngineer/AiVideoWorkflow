@@ -23,8 +23,14 @@ const canvasEl = document.querySelector("#canvas");
 const canvasNodes = document.querySelector("#canvas-nodes");
 const canvasSvg = document.querySelector("#canvas-edges");
 const debugDock = document.querySelector("#debug-dock");
-const viewCanvasBtn = document.querySelector("#view-canvas");
-const viewChatBtn = document.querySelector("#view-chat");
+const stageCenter = document.querySelector("#stage-center");
+const previewPane = document.querySelector("#preview-pane");
+const previewStage = document.querySelector("#preview-stage");
+const previewEmpty = document.querySelector("#preview-empty");
+const shotStrip = document.querySelector("#shot-strip");
+const docNav = document.querySelector("#doc-nav");
+const sideTabs = document.querySelector("#side-tabs");
+const stageZoom = document.querySelector(".stage-zoom");
 
 let projects = [];
 let current = null;
@@ -36,10 +42,13 @@ let sending = false;
 let surface = "canvas";
 let surfaceLock = "";
 let surfaced = "";
+let centerView = "canvas";
+let previewShotId = "";
+let sideTab = "history";
 let canvasSig = "";
 let canvasEdges = [];
 let view = { x: 48, y: 48, scale: 1 };
-const canvasMinScale = 0.55;
+const canvasMinScale = 0.25;
 let pendingSaves = new Set();
 const pointer = { mode: "" };
 let draftMaterials = [];
@@ -1027,6 +1036,7 @@ function workflowMode(project) {
   return !!project.script;
 }
 
+// Home hints only. Workflow keeps the canvas and the chat column together.
 function chatHome(project) {
   if (!project) return false;
   const status = project.status;
@@ -1059,41 +1069,68 @@ function surfaceKey(project) {
 
 function settleSurface(project) {
   const key = surfaceKey(project);
-  if (key !== surfaced) {
-    const previous = surfaced;
-    surfaced = key;
-    if (key.indexOf("canvas:") === 0) {
-      surface = "canvas";
-      surfaceLock = "";
-      return;
-    }
-    if (key.indexOf("chat:") === 0 && surfaceLock !== "canvas") {
-      surface = "chat";
-      return;
-    }
-    if (key.indexOf("other:") === 0 && previous.indexOf("chat:") === 0) {
-      surface = "chat";
-      surfaceLock = "";
-      return;
-    }
+  if (key === surfaced) return;
+  surfaced = key;
+  surfaceLock = "";
+  surface = key.indexOf("canvas:") === 0 ? "canvas" : "chat";
+}
+
+function syncCenter() {
+  const workflow = !!(main && main.classList.contains("workflow"));
+  const preview = workflow && centerView === "preview";
+  if (stageCenter) stageCenter.classList.toggle("hidden", !workflow);
+  if (canvasWrap) canvasWrap.classList.toggle("hidden", !workflow || preview);
+  if (previewPane) previewPane.classList.toggle("hidden", !preview);
+  if (shotStrip) shotStrip.classList.toggle("hidden", !workflow);
+  if (stageZoom) stageZoom.classList.toggle("hidden", preview);
+  const canvasBtn = document.querySelector("#view-canvas");
+  const previewBtn = document.querySelector("#view-preview");
+  if (canvasBtn) canvasBtn.classList.toggle("on", workflow && !preview);
+  if (previewBtn) previewBtn.classList.toggle("on", preview);
+}
+
+function setMenuOpen(open) {
+  const menu = document.querySelector("#app-menu");
+  const toggle = document.querySelector("#menu-toggle");
+  if (menu) menu.classList.toggle("open", !!open);
+  if (toggle) {
+    toggle.classList.toggle("on", !!open);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
   }
-  if (key.indexOf("chat:") === 0 && surfaceLock !== "canvas") surface = "chat";
-  else if (key.indexOf("canvas:") === 0 && surfaceLock !== "chat") surface = "canvas";
+}
+
+function syncSideMode() {
+  const workflow = !!(main && main.classList.contains("workflow"));
+  if (sideTabs) sideTabs.classList.toggle("hidden", !workflow);
+  const docs = workflow && sideTab !== "history";
+  if (docNav) docNav.classList.toggle("hidden", !docs);
+  if (history) history.classList.toggle("hidden", docs);
+  const docsBtn = document.querySelector("#side-docs");
+  const historyBtn = document.querySelector("#side-history");
+  if (docsBtn) docsBtn.classList.toggle("on", docs);
+  if (historyBtn) historyBtn.classList.toggle("on", workflow && !docs);
 }
 
 function hideWorkflow() {
   if (stageBar) stageBar.classList.add("hidden");
-  if (canvasWrap) canvasWrap.classList.add("hidden");
-  if (debugDock) debugDock.classList.add("hidden");
+  if (debugDock) {
+    debugDock.classList.add("hidden");
+    debugDock.classList.remove("open");
+  }
+  const dockToggle = document.querySelector("#dock-toggle");
+  if (dockToggle) dockToggle.classList.remove("on");
+  if (main) main.classList.remove("workflow");
+  syncCenter();
+  syncSideMode();
 }
 
 function showWorkflow() {
   if (stageBar) stageBar.classList.remove("hidden");
   if (debugDock) debugDock.classList.remove("hidden");
-  const chat = surface === "chat";
-  if (canvasWrap) canvasWrap.classList.toggle("hidden", chat);
-  if (viewCanvasBtn) viewCanvasBtn.classList.toggle("on", !chat);
-  if (viewChatBtn) viewChatBtn.classList.toggle("on", chat);
+  if (thread) thread.classList.remove("hidden");
+  if (main) main.classList.add("workflow");
+  syncCenter();
+  syncSideMode();
   syncControlButtons(current);
 }
 
@@ -1105,6 +1142,8 @@ function renderThread(options) {
     surfaceLock = "";
     surfaced = "";
     canvasSig = "";
+    centerView = "canvas";
+    previewShotId = "";
     hideWorkflow();
     empty.classList.remove("hidden");
     thread.classList.add("hidden");
@@ -1124,10 +1163,12 @@ function renderThread(options) {
     return;
   }
   showWorkflow();
-  const chat = surface === "chat";
-  thread.classList.toggle("hidden", !chat);
-  if (chat) paintTranscript(opts, false);
+  thread.classList.remove("hidden");
+  paintTranscript(opts, false);
   syncCanvas(current);
+  syncDocNav(current);
+  syncShotStrip(current);
+  syncPreview(current);
   syncDock(current);
   refreshLogs();
   syncComposer();
@@ -1328,6 +1369,7 @@ async function refreshList() {
 }
 
 async function openProject(id) {
+  setMenuOpen(false);
   const switching = !current || current.id !== id;
   try {
     current = await rpc("projects.get", { id: id });
@@ -1338,6 +1380,10 @@ async function openProject(id) {
     surfaceLock = "";
     surfaced = "";
     canvasSig = "";
+    centerView = "canvas";
+    previewShotId = "";
+    syncDocNav.sig = "";
+    syncShotStrip.sig = "";
   }
   showProjectModel(current);
   showProjectTemplate(current);
@@ -1373,6 +1419,7 @@ function watch() {
 }
 
 newChat.addEventListener("click", () => {
+  setMenuOpen(false);
   current = null;
   otherOpen = false;
   clearDraftMaterials();
@@ -2000,7 +2047,11 @@ function spreadColumns() {
   const measured = [];
   columns.forEach((column) => {
     if (!column) return;
-    column.sort((a, b) => (Number(a.dataset.row) || 0) - (Number(b.dataset.row) || 0));
+    column.sort((a, b) => {
+      const byHeight = (b.offsetHeight || 0) - (a.offsetHeight || 0);
+      if (byHeight) return byHeight;
+      return (Number(a.dataset.row) || 0) - (Number(b.dataset.row) || 0);
+    });
     let width = 0;
     let contentH = 0;
     column.forEach((el) => {
@@ -2024,17 +2075,14 @@ function spreadColumns() {
   const fit = Math.min(viewW / Math.max(naturalW, 1), viewH / Math.max(naturalH, 1));
   if (fit >= canvasMinScale && naturalH > 0 && naturalW / naturalH < viewW / viewH && measured.length > 1) {
     gapX = Math.max(minGapX, (naturalH * (viewW / viewH) - contentW) / (measured.length - 1));
-  } else if (fit >= canvasMinScale && naturalH > 0 && naturalW / naturalH > viewW / viewH) {
-    const targetH = naturalW / (viewW / viewH);
-    const tallest = measured.reduce((best, col) => {
-      return col.contentH + minGapY * col.gaps > best.contentH + minGapY * best.gaps ? col : best;
-    });
-    if (tallest.gaps > 0) gapY = Math.max(minGapY, (targetH - tallest.contentH) / tallest.gaps);
   }
+  const columnHeights = measured.map((col) => col.contentH + gapY * col.gaps);
+  const rowH = columnHeights.reduce((max, height) => Math.max(max, height), 0);
   let x = pad;
-  measured.forEach((col) => {
-    let y = pad;
-    col.column.forEach((el) => {
+  measured.forEach((col, index) => {
+    let y = pad + (rowH - columnHeights[index]) / 2;
+    col.column.forEach((el, row) => {
+      el.dataset.row = String(row);
       placeNode(el, x, y);
       y += el.offsetHeight + gapY;
     });
@@ -2325,20 +2373,18 @@ function syncCanvas(project) {
   } else {
     patchCanvas(project);
   }
-  if (surface !== "chat") {
-    if (fittedSig !== canvasSig) {
-      requestAnimationFrame(() => {
-        if (canvasWrap.classList.contains("hidden") || !canvasWrap.clientWidth) return;
-        if (!canvasNodes.dataset.custom) {
-          if (!spreadColumns()) return;
-        }
-        drawEdges(canvasEdges);
-        fitCanvas();
-        fittedSig = canvasSig;
-      });
-    } else {
+  if (fittedSig !== canvasSig) {
+    requestAnimationFrame(() => {
+      if (!canvasWrap || canvasWrap.classList.contains("hidden") || !canvasWrap.clientWidth) return;
+      if (!canvasNodes.dataset.custom) {
+        if (!spreadColumns()) return;
+      }
       drawEdges(canvasEdges);
-    }
+      fitCanvas();
+      fittedSig = canvasSig;
+    });
+  } else {
+    drawEdges(canvasEdges);
   }
 }
 
@@ -2632,6 +2678,277 @@ function onWheel(event) {
   zoomAt(view.scale * factor, event.clientX, event.clientY);
 }
 
+function docHeading(text) {
+  const heading = document.createElement("h4");
+  heading.textContent = text;
+  return heading;
+}
+
+function docButton(label, onClick, key) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "doc-link";
+  button.textContent = label;
+  if (key) button.dataset.doc = key;
+  button.addEventListener("click", () => {
+    onClick();
+    markDocLink(button);
+  });
+  return button;
+}
+
+function markDocLink(node) {
+  if (!docNav || !node) return;
+  docNav.querySelectorAll(".doc-link, .doc-material").forEach((el) => {
+    el.classList.toggle("on", el === node);
+  });
+}
+
+function docFiles(project) {
+  const box = document.createElement("div");
+  if (project.board_url) {
+    const link = document.createElement("a");
+    link.className = "download";
+    link.href = project.board_url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = "打开看板";
+    box.append(link);
+  }
+  if (project.has_spec) {
+    const spec = document.createElement("a");
+    spec.className = "download";
+    spec.href = "/media/projects/" + project.id + "/spec";
+    spec.textContent = "下载 spec.json";
+    box.append(spec);
+  }
+  (project.debug_files || []).forEach((key) => {
+    const link = document.createElement("a");
+    link.className = "download";
+    link.href = "/media/projects/" + project.id + "/debug/" + key;
+    link.textContent = DEBUG_FILE_LABELS[key] || key;
+    box.append(link);
+  });
+  return box.childElementCount ? box : null;
+}
+
+function docSignature(project) {
+  const materials = (project.materials || []).map((item) => [item.id, item.title, item.url, item.narration].join(":")).join("|");
+  const assets = (project.assets || []).map((item) => item.id).join(",");
+  return [
+    project.id,
+    project.brief || "",
+    materials,
+    assets,
+    project.board_url || "",
+    project.has_spec ? "1" : "",
+    (project.debug_files || []).join(","),
+  ].join("\u0001");
+}
+
+function syncDocNav(project) {
+  if (!docNav || !project) return;
+  const sig = docSignature(project);
+  if (sig === syncDocNav.sig && docNav.childElementCount) return;
+  syncDocNav.sig = sig;
+  docNav.replaceChildren();
+  const materials = project.materials || [];
+  if (materials.length) {
+    docNav.append(docHeading("素材"));
+    materials.forEach((item) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "doc-material";
+      if (item.url) {
+        const img = document.createElement("img");
+        img.src = item.url;
+        img.alt = item.title || item.id || "";
+        row.append(img);
+      } else {
+        const hold = document.createElement("span");
+        hold.className = "doc-hold";
+        hold.textContent = item.id || "";
+        row.append(hold);
+      }
+      const text = document.createElement("span");
+      const name = document.createElement("b");
+      name.textContent = item.title || item.id || "素材";
+      text.append(name);
+      if (item.narration) {
+        text.append(document.createElement("br"));
+        const note = document.createElement("small");
+        note.textContent = item.narration;
+        text.append(note);
+      }
+      row.append(text);
+      row.addEventListener("click", () => {
+        const asset = (project.assets || []).find((entry) => entry.id === item.id);
+        focusCanvasField("image", asset ? "asset:" + asset.id : "");
+        markDocLink(row);
+      });
+      docNav.append(row);
+    });
+  }
+  docNav.append(docHeading("文稿"));
+  if (project.brief) {
+    docNav.append(docButton("简报", () => {
+      const note = docNav.querySelector(".doc-brief");
+      if (note) note.hidden = false;
+    }));
+    const note = document.createElement("p");
+    note.className = "doc-brief";
+    note.textContent = project.brief;
+    docNav.append(note);
+  }
+  docNav.append(docButton("提示词", () => focusCanvasField("script", "script"), "script"));
+  docNav.append(docButton("分镜", () => focusCanvasField("storyboard", "storyboard"), "storyboard"));
+  const files = docFiles(project);
+  if (files) {
+    docNav.append(docHeading("文件"));
+    docNav.append(files);
+  }
+}
+
+function focusCanvasField(nodeId, fieldKey) {
+  setMenuOpen(false);
+  centerView = "canvas";
+  syncCenter();
+  requestAnimationFrame(() => {
+    const node = nodeById(nodeId);
+    if (!node) return;
+    document.querySelectorAll(".wf-node.nav-focus").forEach((el) => el.classList.remove("nav-focus"));
+    node.classList.add("nav-focus");
+    const x = Number(node.dataset.x) || 0;
+    const y = Number(node.dataset.y) || 0;
+    const width = node.offsetWidth || 280;
+    const height = node.offsetHeight || 160;
+    if (canvasWrap && canvasWrap.clientWidth) {
+      const scale = view.scale || 1;
+      view.x = (canvasWrap.clientWidth - width * scale) / 2 - x * scale;
+      view.y = (canvasWrap.clientHeight - height * scale) / 2 - y * scale;
+      applyView();
+    }
+    if (!fieldKey) return;
+    let field = null;
+    node.querySelectorAll("[data-field]").forEach((el) => {
+      if (el.dataset.field === fieldKey) field = el;
+    });
+    if (!field) return;
+    field.focus({ preventScroll: true });
+    const scroller = field.closest(".wf-assets");
+    if (!scroller) return;
+    const fieldBox = field.getBoundingClientRect();
+    const box = scroller.getBoundingClientRect();
+    if (fieldBox.top < box.top || fieldBox.bottom > box.bottom) {
+      scroller.scrollTop += fieldBox.top - box.top - 8;
+    }
+  });
+}
+
+function shotThumbUrl(project, shot) {
+  const ids = (shot && shot.images) || [];
+  for (let index = 0; index < ids.length; index += 1) {
+    const url = imageUrlFor(project, ids[index]);
+    if (url) return url;
+  }
+  return shot ? imageUrlFor(project, shot.id) : "";
+}
+
+function previewUrl(project) {
+  if (!project) return "";
+  if (previewShotId) return clipUrlFor(project, previewShotId) || "";
+  if (project.video_url) return project.video_url;
+  const shots = project.shots || [];
+  for (let index = 0; index < shots.length; index += 1) {
+    const url = clipUrlFor(project, shots[index].id);
+    if (url) return url;
+  }
+  return "";
+}
+
+function syncPreview(project) {
+  if (!previewStage || !project) return;
+  const url = previewUrl(project);
+  if (previewEmpty) {
+    previewEmpty.textContent = previewShotId ? "这一镜还没有片子" : "还没有可以预览的片子";
+    previewEmpty.classList.toggle("hidden", !!url);
+  }
+  if (!url) {
+    previewStage.replaceChildren();
+    return;
+  }
+  const existing = previewStage.querySelector("video");
+  if (existing && existing.dataset.url === url) return;
+  previewStage.replaceChildren(makeVideo(url));
+}
+
+function shotStripSignature(project) {
+  const shots = (project.shots || []).map((shot) => [
+    shot.id,
+    shot.duration,
+    (shot.images || []).join(","),
+    shotThumbUrl(project, shot),
+    clipUrlFor(project, shot.id) ? "1" : "",
+  ].join(":")).join("|");
+  return [project.id, project.video_url || "", shots, previewShotId, centerView].join("\u0001");
+}
+
+function shotChip(shot) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "shot-chip";
+  const film = !!shot.film;
+  const selected = film ? !previewShotId : previewShotId === shot.id;
+  button.classList.toggle("on", selected && centerView === "preview");
+  const url = film || !current ? "" : shotThumbUrl(current, shot);
+  if (url) {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = shot.id || "";
+    img.draggable = false;
+    button.append(img);
+  } else {
+    const hold = document.createElement("span");
+    hold.className = "shot-hold";
+    button.append(hold);
+  }
+  const name = document.createElement("b");
+  name.textContent = film ? "成片" : (shot.id || "镜头");
+  button.append(name);
+  if (!film && shot.duration != null && shot.duration !== "") {
+    const time = document.createElement("small");
+    time.textContent = shot.duration + " 秒";
+    button.append(time);
+  }
+  button.addEventListener("click", () => {
+    previewShotId = film ? "" : shot.id;
+    centerView = "preview";
+    syncCenter();
+    if (!current) return;
+    syncShotStrip(current);
+    syncPreview(current);
+  });
+  return button;
+}
+
+function syncShotStrip(project) {
+  if (!shotStrip || !project) return;
+  const sig = shotStripSignature(project);
+  if (sig === syncShotStrip.sig && shotStrip.childElementCount) return;
+  syncShotStrip.sig = sig;
+  shotStrip.replaceChildren();
+  if (project.video_url) shotStrip.append(shotChip({ id: "", film: true }));
+  const shots = project.shots || [];
+  if (!shots.length && !project.video_url) {
+    const empty = document.createElement("p");
+    empty.className = "shot-empty";
+    empty.textContent = "还没有镜头";
+    shotStrip.append(empty);
+    return;
+  }
+  shots.forEach((shot) => shotStrip.append(shotChip(shot)));
+}
+
 function bindCanvas() {
   if (!canvasWrap || canvasWrap.dataset.bound) return;
   canvasWrap.dataset.bound = "1";
@@ -2658,20 +2975,6 @@ function bindCanvas() {
       fitCanvas();
     });
   });
-  if (viewCanvasBtn) {
-    viewCanvasBtn.addEventListener("click", () => {
-      surface = "canvas";
-      surfaceLock = "canvas";
-      renderThread();
-    });
-  }
-  if (viewChatBtn) {
-    viewChatBtn.addEventListener("click", () => {
-      surface = "chat";
-      surfaceLock = canvasHome(current) ? "chat" : "";
-      renderThread();
-    });
-  }
   document.querySelectorAll(".js-pause").forEach((button) => {
     button.addEventListener("click", () => postControl("pause"));
   });
@@ -2683,8 +2986,57 @@ function bindCanvas() {
   });
   const dockToggle = document.querySelector("#dock-toggle");
   if (dockToggle && debugDock) {
-    dockToggle.addEventListener("click", () => debugDock.classList.toggle("open"));
+    dockToggle.addEventListener("click", () => {
+      debugDock.classList.toggle("open");
+      dockToggle.classList.toggle("on", debugDock.classList.contains("open"));
+    });
   }
+  const menuToggle = document.querySelector("#menu-toggle");
+  const appMenu = document.querySelector("#app-menu");
+  if (menuToggle) {
+    menuToggle.addEventListener("click", () => {
+      const menu = document.querySelector("#app-menu");
+      setMenuOpen(!(menu && menu.classList.contains("open")));
+    });
+  }
+  document.addEventListener("click", (event) => {
+    if (!appMenu || !appMenu.classList.contains("open")) return;
+    if (appMenu.contains(event.target) || (menuToggle && menuToggle.contains(event.target))) return;
+    setMenuOpen(false);
+  });
+  if (appMenu) {
+    appMenu.addEventListener("click", (event) => {
+      if (event.target.closest(".item, a")) setMenuOpen(false);
+    });
+  }
+  const docsTab = document.querySelector("#side-docs");
+  const historyTab = document.querySelector("#side-history");
+  if (docsTab) docsTab.addEventListener("click", () => {
+    sideTab = "docs";
+    syncSideMode();
+  });
+  if (historyTab) historyTab.addEventListener("click", () => {
+    sideTab = "history";
+    syncSideMode();
+  });
+  const viewCanvasBtn = document.querySelector("#view-canvas");
+  const viewPreviewBtn = document.querySelector("#view-preview");
+  if (viewCanvasBtn) viewCanvasBtn.addEventListener("click", () => {
+    centerView = "canvas";
+    syncCenter();
+    if (current && workflowMode(current)) {
+      syncCanvas(current);
+      syncShotStrip(current);
+    }
+  });
+  if (viewPreviewBtn) viewPreviewBtn.addEventListener("click", () => {
+    centerView = "preview";
+    syncCenter();
+    if (current && workflowMode(current)) {
+      syncPreview(current);
+      syncShotStrip(current);
+    }
+  });
 }
 
 bindCanvas();
@@ -2741,6 +3093,93 @@ if (minimaxVideoEl) {
     } catch (_error) {
       await loadConfig();
     }
+  });
+}
+
+function applyTheme(theme) {
+  const next = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  const button = document.querySelector("#theme-toggle");
+  if (!button) return;
+  const toLight = next === "dark";
+  button.textContent = toLight ? "浅色" : "深色";
+  button.setAttribute("aria-label", toLight ? "切换到浅色" : "切换到深色");
+}
+
+applyTheme(document.documentElement.dataset.theme === "light" ? "light" : "dark");
+const themeToggle = document.querySelector("#theme-toggle");
+if (themeToggle) {
+  themeToggle.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    try {
+      localStorage.setItem("aivideo.theme", next);
+    } catch (_error) {}
+    applyTheme(next);
+  });
+}
+
+function setSettingsOpen(open) {
+  const panel = document.querySelector("#composer-settings");
+  const button = document.querySelector("#settings-toggle");
+  if (panel) panel.classList.toggle("open", !!open);
+  if (button) {
+    button.classList.toggle("on", !!open);
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+}
+
+const settingsToggle = document.querySelector("#settings-toggle");
+const settingsPanel = document.querySelector("#composer-settings");
+if (settingsToggle) {
+  settingsToggle.addEventListener("click", () => {
+    setSettingsOpen(!(settingsPanel && settingsPanel.classList.contains("open")));
+  });
+}
+document.addEventListener("click", (event) => {
+  if (!settingsPanel || !settingsPanel.classList.contains("open")) return;
+  if (settingsPanel.contains(event.target) || (settingsToggle && settingsToggle.contains(event.target))) return;
+  setSettingsOpen(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setSettingsOpen(false);
+});
+
+function refitCanvas() {
+  requestAnimationFrame(() => {
+    if (!canvasWrap || canvasWrap.classList.contains("hidden") || !canvasWrap.clientWidth) return;
+    if (!canvasNodes.dataset.custom && !spreadColumns()) return;
+    drawEdges(canvasEdges);
+    fitCanvas();
+  });
+}
+
+function setChatOpen(open) {
+  if (main) main.classList.toggle("chat-collapsed", !open);
+  const button = document.querySelector("#chat-toggle");
+  if (button) {
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    button.setAttribute("aria-label", open ? "收起对话" : "展开对话");
+    const mark = button.querySelector(".chat-toggle-mark");
+    if (mark) mark.textContent = open ? "›" : "‹";
+    const label = button.querySelector(".chat-toggle-label");
+    if (label) label.textContent = open ? "收起" : "对话";
+  }
+  if (!open) setSettingsOpen(false);
+  try {
+    localStorage.setItem("aivideo.chat_open", open ? "1" : "0");
+  } catch (_error) {}
+  refitCanvas();
+}
+
+let chatOpen = false;
+try {
+  chatOpen = localStorage.getItem("aivideo.chat_open") === "1";
+} catch (_error) {}
+setChatOpen(chatOpen);
+const chatToggle = document.querySelector("#chat-toggle");
+if (chatToggle) {
+  chatToggle.addEventListener("click", () => {
+    setChatOpen(!!(main && main.classList.contains("chat-collapsed")));
   });
 }
 
