@@ -33,11 +33,11 @@ python3 front/studio/chat.py
 
 ## 千问
 
-`AI/qwen_api/` 按当前千问环境选密钥。测试用 `QWEN_API_KEY`，Token Plan 生产用 `TOKE_PLAN_QWEN_API_KEY`。密钥只从项目根目录的 `.env` 读取。测试环境是 `https://maas.qianwenaiapi.com/compatible-mode/v1`，生产环境是 `https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1`。页面上的「千问」选择写到 `data/qwen_env`。没选过时用 `QWEN_ENV=test` 或 `prod`，两者都没有才用 `QWEN_BASE_URL`。没配当前环境的密钥时，读图写成「尚未读图」，其它调用报未配置对应的变量。
+`AI/qwen_api/` 按当前千问环境选密钥。测试用 `QWEN_API_KEY`，Token Plan 生产用 `TOKE_PLAN_QWEN_API_KEY`。密钥只从项目根目录的 `.env` 读取。测试环境是 `https://maas.qianwenaiapi.com/compatible-mode/v1`，生产环境是 `https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1`。千问环境写在 `config/qwen.json`。没有这份文件时才用 `QWEN_BASE_URL`。没配当前环境的密钥时，读图写成「尚未读图」，其它调用报未配置对应的变量。
 
 文本和意图用 `qwen3.8-flash`，走兼容模式 `/compatible-mode/v1` 的 Responses API。意图图只调用函数 `submit_intent`。请求带 `enable_thinking: false`，并且不传 `reasoning.effort`。带上 `low` 时仍会返回推理 token。解析仍用 `AI/script.py` 的 `parse_drill_text`。
 
-读图用 `qwen3.8-flash`，请求带 `enable_thinking: false`。生产 Token Plan 不提供 `qwen3.8-omni-flash`。生图用 `wan2.7-image`：没有参考图是文生图，有参考图是同一模型的图生图。Token Plan 没有 `qwen-image-3.0`。万相不接受 `prompt_extend`，无参考图时关闭 `thinking_mode`，`watermark` 关闭。出镜用 `MiniMax/MiniMax-H3`，一个模型覆盖文生、首帧、首尾帧和参考素材，`resolution` 为 `768P`，`watermark` 关闭。`16:9`、`9:16`、`21:9` 原样传入，其它比例用 `adaptive`。云端出镜走当前千问主机，仍是 `768P`。页面选「出镜：本地 MiniMax-H3」时，同一套提交和查询改打 OmniRef Ref2VA，见下一节。旁白用 `qwen-audio-3.0-tts-flash`，音色默认 `longanhuan_v3.6`，可用 `QWEN_TTS_VOICE` 覆盖。没有对等的器乐模型，`audio.compose` 直接失败，不再请求别的供应商。
+读图用 `qwen3.8-flash`，请求带 `enable_thinking: false`。生产 Token Plan 不提供 `qwen3.8-omni-flash`。生图用 `wan2.7-image`：没有参考图是文生图，有参考图是同一模型的图生图。Token Plan 没有 `qwen-image-3.0`。万相不接受 `prompt_extend`，无参考图时关闭 `thinking_mode`，`watermark` 关闭。出镜用 `MiniMax/MiniMax-H3`，一个模型覆盖文生、首帧、首尾帧和参考素材，`resolution` 为 `768P`，`watermark` 关闭。`16:9`、`9:16`、`21:9` 原样传入，其它比例用 `adaptive`。提交参数有 `preview` 和 `generate` 两套，结构相同，默认值也相同。出片走 `generate`。`video.submit` 不传 `mode` 时同样按 `generate` 提交。云端出镜走当前千问主机，仍是 `768P`。页面选「出镜：本地 MiniMax-H3」时，同一套提交和查询改打 OmniRef Ref2VA，见下一节。旁白用 `qwen-audio-3.0-tts-flash`，音色默认 `longanhuan_v3.6`，可用 `QWEN_TTS_VOICE` 覆盖。没有对等的器乐模型，`audio.compose` 直接失败，不再请求别的供应商。
 
 生图和出镜都带 `X-DashScope-Async: enable` 提交，再用 `GET /api/v1/tasks/{task_id}` 查状态。生图把 `PENDING` / `RUNNING` 看成 `IN_PROGRESS`，`SUCCEEDED` 保持不变。出镜把 `SUCCEEDED` 看成 `completed`，`FAILED` 看成 `failed`。轮询节奏仍由 End 掌握。
 
@@ -45,14 +45,14 @@ python3 front/studio/chat.py
 
 出镜可以不走千问，改打 OmniRef Ref2VA（FastH3-Omni-FP8，`local_api --mode ref2va`）。文本、生图、读图和旁白仍用上面的千问环境。
 
-页面「出镜」选本地，或在没选过页面时设 `MINIMAX_VIDEO=local`。页面选择写到 `data/minimax_video`，优先于环境变量。模型名仍是 `MiniMax/MiniMax-H3`。本地在云端四个字段之外再带 `preset:fast`。不传 `width` 和 `height`，片长仍用这一镜的 `duration`。选「云端 MiniMax」时提交到当前千问测试或生产主机上的 `MiniMax/MiniMax-H3`。云端请求体里没有 `preset`，云端仍可以文生、首帧和首尾帧。
+路线没写平台时，用 `config/video_catalog.json` 的 `default_video`。`cloud` 走当前千问主机上的 `MiniMax/MiniMax-H3`，`local` 走 `MINIMAX_H3_BASE_URL` 的 OmniRef，并在云端四个字段之外再带 `preset:fast`。不传 `width` 和 `height`，片长仍用这一镜的 `duration`。当前文件里的 preview 和 generate 路线是 token-plan，不看这个回退。页面只显示这两项，改文件才生效。
 
 `MINIMAX_H3_BASE_URL` 指向 OmniRef 服务。本仓库是 `http://121.196.162.203:8765`。没设这个变量时回退到 `http://127.0.0.1:8765`。AI 进程向这个地址发和云端相同的两步：
 
 - `POST /api/v1/services/aigc/video-generation/video-synthesis`，头 `X-DashScope-Async: enable`
 - `GET /api/v1/tasks/{task_id}`
 
-本地提交仍带云端那四个字段（`768P` 标签、画幅、4–15 秒、`watermark: false`），再追加 `preset:fast`。不传 `width`、`height`、`frames`。不传宽高时 16:9 是 832×480。显式宽高会盖掉这套画布。`preset:fast` 只是被接受，不会改步数。`resolution` 必须仍是 `768P`。`duration` 必填。至少要有一条 `reference_image` 或 `reference_video`。`reference_audio` 可以附在后面，不能单独提交。纯文本、`first_frame`、`last_frame` 会在发出前被拒绝。提示词是普通字符串，服务端不检查 `<Picture 1>` 这类标签。
+本地提交仍带云端那四个字段（`768P` 标签、画幅、4–15 秒、`watermark: false`），再追加 `preset:fast`。`preview` 和 `generate` 的默认值都是这一套。出镜登记在仓库里的 `config/video_catalog.json`，进程直接读它。`preview` 走 token-plan 上的 `wan3.0-video`、`480P`，`generate` 走同一平台和模型、`720P`。片长按这个模型是 2–30 秒，或 `-1`。带图时画幅仍写成 `adaptive`。`watermark` 和 `preset` 不发给 wan3。`prompt_extend` 只有参数档里写了才带上。MiniMax-H3、`qwen`、`omniref` 和原来的 `768P` 参数档 `minimax` 都还在，把 `routes` 指回去就能用。密钥用 `.env` 里的 `TOKE_PLAN_QWEN_API_KEY`。不传 `width`、`height`、`frames`。不传宽高时 16:9 是 832×480。显式宽高会盖掉这套画布。`preset:fast` 只是被接受，不会改步数。`resolution` 必须仍是 `768P`。`duration` 必填。至少要有一条 `reference_image` 或 `reference_video`。`reference_audio` 可以附在后面，不能单独提交。纯文本、`first_frame`、`last_frame` 会在发出前被拒绝。提示词是普通字符串，服务端不检查 `<Picture 1>` 这类标签。
 
 成片仍是对结果里的 `output.video_url` 做一次普通下载，地址形如 `http://<host>/api/v1/videos/<task_id>.mp4`。没配 `MINIMAX_H3_API_KEY` 时请求带 `Authorization: Bearer local`。OmniRef 不校验这个头。Docker 里的 AI 容器访问不到宿主机的 `127.0.0.1`，把 `MINIMAX_H3_BASE_URL` 指到容器能访问的地址。
 

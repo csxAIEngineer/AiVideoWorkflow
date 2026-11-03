@@ -1,0 +1,69 @@
+{
+  "_comment": "出镜正式配置，随仓库提交。进程默认读这一份。preview 走 token-plan 上的 wan3.0-video、480P，generate 走同一平台和模型、720P。default_video 是路线没写 platform 时的回退：cloud 用 qwen，local 用 omniref。MiniMax-H3、qwen、omniref 和 minimax 参数档都还在。密钥放 .env，不要写进这个文件。以 _ 开头的键只是说明。",
+  "default_video": "cloud",
+  "platforms": {
+    "_comment": "token-plan 固定生产主机 https://token-plan.maas.qianwenaiapi.com 和 TOKE_PLAN_QWEN_API_KEY。qwen 与 omniref 是内置平台，这里写出来是为了留档。",
+    "qwen": {
+      "adapter": "dashscope",
+      "host": "qwen",
+      "auth": "qwen",
+      "media": "open",
+      "emit_local_defaults": false
+    },
+    "omniref": {
+      "adapter": "dashscope",
+      "host": "minimax_h3",
+      "auth": "local",
+      "media": "reference",
+      "emit_local_defaults": true
+    },
+    "token-plan": {
+      "adapter": "dashscope",
+      "host": "token-plan",
+      "auth": "token-plan",
+      "media": "open",
+      "emit_local_defaults": false
+    }
+  },
+  "models": {
+    "_comment": "wan3.0-video 是当前 preview/generate 用的模型。minimax-h3 仍保留。duration_* 和 emit 不进请求体。wan3 不发送 watermark 和 preset。prompt_extend 只有参数档写了才发送。",
+    "minimax-h3": {
+      "id": "MiniMax/MiniMax-H3",
+      "duration_min": 4,
+      "duration_max": 15,
+      "emit": ["resolution", "ratio", "duration", "watermark", "preset"]
+    },
+    "wan3.0-video": {
+      "id": "wan3.0-video",
+      "duration_min": 2,
+      "duration_max": 30,
+      "duration_extra": [-1],
+      "emit": ["resolution", "ratio", "duration", "prompt_extend"]
+    }
+  },
+  "profiles": {
+    "_comment": "preview / generate 是 wan3 的分辨率。minimax 保留原来的 768P 参数档。ratio、duration 不写就用这一镜；带图时调用方传入空画幅，客户端写成 adaptive。",
+    "preview": {
+      "resolution": "480P"
+    },
+    "generate": {
+      "resolution": "720P"
+    },
+    "minimax": {
+      "resolution": "768P",
+      "watermark": false,
+      "preset": "fast"
+    }
+  },
+  "routes": {
+    "_comment": "当前 preview 和 generate 都走 token-plan + wan3.0-video。改回 MiniMax：platform 写 qwen 或 omniref，model 写 minimax-h3，参数档用 minimax，或把 preview/generate 的 resolution 改回 768P。",
+    "preview": {
+      "platform": "token-plan",
+      "model": "wan3.0-video"
+    },
+    "generate": {
+      "platform": "token-plan",
+      "model": "wan3.0-video"
+    }
+  }
+}

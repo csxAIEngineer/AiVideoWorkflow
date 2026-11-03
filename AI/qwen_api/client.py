@@ -72,34 +72,48 @@ def _find_env():
     return None
 
 
+def repo_root():
+    """Repository root. This file lives in AI/qwen_api/."""
+    return Path(__file__).resolve().parents[2]
+
+
 def normalize_qwen_env(value):
     """test or prod. Empty when the value is not one of those names."""
     return _ENV_ALIASES.get(str(value or "").strip().lower(), "")
 
 
-def qwen_choice_path(env_path=None):
-    """data/qwen_env next to the .env that configured this process."""
-    if env_path is not None:
-        candidate = Path(env_path)
-        root = candidate.parent if candidate.is_file() else None
-    else:
-        found = _find_env()
-        root = found.parent if found else None
+def _project_root(env_path):
+    """Directory that holds config/. A missing explicit path does not use the repo."""
+    if env_path is None:
+        return repo_root()
+    candidate = Path(env_path)
+    if candidate.is_file():
+        return candidate.parent
+    if candidate.is_dir():
+        return candidate
+    return None
+
+
+def qwen_config_path(env_path=None):
+    """config/qwen.json for this project. None when an explicit root does not exist."""
+    root = _project_root(env_path)
     if root is None:
         return None
-    return root / "data" / "qwen_env"
+    return root / "config" / "qwen.json"
 
 
 def saved_qwen_env(env_path=None):
-    path = qwen_choice_path(env_path)
+    """env field from config/qwen.json. Empty when the file or field is absent."""
+    path = qwen_config_path(env_path)
     if path is None or not path.is_file():
         return ""
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return ""
-    first = text.splitlines()[0] if text.splitlines() else ""
-    return normalize_qwen_env(first)
+    if not isinstance(data, dict):
+        return ""
+    return normalize_qwen_env(data.get("env"))
 
 
 def active_qwen_env(env_path=None):
@@ -107,22 +121,16 @@ def active_qwen_env(env_path=None):
     saved = saved_qwen_env(env_path)
     if saved:
         return saved
-    named = normalize_qwen_env(os.environ.get("QWEN_ENV", ""))
-    if named:
-        return named
     if str(os.environ.get("QWEN_BASE_URL") or "").strip():
         return "custom"
     return DEFAULT_QWEN_ENV
 
 
 def resolve_qwen_host(env_path=None):
-    """Host for this process. A saved page choice wins, then QWEN_ENV, then QWEN_BASE_URL."""
+    """Host for this process. config/qwen.json wins, then QWEN_BASE_URL."""
     saved = saved_qwen_env(env_path)
     if saved:
         return QWEN_ENVS[saved]
-    named = normalize_qwen_env(os.environ.get("QWEN_ENV", ""))
-    if named:
-        return QWEN_ENVS[named]
     explicit = str(os.environ.get("QWEN_BASE_URL") or "").strip()
     if explicit:
         return normalize_host(explicit)

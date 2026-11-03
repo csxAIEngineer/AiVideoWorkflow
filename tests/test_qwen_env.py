@@ -1,47 +1,54 @@
-"""The page can switch the Qwen host between test and production."""
+"""Committed config names the Qwen host and the video cloud/local fallback."""
 
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from end.minimax_video import local_base_url, read_minimax_video, write_minimax_video
-from end.qwen_env import read_qwen_env, write_qwen_env
+from end.minimax_video import local_base_url, read_minimax_video
+from end.qwen_env import read_qwen_env
 
 
 class QwenEnvFileTest(unittest.TestCase):
-    def test_page_choice_is_prod_or_test(self):
+    def test_config_file_is_prod_or_test(self):
         root = Path(tempfile.mkdtemp())
-        with patch.dict(os.environ, {"QWEN_ENV": "prod"}):
-            self.assertEqual(read_qwen_env(root), "prod")
-        self.assertEqual(write_qwen_env("生产", root), "prod")
-        self.assertEqual((root / "data" / "qwen_env").read_text(encoding="utf-8").strip(), "prod")
-        with patch.dict(os.environ, {"QWEN_ENV": "prod"}):
-            self.assertEqual(read_qwen_env(root), "prod")
-        self.assertEqual(write_qwen_env("test", root), "test")
         self.assertEqual(read_qwen_env(root), "test")
-        with self.assertRaises(ValueError):
-            write_qwen_env("其他", root)
+        config = root / "config"
+        config.mkdir()
+        qwen = config / "qwen.json"
+        qwen.write_text(json.dumps({"env": "生产"}), encoding="utf-8")
+        self.assertEqual(read_qwen_env(root), "prod")
+        qwen.write_text(json.dumps({"env": "test"}), encoding="utf-8")
+        self.assertEqual(read_qwen_env(root), "test")
+        qwen.write_text(json.dumps({"env": "其他"}), encoding="utf-8")
+        self.assertEqual(read_qwen_env(root), "test")
+        shipped = Path(__file__).resolve().parents[1] / "config" / "qwen.json"
+        self.assertTrue(shipped.is_file())
+        self.assertIn(read_qwen_env(), ("test", "prod"))
 
 
 class MinimaxVideoChoiceTest(unittest.TestCase):
-    def test_page_choice_is_cloud_or_local_and_wins_over_env(self):
+    def test_default_video_comes_from_the_catalog(self):
         root = Path(tempfile.mkdtemp())
-        with patch.dict(os.environ, {"MINIMAX_VIDEO": "local", "MINIMAX_H3_BASE_URL": ""}):
-            self.assertEqual(read_minimax_video(root), "local")
+        self.assertEqual(read_minimax_video(root), "cloud")
+        with patch.dict(os.environ, {"MINIMAX_H3_BASE_URL": ""}):
             self.assertEqual(local_base_url(), "http://127.0.0.1:8765")
         with patch.dict(os.environ, {"MINIMAX_H3_BASE_URL": "http://127.0.0.1:9000/api/v1"}):
             self.assertEqual(local_base_url(), "http://127.0.0.1:9000")
-        self.assertEqual(write_minimax_video("本地", root), "local")
-        self.assertEqual((root / "data" / "minimax_video").read_text(encoding="utf-8").strip(), "local")
-        with patch.dict(os.environ, {"MINIMAX_VIDEO": "cloud"}):
-            self.assertEqual(read_minimax_video(root), "local")
-        self.assertEqual(write_minimax_video("云端", root), "cloud")
-        with patch.dict(os.environ, {"MINIMAX_VIDEO": "local"}):
-            self.assertEqual(read_minimax_video(root), "cloud")
-        with self.assertRaises(ValueError):
-            write_minimax_video("其他", root)
+        config = root / "config"
+        config.mkdir()
+        catalog = config / "video_catalog.json"
+        catalog.write_text(json.dumps({"default_video": "本地"}), encoding="utf-8")
+        self.assertEqual(read_minimax_video(root), "local")
+        catalog.write_text(json.dumps({"default_video": "云端"}), encoding="utf-8")
+        self.assertEqual(read_minimax_video(root), "cloud")
+        catalog.write_text(json.dumps({"default_video": "其他"}), encoding="utf-8")
+        self.assertEqual(read_minimax_video(root), "cloud")
+        shipped = Path(__file__).resolve().parents[1] / "config" / "video_catalog.json"
+        self.assertEqual(read_minimax_video(), "cloud")
+        self.assertTrue(shipped.is_file())
 
 
 if __name__ == "__main__":

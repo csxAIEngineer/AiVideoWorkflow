@@ -221,6 +221,7 @@ def _video(task):
         "poll_url": getattr(task, "poll_url", "") or "",
         "url": getattr(task, "url", "") or "",
         "error": getattr(task, "error", "") or "",
+        "platform": getattr(task, "platform", "") or "",
     }
 
 
@@ -252,20 +253,33 @@ def image_download(params):
 
 def video_submit(params):
     params = params or {}
-    task = _video_client().submit_video(
-        params.get("text") or "",
-        duration=int(params.get("duration") or 4),
-        aspect_ratio=params.get("aspect_ratio") or "",
-        images=params.get("images") or None,
-        idempotency_key=params.get("idempotency_key"),
-        timeout=int(params.get("timeout") or 180),
-    )
+    kwargs = {
+        "duration": int(params.get("duration") or 4),
+        "aspect_ratio": params.get("aspect_ratio") or "",
+        "images": params.get("images") or None,
+        "idempotency_key": params.get("idempotency_key"),
+        "timeout": int(params.get("timeout") or 180),
+    }
+    # Omitted mode stays generate inside the client, matching older callers.
+    mode = params.get("mode")
+    if mode not in (None, ""):
+        kwargs["mode"] = mode
+    task = _video_client().submit_video(params.get("text") or "", **kwargs)
     return _video(task)
 
 
 def video_poll(params):
     params = params or {}
-    updated = _video_client().poll(params.get("task_id") or "", timeout=int(params.get("timeout") or 60))
+    platform = str(params.get("platform") or "").strip()
+    client = _video_client()
+    if platform:
+        client = client.for_platform(platform)
+    updated = client.poll(
+        params.get("task_id") or "",
+        timeout=int(params.get("timeout") or 60),
+        poll_url=params.get("poll_url") or "",
+        platform_name=platform,
+    )
     return _video(updated)
 
 

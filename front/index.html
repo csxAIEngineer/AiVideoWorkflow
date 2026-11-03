@@ -90,14 +90,14 @@
               <label class="template-picker hidden" title="新建项目使用的模版">
                 <select id="template" aria-label="模版"></select>
               </label>
-              <label class="model-picker" title="测试 https://maas.qianwenaiapi.com ，生产 https://token-plan.maas.qianwenaiapi.com">
-                <select id="qwen-env" aria-label="千问环境">
+              <label class="model-picker" title="由 config/qwen.json 决定。test 是 maas，prod 是 token-plan。页面不能改。">
+                <select id="qwen-env" aria-label="千问环境" disabled>
                   <option value="test">千问：测试</option>
                   <option value="prod">千问：生产</option>
                 </select>
               </label>
-              <label id="minimax-video-label" class="model-picker" title="云端仍是 768P。本地是 OmniRef Ref2VA：模型 MiniMax/MiniMax-H3，至少一条 reference_image 或 reference_video，不传宽高时 16:9 为 832×480，片长用这一镜的 duration。地址 http://121.196.162.203:8765。">
-                <select id="minimax-video" aria-label="出镜">
+              <label id="minimax-video-label" class="model-picker" title="由 config/video_catalog.json 的 default_video 决定。cloud 用 qwen，local 用 OmniRef。当前 preview/generate 路线是 token-plan。页面不能改。">
+                <select id="minimax-video" aria-label="出镜" disabled>
                   <option value="cloud">出镜：云端 MiniMax</option>
                   <option value="local">出镜：本地 MiniMax-H3</option>
                 </select>

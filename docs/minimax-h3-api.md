@@ -41,7 +41,7 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 }
 ```
 
-没有参考素材时不传 `input.media`。调用方传入的 `model` 和 `idempotency_key` 在发出前被丢掉，请求体里的模型名始终是 `MiniMax/MiniMax-H3`。
+没有参考素材时不传 `input.media`。调用方传入的 `model` 和 `idempotency_key` 在发出前被丢掉。请求体里的模型名默认是 `MiniMax/MiniMax-H3`。某一套模式的 JSON 写了 `model` 时用那个名字。
 
 | 参数 | 实际取值 |
 |---|---|
@@ -50,6 +50,47 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 | `watermark` | 固定 `false` |
 | `ratio` | 纯文生时用锁定画幅 `16:9`、`9:16` 或 `21:9`。带图时传入空值，客户端写成 `adaptive`。文档里的比例还有 `4:3`、`1:1`、`3:4`，其它值也会变成 `adaptive` |
 | `prompt` | 投喂稿正文。带首帧时再追加「从这张首帧开始」和无字幕约束 |
+
+`preview` 和 `generate` 各有一套配置，字段相同：`resolution`、`ratio`、`duration`、`watermark`、`preset`、`url`、`model`。默认两套一样。`ratio` 和 `duration` 留空时用这一镜的画幅和秒数。`url` 留空时，云端用当前千问主机，本地用 `MINIMAX_H3_BASE_URL`。`model` 留空时仍是 `MiniMax/MiniMax-H3`。`url` 和 `model` 不进入 `parameters`。出片固定传 `mode=generate`。`video.submit` 不传 `mode`、或传空字符串时，也按 `generate` 组装，请求体与上面的示例一致。调试要换一套时传 `mode=preview`（也认 `预览` / `生成`）。
+
+覆盖写在仓库里的 `config/video_catalog.json`，进程直接读这一份。缺字段时用内置默认。密钥仍放在 `.env`，不要写进 JSON。千问环境在 `config/qwen.json`。路线没写平台时的云端或本地在 `config/video_catalog.json` 的 `default_video`。页面只显示，不改这些文件。
+
+```json
+{
+  "profiles": {
+    "preview": { "resolution": "768P", "watermark": false },
+    "generate": { "duration": 8, "preset": "quality" }
+  },
+  "routes": {
+    "preview": { "url": "http://127.0.0.1:8765", "model": "MiniMax/MiniMax-H3" }
+  }
+}
+```
+
+没写的字段保持默认。`preset` 只在平台声明 `emit_local_defaults` 时进入请求，默认只有 `omniref`。云端示例仍是上面四个字段。提交后的轮询地址跟这次主机走。页面「预览」播放的是已经落盘的成片，不切换这套参数。
+
+平台、模型、参数档是三套登记，提交时各取一个。都以 `_` 开头的键只是说明。
+
+| 登记 | 没写进 JSON 时 | `config/video_catalog.json` 里的键 |
+|---|---|---|
+| 平台 | 页面选本地时是 `omniref`，否则是 `qwen`。管主机、Bearer、协议、素材规则 | `platforms` |
+| 模型 | `minimax-h3`，请求体 id 为 `MiniMax/MiniMax-H3`。不含参数 | `models` |
+| 参数档 | `preview` 与 `generate` 相同 | `profiles` |
+| 路线 | 把某一档绑到平台和模型。不写平台时用页面上的云端或本地 | `routes` |
+
+协议默认是 DashScope 异步 video-synthesis。另一种提交协议通过注册适配器接入，不必改提交函数里的分支。
+
+## wan3.0-video（token-plan）
+
+`config/video_catalog.json` 在保留 MiniMax-H3、`qwen`、`omniref` 和 `minimax` 参数档的同时，把 `preview` / `generate` 的路线定在平台 `token-plan`、模型 `wan3.0-video`。这是仓库里的正式文件，不用再复制。主机是现有生产千问 `https://token-plan.maas.qianwenaiapi.com`，Bearer 用 `TOKE_PLAN_QWEN_API_KEY`。
+
+| 档 | resolution | 模型 |
+|---|---|---|
+| `preview` | `480P` | `wan3.0-video` |
+| `generate` | `720P` | `wan3.0-video` |
+| `minimax` | `768P`，并保留 `watermark: false` 与 `preset: fast` | 仍登记为 `minimax-h3`，路线不指向它 |
+
+请求体字段是 `resolution`、`ratio`、`duration`。`duration` 为 2–30，或 `-1`。`prompt_extend` 不默认写上。带图时 `ratio` 仍是 `adaptive`。官方说明见 https://platform.qianwenai.com/docs/developer-guides/video-generation/wan30-video 。
 
 `media[].type` 由这一镜的模式决定。一次请求不能同时带首尾帧和参考素材。
 
@@ -78,9 +119,9 @@ GET /api/v1/tasks/{task_id}
 
 页面「出镜」选本地时，上面三步改打 `MINIMAX_H3_BASE_URL`。本仓库是 `http://121.196.162.203:8765`，进程是 `local_api --mode ref2va`，权重是 FastH3-Omni-FP8。没设变量时回退到 `http://127.0.0.1:8765`。没配 `MINIMAX_H3_API_KEY` 时鉴权是 `Authorization: Bearer local`。服务不校验这个头，`X-DashScope-Async` 也可以不带。客户端仍会带上。
 
-模型名客户端固定发 `MiniMax/MiniMax-H3`。服务端也认短名 `MiniMax-H3`。别的名字返回 400 `model must be MiniMax/MiniMax-H3`。
+模型名默认发 `MiniMax/MiniMax-H3`。这一套配置写了 `model` 时改发那个名字。服务端也认短名 `MiniMax-H3`。别的名字返回 400 `model must be MiniMax/MiniMax-H3`。主机同样可以由这一套的 `url` 覆盖；不写时仍是 `MINIMAX_H3_BASE_URL`。
 
-请求体在云端四个字段之外再带 `preset: fast`。不传 `width`、`height`、`frames`、`steps`。
+请求体在云端四个字段之外再带 `preset: fast`。`preset` 取当前 `preview` 或 `generate` 那一套，默认是 `fast`。不传 `width`、`height`、`frames`、`steps`。
 
 | 参数 | 取值 |
 |---|---|
