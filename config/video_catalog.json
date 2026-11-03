@@ -1,5 +1,6 @@
 {
-  "_comment": "出镜正式配置，随仓库提交。进程默认读这一份，不用复制。preview 走 token-plan 上的 wan3.0-video、480P，generate 走同一平台和模型、720P。MiniMax-H3、qwen、omniref 和 minimax 参数档都还在。密钥放 .env 的 TOKE_PLAN_QWEN_API_KEY，不要写进这个文件。以 _ 开头的键只是说明。",
+  "_comment": "出镜正式配置，随仓库提交。进程默认读这一份。preview 走 token-plan 上的 wan3.0-video、480P，generate 走同一平台和模型、720P。default_video 是路线没写 platform 时的回退：cloud 用 qwen，local 用 omniref。MiniMax-H3、qwen、omniref 和 minimax 参数档都还在。密钥放 .env，不要写进这个文件。以 _ 开头的键只是说明。",
+  "default_video": "cloud",
   "platforms": {
     "_comment": "token-plan 固定生产主机 https://token-plan.maas.qianwenaiapi.com 和 TOKE_PLAN_QWEN_API_KEY。qwen 与 omniref 是内置平台，这里写出来是为了留档。",
     "qwen": {

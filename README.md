@@ -33,7 +33,7 @@ python3 front/studio/chat.py
 
 ## 千问
 
-`AI/qwen_api/` 按当前千问环境选密钥。测试用 `QWEN_API_KEY`，Token Plan 生产用 `TOKE_PLAN_QWEN_API_KEY`。密钥只从项目根目录的 `.env` 读取。测试环境是 `https://maas.qianwenaiapi.com/compatible-mode/v1`，生产环境是 `https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1`。页面上的「千问」选择写到 `data/qwen_env`。没选过时用 `QWEN_ENV=test` 或 `prod`，两者都没有才用 `QWEN_BASE_URL`。没配当前环境的密钥时，读图写成「尚未读图」，其它调用报未配置对应的变量。
+`AI/qwen_api/` 按当前千问环境选密钥。测试用 `QWEN_API_KEY`，Token Plan 生产用 `TOKE_PLAN_QWEN_API_KEY`。密钥只从项目根目录的 `.env` 读取。测试环境是 `https://maas.qianwenaiapi.com/compatible-mode/v1`，生产环境是 `https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1`。千问环境写在 `config/qwen.json`。没有这份文件时才用 `QWEN_BASE_URL`。没配当前环境的密钥时，读图写成「尚未读图」，其它调用报未配置对应的变量。
 
 文本和意图用 `qwen3.8-flash`，走兼容模式 `/compatible-mode/v1` 的 Responses API。意图图只调用函数 `submit_intent`。请求带 `enable_thinking: false`，并且不传 `reasoning.effort`。带上 `low` 时仍会返回推理 token。解析仍用 `AI/script.py` 的 `parse_drill_text`。
 
@@ -45,7 +45,7 @@ python3 front/studio/chat.py
 
 出镜可以不走千问，改打 OmniRef Ref2VA（FastH3-Omni-FP8，`local_api --mode ref2va`）。文本、生图、读图和旁白仍用上面的千问环境。
 
-页面「出镜」选本地，或在没选过页面时设 `MINIMAX_VIDEO=local`。页面选择写到 `data/minimax_video`，优先于环境变量。模型名仍是 `MiniMax/MiniMax-H3`。本地在云端四个字段之外再带 `preset:fast`。不传 `width` 和 `height`，片长仍用这一镜的 `duration`。选「云端 MiniMax」时提交到当前千问测试或生产主机上的 `MiniMax/MiniMax-H3`。云端请求体里没有 `preset`，云端仍可以文生、首帧和首尾帧。
+路线没写平台时，用 `config/video_catalog.json` 的 `default_video`。`cloud` 走当前千问主机上的 `MiniMax/MiniMax-H3`，`local` 走 `MINIMAX_H3_BASE_URL` 的 OmniRef，并在云端四个字段之外再带 `preset:fast`。不传 `width` 和 `height`，片长仍用这一镜的 `duration`。当前文件里的 preview 和 generate 路线是 token-plan，不看这个回退。页面只显示这两项，改文件才生效。
 
 `MINIMAX_H3_BASE_URL` 指向 OmniRef 服务。本仓库是 `http://121.196.162.203:8765`。没设这个变量时回退到 `http://127.0.0.1:8765`。AI 进程向这个地址发和云端相同的两步：
 

@@ -6,7 +6,7 @@ SUCCEEDED becomes completed. FAILED becomes failed.
 Frame roles and reference roles stay in separate requests.
 
 Cloud uses the current Qwen host. Local uses MINIMAX_H3_BASE_URL
-(default http://127.0.0.1:8765) when the page or MINIMAX_VIDEO selects local.
+(default http://127.0.0.1:8765) when config/video_catalog.json default_video is local.
 This deployment sets that variable to OmniRef Ref2VA (FastH3-Omni-FP8).
 Submit, poll, and download stay on the same DashScope paths. Bearer may be
 a dummy; the local server ignores it.
@@ -37,7 +37,6 @@ from AI.qwen_api.client import (
     extract_media_url,
     load_dotenv,
     qwen_api_key,
-    qwen_choice_path,
     resolve_qwen_host,
 )
 from AI.qwen_api.video_catalog import (
@@ -93,7 +92,6 @@ def _legacy_profile_view():
 PREVIEW_PARAMETERS = _legacy_profile_view()
 GENERATE_PARAMETERS = _legacy_profile_view()
 LOCAL_DUMMY_KEY = "local"
-_CHOICE_FILE = "minimax_video"
 _HOST_SUFFIXES = ("/compatible-mode/v1", "/api/v1")
 _MODE_ALIASES = {
     "cloud": "cloud",
@@ -111,39 +109,12 @@ def normalize_minimax_video(value):
     return _MODE_ALIASES.get(str(value or "").strip().lower(), "")
 
 
-def minimax_choice_path(env_path=None):
-    """data/minimax_video beside .env. Without .env, the process working directory."""
-    if env_path is not None:
-        candidate = Path(env_path)
-        if not candidate.is_file():
-            return None
-        return candidate.parent / "data" / _CHOICE_FILE
-    qwen_path = qwen_choice_path(None)
-    if qwen_path is not None:
-        return qwen_path.parent / _CHOICE_FILE
-    return Path.cwd() / "data" / _CHOICE_FILE
-
-
-def saved_minimax_video(env_path=None):
-    path = minimax_choice_path(env_path)
-    if path is None or not path.is_file():
-        return ""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-    lines = text.splitlines()
-    first = lines[0] if lines else ""
-    return normalize_minimax_video(first)
-
-
 def active_minimax_video(env_path=None):
-    """cloud or local. A saved page choice wins over MINIMAX_VIDEO."""
-    saved = saved_minimax_video(env_path)
-    if saved:
-        return saved
-    named = normalize_minimax_video(os.environ.get("MINIMAX_VIDEO", ""))
-    return named or "cloud"
+    """cloud or local from config/video_catalog.json default_video."""
+    from AI.qwen_api.video_catalog import _load_catalog
+
+    saved = normalize_minimax_video(_load_catalog(env_path).get("default_video"))
+    return saved or "cloud"
 
 
 def local_video_base_url():

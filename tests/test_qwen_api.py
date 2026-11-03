@@ -94,14 +94,19 @@ class QwenClientTest(unittest.TestCase):
     def test_qwen_env_switches_production_and_test(self):
         root = Path(tempfile.mkdtemp())
         (root / ".env").write_text("QWEN_API_KEY=test-key\n", encoding="utf-8")
-        with patch.dict(os.environ, {"QWEN_ENV": "prod", "QWEN_BASE_URL": ""}):
+        config = root / "config"
+        config.mkdir()
+        qwen = config / "qwen.json"
+        qwen.write_text(json.dumps({"env": "prod"}), encoding="utf-8")
+        with patch.dict(os.environ, {"QWEN_BASE_URL": ""}):
             production = QwenClient(api_key="test-key", env_path=root / ".env")
         self.assertEqual(production.base_url, "https://token-plan.maas.qianwenaiapi.com")
         self.assertEqual(
             production.compatible_base,
             "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
         )
-        with patch.dict(os.environ, {"QWEN_ENV": "测试", "QWEN_BASE_URL": ""}):
+        qwen.write_text(json.dumps({"env": "测试"}), encoding="utf-8")
+        with patch.dict(os.environ, {"QWEN_BASE_URL": ""}):
             test = QwenClient(api_key="test-key", env_path=root / ".env")
         self.assertEqual(test.base_url, "https://maas.qianwenaiapi.com")
         self.assertEqual(test.compatible_base, "https://maas.qianwenaiapi.com/compatible-mode/v1")
@@ -109,8 +114,8 @@ class QwenClientTest(unittest.TestCase):
     def test_saved_choice_wins_over_env_and_base_url(self):
         root = Path(tempfile.mkdtemp())
         (root / ".env").write_text("QWEN_API_KEY=test-key\n", encoding="utf-8")
-        (root / "data").mkdir()
-        (root / "data" / "qwen_env").write_text("prod\n", encoding="utf-8")
+        (root / "config").mkdir()
+        (root / "config" / "qwen.json").write_text(json.dumps({"env": "prod"}), encoding="utf-8")
         with patch.dict(os.environ, {"QWEN_ENV": "test", "QWEN_BASE_URL": "https://custom.example"}):
             client = QwenClient(api_key="test-key", env_path=root / ".env")
         self.assertEqual(client.base_url, "https://token-plan.maas.qianwenaiapi.com")
@@ -123,14 +128,15 @@ class QwenClientTest(unittest.TestCase):
     def test_each_environment_uses_its_own_key(self):
         root = Path(tempfile.mkdtemp())
         (root / ".env").write_text("QWEN_API_KEY=test-key\n", encoding="utf-8")
-        data = root / "data"
-        data.mkdir()
-        (data / "qwen_env").write_text("prod\n", encoding="utf-8")
+        config = root / "config"
+        config.mkdir()
+        qwen = config / "qwen.json"
+        qwen.write_text(json.dumps({"env": "prod"}), encoding="utf-8")
         with patch.dict(os.environ, {"QWEN_API_KEY": "test-key", "TOKE_PLAN_QWEN_API_KEY": "plan-key", "QWEN_ENV": "test"}):
             production = QwenClient(env_path=root / ".env")
         self.assertEqual(production.api_key, "plan-key")
         self.assertEqual(production.base_url, "https://token-plan.maas.qianwenaiapi.com")
-        (data / "qwen_env").write_text("test\n", encoding="utf-8")
+        qwen.write_text(json.dumps({"env": "test"}), encoding="utf-8")
         with patch.dict(os.environ, {"QWEN_API_KEY": "test-key", "TOKE_PLAN_QWEN_API_KEY": "plan-key", "QWEN_ENV": "prod"}):
             testing = QwenClient(env_path=root / ".env")
         self.assertEqual(testing.api_key, "test-key")
@@ -141,8 +147,8 @@ class QwenClientTest(unittest.TestCase):
     def test_missing_token_plan_key_names_that_variable(self):
         root = Path(tempfile.mkdtemp())
         (root / ".env").write_text("QWEN_API_KEY=test-key\n", encoding="utf-8")
-        (root / "data").mkdir()
-        (root / "data" / "qwen_env").write_text("prod\n", encoding="utf-8")
+        (root / "config").mkdir()
+        (root / "config" / "qwen.json").write_text(json.dumps({"env": "prod"}), encoding="utf-8")
         with patch.dict(os.environ, {"QWEN_API_KEY": "test-key", "TOKE_PLAN_QWEN_API_KEY": "", "QWEN_ENV": ""}):
             with self.assertRaises(QwenError) as caught:
                 QwenClient(env_path=root / ".env")
@@ -435,10 +441,11 @@ class QwenMediaTest(unittest.TestCase):
     def test_local_minimax_uses_localhost_and_cloud_stays_on_qwen(self):
         root = Path(tempfile.mkdtemp())
         (root / ".env").write_text("QWEN_API_KEY=test-key\n", encoding="utf-8")
-        data = root / "data"
-        data.mkdir()
-        (data / "qwen_env").write_text("prod\n", encoding="utf-8")
-        (data / "minimax_video").write_text("local\n", encoding="utf-8")
+        config = root / "config"
+        config.mkdir()
+        (config / "qwen.json").write_text(json.dumps({"env": "prod"}), encoding="utf-8")
+        catalog = config / "video_catalog.json"
+        catalog.write_text(json.dumps({"default_video": "local"}), encoding="utf-8")
         captured, opener = self._capture(
             {"output": {"task_id": "vid-local", "task_status": "PENDING"}}
         )
@@ -525,7 +532,7 @@ class QwenMediaTest(unittest.TestCase):
         self.assertEqual(image_host.base_url, "https://token-plan.maas.qianwenaiapi.com")
         self.assertEqual(image_host.api_key, "plan-key")
 
-        (data / "minimax_video").write_text("cloud\n", encoding="utf-8")
+        catalog.write_text(json.dumps({"default_video": "cloud"}), encoding="utf-8")
         with patch.dict(os.environ, env):
             cloud = QwenVideoClient(env_path=root / ".env")
         self.assertEqual(cloud.client.base_url, "https://token-plan.maas.qianwenaiapi.com")
@@ -534,9 +541,14 @@ class QwenMediaTest(unittest.TestCase):
     def test_minimax_env_sets_local_host_when_the_page_has_not_chosen(self):
         root = Path(tempfile.mkdtemp())
         (root / ".env").write_text(
-            "QWEN_API_KEY=test-key\nMINIMAX_VIDEO=local\n"
+            "QWEN_API_KEY=test-key\n"
             "MINIMAX_H3_BASE_URL=http://127.0.0.1:9000/api/v1\n"
             "MINIMAX_H3_API_KEY=secret\n",
+            encoding="utf-8",
+        )
+        (root / "config").mkdir()
+        (root / "config" / "video_catalog.json").write_text(
+            json.dumps({"default_video": "local"}),
             encoding="utf-8",
         )
         with patch.dict(
@@ -558,14 +570,18 @@ class QwenMediaTest(unittest.TestCase):
         from AI import api as ai_api
 
         root = Path(tempfile.mkdtemp())
-        (root / "data").mkdir()
+        (root / "config").mkdir()
         (root / ".env").write_text("QWEN_API_KEY=test-key\n", encoding="utf-8")
-        (root / "data" / "minimax_video").write_text("local\n", encoding="utf-8")
+        (root / "config" / "qwen.json").write_text(json.dumps({"env": "test"}), encoding="utf-8")
+        catalog = root / "config" / "video_catalog.json"
+        catalog.write_text(json.dumps({"default_video": "local"}), encoding="utf-8")
         previous = os.getcwd()
         ai_api._VIDEO = None
         try:
             os.chdir(root)
-            with patch("AI.qwen_api.client._find_env", return_value=root / ".env"), patch.dict(
+            with patch("AI.qwen_api.client.repo_root", return_value=root), patch(
+                "AI.qwen_api.client._find_env", return_value=root / ".env"
+            ), patch.dict(
                 os.environ,
                 {
                     "QWEN_API_KEY": "test-key",
@@ -580,7 +596,7 @@ class QwenMediaTest(unittest.TestCase):
                 local = ai_api._video_client()
                 self.assertEqual(local.client.base_url, DEFAULT_LOCAL_VIDEO_URL)
                 self.assertEqual(local.client.api_key, LOCAL_DUMMY_KEY)
-                (root / "data" / "minimax_video").write_text("cloud\n", encoding="utf-8")
+                catalog.write_text(json.dumps({"default_video": "cloud"}), encoding="utf-8")
                 cloud = ai_api._video_client()
                 self.assertEqual(cloud.client.base_url, HOST)
                 self.assertEqual(cloud.client.api_key, "test-key")

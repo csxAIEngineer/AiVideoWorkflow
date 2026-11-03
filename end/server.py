@@ -1978,26 +1978,6 @@ def rpc_config(_params):
     }
 
 
-def rpc_set_qwen_env(params):
-    from end.qwen_env import write_qwen_env
-
-    try:
-        name = write_qwen_env((params or {}).get("qwen_env"))
-    except ValueError as error:
-        raise RpcError(400, str(error))
-    return {"qwen_env": name}
-
-
-def rpc_set_minimax_video(params):
-    from end.minimax_video import local_base_url, write_minimax_video
-
-    try:
-        name = write_minimax_video((params or {}).get("minimax_video"))
-    except ValueError as error:
-        raise RpcError(400, str(error))
-    return {"minimax_video": name, "minimax_base_url": local_base_url()}
-
-
 def rpc_list_projects(_params):
     return [public_view(item) for item in list_projects()]
 
@@ -2336,10 +2316,6 @@ def rpc_logs(params):
 def rpc_call(method, params):
     if method == "config.get":
         return rpc_config(params)
-    if method == "config.set_qwen_env":
-        return rpc_set_qwen_env(params)
-    if method == "config.set_minimax_video":
-        return rpc_set_minimax_video(params)
     if method == "projects.list":
         return rpc_list_projects(params)
     if method == "projects.get":

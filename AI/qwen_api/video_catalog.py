@@ -115,8 +115,10 @@ def default_profile():
 
 
 def repo_root():
-    """Repository root. video_catalog.py lives in AI/qwen_api/."""
-    return Path(__file__).resolve().parents[2]
+    """Repository root. Delegates so tests can patch one function."""
+    from AI.qwen_api.client import repo_root as root
+
+    return root()
 
 
 def catalog_root(env_path=None):

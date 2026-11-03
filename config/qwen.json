@@ -1,0 +1,4 @@
+{
+  "_comment": "千问文本、读图、生图，以及名为 qwen 的出镜平台。test 用 QWEN_API_KEY 和 https://maas.qianwenaiapi.com 。prod 用 TOKE_PLAN_QWEN_API_KEY 和 https://token-plan.maas.qianwenaiapi.com 。页面只显示，不改这个文件。密钥放 .env。",
+  "env": "test"
+}

@@ -53,7 +53,7 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 
 `preview` 和 `generate` 各有一套配置，字段相同：`resolution`、`ratio`、`duration`、`watermark`、`preset`、`url`、`model`。默认两套一样。`ratio` 和 `duration` 留空时用这一镜的画幅和秒数。`url` 留空时，云端用当前千问主机，本地用 `MINIMAX_H3_BASE_URL`。`model` 留空时仍是 `MiniMax/MiniMax-H3`。`url` 和 `model` 不进入 `parameters`。出片固定传 `mode=generate`。`video.submit` 不传 `mode`、或传空字符串时，也按 `generate` 组装，请求体与上面的示例一致。调试要换一套时传 `mode=preview`（也认 `预览` / `生成`）。
 
-覆盖写在仓库里的 `config/video_catalog.json`，进程直接读这一份。缺字段时用内置默认。密钥仍放在 `.env`，不要写进 JSON。页面上的千问环境和出镜云端/本地仍是 `data/qwen_env`、`data/minimax_video`。
+覆盖写在仓库里的 `config/video_catalog.json`，进程直接读这一份。缺字段时用内置默认。密钥仍放在 `.env`，不要写进 JSON。千问环境在 `config/qwen.json`。路线没写平台时的云端或本地在 `config/video_catalog.json` 的 `default_video`。页面只显示，不改这些文件。
 
 ```json
 {

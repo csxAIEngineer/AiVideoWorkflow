@@ -1,6 +1,6 @@
-"""Which Qwen host the page selected. The AI process reads the same file."""
+"""Which Qwen host config/qwen.json names. The page only displays it."""
 
-import os
+import json
 from pathlib import Path
 
 from end.db import ROOT
@@ -13,11 +13,11 @@ _ALIASES = {
     "production": "prod",
     "生产": "prod",
 }
-_FILE_NAME = "qwen_env"
+_FILE = "qwen.json"
 
 
-def env_file(root=None):
-    return Path(root or ROOT) / "data" / _FILE_NAME
+def config_file(root=None):
+    return Path(root or ROOT) / "config" / _FILE
 
 
 def normalize_qwen_env(value):
@@ -25,25 +25,14 @@ def normalize_qwen_env(value):
 
 
 def read_qwen_env(root=None):
-    path = env_file(root)
-    if path.is_file():
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            text = ""
-        first = text.splitlines()[0] if text.splitlines() else ""
-        saved = normalize_qwen_env(first)
-        if saved:
-            return saved
-    named = normalize_qwen_env(os.environ.get("QWEN_ENV", ""))
-    return named or "test"
-
-
-def write_qwen_env(value, root=None):
-    name = normalize_qwen_env(value)
-    if not name:
-        raise ValueError("千问环境只能是生产或测试")
-    path = env_file(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(name + "\n", encoding="utf-8")
-    return name
+    """test or prod from config/qwen.json. Missing file or field is test."""
+    path = config_file(root)
+    if not path.is_file():
+        return "test"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "test"
+    if not isinstance(data, dict):
+        return "test"
+    return normalize_qwen_env(data.get("env")) or "test"
