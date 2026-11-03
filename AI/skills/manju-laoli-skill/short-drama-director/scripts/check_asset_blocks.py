@@ -17,7 +17,8 @@
       [--min-blocks 3] [--json]
 
 判定单元：以 `#### 图N · 名称（类型）`（# 数不限，图N 开头）为块起点，到下一张图为止。
-块内的 `###` 小标题仍属于这一张图。后面若先出现 `#` 或 `##` 新章节，块停在那里。
+块内的 `###` 小标题、以及道具模板那种 `## …道具设定图` 小节，仍属于这一张图。
+后面若先出现一级标题，或 `## 分镜` / `## 段 N` 这类下一阶段章节，块停在那里。
 
 规则码：
   A1 块内出现跨条引用（不自包含）              ERROR
@@ -39,6 +40,10 @@ import sys
 
 BLOCK_RE = re.compile(r"^#{2,6}\s*\*{0,2}\s*图\s*(\d+)\s*[*]{0,2}\s*[·:：\-—]?\s*(.*)$", re.M)
 HEAD_RE = re.compile(r"^(#{1,6})\s", re.M)
+# 资产块内部会写 ## …道具设定图。那不是下一阶段。分镜/剧本等章节才截断，避免最后一张图吞进后文。
+_STAGE_CHAPTER = re.compile(
+    r"^(?:分镜|剧本|投喂|预演|质检|对标|时间轴|故事板|连续性|段\s*\d)"
+)
 
 # 跨条引用：单条提示词复制出去即断
 CROSS_REF_PATTERNS = [
@@ -59,12 +64,32 @@ PROP_FIELDS = ["正面视图", "45° 侧视图", "顶部俯视图", "关键细�
 PROP_FIELDS_ALT = ["正面视图", "45°侧视图", "顶部俯视图", "关键细节特写"]
 
 
+def _heading_title(line):
+    title = re.sub(r"^#{1,6}\s*", "", str(line or "")).strip()
+    return title.replace("*", "").strip()
+
+
+def _chapter_cut(line, level):
+    """一级标题，或分镜/剧本这类下一阶段的二级标题，才结束当前图块。
+
+    道具模板把 `## …道具设定图` 写在 `#### 图N` 下面。那一行仍是这一张图，
+    不能在这里把 16:9 和四格字段切掉。
+    """
+    if level == 1:
+        return True
+    if level != 2:
+        return False
+    return bool(_STAGE_CHAPTER.match(_heading_title(line)))
+
+
 def split_blocks(text):
     """按 `图N` 标题切块，返回 [(图号, 标题, 正文)]。
 
-    一块延伸到下一张图。`#### 图N` 里面的 `###` 小标题仍算这一张图，
-    否则角色模板的音色段和四格表会被切掉。
-    若先遇到 `#` 或 `##` 新章节，块停在那里，避免最后一张图吞进分镜段。
+    一块延伸到下一张图。`#### 图N` 里面的 `###` 小标题，以及 `## …道具设定图`
+    这种块内二级标题，仍算这一张图。否则道具设定图上的 16:9 会被切掉，机检
+    反复报 A2。
+    若先遇到一级标题，或 `## 分镜` / `## 段 N` 这类下一阶段章节，块停在那里，
+    避免最后一张图吞进分镜段。
     """
     lines = text.split("\n")
     offsets, cursor = [], 0
@@ -87,7 +112,7 @@ def split_blocks(text):
             if BLOCK_RE.match(lines[later]):
                 end = offsets[later]
                 break
-            if heading_levels[later] and heading_levels[later] <= 2:
+            if _chapter_cut(lines[later], heading_levels[later]):
                 end = offsets[later]
                 break
         body = text[offsets[index]:end]
