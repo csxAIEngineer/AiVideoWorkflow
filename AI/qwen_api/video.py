@@ -15,8 +15,16 @@ Local OmniRef requires at least one reference_image or reference_video.
 reference_audio may ride along with those. first_frame, last_frame, and
 text-only submits are rejected before the request. Cloud still accepts
 text, frames, and references.
+
+Submit parameters come in two sets, preview and generate. They share one
+schema and the same defaults. Final render passes mode=generate. Omitting
+mode does the same. MINIMAX_VIDEO_PREVIEW_PARAMETERS and
+MINIMAX_VIDEO_GENERATE_PARAMETERS are JSON objects that override fields
+on that set. ratio and duration stay empty in the set so each shot fills
+them, unless that mode's JSON sets them.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -51,6 +59,36 @@ LOCAL_DEFAULT_PARAMETERS = {
 }
 # Alias kept for call sites that still name LOCAL_FAST_PARAMETERS.
 LOCAL_FAST_PARAMETERS = dict(LOCAL_DEFAULT_PARAMETERS)
+# Both modes store this shape. null ratio and duration mean "use this shot".
+# preset is part of the set and is written only on the local request.
+SUBMIT_PARAMETER_KEYS = ("resolution", "ratio", "duration", "watermark", "preset")
+PREVIEW_PARAMETERS_ENV = "MINIMAX_VIDEO_PREVIEW_PARAMETERS"
+GENERATE_PARAMETERS_ENV = "MINIMAX_VIDEO_GENERATE_PARAMETERS"
+_PARAMETER_ENV = {
+    "preview": PREVIEW_PARAMETERS_ENV,
+    "generate": GENERATE_PARAMETERS_ENV,
+}
+_SUBMIT_MODE_ALIASES = {
+    "preview": "preview",
+    "预览": "preview",
+    "generate": "generate",
+    "生成": "generate",
+}
+
+
+def _default_submit_parameters():
+    """One copy of the shared schema. preview and generate start equal."""
+    return {
+        "resolution": VIDEO_RESOLUTION,
+        "ratio": None,
+        "duration": None,
+        "watermark": False,
+        "preset": LOCAL_DEFAULT_PARAMETERS["preset"],
+    }
+
+
+PREVIEW_PARAMETERS = _default_submit_parameters()
+GENERATE_PARAMETERS = _default_submit_parameters()
 LOCAL_DUMMY_KEY = "local"
 _CHOICE_FILE = "minimax_video"
 _HOST_SUFFIXES = ("/compatible-mode/v1", "/api/v1")
@@ -158,6 +196,95 @@ def video_duration(duration):
     return seconds
 
 
+def normalize_video_submit_mode(value):
+    """preview or generate. Empty selects generate, the historical submit."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return "generate"
+    name = _SUBMIT_MODE_ALIASES.get(text, "")
+    if not name:
+        raise QwenError("出镜提交模式只能是 preview 或 generate")
+    return name
+
+
+def _parameter_override(mode_name):
+    """JSON object from the mode's env var. Missing or blank means no override."""
+    env_name = _PARAMETER_ENV[mode_name]
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return {}
+    text = str(raw).strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        raise QwenError("%s 必须是 JSON 对象" % env_name)
+    if not isinstance(parsed, dict):
+        raise QwenError("%s 必须是 JSON 对象" % env_name)
+    return parsed
+
+
+def video_mode_parameters(mode=None):
+    """Configured parameters for preview or generate, before this shot is filled in."""
+    name = normalize_video_submit_mode(mode)
+    spec = dict(PREVIEW_PARAMETERS if name == "preview" else GENERATE_PARAMETERS)
+    spec.update(_parameter_override(name))
+    return spec
+
+
+def _text_parameter(field, value):
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    raise QwenError("parameters.%s 必须是非空字符串" % field)
+
+
+def _watermark(value):
+    if isinstance(value, bool):
+        return value
+    if value in (0, 1):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("false", "0", "no", "off"):
+        return False
+    if text in ("true", "1", "yes", "on"):
+        return True
+    raise QwenError("parameters.watermark 必须是布尔值")
+
+
+def build_video_parameters(mode, aspect_ratio, duration, local):
+    """Request parameters for one submit.
+
+    Cloud sends resolution, ratio, duration, and watermark. Local then
+    update()s LOCAL_DEFAULT_PARAMETERS and writes this mode's preset.
+    A JSON override replaces fields on the selected mode after that merge.
+    preset is left off the cloud body. Extra override keys are sent as-is.
+    """
+    spec = video_mode_parameters(mode)
+    if spec.get("ratio") is None:
+        ratio = video_ratio(aspect_ratio)
+    else:
+        ratio = video_ratio(spec.get("ratio"))
+    if spec.get("duration") is None:
+        seconds = video_duration(duration)
+    else:
+        seconds = video_duration(spec.get("duration"))
+    parameters = {
+        "resolution": _text_parameter("resolution", spec.get("resolution")),
+        "ratio": ratio,
+        "duration": seconds,
+        "watermark": _watermark(spec.get("watermark")),
+    }
+    if local:
+        parameters.update(LOCAL_DEFAULT_PARAMETERS)
+        parameters["preset"] = _text_parameter("preset", spec.get("preset"))
+    for key, value in spec.items():
+        if key in SUBMIT_PARAMETER_KEYS or value is None:
+            continue
+        parameters[key] = value
+    return parameters
+
+
 class VideoTask(object):
     def __init__(self, payload=None):
         data = payload if isinstance(payload, dict) else {}
@@ -238,7 +365,9 @@ class QwenVideoClient(object):
         images=None,
         idempotency_key=None,
         timeout=180,
+        mode=None,
     ):
+        """Submit one clip. mode is preview or generate. Omitted mode is generate."""
         del model, idempotency_key
         prompt = str(text or "").strip()
         if not prompt:
@@ -246,14 +375,7 @@ class QwenVideoClient(object):
         media = _media(images)
         if self.local:
             media = _require_local_references(media)
-        parameters = {
-            "resolution": VIDEO_RESOLUTION,
-            "ratio": video_ratio(aspect_ratio),
-            "duration": video_duration(duration),
-            "watermark": False,
-        }
-        if self.local:
-            parameters.update(LOCAL_DEFAULT_PARAMETERS)
+        parameters = build_video_parameters(mode, aspect_ratio, duration, self.local)
         body = {
             "model": VIDEO_MODEL,
             "input": {"prompt": prompt},

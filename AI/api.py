@@ -252,14 +252,18 @@ def image_download(params):
 
 def video_submit(params):
     params = params or {}
-    task = _video_client().submit_video(
-        params.get("text") or "",
-        duration=int(params.get("duration") or 4),
-        aspect_ratio=params.get("aspect_ratio") or "",
-        images=params.get("images") or None,
-        idempotency_key=params.get("idempotency_key"),
-        timeout=int(params.get("timeout") or 180),
-    )
+    kwargs = {
+        "duration": int(params.get("duration") or 4),
+        "aspect_ratio": params.get("aspect_ratio") or "",
+        "images": params.get("images") or None,
+        "idempotency_key": params.get("idempotency_key"),
+        "timeout": int(params.get("timeout") or 180),
+    }
+    # Omitted mode stays generate inside the client, matching older callers.
+    mode = params.get("mode")
+    if mode not in (None, ""):
+        kwargs["mode"] = mode
+    task = _video_client().submit_video(params.get("text") or "", **kwargs)
     return _video(task)
 
 

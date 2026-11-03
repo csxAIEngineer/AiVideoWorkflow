@@ -14,13 +14,19 @@ from AI.qwen_api.client import DEFAULT_BASE_URL, QwenClient, QwenError
 from AI.qwen_api.graph import bind_trace_prompts, generate_text, log_prompt, understand_text
 from AI.qwen_api.image import IMAGE_MODEL, IMAGE_PATH, ImageTask, QwenImageClient
 from AI.qwen_api.video import (
+    GENERATE_PARAMETERS,
+    GENERATE_PARAMETERS_ENV,
     LOCAL_DEFAULT_PARAMETERS,
     DEFAULT_LOCAL_VIDEO_URL,
     LOCAL_DUMMY_KEY,
+    PREVIEW_PARAMETERS,
+    PREVIEW_PARAMETERS_ENV,
+    SUBMIT_PARAMETER_KEYS,
     VIDEO_MODEL,
     VIDEO_PATH,
     QwenVideoClient,
     VideoTask,
+    video_mode_parameters,
 )
 from end.render_loop import IMAGE_FAILURE, IMAGE_SUCCESS, VIDEO_FAILURE, VIDEO_SUCCESS
 
@@ -582,6 +588,212 @@ class QwenMediaTest(unittest.TestCase):
         finally:
             os.chdir(previous)
             ai_api._VIDEO = None
+
+    def _mode_client(self, local):
+        captured, opener = self._capture({"output": {"task_id": "vid-mode", "task_status": "PENDING"}})
+        client = QwenVideoClient(client=_client(opener))
+        client.local = bool(local)
+        return captured, client
+
+    def test_preview_and_generate_defaults_match_legacy_submit(self):
+        self.assertIsNot(PREVIEW_PARAMETERS, GENERATE_PARAMETERS)
+        self.assertEqual(PREVIEW_PARAMETERS, GENERATE_PARAMETERS)
+        self.assertEqual(tuple(PREVIEW_PARAMETERS), SUBMIT_PARAMETER_KEYS)
+        self.assertEqual(PREVIEW_PARAMETERS["resolution"], "768P")
+        self.assertIsNone(PREVIEW_PARAMETERS["ratio"])
+        self.assertIsNone(PREVIEW_PARAMETERS["duration"])
+        self.assertIs(PREVIEW_PARAMETERS["watermark"], False)
+        self.assertEqual(PREVIEW_PARAMETERS["preset"], LOCAL_DEFAULT_PARAMETERS["preset"])
+        images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
+        with patch.dict(os.environ, {PREVIEW_PARAMETERS_ENV: "", GENERATE_PARAMETERS_ENV: ""}):
+            self.assertEqual(video_mode_parameters(None), dict(PREVIEW_PARAMETERS))
+            self.assertEqual(video_mode_parameters(""), dict(GENERATE_PARAMETERS))
+            self.assertEqual(video_mode_parameters("生成"), video_mode_parameters("preview"))
+            self.assertEqual(video_mode_parameters("预览"), video_mode_parameters("generate"))
+            captured, client = self._mode_client(False)
+            client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9")
+            omitted = dict(captured["body"]["parameters"])
+            client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", mode="generate")
+            explicit = dict(captured["body"]["parameters"])
+            client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", mode="preview")
+            preview = dict(captured["body"]["parameters"])
+            captured, local = self._mode_client(True)
+            local.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", images=images)
+            local_omitted = dict(captured["body"]["parameters"])
+            local.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", images=images, mode="generate")
+            local_generate = dict(captured["body"]["parameters"])
+            local.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", images=images, mode="预览")
+            local_preview = dict(captured["body"]["parameters"])
+        legacy = {
+            "resolution": "768P",
+            "ratio": "21:9",
+            "duration": 5,
+            "watermark": False,
+        }
+        self.assertEqual(omitted, legacy)
+        self.assertEqual(explicit, legacy)
+        self.assertEqual(preview, legacy)
+        self.assertNotIn("preset", omitted)
+        self.assertEqual(local_omitted, local_generate)
+        self.assertEqual(local_preview, local_generate)
+        self.assertEqual(local_generate["ratio"], "16:9")
+        self.assertEqual(local_generate["duration"], 6)
+        self.assertEqual(local_generate["resolution"], "768P")
+        self.assertIs(local_generate["watermark"], False)
+        for key, value in LOCAL_DEFAULT_PARAMETERS.items():
+            self.assertEqual(local_generate[key], value)
+        self.assertNotIn("width", local_generate)
+        self.assertNotIn("height", local_generate)
+
+    def test_mode_parameter_overrides_diverge_and_local_merge_remains(self):
+        images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
+        env = {
+            PREVIEW_PARAMETERS_ENV: json.dumps(
+                {"resolution": "1080P", "ratio": "1:1", "watermark": False}
+            ),
+            GENERATE_PARAMETERS_ENV: json.dumps(
+                {"watermark": True, "duration": 8, "preset": "quality", "seed": 7}
+            ),
+        }
+        with patch.dict(os.environ, env):
+            preview_spec = video_mode_parameters("preview")
+            generate_spec = video_mode_parameters("generate")
+            self.assertEqual(tuple(preview_spec), SUBMIT_PARAMETER_KEYS)
+            self.assertEqual(set(generate_spec), set(SUBMIT_PARAMETER_KEYS) | {"seed"})
+            self.assertEqual(preview_spec["resolution"], "1080P")
+            self.assertEqual(generate_spec["resolution"], "768P")
+            self.assertEqual(video_mode_parameters("预览")["resolution"], "1080P")
+            self.assertEqual(video_mode_parameters("生成")["preset"], "quality")
+            self.assertEqual(preview_spec["preset"], "fast")
+            self.assertEqual(generate_spec["preset"], "quality")
+            self.assertIs(preview_spec["watermark"], False)
+            self.assertIs(generate_spec["watermark"], True)
+            captured, cloud = self._mode_client(False)
+            cloud.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", mode="preview")
+            cloud_preview = dict(captured["body"]["parameters"])
+            cloud.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", mode="generate")
+            cloud_generate = dict(captured["body"]["parameters"])
+            cloud.submit_video("海面亮起来", duration=6, aspect_ratio="16:9")
+            cloud_omitted = dict(captured["body"]["parameters"])
+            captured, local = self._mode_client(True)
+            with patch.dict(LOCAL_DEFAULT_PARAMETERS, {"trace_local_merge": "yes"}):
+                local.submit_video(
+                    "海面亮起来",
+                    duration=6,
+                    aspect_ratio="16:9",
+                    images=images,
+                    mode="preview",
+                )
+                local_preview = dict(captured["body"]["parameters"])
+                local.submit_video(
+                    "海面亮起来",
+                    duration=6,
+                    aspect_ratio="16:9",
+                    images=images,
+                    mode="generate",
+                )
+                local_generate = dict(captured["body"]["parameters"])
+        self.assertEqual(
+            cloud_preview,
+            {"resolution": "1080P", "ratio": "1:1", "duration": 6, "watermark": False},
+        )
+        self.assertEqual(cloud_generate["resolution"], "768P")
+        self.assertEqual(cloud_generate["ratio"], "16:9")
+        self.assertEqual(cloud_generate["duration"], 8)
+        self.assertIs(cloud_generate["watermark"], True)
+        self.assertEqual(cloud_generate["seed"], 7)
+        self.assertNotIn("preset", cloud_generate)
+        self.assertEqual(cloud_omitted, cloud_generate)
+        self.assertEqual(local_preview["resolution"], "1080P")
+        self.assertEqual(local_preview["ratio"], "1:1")
+        self.assertEqual(local_preview["duration"], 6)
+        self.assertEqual(local_preview["preset"], "fast")
+        self.assertEqual(local_preview["trace_local_merge"], "yes")
+        self.assertNotIn("seed", local_preview)
+        self.assertNotIn("width", local_preview)
+        self.assertEqual(local_generate["preset"], "quality")
+        self.assertEqual(local_generate["duration"], 8)
+        self.assertEqual(local_generate["seed"], 7)
+        self.assertEqual(local_generate["trace_local_merge"], "yes")
+        self.assertIs(local_generate["watermark"], True)
+        self.assertEqual(local_generate["resolution"], "768P")
+        self.assertNotIn("width", local_generate)
+        self.assertNotIn("height", local_generate)
+
+    def test_unknown_submit_mode_and_bad_parameter_json(self):
+        def opener(request, timeout=None):
+            raise AssertionError("should not request")
+
+        client = QwenVideoClient(client=_client(opener))
+        with self.assertRaises(QwenError) as unknown:
+            client.submit_video("海", mode="local")
+        self.assertIn("preview", str(unknown.exception))
+        with patch.dict(os.environ, {PREVIEW_PARAMETERS_ENV: "not-json", GENERATE_PARAMETERS_ENV: ""}):
+            with self.assertRaises(QwenError) as bad:
+                client.submit_video("海", mode="preview")
+        self.assertIn(PREVIEW_PARAMETERS_ENV, str(bad.exception))
+        self.assertNotIn("not-json", str(bad.exception))
+        with patch.dict(os.environ, {GENERATE_PARAMETERS_ENV: "[1]", PREVIEW_PARAMETERS_ENV: ""}):
+            with self.assertRaises(QwenError) as listed:
+                client.submit_video("海", mode="generate")
+        self.assertIn(GENERATE_PARAMETERS_ENV, str(listed.exception))
+        with patch.dict(os.environ, {GENERATE_PARAMETERS_ENV: '{"duration": 3}', PREVIEW_PARAMETERS_ENV: ""}):
+            with self.assertRaises(QwenError) as short:
+                client.submit_video("海", duration=6, mode="generate")
+        self.assertIn("4 到 15", str(short.exception))
+
+    def test_video_submit_rpc_defaults_to_generate_parameters(self):
+        from AI import api as ai_api
+
+        captured, client = self._mode_client(False)
+        env = {
+            PREVIEW_PARAMETERS_ENV: '{"resolution":"1080P"}',
+            GENERATE_PARAMETERS_ENV: "",
+        }
+        with patch.dict(os.environ, env), patch.object(ai_api, "_video_client", return_value=client):
+            ai_api.video_submit({"text": "海面亮起来", "duration": 5, "aspect_ratio": "16:9"})
+            omitted = dict(captured["body"]["parameters"])
+            ai_api.video_submit({"text": "海面亮起来", "duration": 5, "aspect_ratio": "16:9", "mode": ""})
+            blank = dict(captured["body"]["parameters"])
+            ai_api.video_submit(
+                {"text": "海面亮起来", "duration": 5, "aspect_ratio": "16:9", "mode": "generate"}
+            )
+            explicit = dict(captured["body"]["parameters"])
+            ai_api.video_submit(
+                {"text": "海面亮起来", "duration": 5, "aspect_ratio": "16:9", "mode": "preview"}
+            )
+            preview = dict(captured["body"]["parameters"])
+        self.assertEqual(omitted["resolution"], "768P")
+        self.assertEqual(omitted["ratio"], "16:9")
+        self.assertEqual(omitted["duration"], 5)
+        self.assertIs(omitted["watermark"], False)
+        self.assertNotIn("preset", omitted)
+        self.assertEqual(blank, omitted)
+        self.assertEqual(explicit, omitted)
+        self.assertEqual(preview["resolution"], "1080P")
+        self.assertEqual(preview["duration"], 5)
+        self.assertNotIn("preset", preview)
+
+    def test_remote_video_submit_passes_mode(self):
+        from end.remote import RemoteVideoClient
+
+        seen = []
+
+        def fake_call(method, params, timeout=None):
+            seen.append((method, dict(params)))
+            return {"id": "v", "status": "submitted", "poll_url": "", "url": "", "error": ""}
+
+        with patch("end.remote.call", fake_call):
+            RemoteVideoClient().submit_video("海", duration=5, aspect_ratio="16:9")
+            RemoteVideoClient().submit_video("海", mode="preview")
+            RemoteVideoClient().submit_video("海", mode="")
+        self.assertEqual([item[0] for item in seen], ["video.submit", "video.submit", "video.submit"])
+        self.assertEqual(seen[0][1]["mode"], "generate")
+        self.assertEqual(seen[0][1]["text"], "海")
+        self.assertEqual(seen[0][1]["duration"], 5)
+        self.assertEqual(seen[0][1]["aspect_ratio"], "16:9")
+        self.assertEqual(seen[1][1]["mode"], "preview")
+        self.assertEqual(seen[2][1]["mode"], "generate")
 
     def test_speech_downloads_and_music_is_refused(self):
         seen = []

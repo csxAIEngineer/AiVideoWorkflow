@@ -51,6 +51,17 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 | `ratio` | 纯文生时用锁定画幅 `16:9`、`9:16` 或 `21:9`。带图时传入空值，客户端写成 `adaptive`。文档里的比例还有 `4:3`、`1:1`、`3:4`，其它值也会变成 `adaptive` |
 | `prompt` | 投喂稿正文。带首帧时再追加「从这张首帧开始」和无字幕约束 |
 
+`preview` 和 `generate` 各有一套参数，字段相同：`resolution`、`ratio`、`duration`、`watermark`、`preset`。默认两套一样。`ratio` 和 `duration` 留空时用这一镜的画幅和秒数。出片固定传 `mode=generate`。`video.submit` 不传 `mode`、或传空字符串时，也按 `generate` 组装，请求体与上面的示例一致。调试要换一套时传 `mode=preview`（也认 `预览` / `生成`）。
+
+覆盖写在环境变量里，值是 JSON 对象，只写要改的字段：
+
+```
+MINIMAX_VIDEO_PREVIEW_PARAMETERS={"resolution":"768P","watermark":false,"preset":"fast"}
+MINIMAX_VIDEO_GENERATE_PARAMETERS={"duration":8,"preset":"quality"}
+```
+
+没写的字段保持默认。`preset` 只合并进本地请求。云端示例仍是上面四个字段。页面「预览」播放的是已经落盘的成片，不切换这套参数。
+
 `media[].type` 由这一镜的模式决定。一次请求不能同时带首尾帧和参考素材。
 
 | 模式 | 何时使用 | `media` |
@@ -80,7 +91,7 @@ GET /api/v1/tasks/{task_id}
 
 模型名客户端固定发 `MiniMax/MiniMax-H3`。服务端也认短名 `MiniMax-H3`。别的名字返回 400 `model must be MiniMax/MiniMax-H3`。
 
-请求体在云端四个字段之外再带 `preset: fast`。不传 `width`、`height`、`frames`、`steps`。
+请求体在云端四个字段之外再带 `preset: fast`。`preset` 取当前 `preview` 或 `generate` 那一套，默认是 `fast`。不传 `width`、`height`、`frames`、`steps`。
 
 | 参数 | 取值 |
 |---|---|

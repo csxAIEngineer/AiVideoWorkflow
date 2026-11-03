@@ -118,7 +118,7 @@ class FakeCR(object):
         self.polls = []
         self._n = 0
 
-    def submit_video(self, text, model="MiniMax/MiniMax-H3", duration=4, aspect_ratio="9:16", images=None, idempotency_key=None, timeout=60):
+    def submit_video(self, text, model="MiniMax/MiniMax-H3", duration=4, aspect_ratio="9:16", images=None, idempotency_key=None, timeout=60, mode=None):
         self.submits.append(
             {
                 "key": idempotency_key,
@@ -127,6 +127,7 @@ class FakeCR(object):
                 "aspect_ratio": aspect_ratio,
                 "images": images,
                 "text": text,
+                "mode": mode,
             }
         )
         if self.fail_submit:
@@ -225,6 +226,7 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(cr.submits[0]["duration"], 5)
         self.assertEqual(cr.submits[0]["images"][0]["role"], "reference_image")
         self.assertEqual(cr.submits[0]["images"][0]["url"], "https://cdn.example/img-1.png")
+        self.assertEqual(cr.submits[0]["mode"], "generate")
         self.assertTrue((self.work / "outputs" / "joined.mp4").is_file())
         state = load_run_state(self.work)
         self.assertEqual(state["phase"], "done")

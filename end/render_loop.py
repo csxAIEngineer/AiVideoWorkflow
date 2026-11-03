@@ -2163,6 +2163,8 @@ def run_local_pipeline(
             if mode == "text" and not ctx.aspect:
                 raise RuntimeError("没有锁定画幅，不能默认竖屏")
             ratio = ctx.aspect if mode == "text" else None
+            # Shot media mode is text, frames, or reference. Parameter mode
+            # is separate: final render uses the generate parameter set.
             return cr.submit_video(
                 text,
                 model=VIDEO_MODE_MODELS[mode],
@@ -2171,6 +2173,7 @@ def run_local_pipeline(
                 images=media or None,
                 idempotency_key=key,
                 timeout=180,
+                mode="generate",
             )
 
         def poll(task_id, shot_id=shot_id):

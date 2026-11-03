@@ -48,6 +48,7 @@ class RemoteVideoClient(object):
         images=None,
         idempotency_key=None,
         timeout=180,
+        mode="generate",
     ):
         return RemoteTask(
             call(
@@ -60,6 +61,7 @@ class RemoteVideoClient(object):
                     "images": images,
                     "idempotency_key": idempotency_key,
                     "timeout": timeout,
+                    "mode": mode or "generate",
                 },
                 timeout=int(timeout or 180) + 30,
             )
