@@ -22,10 +22,9 @@ omniref are platforms. MiniMax/MiniMax-H3 is a model id. A route binds
 one profile to one platform and one model. Omitting the profile selects
 generate. An empty route keeps this client's host and MiniMax/MiniMax-H3.
 
-MINIMAX_VIDEO_PREVIEW_PARAMETERS and MINIMAX_VIDEO_GENERATE_PARAMETERS
-still override that profile. url, model, and platform in those objects
-are route fields. VIDEO_PLATFORMS, VIDEO_MODELS, VIDEO_PROFILES, and
-VIDEO_ROUTES add further platforms, model ids, profiles, and bindings.
+Overrides live in data/video_catalog.json next to .env. See
+data/video_catalog.example.json. A missing file keeps these defaults.
+API keys stay in .env.
 """
 
 import os
@@ -45,11 +44,10 @@ from AI.qwen_api.client import (
 from AI.qwen_api.video_catalog import (
     DEFAULT_MODEL_ID,
     DASH_SCOPE_SUBMIT_PATH,
-    GENERATE_PARAMETERS_ENV,
-    PREVIEW_PARAMETERS_ENV,
     describe_profile,
     enforce_media,
     platform_credentials,
+    resolve_model_id,
     resolve_plan,
 )
 
@@ -202,21 +200,19 @@ def video_duration(duration):
     return seconds
 
 
-def normalize_video_submit_mode(value):
+def normalize_video_submit_mode(value, env_path=None):
     """Profile name. Empty selects generate, the historical submit."""
     from AI.qwen_api.video_catalog import normalize_profile
 
-    return normalize_profile(value)
+    return normalize_profile(value, env_path=env_path)
 
 
-def video_mode_parameters(mode=None):
+def video_mode_parameters(mode=None, env_path=None):
     """Legacy combined view: profile fields plus that profile's route url and model."""
-    from AI.qwen_api.video_catalog import resolve_model_id
-
-    _name, parameters, route = describe_profile(mode)
+    _name, parameters, route = describe_profile(mode, env_path=env_path)
     spec = dict(parameters)
     spec["url"] = route.get("url") if route.get("url") else None
-    spec["model"] = resolve_model_id(route.get("model"))
+    spec["model"] = resolve_model_id(route.get("model"), env_path=env_path)
     return spec
 
 
@@ -226,9 +222,15 @@ def _text_parameter(field, value):
     raise QwenError("parameters.%s 必须是非空字符串" % field)
 
 
-def video_submit_target(mode, fallback_url, local=False, fallback_key=""):
+def video_submit_target(mode, fallback_url, local=False, fallback_key="", env_path=None):
     """Host and model id for one submit. The parameter profile is chosen separately."""
-    plan = resolve_plan(mode, local=local, fallback_url=fallback_url, fallback_key=fallback_key)
+    plan = resolve_plan(
+        mode,
+        local=local,
+        fallback_url=fallback_url,
+        fallback_key=fallback_key,
+        env_path=env_path,
+    )
     return plan.base_url, plan.model_id
 
 
@@ -252,9 +254,9 @@ def _watermark(value):
     raise QwenError("parameters.watermark 必须是布尔值")
 
 
-def build_video_parameters(mode, aspect_ratio, duration, local):
+def build_video_parameters(mode, aspect_ratio, duration, local, env_path=None):
     """Wire parameters for one profile. Platform decides whether preset is sent."""
-    plan = resolve_plan(mode, local=local, fallback_url="", fallback_key="")
+    plan = resolve_plan(mode, local=local, fallback_url="", fallback_key="", env_path=env_path)
     return wire_parameters(plan.parameters, plan.emit_local_defaults, aspect_ratio, duration)
 
 
@@ -328,6 +330,7 @@ def _require_local_references(media):
 
 class QwenVideoClient(object):
     def __init__(self, client=None, api_key=None, opener=None, base_url=None, env_path=None):
+        self.env_path = env_path
         self.local = False
         if client is not None:
             self.client = client
@@ -370,6 +373,7 @@ class QwenVideoClient(object):
             local=self.local,
             fallback_url=self.client.base_url,
             fallback_key=self.client.api_key,
+            env_path=self.env_path,
         )
         enforce_media(media, plan.media)
         parameters = wire_parameters(plan.parameters, plan.emit_local_defaults, aspect_ratio, duration)
@@ -426,7 +430,7 @@ class QwenVideoClient(object):
         """A client whose bearer matches that platform. The same client when it already does."""
         if not str(name or "").strip():
             return self
-        host, key = platform_credentials(name)
+        host, key = platform_credentials(name, self.env_path)
         if not key or key == self.client.api_key:
             return self
         other = QwenVideoClient(

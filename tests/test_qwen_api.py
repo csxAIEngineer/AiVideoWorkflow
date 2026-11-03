@@ -15,13 +15,11 @@ from AI.qwen_api.graph import bind_trace_prompts, generate_text, log_prompt, und
 from AI.qwen_api.image import IMAGE_MODEL, IMAGE_PATH, ImageTask, QwenImageClient
 from AI.qwen_api.video import (
     GENERATE_PARAMETERS,
-    GENERATE_PARAMETERS_ENV,
     LOCAL_DEFAULT_PARAMETERS,
     DEFAULT_LOCAL_VIDEO_URL,
     LOCAL_DUMMY_KEY,
     MODE_CONFIG_KEYS,
     PREVIEW_PARAMETERS,
-    PREVIEW_PARAMETERS_ENV,
     VIDEO_MODEL,
     VIDEO_PATH,
     QwenVideoClient,
@@ -589,9 +587,19 @@ class QwenMediaTest(unittest.TestCase):
             os.chdir(previous)
             ai_api._VIDEO = None
 
-    def _mode_client(self, local):
+    def _catalog(self, payload=None, raw=None):
+        root = Path(tempfile.mkdtemp())
+        (root / "data").mkdir()
+        env_file = root / ".env"
+        env_file.write_text("", encoding="utf-8")
+        if raw is not None or payload is not None:
+            text = raw if raw is not None else json.dumps(payload, ensure_ascii=False)
+            (root / "data" / "video_catalog.json").write_text(text, encoding="utf-8")
+        return env_file
+
+    def _mode_client(self, local, env_path=None):
         captured, opener = self._capture({"output": {"task_id": "vid-mode", "task_status": "PENDING"}})
-        client = QwenVideoClient(client=_client(opener))
+        client = QwenVideoClient(client=_client(opener), env_path=env_path)
         client.local = bool(local)
         return captured, client
 
@@ -607,27 +615,33 @@ class QwenMediaTest(unittest.TestCase):
         self.assertIsNone(PREVIEW_PARAMETERS["url"])
         self.assertEqual(PREVIEW_PARAMETERS["model"], VIDEO_MODEL)
         images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
-        with patch.dict(os.environ, {PREVIEW_PARAMETERS_ENV: "", GENERATE_PARAMETERS_ENV: ""}):
-            self.assertEqual(video_mode_parameters(None), dict(PREVIEW_PARAMETERS))
-            self.assertEqual(video_mode_parameters(""), dict(GENERATE_PARAMETERS))
-            self.assertEqual(video_mode_parameters("生成"), video_mode_parameters("preview"))
-            self.assertEqual(video_mode_parameters("预览"), video_mode_parameters("generate"))
-            captured, client = self._mode_client(False)
-            client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", model="caller-model")
-            omitted = dict(captured["body"]["parameters"])
-            omitted_url = captured["url"]
-            omitted_model = captured["body"]["model"]
-            client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", mode="generate")
-            explicit = dict(captured["body"]["parameters"])
-            client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", mode="preview")
-            preview = dict(captured["body"]["parameters"])
-            captured, local = self._mode_client(True)
-            local.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", images=images)
-            local_omitted = dict(captured["body"]["parameters"])
-            local.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", images=images, mode="generate")
-            local_generate = dict(captured["body"]["parameters"])
-            local.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", images=images, mode="预览")
-            local_preview = dict(captured["body"]["parameters"])
+        env_path = self._catalog()
+        self.assertEqual(video_mode_parameters(None, env_path=env_path), dict(PREVIEW_PARAMETERS))
+        self.assertEqual(video_mode_parameters("", env_path=env_path), dict(GENERATE_PARAMETERS))
+        self.assertEqual(
+            video_mode_parameters("生成", env_path=env_path),
+            video_mode_parameters("preview", env_path=env_path),
+        )
+        self.assertEqual(
+            video_mode_parameters("预览", env_path=env_path),
+            video_mode_parameters("generate", env_path=env_path),
+        )
+        captured, client = self._mode_client(False, env_path)
+        client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", model="caller-model")
+        omitted = dict(captured["body"]["parameters"])
+        omitted_url = captured["url"]
+        omitted_model = captured["body"]["model"]
+        client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", mode="generate")
+        explicit = dict(captured["body"]["parameters"])
+        client.submit_video("海面亮起来", duration=5, aspect_ratio="21:9", mode="preview")
+        preview = dict(captured["body"]["parameters"])
+        captured, local = self._mode_client(True, env_path)
+        local.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", images=images)
+        local_omitted = dict(captured["body"]["parameters"])
+        local.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", images=images, mode="generate")
+        local_generate = dict(captured["body"]["parameters"])
+        local.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", images=images, mode="预览")
+        local_preview = dict(captured["body"]["parameters"])
         legacy = {
             "resolution": "768P",
             "ratio": "21:9",
@@ -655,56 +669,55 @@ class QwenMediaTest(unittest.TestCase):
 
     def test_mode_parameter_overrides_diverge_and_local_merge_remains(self):
         images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
-        env = {
-            PREVIEW_PARAMETERS_ENV: json.dumps(
-                {"resolution": "1080P", "ratio": "1:1", "watermark": False}
-            ),
-            GENERATE_PARAMETERS_ENV: json.dumps(
-                {"watermark": True, "duration": 8, "preset": "quality", "seed": 7}
-            ),
-        }
-        with patch.dict(os.environ, env):
-            preview_spec = video_mode_parameters("preview")
-            generate_spec = video_mode_parameters("generate")
-            self.assertEqual(tuple(preview_spec), MODE_CONFIG_KEYS)
-            self.assertEqual(set(generate_spec), set(MODE_CONFIG_KEYS) | {"seed"})
-            self.assertIsNone(preview_spec["url"])
-            self.assertEqual(preview_spec["model"], VIDEO_MODEL)
-            self.assertIsNone(generate_spec["url"])
-            self.assertEqual(generate_spec["model"], VIDEO_MODEL)
-            self.assertEqual(preview_spec["resolution"], "1080P")
-            self.assertEqual(generate_spec["resolution"], "768P")
-            self.assertEqual(video_mode_parameters("预览")["resolution"], "1080P")
-            self.assertEqual(video_mode_parameters("生成")["preset"], "quality")
-            self.assertEqual(preview_spec["preset"], "fast")
-            self.assertEqual(generate_spec["preset"], "quality")
-            self.assertIs(preview_spec["watermark"], False)
-            self.assertIs(generate_spec["watermark"], True)
-            captured, cloud = self._mode_client(False)
-            cloud.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", mode="preview")
-            cloud_preview = dict(captured["body"]["parameters"])
-            cloud.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", mode="generate")
-            cloud_generate = dict(captured["body"]["parameters"])
-            cloud.submit_video("海面亮起来", duration=6, aspect_ratio="16:9")
-            cloud_omitted = dict(captured["body"]["parameters"])
-            captured, local = self._mode_client(True)
-            with patch.dict(LOCAL_DEFAULT_PARAMETERS, {"trace_local_merge": "yes"}):
-                local.submit_video(
-                    "海面亮起来",
-                    duration=6,
-                    aspect_ratio="16:9",
-                    images=images,
-                    mode="preview",
-                )
-                local_preview = dict(captured["body"]["parameters"])
-                local.submit_video(
-                    "海面亮起来",
-                    duration=6,
-                    aspect_ratio="16:9",
-                    images=images,
-                    mode="generate",
-                )
-                local_generate = dict(captured["body"]["parameters"])
+        env_path = self._catalog(
+            {
+                "profiles": {
+                    "preview": {"resolution": "1080P", "ratio": "1:1", "watermark": False},
+                    "generate": {"watermark": True, "duration": 8, "preset": "quality", "seed": 7},
+                }
+            }
+        )
+        preview_spec = video_mode_parameters("preview", env_path=env_path)
+        generate_spec = video_mode_parameters("generate", env_path=env_path)
+        self.assertEqual(tuple(preview_spec), MODE_CONFIG_KEYS)
+        self.assertEqual(set(generate_spec), set(MODE_CONFIG_KEYS) | {"seed"})
+        self.assertIsNone(preview_spec["url"])
+        self.assertEqual(preview_spec["model"], VIDEO_MODEL)
+        self.assertIsNone(generate_spec["url"])
+        self.assertEqual(generate_spec["model"], VIDEO_MODEL)
+        self.assertEqual(preview_spec["resolution"], "1080P")
+        self.assertEqual(generate_spec["resolution"], "768P")
+        self.assertEqual(video_mode_parameters("预览", env_path=env_path)["resolution"], "1080P")
+        self.assertEqual(video_mode_parameters("生成", env_path=env_path)["preset"], "quality")
+        self.assertEqual(preview_spec["preset"], "fast")
+        self.assertEqual(generate_spec["preset"], "quality")
+        self.assertIs(preview_spec["watermark"], False)
+        self.assertIs(generate_spec["watermark"], True)
+        captured, cloud = self._mode_client(False, env_path)
+        cloud.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", mode="preview")
+        cloud_preview = dict(captured["body"]["parameters"])
+        cloud.submit_video("海面亮起来", duration=6, aspect_ratio="16:9", mode="generate")
+        cloud_generate = dict(captured["body"]["parameters"])
+        cloud.submit_video("海面亮起来", duration=6, aspect_ratio="16:9")
+        cloud_omitted = dict(captured["body"]["parameters"])
+        captured, local = self._mode_client(True, env_path)
+        with patch.dict(LOCAL_DEFAULT_PARAMETERS, {"trace_local_merge": "yes"}):
+            local.submit_video(
+                "海面亮起来",
+                duration=6,
+                aspect_ratio="16:9",
+                images=images,
+                mode="preview",
+            )
+            local_preview = dict(captured["body"]["parameters"])
+            local.submit_video(
+                "海面亮起来",
+                duration=6,
+                aspect_ratio="16:9",
+                images=images,
+                mode="generate",
+            )
+            local_generate = dict(captured["body"]["parameters"])
         self.assertEqual(
             cloud_preview,
             {"resolution": "1080P", "ratio": "1:1", "duration": 6, "watermark": False},
@@ -738,41 +751,47 @@ class QwenMediaTest(unittest.TestCase):
         def opener(request, timeout=None):
             raise AssertionError("should not request")
 
-        client = QwenVideoClient(client=_client(opener))
+        client = QwenVideoClient(client=_client(opener), env_path=self._catalog())
         with self.assertRaises(QwenError) as unknown:
             client.submit_video("海", mode="local")
         self.assertIn("preview", str(unknown.exception))
-        with patch.dict(os.environ, {PREVIEW_PARAMETERS_ENV: "not-json", GENERATE_PARAMETERS_ENV: ""}):
-            with self.assertRaises(QwenError) as bad:
-                client.submit_video("海", mode="preview")
-        self.assertIn(PREVIEW_PARAMETERS_ENV, str(bad.exception))
+        bad_client = QwenVideoClient(client=_client(opener), env_path=self._catalog(raw="not-json"))
+        with self.assertRaises(QwenError) as bad:
+            bad_client.submit_video("海", mode="preview")
+        self.assertIn("video_catalog.json", str(bad.exception))
         self.assertNotIn("not-json", str(bad.exception))
-        with patch.dict(os.environ, {GENERATE_PARAMETERS_ENV: "[1]", PREVIEW_PARAMETERS_ENV: ""}):
-            with self.assertRaises(QwenError) as listed:
-                client.submit_video("海", mode="generate")
-        self.assertIn(GENERATE_PARAMETERS_ENV, str(listed.exception))
-        with patch.dict(os.environ, {GENERATE_PARAMETERS_ENV: '{"duration": 3}', PREVIEW_PARAMETERS_ENV: ""}):
-            with self.assertRaises(QwenError) as short:
-                client.submit_video("海", duration=6, mode="generate")
+        listed_client = QwenVideoClient(client=_client(opener), env_path=self._catalog(raw="[1]"))
+        with self.assertRaises(QwenError) as listed:
+            listed_client.submit_video("海", mode="generate")
+        self.assertIn("video_catalog.json", str(listed.exception))
+        short_client = QwenVideoClient(
+            client=_client(opener),
+            env_path=self._catalog({"profiles": {"generate": {"duration": 3}}}),
+        )
+        with self.assertRaises(QwenError) as short:
+            short_client.submit_video("海", duration=6, mode="generate")
         self.assertIn("4 到 15", str(short.exception))
-        with patch.dict(os.environ, {PREVIEW_PARAMETERS_ENV: '{"url": "ftp://preview.example"}', GENERATE_PARAMETERS_ENV: ""}):
-            with self.assertRaises(QwenError) as bad_url:
-                client.submit_video("海", mode="preview")
+        url_client = QwenVideoClient(
+            client=_client(opener),
+            env_path=self._catalog({"routes": {"preview": {"url": "ftp://preview.example"}}}),
+        )
+        with self.assertRaises(QwenError) as bad_url:
+            url_client.submit_video("海", mode="preview")
         self.assertIn("url", str(bad_url.exception))
-        with patch.dict(os.environ, {GENERATE_PARAMETERS_ENV: '{"model": 1}', PREVIEW_PARAMETERS_ENV: ""}):
-            with self.assertRaises(QwenError) as bad_model:
-                client.submit_video("海", mode="generate")
+        model_client = QwenVideoClient(
+            client=_client(opener),
+            env_path=self._catalog({"routes": {"generate": {"model": 1}}}),
+        )
+        with self.assertRaises(QwenError) as bad_model:
+            model_client.submit_video("海", mode="generate")
         self.assertIn("model", str(bad_model.exception))
 
     def test_video_submit_rpc_defaults_to_generate_parameters(self):
         from AI import api as ai_api
 
-        captured, client = self._mode_client(False)
-        env = {
-            PREVIEW_PARAMETERS_ENV: '{"resolution":"1080P"}',
-            GENERATE_PARAMETERS_ENV: "",
-        }
-        with patch.dict(os.environ, env), patch.object(ai_api, "_video_client", return_value=client):
+        env_path = self._catalog({"profiles": {"preview": {"resolution": "1080P"}}})
+        captured, client = self._mode_client(False, env_path)
+        with patch.object(ai_api, "_video_client", return_value=client):
             ai_api.video_submit({"text": "海面亮起来", "duration": 5, "aspect_ratio": "16:9"})
             omitted = dict(captured["body"]["parameters"])
             ai_api.video_submit({"text": "海面亮起来", "duration": 5, "aspect_ratio": "16:9", "mode": ""})
@@ -802,64 +821,69 @@ class QwenMediaTest(unittest.TestCase):
         from AI import api as ai_api
 
         images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
-        env = {
-            PREVIEW_PARAMETERS_ENV: json.dumps(
-                {"url": "http://preview.example:8765/api/v1", "model": "MiniMax-H3-preview"}
-            ),
-            GENERATE_PARAMETERS_ENV: json.dumps(
-                {"url": "https://generate.example/compatible-mode/v1", "model": "MiniMax/MiniMax-H3-gen"}
-            ),
-        }
-        with patch.dict(os.environ, env):
-            captured, cloud = self._mode_client(False)
-            cloud_captured = captured
-            preview_task = cloud.submit_video(
-                "海面亮起来",
-                duration=5,
-                aspect_ratio="16:9",
-                mode="preview",
-                model="caller-model",
+        env_path = self._catalog(
+            {
+                "routes": {
+                    "preview": {
+                        "url": "http://preview.example:8765/api/v1",
+                        "model": "MiniMax-H3-preview",
+                    },
+                    "generate": {
+                        "url": "https://generate.example/compatible-mode/v1",
+                        "model": "MiniMax/MiniMax-H3-gen",
+                    },
+                }
+            }
+        )
+        captured, cloud = self._mode_client(False, env_path)
+        cloud_captured = captured
+        preview_task = cloud.submit_video(
+            "海面亮起来",
+            duration=5,
+            aspect_ratio="16:9",
+            mode="preview",
+            model="caller-model",
+        )
+        preview_url = captured["url"]
+        preview_model = captured["body"]["model"]
+        preview_parameters = dict(captured["body"]["parameters"])
+        generate_task = cloud.submit_video(
+            "海面亮起来",
+            duration=5,
+            aspect_ratio="16:9",
+            mode="generate",
+        )
+        generate_url = captured["url"]
+        generate_model = captured["body"]["model"]
+        cloud.poll(preview_task.id, poll_url=preview_task.poll_url)
+        preview_poll = captured["url"]
+        cloud.poll(generate_task.id, previous=generate_task)
+        generate_poll = captured["url"]
+        captured, local = self._mode_client(True, env_path)
+        local.submit_video(
+            "海面亮起来",
+            duration=6,
+            images=images,
+            mode="preview",
+        )
+        local_url = captured["url"]
+        local_body = dict(captured["body"])
+        with patch.object(ai_api, "_video_client", return_value=cloud):
+            ai_api.video_submit(
+                {
+                    "text": "海面亮起来",
+                    "duration": 5,
+                    "aspect_ratio": "16:9",
+                    "mode": "preview",
+                    "model": "other-model",
+                }
             )
-            preview_url = captured["url"]
-            preview_model = captured["body"]["model"]
-            preview_parameters = dict(captured["body"]["parameters"])
-            generate_task = cloud.submit_video(
-                "海面亮起来",
-                duration=5,
-                aspect_ratio="16:9",
-                mode="generate",
+            rpc_url = cloud_captured["url"]
+            rpc_model = cloud_captured["body"]["model"]
+            polled = ai_api.video_poll(
+                {"task_id": preview_task.id, "poll_url": preview_task.poll_url}
             )
-            generate_url = captured["url"]
-            generate_model = captured["body"]["model"]
-            cloud.poll(preview_task.id, poll_url=preview_task.poll_url)
-            preview_poll = captured["url"]
-            cloud.poll(generate_task.id, previous=generate_task)
-            generate_poll = captured["url"]
-            captured, local = self._mode_client(True)
-            local.submit_video(
-                "海面亮起来",
-                duration=6,
-                images=images,
-                mode="preview",
-            )
-            local_url = captured["url"]
-            local_body = dict(captured["body"])
-            with patch.object(ai_api, "_video_client", return_value=cloud):
-                ai_api.video_submit(
-                    {
-                        "text": "海面亮起来",
-                        "duration": 5,
-                        "aspect_ratio": "16:9",
-                        "mode": "preview",
-                        "model": "other-model",
-                    }
-                )
-                rpc_url = cloud_captured["url"]
-                rpc_model = cloud_captured["body"]["model"]
-                polled = ai_api.video_poll(
-                    {"task_id": preview_task.id, "poll_url": preview_task.poll_url}
-                )
-                rpc_poll = cloud_captured["url"]
+            rpc_poll = cloud_captured["url"]
         self.assertEqual(preview_url, "http://preview.example:8765" + VIDEO_PATH)
         self.assertEqual(preview_model, "MiniMax-H3-preview")
         self.assertNotIn("url", preview_parameters)
@@ -891,13 +915,14 @@ class QwenMediaTest(unittest.TestCase):
 
         register_adapter(ProbeAdapter())
         images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
-        env = {
-            "VIDEO_MODELS": json.dumps({"studio-take": {"id": "studio/take-1"}}),
-            "VIDEO_PROFILES": json.dumps(
-                {"preview": {"watermark": True}, "generate": {"resolution": "1080P"}}
-            ),
-            "VIDEO_PLATFORMS": json.dumps(
-                {
+        env_path = self._catalog(
+            {
+                "models": {"studio-take": {"id": "studio/take-1"}},
+                "profiles": {
+                    "preview": {"watermark": True},
+                    "generate": {"resolution": "1080P"},
+                },
+                "platforms": {
                     "studio": {
                         "adapter": "probe",
                         "host": "https://studio.example",
@@ -905,18 +930,17 @@ class QwenMediaTest(unittest.TestCase):
                         "media": "open",
                         "emit_local_defaults": False,
                     }
-                }
-            ),
-            "VIDEO_ROUTES": json.dumps(
-                {
+                },
+                "routes": {
                     "preview": {"platform": "studio", "model": "studio-take"},
-                    "generate": {"platform": "omniref", "model": "minimax-h3", "url": "http://generate.example:8765"},
-                }
-            ),
-            PREVIEW_PARAMETERS_ENV: "",
-            GENERATE_PARAMETERS_ENV: "",
-            "MINIMAX_H3_API_KEY": "",
-        }
+                    "generate": {
+                        "platform": "omniref",
+                        "model": "minimax-h3",
+                        "url": "http://generate.example:8765",
+                    },
+                },
+            }
+        )
         seen = {}
 
         def opener(request, timeout=None):
@@ -928,8 +952,8 @@ class QwenMediaTest(unittest.TestCase):
             return _Body(json.dumps({"output": {"task_id": "vid-mode", "task_status": "PENDING"}}))
 
         try:
-            with patch.dict(os.environ, env):
-                registry = video_registry()
+            with patch.dict(os.environ, {"MINIMAX_H3_API_KEY": ""}):
+                registry = video_registry(env_path)
                 self.assertIn("dashscope", registry["adapters"])
                 self.assertIn("probe", registry["adapters"])
                 self.assertEqual(registry["models"]["minimax-h3"]["id"], VIDEO_MODEL)
@@ -939,7 +963,7 @@ class QwenMediaTest(unittest.TestCase):
                 self.assertIs(registry["profiles"]["preview"]["watermark"], True)
                 self.assertEqual(registry["profiles"]["generate"]["resolution"], "1080P")
                 self.assertEqual(registry["profiles"]["preview"]["resolution"], "768P")
-                client = QwenVideoClient(client=_client(opener))
+                client = QwenVideoClient(client=_client(opener), env_path=env_path)
                 preview = client.submit_video("海面亮起来", duration=5, aspect_ratio="16:9", mode="preview")
                 preview_url = seen["url"]
                 preview_probe = seen["probe"]
@@ -971,6 +995,21 @@ class QwenMediaTest(unittest.TestCase):
             self.assertNotEqual(preview_body["model"], generate_body["model"])
         finally:
             unregister_adapter("probe")
+
+    def test_example_catalog_file_keeps_builtin_defaults(self):
+        from AI.qwen_api.video_catalog import video_registry
+
+        example = Path(__file__).resolve().parents[1] / "data" / "video_catalog.example.json"
+        env_path = self._catalog(raw=example.read_text(encoding="utf-8"))
+        registry = video_registry(env_path)
+        self.assertEqual(set(registry["platforms"]), {"qwen", "omniref"})
+        self.assertEqual(registry["models"]["minimax-h3"]["id"], VIDEO_MODEL)
+        self.assertEqual(registry["profiles"]["preview"]["resolution"], "768P")
+        self.assertEqual(registry["profiles"]["preview"]["watermark"], False)
+        self.assertEqual(registry["profiles"]["generate"], registry["profiles"]["preview"])
+        self.assertEqual(registry["routes"]["generate"]["model"], "minimax-h3")
+        self.assertEqual(registry["routes"]["preview"]["platform"], "")
+        self.assertIsNone(registry["routes"]["preview"]["url"])
 
     def test_remote_video_submit_passes_mode(self):
         from end.remote import RemoteVideoClient

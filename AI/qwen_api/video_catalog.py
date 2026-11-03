@@ -5,18 +5,15 @@ id, and one parameter profile. None of the three stores the other two.
 preview and generate are profiles. qwen and omniref are platforms. The
 MiniMax-H3 id is a model. Routes name which pair a profile uses.
 
-Add a protocol by register_adapter. Add a host that already speaks a
-registered protocol with VIDEO_PLATFORMS. Add a model id with VIDEO_MODELS.
-Add or edit parameter profiles with VIDEO_PROFILES. Bind them with
-VIDEO_ROUTES.
-
-MINIMAX_VIDEO_PREVIEW_PARAMETERS and MINIMAX_VIDEO_GENERATE_PARAMETERS
-remain aliases: parameter fields merge into that profile, and url, model,
-and platform merge into that profile's route.
+Add a protocol by register_adapter. Add a host, model id, profile, or
+route in data/video_catalog.json beside the process .env. See
+data/video_catalog.example.json. A missing file or a missing field keeps
+the built-in default. API keys stay in .env.
 """
 
 import json
 import os
+from pathlib import Path
 
 from AI.qwen_api.client import QwenError, normalize_host, qwen_api_key, resolve_qwen_host
 
@@ -25,17 +22,9 @@ DEFAULT_MODEL_ID = "MiniMax/MiniMax-H3"
 DASH_SCOPE_SUBMIT_PATH = "/api/v1/services/aigc/video-generation/video-synthesis"
 DASH_SCOPE_TASK_PREFIX = "/api/v1/tasks/"
 
-PREVIEW_PARAMETERS_ENV = "MINIMAX_VIDEO_PREVIEW_PARAMETERS"
-GENERATE_PARAMETERS_ENV = "MINIMAX_VIDEO_GENERATE_PARAMETERS"
-PLATFORMS_ENV = "VIDEO_PLATFORMS"
-MODELS_ENV = "VIDEO_MODELS"
-PROFILES_ENV = "VIDEO_PROFILES"
-ROUTES_ENV = "VIDEO_ROUTES"
+CATALOG_FILE = "video_catalog.json"
+CATALOG_LABEL = "data/video_catalog.json"
 
-_PROFILE_ENV = {
-    "preview": PREVIEW_PARAMETERS_ENV,
-    "generate": GENERATE_PARAMETERS_ENV,
-}
 _PROFILE_ALIASES = {
     "preview": "preview",
     "预览": "preview",
@@ -121,27 +110,66 @@ def default_profile():
     }
 
 
-def _json_object(env_name):
-    raw = os.environ.get(env_name)
-    if raw is None:
+def catalog_root(env_path=None):
+    """Project root whose data/video_catalog.json is read.
+
+    An explicit env_path that is not a file or directory does not fall
+    through to the repo, so tests can opt out of a local catalog.
+    """
+    if env_path is not None:
+        candidate = Path(env_path)
+        if candidate.is_file():
+            return candidate.parent
+        if candidate.is_dir():
+            return candidate
+        return None
+    from AI.qwen_api.client import qwen_choice_path
+
+    choice = qwen_choice_path(None)
+    if choice is None:
+        return Path.cwd()
+    return choice.parent.parent
+
+
+def catalog_path(env_path=None):
+    root = catalog_root(env_path)
+    if root is None:
+        return None
+    return root / "data" / CATALOG_FILE
+
+
+def _load_catalog(env_path=None):
+    path = catalog_path(env_path)
+    if path is None or not path.is_file():
         return {}
-    text = str(raw).strip()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    text = text.strip()
     if not text:
         return {}
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        raise QwenError("%s 必须是 JSON 对象" % env_name)
+        raise QwenError("%s 必须是 JSON 对象" % CATALOG_LABEL)
     if not isinstance(parsed, dict):
-        raise QwenError("%s 必须是 JSON 对象" % env_name)
+        raise QwenError("%s 必须是 JSON 对象" % CATALOG_LABEL)
     return parsed
 
 
-def _legacy_blob(profile):
-    env_name = _PROFILE_ENV.get(profile)
-    if not env_name:
+def _plain(value):
+    """Drop keys that document the file. They are not configuration."""
+    return {key: item for key, item in value.items() if not str(key).startswith("_")}
+
+
+def _section(catalog, name):
+    value = catalog.get(name)
+    if value is None:
         return {}
-    return _json_object(env_name)
+    if not isinstance(value, dict):
+        raise QwenError("%s 的 %s 必须是对象" % (CATALOG_LABEL, name))
+    return _plain(value)
 
 
 def _split_legacy(blob):
@@ -177,39 +205,33 @@ def _check_route_value(key, value, env_name):
     return value
 
 
-def parameter_profiles():
+def parameter_profiles(env_path=None):
     """Profile name -> parameter dict. No host and no model id."""
     table = {
         "preview": default_profile(),
         "generate": default_profile(),
     }
-    for name, value in _json_object(PROFILES_ENV).items():
+    for name, value in _section(_load_catalog(env_path), "profiles").items():
         if not isinstance(value, dict):
-            raise QwenError("%s.%s 必须是对象" % (PROFILES_ENV, name))
+            raise QwenError("%s 的 profiles.%s 必须是对象" % (CATALOG_LABEL, name))
         base = dict(table.get(name) or default_profile())
-        params, _route = _split_legacy(value)
+        params, _route = _split_legacy(_plain(value))
         base.update(params)
         table[str(name)] = base
-    for name in ("preview", "generate"):
-        params, _route = _split_legacy(_legacy_blob(name))
-        if params:
-            merged = dict(table[name])
-            merged.update(params)
-            table[name] = merged
     return table
 
 
-def models():
+def models(env_path=None):
     """Model key -> {id}. The id is the request body model. No parameters."""
     table = {DEFAULT_MODEL_KEY: {"id": DEFAULT_MODEL_ID}}
-    for name, value in _json_object(MODELS_ENV).items():
+    for name, value in _section(_load_catalog(env_path), "models").items():
         if isinstance(value, str) and value.strip():
             table[str(name)] = {"id": value.strip()}
             continue
         if isinstance(value, dict) and isinstance(value.get("id"), str) and value.get("id").strip():
             table[str(name)] = {"id": value.get("id").strip()}
             continue
-        raise QwenError("%s.%s 需要 id" % (MODELS_ENV, name))
+        raise QwenError("%s 的 models.%s 需要 id" % (CATALOG_LABEL, name))
     return table
 
 
@@ -232,12 +254,13 @@ def _builtin_platforms():
     }
 
 
-def platforms():
+def platforms(env_path=None):
     """Platform name -> host, auth, protocol, and media rules. No model id."""
     table = _builtin_platforms()
-    for name, value in _json_object(PLATFORMS_ENV).items():
+    for name, value in _section(_load_catalog(env_path), "platforms").items():
         if not isinstance(value, dict):
-            raise QwenError("%s.%s 必须是对象" % (PLATFORMS_ENV, name))
+            raise QwenError("%s 的 platforms.%s 必须是对象" % (CATALOG_LABEL, name))
+        value = _plain(value)
         base = dict(table.get(name) or {
             "adapter": "dashscope",
             "host": "",
@@ -250,19 +273,19 @@ def platforms():
     return table
 
 
-def routes():
+def routes(env_path=None):
     """Profile -> {platform, model, url}. Empty platform keeps the page host."""
-    names = set(parameter_profiles())
+    names = set(parameter_profiles(env_path))
     table = {}
     for name in names:
         table[name] = {"platform": "", "model": DEFAULT_MODEL_KEY, "url": None}
-    for name in ("preview", "generate"):
-        _params, route = _split_legacy(_legacy_blob(name))
-        _apply_route(table, name, route, _PROFILE_ENV[name])
-    for name, value in _json_object(ROUTES_ENV).items():
+    for name, value in _section(_load_catalog(env_path), "routes").items():
         if not isinstance(value, dict):
-            raise QwenError("%s.%s 必须是对象" % (ROUTES_ENV, name))
-        _apply_route(table, str(name), value, ROUTES_ENV)
+            raise QwenError("%s 的 routes.%s 必须是对象" % (CATALOG_LABEL, name))
+        params, route = _split_legacy(_plain(value))
+        if params:
+            raise QwenError("%s 的 routes.%s 只接受 platform、model、url" % (CATALOG_LABEL, name))
+        _apply_route(table, str(name), route, CATALOG_LABEL)
     return table
 
 
@@ -275,13 +298,13 @@ def _apply_route(table, name, route, env_name):
     table[name] = current
 
 
-def known_profiles():
-    names = set(parameter_profiles())
-    names.update(routes())
+def known_profiles(env_path=None):
+    names = set(parameter_profiles(env_path))
+    names.update(routes(env_path))
     return names
 
 
-def normalize_profile(value):
+def normalize_profile(value, env_path=None):
     """Parameter profile name. Empty selects generate."""
     text = str(value or "").strip()
     lowered = text.lower()
@@ -290,7 +313,7 @@ def normalize_profile(value):
     alias = _PROFILE_ALIASES.get(lowered) or _PROFILE_ALIASES.get(text)
     if alias:
         return alias
-    names = known_profiles()
+    names = known_profiles(env_path)
     if text in names:
         return text
     if lowered in names:
@@ -298,31 +321,31 @@ def normalize_profile(value):
     raise QwenError("出镜提交模式只能是 preview 或 generate")
 
 
-def resolve_model_id(token):
+def resolve_model_id(token, env_path=None):
     """Registry key or a raw model id. Parameters are not consulted."""
     if token is None or (isinstance(token, str) and not token.strip()):
         return DEFAULT_MODEL_ID
     if not isinstance(token, str):
         raise QwenError("model 必须是非空字符串")
     text = token.strip()
-    found = models().get(text)
+    found = models(env_path).get(text)
     if found:
         return found["id"]
     return text
 
 
-def profile_parameters(name):
-    table = parameter_profiles()
+def profile_parameters(name, env_path=None):
+    table = parameter_profiles(env_path)
     if name not in table:
         return default_profile()
     return dict(table[name])
 
 
-def describe_profile(mode=None):
+def describe_profile(mode=None, env_path=None):
     """Profile parameters plus the route's url and model, still not mixed into one registry."""
-    name = normalize_profile(mode)
-    route = dict(routes().get(name) or {"platform": "", "model": DEFAULT_MODEL_KEY, "url": None})
-    return name, profile_parameters(name), route
+    name = normalize_profile(mode, env_path=env_path)
+    route = dict(routes(env_path).get(name) or {"platform": "", "model": DEFAULT_MODEL_KEY, "url": None})
+    return name, profile_parameters(name, env_path), route
 
 
 def _platform_host(platform):
@@ -396,10 +419,10 @@ def _as_bool(value):
     return bool(value)
 
 
-def resolve_plan(mode, local, fallback_url, fallback_key):
+def resolve_plan(mode, local, fallback_url, fallback_key, env_path=None):
     """Combine one profile, one platform, and one model id for a submit."""
-    name, parameters, route = describe_profile(mode)
-    table = platforms()
+    name, parameters, route = describe_profile(mode, env_path=env_path)
+    table = platforms(env_path)
     explicit = str(route.get("platform") or "").strip()
     if explicit:
         if explicit not in table:
@@ -420,7 +443,7 @@ def resolve_plan(mode, local, fallback_url, fallback_key):
     return SubmissionPlan(
         profile=name,
         platform=platform_name,
-        model_id=resolve_model_id(route.get("model")),
+        model_id=resolve_model_id(route.get("model"), env_path=env_path),
         base_url=base,
         api_key=api_key,
         parameters=parameters,
@@ -434,9 +457,9 @@ def resolve_plan(mode, local, fallback_url, fallback_key):
     )
 
 
-def platform_credentials(name):
+def platform_credentials(name, env_path=None):
     """Host and bearer for a platform name. Used when a later poll names it."""
-    table = platforms()
+    table = platforms(env_path)
     if name not in table:
         raise QwenError("未知的视频平台 %s" % name)
     platform = table[name]
@@ -464,12 +487,12 @@ def enforce_media(media, policy):
     return media
 
 
-def video_registry():
+def video_registry(env_path=None):
     """The three registries plus routes, for callers that want to see the split."""
     return {
         "adapters": sorted(ADAPTERS),
-        "platforms": platforms(),
-        "models": models(),
-        "profiles": parameter_profiles(),
-        "routes": routes(),
+        "platforms": platforms(env_path),
+        "models": models(env_path),
+        "profiles": parameter_profiles(env_path),
+        "routes": routes(env_path),
     }
