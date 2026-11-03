@@ -9,7 +9,7 @@
       if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
     } catch (_error) {}
   </script>
-  <link rel="stylesheet" href="/styles.css?v=41" />
+  <link rel="stylesheet" href="/styles.css?v=42" />
 </head>
 <body>
   <aside id="app-menu" class="sidebar" aria-label="项目菜单">
@@ -73,6 +73,12 @@
               </label>
             </div>
             <textarea id="brief" rows="1" placeholder="文字决定要拍成什么样：时长、广告、感觉、情节和结尾。用户没写的部分，用读图补上身份和场景。"></textarea>
+            <div class="composer-actions">
+              <button id="settings-toggle" class="settings-toggle" type="button" aria-expanded="false" aria-controls="composer-settings">设置</button>
+              <button id="send" type="submit" aria-label="发送">↑</button>
+            </div>
+          </div>
+          <div id="composer-settings" class="composer-settings" aria-label="设置">
             <div class="composer-tools">
               <label class="model-picker">
                 <select id="model" aria-label="模型"></select>
@@ -112,7 +118,6 @@
               </label>
             </div>
           </div>
-          <button id="send" type="submit" aria-label="发送">↑</button>
         </form>
       </div>
       <aside id="debug-dock" class="debug-dock hidden" aria-label="调试">
@@ -144,6 +149,6 @@
     </div>
   </main>
   <script src="/rpc.js?v=1"></script>
-    <script src="/app.js?v=70"></script>
+    <script src="/app.js?v=71"></script>
 </body>
 </html>

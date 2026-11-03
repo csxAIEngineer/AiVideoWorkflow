@@ -3118,5 +3118,31 @@ if (themeToggle) {
   });
 }
 
+function setSettingsOpen(open) {
+  const panel = document.querySelector("#composer-settings");
+  const button = document.querySelector("#settings-toggle");
+  if (panel) panel.classList.toggle("open", !!open);
+  if (button) {
+    button.classList.toggle("on", !!open);
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+}
+
+const settingsToggle = document.querySelector("#settings-toggle");
+const settingsPanel = document.querySelector("#composer-settings");
+if (settingsToggle) {
+  settingsToggle.addEventListener("click", () => {
+    setSettingsOpen(!(settingsPanel && settingsPanel.classList.contains("open")));
+  });
+}
+document.addEventListener("click", (event) => {
+  if (!settingsPanel || !settingsPanel.classList.contains("open")) return;
+  if (settingsPanel.contains(event.target) || (settingsToggle && settingsToggle.contains(event.target))) return;
+  setSettingsOpen(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setSettingsOpen(false);
+});
+
 loadConfig();
 refreshList();
