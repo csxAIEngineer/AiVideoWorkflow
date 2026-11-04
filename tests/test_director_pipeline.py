@@ -1862,6 +1862,11 @@ class PageTest(unittest.TestCase):
         self.assertIn("seam-option", css)
         self.assertIn("style-card", css)
         self.assertIn("function syncCrew", app)
+        composer = app.split("function syncComposer()", 1)[1].split("\nfunction workflowMode", 1)[0]
+        self.assertIn("if (current) syncControlButtons(current);", composer)
+        send = app.split("async function sendText(", 1)[1].split("\nasync function ", 1)[0]
+        self.assertIn("sending = false", send)
+        self.assertIn("syncComposer()", send)
         self.assertIn("active_role", app)
         self.assertIn("crew-role", css)
         self.assertIn("crew-breathe", css)
