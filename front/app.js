@@ -3127,7 +3127,7 @@ function refitCanvas() {
   });
 }
 
-function setChatOpen(open) {
+function setChatOpen(open, persist) {
   if (main) main.classList.toggle("chat-collapsed", !open);
   const button = document.querySelector("#chat-toggle");
   if (button) {
@@ -3139,17 +3139,24 @@ function setChatOpen(open) {
     if (label) label.textContent = open ? "收起" : "对话";
   }
   if (!open) setSettingsOpen(false);
-  try {
-    localStorage.setItem("aivideo.chat_open", open ? "1" : "0");
-  } catch (_error) {}
+  if (persist !== false) {
+    try {
+      localStorage.setItem("aivideo.chat_open", open ? "1" : "0");
+    } catch (_error) {}
+  }
   refitCanvas();
 }
 
-let chatOpen = false;
-try {
-  chatOpen = localStorage.getItem("aivideo.chat_open") === "1";
-} catch (_error) {}
-setChatOpen(chatOpen);
+function storedChatOpen() {
+  try {
+    const saved = localStorage.getItem("aivideo.chat_open");
+    if (saved === "0") return false;
+    if (saved === "1") return true;
+  } catch (_error) {}
+  return true;
+}
+
+setChatOpen(storedChatOpen(), false);
 const chatToggle = document.querySelector("#chat-toggle");
 if (chatToggle) {
   chatToggle.addEventListener("click", () => {
