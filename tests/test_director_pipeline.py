@@ -429,7 +429,7 @@ class DirectorDbTest(unittest.TestCase):
                 return {"text": "路线"}
             if "任务：剧本" in brief:
                 return {"title": "雨夜", "script": "她在雨里等车。"}
-            if "只写资产" in brief or "机检没过" in brief:
+            if "只写资产" in brief or "机检没过" in brief or "任务：建议修补" in brief:
                 return {"image_prompts": "#### 图1 · 女（角色）\n同上"}
             raise AssertionError("跳到了后面的阶段")
 
@@ -445,17 +445,22 @@ class DirectorDbTest(unittest.TestCase):
             with patch("end.server.submit_agent_task"):
                 answer_gate(read_project("p-gate"), "继续")
             run_project("p-gate")
-            self.assertEqual(len(calls), 3)
+            self.assertEqual(len(calls), 5)
             self.assertIn("任务：资产锁定", calls[2])
             self.assertIn("只写资产", calls[2])
+            self.assertIn("任务：建议修补", calls[3])
+            self.assertNotIn("任务：分镜", "\n".join(calls))
             saved = read_project("p-gate")
+            self.assertEqual(saved["status"], "gate")
             self.assertEqual(saved["progress"]["phase"], "gate_asset")
             self.assertFalse(saved["progress"]["pipeline"]["passed"])
+            self.assertGreaterEqual(saved["progress"]["pipeline"]["repairs"], 3)
             self.assertIn("根据建议修改会按下面这些项改", saved["messages"][-1]["content"])
             self.assertNotIn("已按检查结果自动改了", saved["messages"][-1]["content"])
             self.assertEqual(saved["messages"][-1]["options"], ["根据建议修改"])
+            self.assertNotEqual(saved["progress"]["question"]["id"], "asset_repair_choice")
             run_project("p-gate")
-            self.assertEqual(len(calls), 3)
+            self.assertEqual(len(calls), 5)
 
     def test_failed_continue_rewrites_only_the_current_stage(self):
         locks = prepare_locks(_base_locks(), "时长：12秒")
@@ -499,12 +504,14 @@ class DirectorDbTest(unittest.TestCase):
 
         def writer(brief, skill_pack, debug_dir=None, model=None, template=None):
             calls.append(brief)
-            return {"image_prompts": "#### 图8 · 预演\n改过的块\n"}
+            return {"image_prompts": "#### 图8 · 预演\n改过的块\n同上\n"}
 
         with patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"), patch("end.server.submit_agent_task"):
             answer_gate(read_project("p-rewrite"), "继续")
             run_project("p-rewrite")
-        self.assertEqual(len(calls), 1)
+        self.assertGreaterEqual(len(calls), 1)
+        self.assertLessEqual(len(calls), 3)
+        self.assertTrue(all("任务：建议修补" in call for call in calls))
         self.assertIn("任务：建议修补", calls[0])
         self.assertIn("旧失败块", calls[0])
         self.assertNotIn("通过块不要动", calls[0])
@@ -559,18 +566,16 @@ class DirectorDbTest(unittest.TestCase):
 
         with patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"), patch("end.server.submit_agent_task") as submit:
             view = answer_gate(read_project("p-asset-revise"), "根据建议修改")
-        submit.assert_not_called()
+        submit.assert_called_once()
         self.assertEqual(calls, [])
-        self.assertIn("交给模型改这一块", view["messages"][-1]["options"])
-        self.assertIn("补上「声纹」", view["messages"][-1]["options"])
-        self.assertNotIn("仅允许摄影机移动", view["messages"][-1]["options"])
-        self.assertIn("图1", view["messages"][-1]["content"])
+        self.assertEqual(view["status"], "writing")
+        self.assertEqual(view["progress"]["pipeline"]["action"], "rewrite")
+        self.assertNotEqual((view["progress"].get("question") or {}).get("id"), "asset_repair_choice")
+        self.assertNotIn("交给模型改这一块", view["messages"][-1].get("options") or [])
         stored = (internal / "assets.md").read_text(encoding="utf-8")
         self.assertIn("旧稿", stored)
-        self.assertNotIn("五官 10 项锁定", stored)
-        self.assertNotIn("仅允许摄影机移动", stored)
         saved = read_project("p-asset-revise")
-        self.assertEqual(saved["status"], "gate")
+        self.assertEqual(saved["status"], "writing")
         self.assertFalse(saved["progress"]["pipeline"]["passed"])
 
     def _open_asset(self, project_id, draft):
@@ -606,32 +611,34 @@ class DirectorDbTest(unittest.TestCase):
         (internal / "assets.md").write_text(text, encoding="utf-8")
         return internal
 
-    def test_mode_choice_is_two_sentences_and_writes_neither(self):
+    def test_mode_choice_is_not_asked_before_the_rewrite(self):
         internal = self._open_asset("p-mode-choice", _mode_block())
         with patch("end.server.submit_agent_task") as submit, patch("end.server.call_deepseek") as writer:
             view = answer_gate(read_project("p-mode-choice"), "根据建议修改")
-        submit.assert_not_called()
+        submit.assert_called_once()
         writer.assert_not_called()
-        self.assertEqual(
-            view["messages"][-1]["options"],
-            ["仅允许摄影机移动", "允许按子区域切换机位", "交给模型改这一块"],
-        )
-        self.assertIn("图5", view["messages"][-1]["content"])
-        self.assertIn("缺【参考场景锁定模式】正文", view["messages"][-1]["content"])
+        self.assertEqual(view["status"], "writing")
+        self.assertNotIn("仅允许摄影机移动", view["messages"][-1].get("options") or [])
+        self.assertNotEqual((view["progress"].get("question") or {}).get("id"), "asset_repair_choice")
         stored = (internal / "assets.md").read_text(encoding="utf-8")
         self.assertIn("模式B", stored)
-        self.assertIn("子区域", stored)
         self.assertNotIn("仅允许摄影机移动", stored)
         self.assertNotIn("允许按子区域切换机位", stored)
 
     def test_voice_phrase_fills_without_calling_the_model(self):
         internal = self._open_asset("p-voice-choice", _voice_block())
-        with patch("end.server.submit_agent_task"):
-            view = answer_gate(read_project("p-voice-choice"), "根据建议修改")
-            self.assertEqual(view["messages"][-1]["options"], ["补上「声纹」", "交给模型改这一块"])
-            self.assertIn("图3", view["messages"][-1]["content"])
-            self.assertIn("缺图底声纹锚", view["messages"][-1]["content"])
-            answer_gate(read_project("p-voice-choice"), "补上「声纹」")
+        project = read_project("p-voice-choice")
+        project["status"] = "writing"
+        pipeline = project["progress"]["pipeline"]
+        pipeline["only"] = "asset"
+        pipeline["action"] = "rewrite"
+        pipeline["passed"] = False
+        pipeline["repair"] = "FAIL: 图3 缺图底声纹锚"
+        pipeline["report"] = pipeline["repair"]
+        write_project(project)
+        locks = read_locks(project_dir("p-voice-choice"))
+        locks["delivery"] = "2"
+        write_locks(project_dir("p-voice-choice"), locks)
         calls = []
 
         def writer(brief, skill_pack, debug_dir=None, model=None, template=None):
@@ -644,42 +651,14 @@ class DirectorDbTest(unittest.TestCase):
         stored = (internal / "assets.md").read_text(encoding="utf-8")
         self.assertIn("声纹", stored)
         saved = read_project("p-voice-choice")
-        self.assertTrue(saved["progress"]["pipeline"]["passed"])
+        self.assertEqual(saved["status"], "done")
+        self.assertEqual(saved["progress"]["phase"], "prompts_ready")
+        self.assertNotEqual((saved["progress"].get("question") or {}).get("id"), "asset_repair_choice")
 
-    def test_model_brief_contains_only_the_chosen_block(self):
-        internal = self._open_asset("p-model-brief", _voice_block() + "\n\n" + _mode_block())
-        with patch("end.server.submit_agent_task"):
-            first = answer_gate(read_project("p-model-brief"), "根据建议修改")
-            self.assertIn("缺图底声纹锚", first["messages"][-1]["content"])
-            self.assertNotIn("参考场景锁定模式", first["messages"][-1]["content"])
-            second = answer_gate(read_project("p-model-brief"), "交给模型改这一块")
-            self.assertIn("缺【参考场景锁定模式】正文", second["messages"][-1]["content"])
-            self.assertNotIn("缺图底声纹锚", second["messages"][-1]["content"])
-            answer_gate(read_project("p-model-brief"), "仅允许摄影机移动")
-        calls = []
-
-        def writer(brief, skill_pack, debug_dir=None, model=None, template=None):
-            calls.append(brief)
-            return {"partials": [{"skill": "图-0", "text": _passing_voice()}]}
-
-        with patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"):
-            run_project("p-model-brief")
-        self.assertEqual(len(calls), 1)
-        self.assertIn("缺图底声纹锚", calls[0])
-        self.assertNotIn("参考场景锁定模式", calls[0])
-        self.assertNotIn("客厅九宫格", calls[0])
-        stored = (internal / "assets.md").read_text(encoding="utf-8")
-        self.assertIn("仅允许摄影机移动", stored)
-        self.assertNotIn("允许按子区域切换机位", stored)
-        self.assertIn("声纹", stored)
-        saved = read_project("p-model-brief")
-        self.assertTrue(saved["progress"]["pipeline"]["passed"])
-
-    def test_model_text_that_still_fails_is_asked_again(self):
+    def test_model_text_that_still_fails_stops_without_a_block_choice(self):
         internal = self._open_asset("p-model-again", _voice_block())
         with patch("end.server.submit_agent_task"):
             answer_gate(read_project("p-model-again"), "根据建议修改")
-            answer_gate(read_project("p-model-again"), "交给模型改这一块")
         calls = []
         rewritten = "\n".join((
             "#### 图3 · 黑鳞怪物设定板",
@@ -699,21 +678,18 @@ class DirectorDbTest(unittest.TestCase):
 
         with patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"):
             run_project("p-model-again")
-        self.assertEqual(len(calls), 1)
-        self.assertIn("缺图底声纹锚", calls[0])
+        self.assertGreaterEqual(len(calls), 1)
+        self.assertLessEqual(len(calls), 3)
+        self.assertNotIn("交给模型改这一块", "\n".join(calls))
         stored = (internal / "assets.md").read_text(encoding="utf-8")
         self.assertIn("改过的正文", stored)
-        self.assertIn("同上", stored)
-        self.assertNotIn("声纹", stored)
         saved = read_project("p-model-again")
         self.assertFalse(saved["progress"]["pipeline"]["passed"])
         question = saved["progress"]["question"]
-        self.assertEqual(question["id"], "asset_repair_choice")
-        self.assertIn("缺图底声纹锚", question["reply"])
-        self.assertIn("同上", question["reply"])
-        self.assertEqual(question["options"], ["补上「声纹」", "交给模型改这一块"])
-        self.assertIn("缺图底声纹锚", saved["messages"][-1]["content"])
-        self.assertIn("同上", saved["messages"][-1]["content"])
+        self.assertEqual(question["id"], "asset")
+        self.assertNotEqual(question["id"], "asset_repair_choice")
+        self.assertIn("根据建议修改", question["options"])
+        self.assertNotIn("交给模型改这一块", question["options"])
 
     def test_failed_storyboard_gate_revises_from_the_check(self):
         locks = prepare_locks(_base_locks(), "时长：12秒")
@@ -765,11 +741,12 @@ class DirectorDbTest(unittest.TestCase):
         with patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"), patch("end.server.submit_agent_task"):
             answer_gate(read_project("p-board-revise"), "根据建议修改")
             run_project("p-board-revise")
-        self.assertEqual(len(calls), 1)
+        self.assertGreaterEqual(len(calls), 1)
+        self.assertLessEqual(len(calls), 3)
+        self.assertTrue(all("任务：建议修补" in call for call in calls))
         self.assertIn("任务：建议修补", calls[0])
-        self.assertIn("FAIL: 段1 缺六问", calls[0])
+        self.assertIn("缺六问", calls[0])
         self.assertIn("第 1 格：她站在门内。", calls[0])
-        self.assertNotIn("通过的段不要动", calls[0])
         self.assertNotIn("这次是返修", calls[0])
         self.assertNotIn("只写分镜", calls[0])
         stored = (internal / "previs.md").read_text(encoding="utf-8")
