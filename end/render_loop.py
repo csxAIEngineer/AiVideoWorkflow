@@ -962,6 +962,15 @@ VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
 VIDEO_MODEL = "MiniMax/MiniMax-H3"
 VIDEO_MODE_MODELS = {mode: VIDEO_MODEL for mode in VIDEO_MODES}
 FRAME_OPENING = "从这张首帧的可见内容开始，主体、材质和构图保持一致，只做本镜写的光影和轻微运镜。"
+NO_ONSCREEN_CAPTION = "全程无字幕、无对白文字叠加。"
+# Six-section H3 copy is English. Keep this lock in English so it is not
+# another Chinese string outside <d>.
+H3_NO_ONSCREEN_CAPTION = (
+    "The frame shows the scene and the performers. "
+    "No readable on-screen subtitles, captions, or overlaid dialogue text. "
+    "Lines inside <d> are spoken audio only and must not be painted into the frame "
+    "as Chinese caption glyphs, bottom white text, or any other burned-in dialogue."
+)
 
 
 def image_size(path):
@@ -1106,26 +1115,47 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
     return "", media
 
 
+def _caption_lock(text):
+    """Executor-side ban. H3 units stay English; short prompts and Seedance stay Chinese."""
+    raw = str(text or "")
+    if "subject_definitions" in raw and "detailed_description" in raw:
+        return H3_NO_ONSCREEN_CAPTION
+    return NO_ONSCREEN_CAPTION
+
+
+def _with_caption_lock(text):
+    body = str(text or "").strip()
+    lock = _caption_lock(body)
+    if lock in body:
+        return body
+    if not body:
+        return lock
+    return body + "\n" + lock
+
+
 def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack="off", template=None):
     """Prompt sent with the clip. Vehicle lines come only from the active template's skills.
 
     Music or narration is mixed after the join, so those shots keep only room tone.
+    A full H3 or Seedance unit is sent as written, plus a lock that ``<d>`` audio
+    must not be painted as on-screen captions. Burned 字幕.ass is a later ffmpeg step
+    and still reads only shot dialogue and narration.
     """
     from end.ai_client import template_render
     from end.prompt_gate import is_full_delivery
 
     base = (shot.get("prompt") or "").strip()
     if is_full_delivery(base):
-        return base
+        return _with_caption_lock(base)
     render = template_render(template)
     if mode in ("first_frame", "first_last_frame"):
-        parts = [base, FRAME_OPENING, "全程无字幕、无对白文字叠加。"]
+        parts = [base, FRAME_OPENING, NO_ONSCREEN_CAPTION]
     else:
         parts = [base]
         if render["video_lock"]:
             parts.append(render["video_lock"])
-        else:
-            parts.append("全程无字幕、无对白文字叠加。")
+        if NO_ONSCREEN_CAPTION not in "\n".join(parts):
+            parts.append(NO_ONSCREEN_CAPTION)
         if index > 0 and render["video_next"]:
             parts.append(render["video_next"])
         if has_tail and render["video_tail"]:
