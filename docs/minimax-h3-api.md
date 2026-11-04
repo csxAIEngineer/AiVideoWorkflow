@@ -49,7 +49,7 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 | `duration` | 这一镜的秒数，整数，只允许 4–15 |
 | `watermark` | 固定 `false` |
 | `ratio` | 纯文生时用锁定画幅 `16:9`、`9:16` 或 `21:9`。带图时传入空值，客户端写成 `adaptive`。文档里的比例还有 `4:3`、`1:1`、`3:4`，其它值也会变成 `adaptive` |
-| `prompt` | 投喂稿正文。带首帧时再追加「从这张首帧开始」和无字幕约束 |
+| `prompt` | 投喂稿正文。六段式 H3 整段照发，末尾用英文锁定画面不烧字幕，`<d>` 仍是口播。Seedance 整段照发，末尾加「全程无字幕、无对白文字叠加。」短提示词另加环境声或口播；带首帧且不是整段投喂时，再追加「从这张首帧开始」和那句中文无字幕约束 |
 
 `preview` 和 `generate` 各有一套配置，字段相同：`resolution`、`ratio`、`duration`、`watermark`、`preset`、`url`、`model`。默认两套一样。`ratio` 和 `duration` 留空时用这一镜的画幅和秒数。`url` 留空时，云端用当前千问主机，本地用 `MINIMAX_H3_BASE_URL`。`model` 留空时仍是 `MiniMax/MiniMax-H3`。`url` 和 `model` 不进入 `parameters`。出片固定传 `mode=generate`。`video.submit` 不传 `mode`、或传空字符串时，也按 `generate` 组装，请求体与上面的示例一致。调试要换一套时传 `mode=preview`（也认 `预览` / `生成`）。
 

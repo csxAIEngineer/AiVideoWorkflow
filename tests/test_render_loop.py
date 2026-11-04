@@ -608,6 +608,69 @@ class RenderLoopTest(unittest.TestCase):
         self.assertIn("全程无字幕、无对白文字叠加", prompt)
         self.assertIn("<d>[Chinese] 再站一会儿就好。</d>", prompt)
 
+    def test_full_h3_delivery_bans_painted_captions_and_does_not_burn_ass(self):
+        unit = "\n".join((
+            "## 【投喂单元 1/1】",
+            "duration: 8",
+            "subject_definitions:",
+            "<Subject 1> is a woman.",
+            "summary:",
+            "She waits.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved.",
+            "detailed_description:",
+            "[Shot 1] She says <d>[Chinese] 等我。</d>",
+            "[Shot 2] He answers <d>[Chinese] 你说煮水茶好有了吗</d>",
+            "overall_soundscape:",
+            "Rain.",
+            "non_diegetic_music:",
+            "none.",
+        ))
+        spec = {
+            "title": "雨夜",
+            "aspect_ratio": "9:16",
+            "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人站在车站"}],
+            "feed": unit,
+            "shots": [{
+                "id": "S01",
+                "duration": 5,
+                "prompt": "旧分镜",
+                "images": ["A1"],
+                "dialogue": "",
+                "narration": "",
+            }],
+        }
+        burned = []
+
+        def burner(_raw, ass_path, target):
+            burned.append(Path(ass_path).read_text(encoding="utf-8"))
+            Path(target).write_bytes(b"burned-mp4")
+
+        cr = FakeCR()
+        run_local_pipeline(
+            spec,
+            self.work,
+            icreat=FakeICreat(),
+            cr=cr,
+            sleeper=_noop_sleep,
+            burner=burner,
+        )
+        text = cr.submits[0]["text"]
+        self.assertTrue(text.startswith(unit.strip()))
+        self.assertIn("<d>[Chinese] 等我。</d>", text)
+        self.assertIn("<d>[Chinese] 你说煮水茶好有了吗</d>", text)
+        self.assertIn("No readable on-screen subtitles, captions, or overlaid dialogue text.", text)
+        self.assertIn("Lines inside <d> are spoken audio only", text)
+        self.assertIn("Chinese caption glyphs", text)
+        self.assertNotIn("全程无字幕", text)
+        self.assertNotIn("本镜无对白", text)
+        self.assertNotIn("从这张首帧", text)
+        self.assertNotIn("旧分镜", text)
+        self.assertEqual(burned, [])
+        self.assertFalse((self.work / "outputs" / "字幕.ass").exists())
+        log = (self.work / "outputs" / "render.log").read_text(encoding="utf-8")
+        self.assertIn("这一集没有对白，成片不烧字幕", log)
+
     def test_submit_reads_spec_file_before_each_step(self):
         stale = {
             "title": "雨夜",
