@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -109,8 +110,25 @@ class RerunProjectTest(unittest.TestCase):
         db.DB_PATH = self.root / "api.db"
         db._CONN = None
         db.DATA.mkdir()
+        self._catalog = ExitStack()
+        self._catalog.enter_context(
+            patch("end.server.normalize_model", side_effect=lambda value: value or "qwen3.8-flash")
+        )
+        self._catalog.enter_context(
+            patch("end.server.model_label", side_effect=lambda value: value or "Qwen")
+        )
+        self._catalog.enter_context(
+            patch(
+                "end.server.normalize_template",
+                side_effect=lambda value: value or "short-drama-director",
+            )
+        )
+        self._catalog.enter_context(
+            patch("end.server.template_label", side_effect=lambda value: value or "短剧")
+        )
 
     def tearDown(self):
+        self._catalog.close()
         conn = db._CONN
         db.DATA, db.DB_PATH, db._CONN = self._old
         if conn is not None and conn is not self._old[2]:
@@ -233,6 +251,7 @@ class RerunProjectTest(unittest.TestCase):
             rerun_from(project_id, "asset", "A3")
         submit.assert_not_called()
         render.assert_called_once()
+        self.assertEqual(render.call_args.kwargs.get("video_submit_mode", "generate"), "generate")
         self.assertTrue((folder / "outputs" / "images" / "A1.png").is_file())
         self.assertTrue((folder / "outputs" / "images" / "A2.png").is_file())
         self.assertFalse((folder / "outputs" / "images" / "A3.png").is_file())

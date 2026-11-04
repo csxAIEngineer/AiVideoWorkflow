@@ -3,6 +3,7 @@
 Script and storyboard go through the stage StateGraph. One image or one shot
 goes through a single-block StateGraph so the other blocks stay put.
 The new text is saved. Downstream rerun stays on the existing button.
+A feel-driven retouch lives in end.retouch and reruns on its own.
 """
 
 import threading

@@ -232,6 +232,16 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(state["phase"], "done")
         self.assertEqual(state["steps"]["A1"]["remote_task_id"], "old")
 
+    def test_preview_parameter_mode_is_selected_for_retouch(self):
+        from end.render_loop import RenderContext, normalize_video_submit_mode
+
+        self.assertEqual(normalize_video_submit_mode(None), "generate")
+        self.assertEqual(normalize_video_submit_mode("preview"), "preview")
+        self.assertEqual(normalize_video_submit_mode("GENERATE"), "generate")
+        self.assertEqual(normalize_video_submit_mode("draft"), "generate")
+        preview = RenderContext(self.work / "preview-route", video_submit_mode="preview")
+        self.assertEqual(preview.video_submit_mode, "preview")
+
     def test_an_upload_still_stays_on_its_shot(self):
         assets, shots = collect_steps(
             {

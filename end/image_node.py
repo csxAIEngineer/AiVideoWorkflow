@@ -140,7 +140,7 @@ def _normalize_asset(item, index, used):
         view = "single"
     elif view not in VIEWS and view not in PRODUCT_VIEWS:
         view = "single" if depends_on or not prompt else ""
-    return {
+    asset = {
         "id": asset_id,
         "title": title,
         "prompt": prompt,
@@ -150,6 +150,9 @@ def _normalize_asset(item, index, used):
         "subject_kind": kind,
         "view": view,
     }
+    if item.get("prompt_edited"):
+        asset["prompt_edited"] = True
+    return asset
 
 
 def _single_stills(assets):
