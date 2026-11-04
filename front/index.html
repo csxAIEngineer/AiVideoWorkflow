@@ -9,7 +9,7 @@
       if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
     } catch (_error) {}
   </script>
-  <link rel="stylesheet" href="/styles.css?v=45" />
+  <link rel="stylesheet" href="/styles.css?v=46" />
 </head>
 <body>
   <aside id="app-menu" class="sidebar" aria-label="项目菜单">
@@ -34,7 +34,7 @@
         <button id="crew-toggle" class="crew-toggle" type="button" aria-expanded="false" aria-controls="crew-line" aria-label="分工，现在没有人在写">
           <span class="crew-roles" role="list"></span>
         </button>
-        <p id="crew-line" class="crew-line"></p>
+        <p id="crew-line" class="crew-line" aria-live="polite"></p>
       </div>
       <div class="stage-zoom">
         <button id="zoom-out" type="button" aria-label="缩小">−</button>
@@ -55,6 +55,10 @@
     <section id="empty" class="empty" aria-hidden="true"></section>
     <div id="work-body" class="work-body">
       <div id="stage-center" class="stage-center hidden">
+      <div id="stage-livebar" class="stage-livebar hidden" aria-live="polite">
+        <p id="stage-live" class="stage-live"></p>
+        <ol id="stage-strip" class="stage-strip" aria-label="阶段"></ol>
+      </div>
       <div id="canvas-wrap" class="canvas-wrap hidden">
         <div id="canvas" class="canvas">
           <svg id="canvas-edges" class="canvas-edges" xmlns="http://www.w3.org/2000/svg"></svg>
@@ -195,6 +199,6 @@
     </div>
   </main>
   <script src="/rpc.js?v=1"></script>
-    <script src="/app.js?v=76"></script>
+    <script src="/app.js?v=77"></script>
 </body>
 </html>

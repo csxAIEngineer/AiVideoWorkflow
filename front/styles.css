@@ -443,6 +443,15 @@ body {
   margin-bottom: 12px;
 }
 
+.stage.auto-run,
+.job-message.auto-run {
+  font-weight: 650;
+}
+
+.assistant-reply.aside {
+  opacity: 0.45;
+}
+
 .job {
   margin-bottom: 18px;
   padding: 14px 14px 8px;
@@ -486,6 +495,18 @@ body {
 
 .job-steps li.done { background: #e7f6ee; color: #0d7a45; }
 .job-steps li.current { background: #e8f0ff; color: var(--accent); font-weight: 650; }
+.job-steps li.current.live::before,
+.stage-strip li.current.live::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+  animation: crew-breathe 1.6s ease-in-out infinite;
+}
 .job-steps li.paused { background: #fff6e8; color: #9a6700; font-weight: 650; }
 .job-steps li.failed { background: #fff2f0; color: #b42318; }
 
@@ -1163,6 +1184,48 @@ a.download {
   flex-direction: column;
 }
 
+.stage-livebar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 6px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+
+.stage-livebar.hidden { display: none; }
+
+.stage-live {
+  margin: 0;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.stage-strip {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: auto;
+}
+
+.stage-strip li {
+  flex: 1 0 auto;
+  text-align: center;
+  font-size: 12px;
+  color: #8a8a93;
+  background: #f3f3f6;
+  border-radius: 999px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.stage-strip li.done { background: #e7f6ee; color: #0d7a45; }
+.stage-strip li.current { background: #e8f0ff; color: var(--accent); font-weight: 650; }
+
 .preview-pane {
   flex: 1;
   min-width: 0;
@@ -1508,7 +1571,14 @@ a.download {
 }
 
 .crew:hover .crew-line,
-.crew.open .crew-line { display: block; }
+.crew.open .crew-line,
+.crew.speaking .crew-line { display: block; }
+
+.crew.speaking .crew-line {
+  max-width: min(42ch, 48vw);
+  color: var(--accent);
+  font-weight: 650;
+}
 
 @keyframes crew-breathe {
   0%, 100% { opacity: 0.4; }
@@ -1516,7 +1586,10 @@ a.download {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .crew-role.live .crew-dot { animation: none; opacity: 1; }
+  .crew-role.live .crew-dot,
+  .wf-dot.running,
+  .job-steps li.current.live::before,
+  .stage-strip li.current.live::before { animation: none; opacity: 1; }
 }
 
 .dock-toggle { display: inline-flex; }
@@ -1577,6 +1650,16 @@ a.download {
 
 .wf-node.nav-focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+.wf-node.is-live {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(77, 107, 254, 0.28);
+}
+
+.wf-node.is-live .wf-head small {
+  color: var(--accent);
+  font-weight: 650;
+}
+
 .wf-head {
   display: flex;
   align-items: center;
@@ -1605,7 +1688,11 @@ a.download {
   flex: none;
 }
 
-.wf-dot.running { background: var(--accent); }
+.wf-dot.running {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(77, 107, 254, 0.35);
+  animation: crew-breathe 1.6s ease-in-out infinite;
+}
 .wf-dot.done { background: #128a4e; }
 .wf-dot.paused,
 .wf-dot.retrying { background: #c4841d; }
@@ -2000,6 +2087,7 @@ html[data-theme="dark"] .md code,
 html[data-theme="dark"] .dock-log,
 html[data-theme="dark"] .prompt-table th,
 html[data-theme="dark"] .job-steps li,
+html[data-theme="dark"] .stage-strip li,
 html[data-theme="dark"] .job-calls li,
 html[data-theme="dark"] .job-bar,
 html[data-theme="dark"] .wf-hold,
@@ -2041,6 +2129,11 @@ html[data-theme="dark"] .prompt-table th {
   color: #c8c2b8;
 }
 
+html[data-theme="dark"] .stage-livebar { border-color: #2c2c31; }
+
+html[data-theme="dark"] .wf-node.is-live { box-shadow: 0 0 0 3px rgba(110, 142, 255, 0.35); }
+
+html[data-theme="dark"] .stage-strip li.done,
 html[data-theme="dark"] .job-steps li.done,
 html[data-theme="dark"] .job-calls .done,
 html[data-theme="dark"] .task-ready .task-state,
@@ -2049,6 +2142,7 @@ html[data-theme="dark"] .task-done .task-state {
   color: #8dcea8;
 }
 
+html[data-theme="dark"] .stage-strip li.current,
 html[data-theme="dark"] .job-steps li.current,
 html[data-theme="dark"] .job-calls .current,
 html[data-theme="dark"] .task-running .task-state {
