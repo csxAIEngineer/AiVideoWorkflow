@@ -4,7 +4,7 @@ import unittest
 
 from end.board_shots import apply_feed_binding, apply_storyboard_shots, shots_from_storyboard
 from end.prompt_gate import feed_text
-from end.render_loop import delivery_prompt, image_prompt
+from end.render_loop import delivery_prompt, image_prompt, subtitle_cues
 from end.server import _merge_spec
 from end.workflow_from_spec import collect_steps
 
@@ -27,6 +27,13 @@ UNIT = "\n".join((
 ))
 UNIT_2 = UNIT.replace("1/1", "2/2").replace("等我。", "走吧。")
 PLACEHOLDER = "按这张资产图演这一镜"
+H3_CAPTION_LOCK = (
+    "The frame shows the scene and the performers. "
+    "No readable on-screen subtitles, captions, or overlaid dialogue text. "
+    "Lines inside <d> are spoken audio only and must not be painted into the frame "
+    "as Chinese caption glyphs, bottom white text, or any other burned-in dialogue."
+)
+SEEDANCE_CAPTION_LOCK = "全程无字幕、无对白文字叠加。"
 
 
 def _spec():
@@ -53,13 +60,13 @@ class HandoffTest(unittest.TestCase):
         self.assertEqual(shots[0]["prompt"], UNIT.strip())
         self.assertEqual(shots[0]["duration"], 8)
         sent = delivery_prompt(shots[0], [], 0, False, "first_frame")
-        self.assertEqual(sent, UNIT.strip())
+        self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK)
         self.assertNotIn("全程无字幕", sent)
         self.assertNotIn("本镜无对白", sent)
         self.assertNotIn("non_diegetic_music: N/A", sent)
         self.assertNotIn("从这张首帧", sent)
         self.assertIn("non_diegetic_music:", sent)
-        self.assertIn("等我。", sent)
+        self.assertIn("<d>[Chinese] 等我。</d>", sent)
 
     def test_units_fill_shots_in_order(self):
         spec = _spec()
@@ -104,15 +111,60 @@ class HandoffTest(unittest.TestCase):
         self.assertIn("subject_definitions", shots[0]["prompt"])
         self.assertNotIn("影兽闯入", shots[0]["prompt"])
 
-    def test_a_full_unit_already_on_the_shot_is_not_decorated(self):
+    def test_a_full_unit_keeps_its_body_and_bans_onscreen_captions(self):
         sent = delivery_prompt({"prompt": UNIT}, [], 1, True, "first_frame")
-        self.assertEqual(sent, UNIT.strip())
+        self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK)
+        self.assertNotIn("从这张首帧", sent)
+        self.assertNotIn("本镜无对白", sent)
 
-    def test_seedance_unit_is_not_decorated(self):
+    def test_seedance_unit_keeps_its_body_and_bans_onscreen_captions(self):
         seedance = "【画幅风格】竖屏\n【时间轴分镜】0-4秒 她回头。\n"
         sent = delivery_prompt({"prompt": seedance}, [], 0, False, "reference")
-        self.assertEqual(sent, seedance.strip())
+        self.assertEqual(sent, seedance.strip() + "\n" + SEEDANCE_CAPTION_LOCK)
         self.assertNotIn("本镜无对白", sent)
+        self.assertNotIn("No readable on-screen subtitles", sent)
+
+    def test_full_delivery_bans_painted_captions_without_touching_ass(self):
+        spoken = [{"speaker": "她", "line": "这句不该写进画面。"}]
+        for mode in ("reference", "first_frame", "first_last_frame"):
+            sent = delivery_prompt({"prompt": UNIT}, spoken, 1, True, mode)
+            self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK)
+            self.assertEqual(sent.count("<d>[Chinese] 等我。</d>"), 1)
+            self.assertNotIn("这句不该写进画面", sent)
+            self.assertNotIn("从这张首帧", sent)
+            self.assertNotIn("本镜无对白", sent)
+            self.assertNotIn("non_diegetic_music: N/A", sent)
+        again = delivery_prompt({"prompt": sent}, spoken, 0, False, "reference")
+        self.assertEqual(again, sent)
+        already = UNIT.strip() + "\n" + H3_CAPTION_LOCK
+        self.assertEqual(delivery_prompt({"prompt": already}, [], 0, False, "reference"), already)
+        seedance = "【画幅风格】竖屏\n【时间轴分镜】0-4秒 她回头。\n" + SEEDANCE_CAPTION_LOCK
+        self.assertEqual(
+            delivery_prompt({"prompt": seedance}, [], 0, False, "reference"),
+            seedance.strip(),
+        )
+        self.assertEqual(
+            subtitle_cues([{"duration": 8, "prompt": UNIT, "narration": "", "spoken": []}]),
+            [],
+        )
+        burned = subtitle_cues([
+            {
+                "duration": 8,
+                "prompt": sent,
+                "narration": "",
+                "spoken": [{"speaker": "苏晚", "line": "再站一会儿就好。"}],
+            }
+        ])
+        self.assertEqual([cue["text"] for cue in burned], ["再站一会儿就好"])
+        voiced = subtitle_cues([
+            {
+                "duration": 8,
+                "prompt": sent,
+                "narration": "夜色已经很深了",
+                "spoken": [{"speaker": "她", "line": "等我。"}],
+            }
+        ])
+        self.assertEqual([cue["text"] for cue in voiced], ["夜色已经很深了"])
 
     def test_markdown_board_does_not_keep_the_placeholder_when_feed_exists(self):
         spec = apply_storyboard_shots({

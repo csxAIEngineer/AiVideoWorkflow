@@ -284,11 +284,11 @@ def _cohort_partials(relatives, text):
 
 
 def _merge_node(task, model, kind):
-    system = merge_prompt(task)
     tokens, retry_tokens, timeout = _role_budget(kind, "merge")
 
     def node(state):
         _mark(state, "merge", "进行中")
+        system = merge_prompt(task, state.get("brief") or "")
         try:
             user = _merge_user(state.get("brief") or "", state.get("partials") or [])
             messages = [

@@ -9,8 +9,15 @@ from pathlib import Path
 
 from end.board_shots import apply_feed_binding, apply_storyboard_shots, bind_feed_document, shots_are_placeholder
 from end.delivery import internal_dir, list_deliverables, previs_name, publish
-from end.gates import check_asset_blocks, check_feed, check_p45, check_prompt, unverified_claim
-from end.intake import enrich_brief, intake_note, load_intake
+from end.gates import (
+    check_asset_blocks,
+    check_feed,
+    check_p45,
+    check_prompt,
+    invented_upload_claim,
+    unverified_claim,
+)
+from end.intake import enrich_brief, load_intake, writer_upload_block
 from end.locks import lock_brief
 
 _ASSET_HEAD = re.compile(r"^(#{2,6})\s*\*{0,2}\s*图\s*(\d+)\b", re.M)
@@ -712,7 +719,7 @@ _SCRIPT_CHAIN = {
 _INSTRUCTION = {
     "recon": "只写《对标情报卡》，放在 intel。这是来源，不是事实。不要写剧本。",
     "script": "只写剧本，放在 script。过程稿放在 internal。不要改锁。",
-    "asset": "只写资产提示词，放在 image_prompts。每条以「#### 图N · 名称」开头，自包含，禁止同上、见母版、同图N。",
+    "asset": "只写资产提示词，放在 image_prompts。每条以「#### 图N · 名称」开头，自包含，禁止同上、见母版、同图N。上传图按读图挂到已有资产的 references：产品、包装、药品挂道具图，人物挂对应角色图，不要另造同名资产。",
     "storyboard": "\n".join((
         "只写分镜，放在 storyboard。有打斗时招式只来自已挂载的打戏原文。",
         "预演故事板放在 previs，必须是 markdown 字符串，禁止 JSON 数组/对象。",
@@ -728,13 +735,22 @@ _INSTRUCTION = {
     )),
     "feed": "\n".join((
         "只写投喂稿，放在 feed。feed 必须是字符串。",
-        "用 ## 【投喂单元 N/M】标题，下面写七段。",
-        "每一段改成六段正文。字段名必须带冒号并且单独成行：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+        "用 ## 【投喂单元 N/M】标题。每一段只写六段英文正文。",
+        "不要使用七段式栏名（【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】）。",
+        "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+        "六段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
         "每个投喂单元单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。",
         "每个 Subject 必须对应 assets.md 里已经有的图。没有关键帧资产就不要写 Picture。",
         "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
     )),
 }
+
+_FEED_SEEDANCE = "\n".join((
+    "只写投喂稿，放在 feed。feed 必须是字符串。",
+    "用 ## 【投喂单元 N/M】标题，下面写七段：【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】。",
+    "每个投喂单元单独计时，单段不超过该模型上限。",
+    "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
+))
 
 
 def detect_only(text):
@@ -815,13 +831,31 @@ def mount_header(stage, locks, carried, only):
     return "\n".join(lines)
 
 
+def stage_instruction(stage, locks=None):
+    """H3 feed is six English sections. Seedance keeps the seven-section sheet."""
+    if stage != "feed":
+        return _INSTRUCTION.get(stage, "")
+    model = str((locks or {}).get("model") or "h3").lower()
+    if model == "h3":
+        return _INSTRUCTION["feed"]
+    return _FEED_SEEDANCE
+
+
+def advisory_qc_enabled():
+    """P5 质检.md is advisory. Render never reads it. Default off so prompts_ready skips that suite."""
+    import os
+
+    raw = (os.environ.get("AIVIDEO_ADVISORY_QC") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def stage_brief(stage, locks, carried):
     return "\n\n".join(
         part
         for part in (
             mount_header(stage, locks, carried, ""),
             lock_brief(locks),
-            _INSTRUCTION.get(stage, ""),
+            stage_instruction(stage, locks),
             "上一阶段正文：" if carried else "",
             carried,
         )
@@ -859,6 +893,9 @@ def carried_text(folder, stage):
         board = _read(internal / "分镜.md")
         if board:
             chunks.append(board)
+        previs = _read(internal / "previs.md")
+        if previs:
+            chunks.append(previs)
     return "\n\n".join(chunks)
 
 
@@ -930,12 +967,25 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
     if passed and stage == "storyboard":
         return "分镜门。继续之后才写投喂稿。", ["继续"]
     if passed and stage == "feed":
-        return "投喂前。闸门已过。继续就做质检和交付。", ["继续"]
+        return "投喂前。闸门已过。继续就做投喂机检并交付。", ["继续"]
     tail = (report or "").strip()
     if len(tail) > 1200:
         tail = tail[-1200:]
+    if stage == "feed" and str(report or "").strip() == "投喂稿是空的":
+        return (
+            "投喂稿没写出来。根据建议修改会按分镜和资产再写一版。",
+            [ASSET_REVISE],
+        )
+    if stage == "storyboard" and str(report or "").strip() == "预演故事板是空的":
+        return (
+            "预演故事板没写出来。根据建议修改会按分镜再写一版。",
+            [ASSET_REVISE],
+        )
     if stage in ("asset", "storyboard", "feed"):
-        reply = "机检没过。根据建议修改会按下面这些项改。"
+        if stage == "feed":
+            reply = "投喂机检没过。根据建议修改会按下面这些项改。"
+        else:
+            reply = "机检没过。根据建议修改会按下面这些项改。"
         if tail:
             reply = reply + "\n" + tail
         options = [ASSET_REVISE]
@@ -959,8 +1009,10 @@ def gate_result(stage, passed, report, pipeline, has_draft=False):
     tries = int((pipeline or {}).get("repairs") or 0)
     reply, options = _gate_copy(stage, passed, report, tries, has_draft=has_draft)
     phase = _GATE_PHASE.get(stage, "gate_fail")
-    if not passed and stage == "feed" and (pipeline or {}).get("check") == "qc":
-        phase = "gate_fail"
+    label = _GATE_LABEL.get(stage, "停在门上")
+    if not passed and str((pipeline or {}).get("check") or "") == "machine":
+        phase = "gate_machine"
+        label = "投喂机检"
     stored = dict(pipeline or {})
     stored.update(
         {
@@ -973,7 +1025,7 @@ def gate_result(stage, passed, report, pipeline, has_draft=False):
     return {
         "terminal": "gate",
         "status": "gate",
-        "stage": "独立质检" if phase == "gate_fail" else _GATE_LABEL.get(stage, "停在门上"),
+        "stage": label,
         "progress": {
             "percent": _PERCENT.get(stage, 50),
             "phase": phase,
@@ -1049,6 +1101,9 @@ def check_stage(folder, stage, locks, title=""):
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
+        invented = invented_upload_claim(text, load_intake(folder))
+        if invented:
+            return False, invented
         return True, ""
     if stage == "asset":
         path = internal / "assets.md"
@@ -1058,6 +1113,9 @@ def check_stage(folder, stage, locks, title=""):
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
+        invented = invented_upload_claim(text, load_intake(folder))
+        if invented:
+            return False, invented
         code, report = check_asset_blocks(path)
         if code != 0:
             return False, report
@@ -1069,7 +1127,12 @@ def check_stage(folder, stage, locks, title=""):
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
+        invented = invented_upload_claim(text, load_intake(folder))
+        if invented:
+            return False, invented
         previs = _read(internal / "previs.md")
+        if previs_is_blank(previs):
+            return False, "预演故事板是空的"
         if previs.strip():
             body = previs_check_text(text, previs, mode)
             # Persist rendered markdown so repair units see real段 bodies, not JSON shards.
@@ -1139,6 +1202,19 @@ def check_stage(folder, stage, locks, title=""):
 
 
 _HEADING_SEGMENT = re.compile(r"(?m)^#{1,6}\s*\**\s*段\s*\d+")
+_PANEL_MARK = re.compile(r"第\s*\d+\s*格")
+
+
+def previs_is_blank(text):
+    """No segment heading and no panel line. Whitespace and summary stubs count as empty."""
+    raw = str(text or "").strip()
+    if not raw:
+        return True
+    if _HEADING_SEGMENT.search(raw):
+        return False
+    if _PANEL_MARK.search(raw):
+        return False
+    return True
 
 
 def _promote_inline_segments(text):
@@ -1365,14 +1441,46 @@ def _board_rank(text):
     return (panels, labels, headings, len(raw.strip()))
 
 
+def _board_fail_count(text):
+    """P45 error rows. None when the checker cannot be run."""
+    import tempfile
+
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix="-预演故事板.md", encoding="utf-8", delete=False
+    )
+    name = handle.name
+    try:
+        body = str(text or "")
+        handle.write(body if body.endswith("\n") else body + "\n")
+        handle.close()
+        _code, report = check_p45(name)
+    except (OSError, RuntimeError):
+        return None
+    finally:
+        try:
+            Path(name).unlink()
+        except OSError:
+            pass
+    return sum(1 for line in (report or "").splitlines() if "FAIL:" in line)
+
+
 def keep_richer_board(previous, new):
-    """Keep a real panel board when a later rewrite comes back as a summary."""
+    """Keep a real panel board when a later rewrite comes back as a summary.
+
+    A shorter repair that clears machine-check FAILs replaces the longer board.
+    """
     previous = str(previous or "").strip()
     new = str(new or "").strip()
-    old_panels, old_labels, old_headings, old_len = _board_rank(previous)
-    new_panels, new_labels, new_headings, new_len = _board_rank(new)
     if not previous:
         return new
+    if not new:
+        return previous
+    old_fails = _board_fail_count(previous)
+    new_fails = _board_fail_count(new)
+    if old_fails is not None and new_fails is not None and new_fails != old_fails:
+        return new if new_fails < old_fails else previous
+    old_panels, old_labels, old_headings, old_len = _board_rank(previous)
+    new_panels, new_labels, new_headings, new_len = _board_rank(new)
     if new_panels > old_panels:
         return new
     if new_panels == old_panels and new_panels > 0 and new_labels >= old_labels:
@@ -2132,6 +2240,33 @@ def _normalize_loose_h3(text):
     return normalize_h3_shot_cuts("\n\n".join(blocks).strip())
 
 
+def _looks_like_feed_text(text):
+    raw = str(text or "")
+    return (
+        "subject_definitions" in raw
+        or "投喂单元" in raw
+        or "【时间轴分镜】" in raw
+    )
+
+
+def feed_from_result(result):
+    """The feed draft, even when the merge put the six sections in text."""
+    result = result if isinstance(result, dict) else {}
+    rendered = render_feed_text(result.get("feed") or "")
+    if _looks_like_feed_text(rendered) or rendered.strip():
+        if rendered.strip():
+            return rendered
+    candidates = [result.get("text"), result.get("internal")]
+    for item in result.get("partials") or []:
+        if isinstance(item, dict):
+            candidates.append(item.get("text"))
+    for candidate in candidates:
+        rendered_alt = render_feed_text(candidate or "")
+        if _looks_like_feed_text(rendered_alt):
+            return rendered_alt
+    return rendered
+
+
 def render_feed_text(value):
     """Write an H3 segment object as one six-section block per segment."""
     payload = _feed_payload(value)
@@ -2342,9 +2477,9 @@ def _script_brief(project, folder, locks, only, pipeline, step_id, previous):
         story = str((project or {}).get("brief") or "").strip()
         if story:
             lines.extend(["", "用户原文", story])
-        note = intake_note(load_intake(folder))
-        if note:
-            lines.extend(["", note])
+        block = writer_upload_block(load_intake(folder))
+        if block:
+            lines.extend(["", block])
     elif step_id != "1":
         lines.extend(["", "上一步正文", previous or "（上一步还没有正文）"])
     if step_id in ("5", "6") and (revise or repair or rewriting):
@@ -2431,9 +2566,6 @@ def _script_suite_brief(project, folder, locks, only, pipeline):
         story = str((project or {}).get("brief") or "").strip()
         if story:
             lines.extend(["", "用户原文", story])
-        note = intake_note(load_intake(folder))
-        if note:
-            lines.extend(["", note])
     else:
         draft = _read(Path(folder) / "_内部_" / "剧本.md").strip()
         if draft:
@@ -2445,6 +2577,9 @@ def _script_suite_brief(project, folder, locks, only, pipeline):
                 kept.append("%s\n%s" % (label, body))
         if kept:
             lines.extend(["", "已有剧本链", "\n\n".join(kept)])
+    block = writer_upload_block(load_intake(folder))
+    if block:
+        lines.extend(["", block])
     return "\n".join(line for line in lines if line is not None).strip()
 
 
@@ -2478,8 +2613,20 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
             if previs_draft:
                 current_draft = (current_draft + "\n\n预演故事板：\n" + previs_draft).strip()
     task_line = _TASK_LINE.get(stage, "")
+    upload_block = writer_upload_block(load_intake(folder))
     debug = bool((project.get("progress") or {}).get("debug_llm"))
     debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
+    feed_file = _read(Path(folder) / "_内部_" / "feed.md")
+    empty_feed_report = stage == "feed" and not feed_file.strip() and "投喂稿是空的" in repair and "FAIL" not in repair
+    blank_previs_report = (
+        stage == "storyboard"
+        and previs_is_blank(_read(Path(folder) / "_内部_" / "previs.md"))
+        and "预演故事板是空的" in repair
+        and "FAIL" not in repair
+    )
+    if empty_feed_report or blank_previs_report:
+        repair = ""
+        repair_choices = {}
     if (repair or repair_choices) and stage in ("asset", "storyboard", "feed"):
         return _repair_with_graph(
             folder,
@@ -2506,6 +2653,7 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
                 _REPAIR_FIELD.get(stage, ""),
                 "精修要求：\n" + note if note else "",
                 _locked_reference("上一阶段正文", carried),
+                upload_block,
                 "再确认：只改机检点名的失败项。锁定参考整段保留，不要为它另写一批。",
             )
             if part
@@ -2518,7 +2666,8 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
                 task_line,
                 lock_brief(locks),
                 _user_story_block(stage, story, current_draft),
-                _INSTRUCTION.get(stage, ""),
+                stage_instruction(stage, locks),
+                upload_block,
                 "当前这一稿：\n" + current_draft if current_draft else "",
                 "精修要求：\n" + note if note else "",
                 "上一阶段正文：\n" + carried if carried else "",
@@ -2551,13 +2700,14 @@ def _finish(folder, locks, pipeline):
         code, report = check_prompt(feed_path, locks.get("model") or "h3", locks.get("track") or "1")
         if code != 0:
             failed = dict(pipeline or {})
-            failed["check"] = "qc"
+            failed["check"] = "machine"
             failed["current"] = "feed"
             return gate_result("feed", False, report, failed)
         claim = unverified_claim(_read(feed_path), locks.get("material_mode"))
         if claim:
             failed = dict(pipeline or {})
-            failed["check"] = "qc"
+            failed["check"] = "machine"
+            failed["current"] = "feed"
             return gate_result("feed", False, "没看见图，却写了%s" % claim, failed)
     title = spec.get("title") or "未命名"
     previs_file = folder / previs_name(title)
@@ -2769,7 +2919,8 @@ def _side_note(project, folder, locks, write_model, task_line, filename, label, 
 
 
 def _done(project, folder, locks, pipeline, write_model):
-    _side_note(project, folder, locks, write_model, "任务：独立质检", "质检.md", "独立质检", "qc")
+    if advisory_qc_enabled():
+        _side_note(project, folder, locks, write_model, "任务：独立质检", "质检.md", "独立质检", "qc")
     if str((locks or {}).get("delivery") or "") in ("1", "3"):
         _side_note(project, folder, locks, write_model, "任务：离线看板", "看板说明.md", "离线看板", "board")
     return _finish(folder, locks, pipeline)
@@ -2927,7 +3078,7 @@ def execute(project, folder, locks, write_model, load_pack):
             result["storyboard"] = storyboard
             result["previs"] = previs
         if current == "feed":
-            raw_feed = render_feed_text((result or {}).get("feed") or "")
+            raw_feed = feed_from_result(result)
             patched_feed = patch_h3_voiceover(raw_feed)
             result = dict(result or {})
             result["feed"] = patched_feed
@@ -2952,6 +3103,10 @@ def execute(project, folder, locks, write_model, load_pack):
                 or "文件不存在" in (report or "")
             )
         ):
+            pipeline["retry_write"] = True
+        if current == "feed" and not passed and str(report or "").strip() == "投喂稿是空的":
+            pipeline["retry_write"] = True
+        if current == "storyboard" and not passed and str(report or "").strip() == "预演故事板是空的":
             pipeline["retry_write"] = True
         if passed or current in ("asset", "storyboard", "feed") or attempts >= REPAIR_LIMIT:
             break

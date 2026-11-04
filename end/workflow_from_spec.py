@@ -110,8 +110,14 @@ def _figure_blocks(text):
 
 
 def _image_prompt(item, blocks):
-    """Use the 图 block when the asset line is shorter than that block."""
+    """Use the 图 block when the asset line is shorter than that block.
+
+    A canvas edit sets prompt_edited and that text wins, even when the old
+    block in image_prompts is longer.
+    """
     prompt = str(item.get("prompt") or "").strip()
+    if item.get("prompt_edited") and prompt:
+        return prompt
     match = re.search(r"图\s*(\d+)", str(item.get("id") or ""))
     if not match:
         return prompt

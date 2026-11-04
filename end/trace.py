@@ -258,6 +258,17 @@ def list_traces(folder):
     return rows
 
 
+def write_internal(folder, name, text):
+    """Write one pipeline file under _内部_. Empty text removes it."""
+    _put_text(folder, name, text)
+
+
+def clear_downstream(folder, stage):
+    """Drop every saved writing stage that comes after `stage`."""
+    for later in _AFTER.get(str(stage or ""), ()):
+        _clear_stage(folder, later)
+
+
 def _put_text(folder, name, text):
     path = Path(folder) / "_内部_" / name
     path.parent.mkdir(parents=True, exist_ok=True)

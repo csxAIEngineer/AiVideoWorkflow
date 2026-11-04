@@ -259,6 +259,84 @@ class DirectorDbTest(unittest.TestCase):
             conn.close()
         self.tmp.cleanup()
 
+    def test_blank_previs_revise_asks_for_a_full_write(self):
+        make_project(
+            "p-empty-previs",
+            status="gate",
+            progress={
+                "percent": 62,
+                "phase": "gate_storyboard",
+                "message": "预演故事板没写出来。",
+                "lock_machine": True,
+                "pipeline": {
+                    "only": "",
+                    "accepted": ["script", "asset"],
+                    "current": "storyboard",
+                    "action": "wait",
+                    "passed": False,
+                    "report": "预演故事板是空的",
+                    "repair": "预演故事板是空的",
+                    "check": "",
+                },
+                "question": {
+                    "id": "storyboard",
+                    "kind": "single",
+                    "reply": "预演故事板是空的",
+                    "options": ["根据建议修改"],
+                    "cards": [],
+                },
+            },
+        )
+        seen = {}
+
+        def capture(_project, pipeline, _label):
+            seen["pipeline"] = dict(pipeline)
+
+        with patch("end.server._enqueue_stage", capture):
+            answer_gate(read_project("p-empty-previs"), "根据建议修改")
+        self.assertEqual(seen["pipeline"]["action"], "write")
+        self.assertFalse(seen["pipeline"].get("repair"))
+
+    def test_empty_feed_revise_asks_for_a_full_write(self):
+        make_project(
+            "p-empty-feed",
+            status="gate",
+            progress={
+                "percent": 76,
+                "phase": "gate_feed",
+                "message": "投喂机检没过。根据建议修改会按下面这些项改。",
+                "lock_machine": True,
+                "pipeline": {
+                    "only": "",
+                    "accepted": ["script", "asset", "storyboard"],
+                    "current": "feed",
+                    "action": "wait",
+                    "passed": False,
+                    "report": "投喂稿是空的",
+                    "repair": "投喂稿是空的",
+                    "check": "",
+                },
+                "question": {
+                    "id": "feed",
+                    "kind": "single",
+                    "reply": "投喂机检没过。根据建议修改会按下面这些项改。\n投喂稿是空的",
+                    "options": ["根据建议修改"],
+                    "cards": [],
+                },
+            },
+        )
+        seen = {}
+
+        def capture(_project, pipeline, label):
+            seen["pipeline"] = dict(pipeline)
+            seen["label"] = label
+
+        with patch("end.server._enqueue_stage", capture):
+            answer_gate(read_project("p-empty-feed"), "根据建议修改")
+        self.assertEqual(seen["pipeline"]["action"], "write")
+        self.assertFalse(seen["pipeline"].get("repair"))
+        self.assertNotEqual(seen["pipeline"].get("action"), "rewrite")
+
     def test_first_question_is_the_track_options(self):
         make_project("p-lock", brief="海外剧 玄幻打斗", status="drilling")
         run_lock_turn("p-lock")
@@ -981,6 +1059,173 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertEqual(outcome["message"]["options"], ["继续"])
         self.assertIn("没写完", outcome["message"]["content"])
 
+    def test_feed_text_field_is_kept_and_an_empty_feed_is_rewritten(self):
+        folder = Path(tempfile.mkdtemp())
+        internal = folder / "_内部_"
+        internal.mkdir()
+        (internal / "分镜.md").write_text("分镜正文 L01 她拿起药盒。\n", encoding="utf-8")
+        (internal / "previs.md").write_text("## 段 1\n预演正文\n", encoding="utf-8")
+        (internal / "assets.md").write_text("#### 图1 · 药盒\n16:9\n", encoding="utf-8")
+        draft = "\n".join((
+            "## 【投喂单元 1/1】",
+            "subject_definitions:",
+            "<Subject 1> is a medicine box on a table.",
+            "summary:",
+            "The box sits in warm light.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved.",
+            "detailed_description:",
+            "[Shot 1] <Subject 1> rests on the table.",
+            "overall_soundscape:",
+            "Quiet room tone.",
+            "non_diegetic_music:",
+            "A soft pulse.",
+        ))
+        project = {
+            "template": "short-drama-director",
+            "model": "qwen3.8-flash",
+            "brief": "药盒",
+            "progress": {
+                "pipeline": {
+                    "action": "write",
+                    "current": "feed",
+                    "accepted": ["script", "asset", "storyboard"],
+                    "only": "",
+                }
+            },
+        }
+
+        def writer(brief, *_args, **_kwargs):
+            return {"text": draft}
+
+        kept = execute(project, folder, _base_locks(), writer, lambda *_a, **_k: "pack")
+        stored = (internal / "feed.md").read_text(encoding="utf-8")
+        self.assertIn("subject_definitions", stored)
+        self.assertNotEqual(kept["progress"]["pipeline"].get("report"), "投喂稿是空的")
+
+        empty_dir = Path(tempfile.mkdtemp())
+        empty_internal = empty_dir / "_内部_"
+        empty_internal.mkdir()
+        (empty_internal / "分镜.md").write_text("分镜正文\n", encoding="utf-8")
+        (empty_internal / "previs.md").write_text("预演正文\n", encoding="utf-8")
+        empty = execute(
+            project,
+            empty_dir,
+            _base_locks(),
+            lambda *_a, **_k: {},
+            lambda *_a, **_k: "pack",
+        )
+        self.assertEqual(empty["progress"]["pipeline"]["report"], "投喂稿是空的")
+        self.assertTrue(empty["progress"]["pipeline"]["retry_write"])
+        self.assertIn("再写一版", empty["message"]["content"])
+        self.assertFalse((empty_internal / "feed.md").is_file())
+
+        calls = []
+
+        def rewrite(brief, *_args, **_kwargs):
+            calls.append(brief)
+            return {"feed": draft}
+
+        again_project = {
+            "template": "short-drama-director",
+            "model": "qwen3.8-flash",
+            "brief": "药盒",
+            "progress": {
+                "pipeline": {
+                    "action": "rewrite",
+                    "current": "feed",
+                    "accepted": ["script", "asset", "storyboard"],
+                    "passed": False,
+                    "report": "投喂稿是空的",
+                    "repair": "投喂稿是空的",
+                    "only": "",
+                }
+            },
+        }
+        execute(again_project, empty_dir, _base_locks(), rewrite, lambda *_a, **_k: "pack")
+        self.assertTrue(calls)
+        self.assertIn("任务：提示词封装", calls[0])
+        self.assertNotIn("任务：建议修补", calls[0])
+        self.assertIn("分镜正文", calls[0])
+        self.assertIn("预演正文", calls[0])
+        self.assertIn("subject_definitions", (empty_internal / "feed.md").read_text(encoding="utf-8"))
+
+    def test_blank_previs_fails_the_storyboard_gate_and_rewrites_from_the_board(self):
+        folder = Path(tempfile.mkdtemp())
+        internal = folder / "_内部_"
+        internal.mkdir()
+        (internal / "分镜.md").write_text("分镜正文 L01 她进门。\n", encoding="utf-8")
+        project = {
+            "template": "short-drama-director",
+            "model": "qwen3.8-flash",
+            "brief": "药盒",
+            "progress": {
+                "pipeline": {
+                    "action": "write",
+                    "current": "storyboard",
+                    "accepted": ["script", "asset"],
+                    "only": "",
+                }
+            },
+        }
+        empty = execute(
+            project,
+            folder,
+            _base_locks(),
+            lambda *_a, **_k: {"storyboard": "分镜正文 L01 她进门。", "previs": "没有段"},
+            lambda *_a, **_k: "pack",
+        )
+        self.assertFalse(empty["progress"]["pipeline"]["passed"])
+        self.assertEqual(empty["progress"]["pipeline"]["report"], "预演故事板是空的")
+        self.assertTrue(empty["progress"]["pipeline"]["retry_write"])
+        self.assertIn("再写一版", empty["message"]["content"])
+        self.assertNotIn("先用这一稿继续", empty["message"]["options"])
+
+        calls = []
+
+        def rewrite(brief, *_args, **_kwargs):
+            calls.append(brief)
+            return {
+                "storyboard": "分镜正文 L01 她进门。",
+                "previs": "\n".join((
+                    "## 段 1",
+                    "**本段要验什么**：站位",
+                    "**风险提示**：左右别换",
+                    "### 故事板提示词（1 格）",
+                    "第 1 格：她站在门内，身体朝门，视线看向门外，手抬着，镜头在侧面，光从门内照来。",
+                    "看图先看这三点：人、门、光",
+                    "预演故事板：段1~段1 ✅",
+                )),
+            }
+
+        execute(
+            {
+                "template": "short-drama-director",
+                "model": "qwen3.8-flash",
+                "brief": "药盒",
+                "progress": {
+                    "pipeline": {
+                        "action": "rewrite",
+                        "current": "storyboard",
+                        "accepted": ["script", "asset"],
+                        "passed": False,
+                        "report": "预演故事板是空的",
+                        "repair": "预演故事板是空的",
+                        "only": "",
+                    }
+                },
+            },
+            folder,
+            _base_locks(),
+            rewrite,
+            lambda *_a, **_k: "pack",
+        )
+        self.assertTrue(calls)
+        self.assertIn("任务：分镜", calls[0])
+        self.assertNotIn("任务：建议修补", calls[0])
+        self.assertIn("分镜正文", calls[0])
+        self.assertIn("## 段 1", (internal / "previs.md").read_text(encoding="utf-8"))
+
     def test_asset_repair_keeps_blocks_the_model_left_out(self):
         folder = Path(tempfile.mkdtemp())
         internal = folder / "_内部_"
@@ -1098,6 +1343,18 @@ class MachineAndMountTest(unittest.TestCase):
         summary = "段1验证客厅。段2验证门口。"
         self.assertEqual(keep_richer_board(rich, summary), rich)
         self.assertIn("第 1 格", keep_richer_board(summary, rich))
+        longer = "## 段 1\n第 1 格：她站着。\n" + ("多余说明，没有六问。\n" * 30)
+        shorter = "\n".join((
+            "## 段 1",
+            "**本段要验什么**：站位",
+            "**风险提示**：左右别换",
+            "### 故事板提示词（1 格）",
+            "第 1 格：她站在门内，身体朝门，视线看向门外，手抬着，镜头在侧面，光从门内照来。",
+            "看图先看这三点：人、门、光",
+            "预演故事板：段1~段1 ✅",
+        ))
+        self.assertLess(len(shorter), len(longer))
+        self.assertEqual(keep_richer_board(longer, shorter), shorter)
         checked = previs_check_text(summary, "段 1\n" + rich, "M2")
         self.assertIn("第 1 格", checked)
         self.assertNotIn("验证客厅", checked)
@@ -1153,6 +1410,36 @@ class MachineAndMountTest(unittest.TestCase):
         stored = (folder / "_内部_" / "previs.md").read_text(encoding="utf-8")
         self.assertIn("第 1 格", stored)
         self.assertNotIn("验证客厅", stored)
+
+    def test_c31_alone_does_not_keep_a_failing_exit_once_its_lines_are_hidden(self):
+        from end.repair_units import units_for
+
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(
+            "## 【投喂单元 1/1】\nsubject_definitions:\n<Subject 1> a woman.\n",
+            encoding="utf-8",
+        )
+        only_c31 = "\n".join((
+            "[+] 时长4s | model=h3",
+            "[-] FAIL: C31 CT6-WIR 缺失 M1《素材接线单》",
+            "[-] 1 error(s)",
+        ))
+        with patch("end.gates.run_script", return_value=(1, only_c31)):
+            code, shown = check_feed(path, "h3", "M1", "1")
+        self.assertEqual(code, 0)
+        self.assertNotIn("C31", shown)
+        self.assertEqual(units_for("feed", shown, feed=path.read_text(encoding="utf-8")), [])
+        mixed = only_c31 + "\n[-] FAIL: H1 Ref2VA 缺段"
+        with patch("end.gates.run_script", return_value=(1, mixed)):
+            code, shown = check_feed(path, "h3", "M1", "1")
+        self.assertEqual(code, 1)
+        self.assertIn("H1", shown)
+        self.assertNotIn("C31", shown)
+        self.assertTrue(units_for("feed", shown, feed=path.read_text(encoding="utf-8")))
+        with patch("end.gates.run_script", return_value=(1, only_c31)):
+            code, shown = check_prompt(path, "h3", "1")
+        self.assertEqual(code, 0)
+        self.assertNotIn("C31", shown)
 
     def test_h3_feed_is_not_rejected_for_missing_seven_section_units(self):
         folder = Path(tempfile.mkdtemp())
@@ -1468,6 +1755,63 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertIn("detailed_description: detailed_description", once)
         self.assertEqual(render_feed_text(once), once)
 
+    def test_h3_feed_contract_and_advisory_qc_stay_off_the_ready_path(self):
+        from end.stage_runner import advisory_qc_enabled, stage_instruction
+
+        h3 = stage_instruction("feed", {"model": "h3"})
+        self.assertNotIn("写七段", h3)
+        self.assertIn("subject_definitions:", h3)
+        self.assertIn("六段正文一律英文", h3)
+        self.assertIn("<d>[Chinese]", h3)
+        seedance = stage_instruction("feed", {"model": "2.5"})
+        self.assertIn("下面写七段", seedance)
+        self.assertNotIn("<d>[Chinese]", seedance)
+
+        folder = Path(tempfile.mkdtemp())
+        internal = folder / "_内部_"
+        internal.mkdir()
+        (internal / "feed.md").write_text("subject_definitions:\nhello\n", encoding="utf-8")
+        locks = _base_locks(delivery="2")
+        project = {
+            "template": "short-drama-director",
+            "model": "qwen3.8-flash",
+            "title": "雨夜",
+            "progress": {
+                "pipeline": {
+                    "action": "finish",
+                    "current": "feed",
+                    "accepted": ["script", "asset", "storyboard", "feed"],
+                }
+            },
+        }
+        calls = []
+
+        def writer(brief, skill_pack, debug_dir=None, model=None, template=None, trace_prompts=None):
+            calls.append(brief or "")
+            return {"text": "质检意见"}
+
+        with patch("end.stage_runner.check_prompt", return_value=(0, "PASSED")):
+            ready = execute(project, folder, locks, writer, lambda *args, **kwargs: "")
+        self.assertEqual(ready["progress"]["phase"], "prompts_ready")
+        self.assertFalse(any("任务：独立质检" in call for call in calls))
+        self.assertFalse((internal / "质检.md").is_file())
+
+        calls.clear()
+        with patch.dict("os.environ", {"AIVIDEO_ADVISORY_QC": "1"}):
+            self.assertTrue(advisory_qc_enabled())
+            with patch("end.stage_runner.check_prompt", return_value=(0, "PASSED")):
+                execute(project, folder, locks, writer, lambda *args, **kwargs: "")
+        self.assertTrue(any("任务：独立质检" in call for call in calls))
+        self.assertIn("质检意见", (internal / "质检.md").read_text(encoding="utf-8"))
+
+        with patch("end.stage_runner.check_prompt", return_value=(1, "[-] FAIL: H1 缺段")):
+            failed = execute(project, folder, locks, writer, lambda *args, **kwargs: "")
+        self.assertEqual(failed["stage"], "投喂机检")
+        self.assertEqual(failed["progress"]["phase"], "gate_machine")
+        self.assertIn("投喂机检没过", failed["message"]["content"])
+        self.assertNotIn("独立质检", failed["stage"])
+        self.assertNotIn("独立质检", failed["message"]["content"])
+
 
 class DeliveryTest(unittest.TestCase):
     def test_public_package_is_at_most_three_and_skips_internal(self):
@@ -1498,7 +1842,7 @@ class PageTest(unittest.TestCase):
     def test_page_stops_on_gates_and_renders_seam_and_style(self):
         app = (ROOT / "front" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "front" / "styles.css").read_text(encoding="utf-8")
-        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "独立质检", "离线看板"]', app)
+        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "离线看板"]', app)
         self.assertIn('kind === "multi"', app)
         self.assertIn('type = "checkbox"', app)
         self.assertIn('kind === "cards"', app)
@@ -1517,6 +1861,15 @@ class PageTest(unittest.TestCase):
         self.assertIn("if (chatHome(current))", app)
         self.assertIn("seam-option", css)
         self.assertIn("style-card", css)
+        self.assertIn("function syncCrew", app)
+        composer = app.split("function syncComposer()", 1)[1].split("\nfunction workflowMode", 1)[0]
+        self.assertIn("if (current) syncControlButtons(current);", composer)
+        send = app.split("async function sendText(", 1)[1].split("\nasync function ", 1)[0]
+        self.assertIn("sending = false", send)
+        self.assertIn("syncComposer()", send)
+        self.assertIn("active_role", app)
+        self.assertIn("crew-role", css)
+        self.assertIn("crew-breathe", css)
 
 
 if __name__ == "__main__":

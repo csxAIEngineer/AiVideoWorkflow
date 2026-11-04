@@ -134,6 +134,21 @@ def thread_alive(project_id):
     return thread is not None and thread.is_alive()
 
 
+def thread_is_current(project_id):
+    """True when this thread is the one registered for the project."""
+    with _GUARD:
+        thread = _THREADS.get(project_id)
+    return thread is not None and thread is threading.current_thread()
+
+
+def normalize_video_submit_mode(value):
+    """Parameter profile for a clip submit. Retouch uses preview; a full render uses generate."""
+    text = str(value or "").strip().lower()
+    if text in ("preview", "generate"):
+        return text
+    return "generate"
+
+
 def empty_state():
     return {
         "phase": "",
@@ -222,6 +237,57 @@ def _output_file(work_dir, relative):
     if path.is_absolute() or ".." in path.parts:
         return None
     return Path(work_dir) / "outputs" / path
+
+
+def _unlink_render_output(path):
+    if path is None:
+        return
+    for candidate in (path, Path(str(path) + ".part")):
+        try:
+            if candidate.is_file():
+                candidate.unlink()
+        except OSError:
+            pass
+
+
+def invalidate_steps(work_dir, project_id, steps):
+    """Mark the listed steps pending and delete their outputs. Every other step stays done."""
+    folder = Path(work_dir)
+    lock = project_lock(project_id or str(folder))
+    with lock:
+        state = load_run_state(folder)
+        stored = state.setdefault("steps", {})
+        for step_id, kind in steps:
+            kind = str(kind or "image")
+            step = dict(stored.get(step_id) or blank_step(kind))
+            previous = _output_file(folder, step.get("output_file"))
+            canonical, _relative = output_paths(folder, step_id, kind)
+            _unlink_render_output(previous)
+            _unlink_render_output(canonical)
+            if kind == "subtitles":
+                _unlink_render_output(folder / "outputs" / "字幕.ass")
+            step["kind"] = kind
+            step["status"] = "pending"
+            step["remote_task_id"] = ""
+            step["poll_url"] = ""
+            step["idempotency_key"] = ""
+            step["attempts"] = 0
+            step["epoch"] = int(step.get("epoch") or 0) + 1
+            step["output_file"] = ""
+            step["public_url"] = ""
+            step["local_override"] = False
+            step["error"] = ""
+            step.pop("video_mode", None)
+            step.pop("video_platform", None)
+            stored[step_id] = step
+        if steps:
+            state["current_step"] = steps[0][0]
+            state["phase"] = ""
+            state["paused"] = False
+            state["pause_reason"] = ""
+            state["paused_by"] = ""
+        save_run_state(folder, state)
+        return state
 
 
 def _reset_target(state):
@@ -896,6 +962,15 @@ VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
 VIDEO_MODEL = "MiniMax/MiniMax-H3"
 VIDEO_MODE_MODELS = {mode: VIDEO_MODEL for mode in VIDEO_MODES}
 FRAME_OPENING = "从这张首帧的可见内容开始，主体、材质和构图保持一致，只做本镜写的光影和轻微运镜。"
+NO_ONSCREEN_CAPTION = "全程无字幕、无对白文字叠加。"
+# Six-section H3 copy is English. Keep this lock in English so it is not
+# another Chinese string outside <d>.
+H3_NO_ONSCREEN_CAPTION = (
+    "The frame shows the scene and the performers. "
+    "No readable on-screen subtitles, captions, or overlaid dialogue text. "
+    "Lines inside <d> are spoken audio only and must not be painted into the frame "
+    "as Chinese caption glyphs, bottom white text, or any other burned-in dialogue."
+)
 
 
 def image_size(path):
@@ -1040,26 +1115,47 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
     return "", media
 
 
+def _caption_lock(text):
+    """Executor-side ban. H3 units stay English; short prompts and Seedance stay Chinese."""
+    raw = str(text or "")
+    if "subject_definitions" in raw and "detailed_description" in raw:
+        return H3_NO_ONSCREEN_CAPTION
+    return NO_ONSCREEN_CAPTION
+
+
+def _with_caption_lock(text):
+    body = str(text or "").strip()
+    lock = _caption_lock(body)
+    if lock in body:
+        return body
+    if not body:
+        return lock
+    return body + "\n" + lock
+
+
 def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack="off", template=None):
     """Prompt sent with the clip. Vehicle lines come only from the active template's skills.
 
     Music or narration is mixed after the join, so those shots keep only room tone.
+    A full H3 or Seedance unit is sent as written, plus a lock that ``<d>`` audio
+    must not be painted as on-screen captions. Burned 字幕.ass is a later ffmpeg step
+    and still reads only shot dialogue and narration.
     """
     from end.ai_client import template_render
     from end.prompt_gate import is_full_delivery
 
     base = (shot.get("prompt") or "").strip()
     if is_full_delivery(base):
-        return base
+        return _with_caption_lock(base)
     render = template_render(template)
     if mode in ("first_frame", "first_last_frame"):
-        parts = [base, FRAME_OPENING, "全程无字幕、无对白文字叠加。"]
+        parts = [base, FRAME_OPENING, NO_ONSCREEN_CAPTION]
     else:
         parts = [base]
         if render["video_lock"]:
             parts.append(render["video_lock"])
-        else:
-            parts.append("全程无字幕、无对白文字叠加。")
+        if NO_ONSCREEN_CAPTION not in "\n".join(parts):
+            parts.append(NO_ONSCREEN_CAPTION)
         if index > 0 and render["video_next"]:
             parts.append(render["video_next"])
         if has_tail and render["video_tail"]:
@@ -1139,10 +1235,12 @@ class RenderContext(object):
         duration_of=None,
         template=None,
         aspect="",
+        video_submit_mode="generate",
     ):
         self.work_dir = Path(work_dir)
         self.template = template
         self.aspect = aspect or ""
+        self.video_submit_mode = normalize_video_submit_mode(video_submit_mode)
         self.on_progress = on_progress
         self.project_id = project_id or ""
         self.icreat = icreat
@@ -1975,6 +2073,7 @@ def run_local_pipeline(
     duration_of=None,
     template=None,
     aspect="",
+    video_submit_mode="generate",
 ):
     """Generate stills, then clips, join them, optionally mix a soundtrack, then burn 字幕.ass.
 
@@ -2019,6 +2118,7 @@ def run_local_pipeline(
         duration_of=duration_of,
         template=template,
         aspect=aspect,
+        video_submit_mode=video_submit_mode,
     )
     if project_id:
         register_thread(project_id)
@@ -2168,7 +2268,7 @@ def run_local_pipeline(
                 raise RuntimeError("没有锁定画幅，不能默认竖屏")
             ratio = ctx.aspect if mode == "text" else None
             # Shot media mode is text, frames, or reference. Parameter mode
-            # is separate: final render uses the generate parameter set.
+            # is separate: a full render uses generate; a retouch rerun uses preview.
             return cr.submit_video(
                 text,
                 model=VIDEO_MODE_MODELS[mode],
@@ -2177,7 +2277,7 @@ def run_local_pipeline(
                 images=media or None,
                 idempotency_key=key,
                 timeout=180,
-                mode="generate",
+                mode=ctx.video_submit_mode,
             )
 
         def poll(task_id, shot_id=shot_id):

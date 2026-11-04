@@ -133,6 +133,10 @@ class ShortDramaSkillTest(unittest.TestCase):
     def test_p4_pack_includes_the_h3_adapter_and_not_the_whole_skill(self):
         pack = load_skill_pack(context=LOCKED, stage="P4")
         self.assertIn("short-drama-director/references/h3-adapter.md", pack)
+        self.assertLess(
+            pack.index("# short-drama-director/references/h3-adapter.md"),
+            pack.index("# short-drama-director/references/model-adapters.md"),
+        )
         self.assertNotIn("# short-drama-director/SKILL.md", pack)
         prompt = build_system_prompt(pack, brief=LOCKED)
         self.assertIn("本片画幅以简报为准：16:9", prompt)

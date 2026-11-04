@@ -73,13 +73,28 @@ def units_for(stage, report, asset="", previs="", feed=""):
     """One dict per failed item. Empty when this report names nothing we can edit."""
     stage = str(stage or "")
     if stage == "asset":
-        return _asset_units(report, asset)
+        return trim_repair_units(_asset_units(report, asset))
     if stage == "storyboard":
-        return _segment_units("段", report, previs, whole_when_empty=True)
+        return trim_repair_units(_segment_units("段", report, previs, whole_when_empty=True))
     if stage == "feed":
-        units = _feed_units(report, feed)
-        return units
+        return trim_repair_units(_feed_units(report, feed))
     return []
+
+
+def trim_repair_units(units):
+    """Drop empty leftover buckets and units already covered by a named failure.
+
+    A numbered 段/图 is the rewrite. A rest unit beside it only repeats neighbors.
+    """
+    units = [unit for unit in (units or []) if isinstance(unit, dict)]
+    named = [unit for unit in units if int(unit.get("number") or 0) > 0 and str(unit.get("body") or "").strip()]
+    if named:
+        return named
+    kept = []
+    for unit in units:
+        if str(unit.get("body") or "").strip():
+            kept.append(unit)
+    return kept
 
 
 def apply_repairs(stage, units, repairs, asset="", previs="", storyboard="", feed=""):
@@ -424,10 +439,11 @@ def _segment_units(prefix, report, text, whole_when_empty):
             body,
             number=number,
         ))
-    if loose and not pieces and whole_when_empty:
-        units.append(_unit("previs", "预演", "\n".join(loose), str(text or ""), number=0))
-    elif loose and pieces:
-        units.append(_unit("previs-rest", "未点名的段", "\n".join(loose), "", number=0))
+    if loose and not units:
+        if not pieces and whole_when_empty:
+            units.append(_unit("previs", "预演", "\n".join(loose), str(text or ""), number=0))
+        else:
+            units.extend(_loose_piece_units("段", loose, pieces))
     return units
 
 
@@ -446,12 +462,43 @@ def _feed_units(report, text):
             body,
             number=number,
         ))
-    if loose:
-        section = _named_sections(text, loose) if pieces else str(text or "")
-        units.append(_unit("feed-rest", "未点名的失败项", "\n".join(loose), section, number=0))
-    if not units and _fail_lines(report) and str(text or "").strip() and not pieces:
-        units.append(_unit("feed-rest", "投喂稿", "\n".join(_fail_lines(report)), text, number=0))
+    if loose and not units:
+        if not pieces and str(text or "").strip():
+            units.append(_unit("feed-rest", "投喂稿", "\n".join(loose), text, number=0))
+        else:
+            units.extend(_loose_piece_units("段", loose, pieces))
     return units
+
+
+def _loose_piece_units(prefix, lines, pieces):
+    """Map file-level FAIL lines onto the pieces that actually contain the cited marker.
+
+    Unmatched lines do not pull every neighboring piece into the repair.
+    """
+    grouped = {}
+    for line in lines or []:
+        hits = [number for number, body in pieces if _line_hits_piece(line, body)]
+        for number in hits:
+            grouped.setdefault(number, []).append(line)
+    units = []
+    for number in sorted(grouped):
+        body = _piece_body(pieces, number)
+        if not body:
+            continue
+        units.append(_unit(
+            "%s-%s" % (prefix, number),
+            "段%d" % number,
+            "\n".join(grouped[number]),
+            body,
+            number=number,
+        ))
+    return units
+
+
+def _line_hits_piece(line, body):
+    markers = re.findall(r"【[^】]{1,40}】|「[^」]{1,40}」|\[Shot\s*\d+\]", str(line or ""))
+    blob = str(body or "")
+    return any(marker and marker in blob for marker in markers)
 
 
 def _apply_asset(units, found, text):

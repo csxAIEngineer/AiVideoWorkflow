@@ -50,12 +50,27 @@ let canvasEdges = [];
 let view = { x: 48, y: 48, scale: 1 };
 const canvasMinScale = 0.25;
 let pendingSaves = new Set();
+let retouchSelection = null;
+let retouchDrafts = {};
+let retouchLocalError = "";
+let retouchPending = false;
+let keptPromptDiff = null;
+let retouchDiffKey = "";
+let retouchDiffSelection = "";
+let seenRetouchError = "";
 const pointer = { mode: "" };
 let draftMaterials = [];
 let seamKept = new Set();
 const MAX_MATERIALS = 8;
 
-const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "独立质检", "离线看板"];
+const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "离线看板"];
+const CREW_FALLBACK = [
+  { id: "script", name: "编剧" },
+  { id: "asset", name: "资产" },
+  { id: "storyboard", name: "分镜" },
+  { id: "check", name: "机检" },
+  { id: "feed", name: "投喂" },
+];
 const DEBUG_FILE_LABELS = {
   skill_pack: "Skill 规则",
   system_prompt: "System Prompt",
@@ -1026,6 +1041,8 @@ function syncComposer() {
   if (materialFile) materialFile.disabled = !showBrief || sending;
   if (showOther) briefEl.placeholder = "写下你的方向";
   else if (showBrief) briefEl.placeholder = "文字决定要拍成什么样：时长、广告、感觉、情节和结尾。用户没写的部分，用读图补上身份和场景。";
+  // The ready reply is painted while `sending` is still true, and a done project stops polling.
+  if (current) syncControlButtons(current);
 }
 
 function workflowMode(project) {
@@ -1111,7 +1128,75 @@ function syncSideMode() {
   if (historyBtn) historyBtn.classList.toggle("on", workflow && !docs);
 }
 
+function crewNote(project) {
+  const progress = (project && project.progress) || {};
+  let text = String(progress.message || (project && project.stage) || "").replace(/\s+/g, " ").trim();
+  const split = text.indexOf(" · ");
+  if (split >= 0) text = text.slice(0, split).trim();
+  text = text.replace(/^.{1,48}?正在/, "正在");
+  text = text.split(/[。\n]/)[0].trim();
+  if (text.length > 32) text = text.slice(0, 32) + "…";
+  return text;
+}
+
+function syncCrew(project) {
+  const box = document.querySelector("#crew");
+  const toggle = document.querySelector("#crew-toggle");
+  const roles = document.querySelector("#crew .crew-roles");
+  const line = document.querySelector("#crew-line");
+  if (!box || !toggle || !roles || !line) return;
+  if (!project) {
+    box.classList.add("settled");
+    box.classList.remove("open");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-label", "分工，现在没有人在写");
+    line.textContent = "";
+    syncCrew.sig = "";
+    syncCrew.projectId = "";
+    return;
+  }
+  const progress = project.progress || {};
+  const crew = Array.isArray(progress.crew) && progress.crew.length ? progress.crew : CREW_FALLBACK;
+  const active = String(progress.active_role || "");
+  const live = !!(active && project.status === "writing");
+  const note = crewNote(project);
+  const sig = crew.map((item) => (item.id || "") + ":" + (item.name || "")).join("|") + "#" + active + (live ? "*" : "") + "#" + note;
+  box.classList.toggle("settled", !active);
+  if (syncCrew.projectId !== project.id) {
+    box.classList.remove("open");
+    toggle.setAttribute("aria-expanded", "false");
+    syncCrew.projectId = project.id;
+  }
+  const activeName = (crew.find((item) => item.id === active) || {}).name || "";
+  toggle.setAttribute(
+    "aria-label",
+    activeName ? activeName + (live ? "正在进行" : "停在这一步") : "分工，现在没有人在写"
+  );
+  line.textContent = note;
+  if (syncCrew.sig === sig) return;
+  syncCrew.sig = sig;
+  roles.replaceChildren();
+  crew.forEach((item) => {
+    const pill = document.createElement("span");
+    pill.className = "crew-role";
+    if (item.id && item.id === active) {
+      pill.classList.add("on");
+      if (live) pill.classList.add("live");
+      pill.setAttribute("aria-current", "true");
+    }
+    pill.setAttribute("role", "listitem");
+    const dot = document.createElement("span");
+    dot.className = "crew-dot";
+    dot.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.textContent = item.name || "";
+    pill.append(dot, label);
+    roles.append(pill);
+  });
+}
+
 function hideWorkflow() {
+  syncCrew(null);
   if (stageBar) stageBar.classList.add("hidden");
   if (debugDock) {
     debugDock.classList.add("hidden");
@@ -1125,6 +1210,7 @@ function hideWorkflow() {
 }
 
 function showWorkflow() {
+  syncCrew(current);
   if (stageBar) stageBar.classList.remove("hidden");
   if (debugDock) debugDock.classList.remove("hidden");
   if (thread) thread.classList.remove("hidden");
@@ -1151,6 +1237,7 @@ function renderThread(options) {
     paintTranscript.key = "";
     paintTranscript.projectId = "";
     seamKept = new Set();
+    syncRetouchPanel(null);
     syncComposer();
     return;
   }
@@ -1160,12 +1247,14 @@ function renderThread(options) {
     hideWorkflow();
     thread.classList.remove("hidden");
     paintTranscript(opts, true);
+    syncRetouchPanel(current);
     return;
   }
   showWorkflow();
   thread.classList.remove("hidden");
   paintTranscript(opts, false);
   syncCanvas(current);
+  syncRetouchPanel(current);
   syncDocNav(current);
   syncShotStrip(current);
   syncPreview(current);
@@ -1384,6 +1473,7 @@ async function openProject(id) {
     previewShotId = "";
     syncDocNav.sig = "";
     syncShotStrip.sig = "";
+    resetRetouch();
   }
   showProjectModel(current);
   showProjectTemplate(current);
@@ -1393,7 +1483,9 @@ async function openProject(id) {
 }
 
 function keepWatching(project) {
-  return !!(project && project.status !== "done" && project.status !== "error");
+  if (!project) return false;
+  if (project.progress && project.progress.retouching) return true;
+  return project.status !== "done" && project.status !== "error";
 }
 
 function watch() {
@@ -1422,6 +1514,7 @@ newChat.addEventListener("click", () => {
   setMenuOpen(false);
   current = null;
   otherOpen = false;
+  resetRetouch();
   clearDraftMaterials();
   briefEl.value = "";
   const savedModel = localStorage.getItem("aivideo.model");
@@ -1854,6 +1947,10 @@ function taskById(project, id) {
 }
 
 function nodeState(project, kind, id) {
+  if (kind === "shot") {
+    const mark = retouchDot(project, "shot", id);
+    if (mark) return mark;
+  }
   const task = taskById(project, id);
   if (task && task.state) return task.state;
   if (kind === "script" || kind === "storyboard") {
@@ -2101,6 +2198,8 @@ function planSignature(plan) {
 }
 
 function assetState(project, id) {
+  const mark = retouchDot(project, "asset", id);
+  if (mark) return mark;
   const task = taskById(project, id);
   if (task && task.state) return task.state;
   if (imageUrlFor(project, id)) return "done";
@@ -2179,8 +2278,16 @@ function renderAsset(project, asset) {
     ref.textContent = "参考 " + referenceText;
     card.append(ref);
   }
-  card.append(makeField(project, "asset:" + asset.id, 3));
+  const advanced = document.createElement("details");
+  advanced.className = "wf-advanced";
+  const summary = document.createElement("summary");
+  summary.textContent = "高级 / 调试";
+  advanced.append(summary, makeField(project, "asset:" + asset.id, 3));
+  card.append(advanced);
   card.append(uploadControl(asset.id));
+  if (retouchSelection && retouchSelection.node === "asset" && retouchSelection.targetId === asset.id) {
+    card.classList.add("is-selected");
+  }
   return card;
 }
 
@@ -2212,6 +2319,9 @@ function makeField(project, key, rows) {
 function renderNode(project, info) {
   const node = document.createElement("article");
   node.className = "wf-node " + info.kind;
+  if (info.kind === "shot" && retouchSelection && retouchSelection.node === "shot" && retouchSelection.targetId === info.id) {
+    node.classList.add("is-selected");
+  }
   node.dataset.id = info.id;
   node.dataset.kind = info.kind;
   node.dataset.col = String(info.col);
@@ -2422,6 +2532,7 @@ function patchCanvas(project) {
       }
     }
   });
+  syncRetouchChrome();
 }
 
 function setSaveState(text) {
@@ -2500,6 +2611,7 @@ function syncControlButtons(project) {
 }
 
 function syncDock(project) {
+  syncCrew(project);
   if (!debugDock) return;
   const phase = document.querySelector("#dock-phase");
   const percentNode = document.querySelector("#dock-percent");
@@ -2609,6 +2721,7 @@ async function refreshLogs() {
 
 function onCanvasPointerDown(event) {
   if (!canvasWrap || event.button !== 0) return;
+  pointer.moved = false;
   const head = event.target.closest(".wf-head");
   if (head && canvasWrap.contains(head)) {
     const node = head.closest(".wf-node");
@@ -2631,6 +2744,11 @@ function onCanvasPointerDown(event) {
 }
 
 function onPointerMove(event) {
+  if (pointer.mode) {
+    const dx = event.clientX - pointer.x;
+    const dy = event.clientY - pointer.y;
+    if (dx * dx + dy * dy > 16) pointer.moved = true;
+  }
   if (pointer.mode === "pan") {
     view.x = pointer.vx + (event.clientX - pointer.x);
     view.y = pointer.vy + (event.clientY - pointer.y);
@@ -2834,6 +2952,8 @@ function focusCanvasField(nodeId, fieldKey) {
       if (el.dataset.field === fieldKey) field = el;
     });
     if (!field) return;
+    const advanced = field.closest("details");
+    if (advanced) advanced.open = true;
     field.focus({ preventScroll: true });
     const scroller = field.closest(".wf-assets");
     if (!scroller) return;
@@ -2949,7 +3069,478 @@ function syncShotStrip(project) {
   shots.forEach((shot) => shotStrip.append(shotChip(shot)));
 }
 
+function hasProducedOutput(project) {
+  if (!project) return false;
+  if (project.has_video || project.video_url) return true;
+  if ((project.images || []).some((image) => image && image.url)) return true;
+  if ((project.clips || []).some((clip) => clip && clip.url)) return true;
+  return (project.tasks || []).some((task) => {
+    const kind = task && task.kind;
+    return (kind === "image" || kind === "video" || kind === "join") && task.state === "done";
+  });
+}
+
+function projectBusy(project) {
+  return !!(project && ["writing", "building", "rendering", "drilling"].includes(project.status));
+}
+
+function retouchLocked(project) {
+  const progress = (project && project.progress) || {};
+  return !!(retouchPending || progress.retouching || projectBusy(project));
+}
+
+function retouchDot(project, node, id) {
+  const progress = (project && project.progress) || {};
+  const active = progress.retouching;
+  if (active && active.node === node && String(active.target_id || "") === String(id)) return "running";
+  const error = progress.retouch_error;
+  const key = error && typeof error === "object" ? String(error.key || "") : "";
+  if (key === node + ":" + id) return "error";
+  return "";
+}
+
+function resetRetouch() {
+  retouchSelection = null;
+  retouchLocalError = "";
+  retouchPending = false;
+  keptPromptDiff = null;
+  retouchDiffKey = "";
+  retouchDiffSelection = "";
+  seenRetouchError = "";
+}
+
+function retouchDraftKey(project, node, targetId) {
+  return (project && project.id ? project.id : "") + "\u0001" + node + "\u0001" + targetId;
+}
+
+function selectionAlive(project, selection) {
+  if (!project || !selection) return false;
+  if (selection.node === "asset") {
+    return (project.assets || []).some((item) => item && item.id === selection.targetId);
+  }
+  if (selection.node === "shot") {
+    return (project.shots || []).some((item) => item && item.id === selection.targetId);
+  }
+  return false;
+}
+
+function rememberPromptDiff(project) {
+  if (!project) return;
+  const diff = (project.progress || {}).prompt_diff;
+  if (!diff || typeof diff !== "object") return;
+  if (diff.before == null && diff.after == null) return;
+  keptPromptDiff = { projectId: project.id, diff: diff };
+}
+
+function promptDiffFor(project) {
+  if (!project) return null;
+  rememberPromptDiff(project);
+  const live = (project.progress || {}).prompt_diff;
+  if (live && typeof live === "object" && (live.before != null || live.after != null)) return live;
+  if (keptPromptDiff && keptPromptDiff.projectId === project.id) return keptPromptDiff.diff;
+  return null;
+}
+
+function retouchTargetLabel(project, selection) {
+  if (selection.node === "asset") {
+    const asset = (project.assets || []).find((item) => item.id === selection.targetId);
+    return "静帧 · " + ((asset && (asset.title || asset.id)) || selection.targetId);
+  }
+  const shot = (project.shots || []).find((item) => item.id === selection.targetId);
+  const duration = shot && shot.duration != null && shot.duration !== "" ? " · " + shot.duration + " 秒" : "";
+  return "镜头 · " + selection.targetId + duration;
+}
+
+function currentBlockPrompt(project, selection) {
+  if (!project || !selection) return "";
+  if (selection.node === "asset") {
+    const asset = (project.assets || []).find((item) => item.id === selection.targetId);
+    return asset ? asset.prompt || "" : "";
+  }
+  const shot = (project.shots || []).find((item) => item.id === selection.targetId);
+  return shot ? shot.prompt || "" : "";
+}
+
+function retouchStatusText(project, selection) {
+  const active = project && project.progress && project.progress.retouching;
+  if (!active) return "";
+  const phase = active.phase === "prompt" ? "正在改这一块提示词" : "正在按预览档重跑";
+  const same = selection && active.node === selection.node && String(active.target_id || "") === selection.targetId;
+  const who = same ? "" : " · " + (active.node === "shot" ? "镜头 " : "静帧 ") + (active.target_id || "");
+  return "正在按你的感觉重修 · " + phase + who;
+}
+
+function retouchErrorText(project, selection) {
+  if (retouchLocalError) return retouchLocalError;
+  const error = project && project.progress && project.progress.retouch_error;
+  if (!error) return "";
+  const message = typeof error === "string" ? error : (error.message || "重修没有完成");
+  const key = typeof error === "object" && error ? String(error.key || "") : "";
+  if (!key || !selection) return message;
+  const expected = selection.node + ":" + selection.targetId;
+  if (key === expected) return message;
+  return key + "：" + message;
+}
+
+function retouchErrorIdentity(project) {
+  const error = project && project.progress && project.progress.retouch_error;
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  return [error.key || "", error.message || "", error.at || ""].join("\u0001");
+}
+
+function rpcMissing(error) {
+  if (!error) return false;
+  if (error.code === -32601) return true;
+  const message = String(error.message || "");
+  return message.indexOf("没有这个接口") >= 0 || message.indexOf("Method not found") >= 0;
+}
+
+function diffRows(before, after) {
+  const leftLines = String(before == null ? "" : before).split("\n");
+  const rightLines = String(after == null ? "" : after).split("\n");
+  if (leftLines.length * rightLines.length > 160000) {
+    return {
+      left: leftLines.map((text) => ({ text: text, kind: "same" })),
+      right: rightLines.map((text) => ({ text: text, kind: "same" })),
+    };
+  }
+  const n = leftLines.length;
+  const m = rightLines.length;
+  const scores = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      scores[i][j] = leftLines[i] === rightLines[j]
+        ? scores[i + 1][j + 1] + 1
+        : Math.max(scores[i + 1][j], scores[i][j + 1]);
+    }
+  }
+  const left = [];
+  const right = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (leftLines[i] === rightLines[j]) {
+      left.push({ text: leftLines[i], kind: "same" });
+      right.push({ text: rightLines[j], kind: "same" });
+      i += 1;
+      j += 1;
+    } else if (scores[i + 1][j] >= scores[i][j + 1]) {
+      left.push({ text: leftLines[i], kind: "removed" });
+      i += 1;
+    } else {
+      right.push({ text: rightLines[j], kind: "added" });
+      j += 1;
+    }
+  }
+  while (i < n) {
+    left.push({ text: leftLines[i], kind: "removed" });
+    i += 1;
+  }
+  while (j < m) {
+    right.push({ text: rightLines[j], kind: "added" });
+    j += 1;
+  }
+  return { left: left, right: right };
+}
+
+function fillDiffColumn(node, rows) {
+  if (!node) return;
+  node.replaceChildren();
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "retouch-diff-empty";
+    empty.textContent = "（空）";
+    node.append(empty);
+    return;
+  }
+  rows.forEach((row) => {
+    const line = document.createElement("div");
+    line.className = "retouch-line " + row.kind;
+    line.textContent = row.text.length ? row.text : " ";
+    node.append(line);
+  });
+}
+
+function diffMetaText(diff, selection) {
+  if (!diff) return "还没有提示词差量。重修成功后留在这里。";
+  const kind = diff.node === "shot" ? "镜头" : "静帧";
+  const parts = [kind + " " + (diff.target_id || "")];
+  if (diff.suggestion) parts.push("感觉：" + diff.suggestion);
+  if (selection && (diff.node !== selection.node || String(diff.target_id || "") !== selection.targetId)) {
+    parts.push("这是上一次成功的差量");
+  }
+  return parts.filter(Boolean).join(" · ");
+}
+
+function paintPromptDiff(diff, selection) {
+  const meta = document.querySelector("#retouch-diff-meta");
+  const before = document.querySelector("#retouch-before");
+  const after = document.querySelector("#retouch-after");
+  const cols = document.querySelector(".retouch-diff-cols");
+  if (meta) meta.textContent = diffMetaText(diff, selection);
+  if (cols) cols.classList.toggle("hidden", !diff);
+  if (!diff) {
+    if (before) before.replaceChildren();
+    if (after) after.replaceChildren();
+    return;
+  }
+  const rows = diffRows(diff.before, diff.after);
+  fillDiffColumn(before, rows.left);
+  fillDiffColumn(after, rows.right);
+}
+
+function syncRetouchChrome() {
+  if (!canvasNodes) return;
+  canvasNodes.querySelectorAll(".wf-asset.is-selected, .wf-node.is-selected").forEach((el) => {
+    el.classList.remove("is-selected");
+  });
+  if (!retouchSelection) return;
+  if (retouchSelection.node === "asset") {
+    canvasNodes.querySelectorAll(".wf-asset").forEach((card) => {
+      card.classList.toggle("is-selected", card.dataset.asset === retouchSelection.targetId);
+    });
+    return;
+  }
+  const node = nodeById(retouchSelection.targetId);
+  if (node && node.dataset.kind === "shot") node.classList.add("is-selected");
+}
+
+function syncRetouchPanel(project) {
+  const panel = document.querySelector("#retouch-panel");
+  if (!panel) return;
+  const selection = retouchSelection;
+  if (project && selection && !selectionAlive(project, selection)) {
+    retouchSelection = null;
+  }
+  const active = retouchSelection;
+  const show = !!(
+    project
+    && active
+    && workflowMode(project)
+    && hasProducedOutput(project)
+    && selectionAlive(project, active)
+  );
+  if (!show) {
+    panel.classList.add("hidden");
+    panel.setAttribute("aria-hidden", "true");
+    panel.removeAttribute("aria-busy");
+    syncRetouchChrome();
+    return;
+  }
+  panel.classList.remove("hidden");
+  panel.setAttribute("aria-hidden", "false");
+  panel.setAttribute("aria-busy", retouchLocked(project) ? "true" : "false");
+  const target = document.querySelector("#retouch-target");
+  if (target) target.textContent = retouchTargetLabel(project, active);
+  const scope = document.querySelector("#retouch-scope");
+  if (scope) {
+    scope.textContent = active.node === "shot"
+      ? "只改这一镜，不动其他镜头。"
+      : "只改这一张图，不动其他图。";
+  }
+  const suggestion = document.querySelector("#retouch-suggestion");
+  const draft = retouchDrafts[retouchDraftKey(project, active.node, active.targetId)] || "";
+  if (suggestion && document.activeElement !== suggestion && suggestion.value !== draft) suggestion.value = draft;
+  const locked = retouchLocked(project);
+  if (suggestion) suggestion.disabled = locked;
+  const submit = document.querySelector("#retouch-submit");
+  const generate = document.querySelector("#retouch-generate");
+  if (submit) submit.disabled = locked;
+  if (generate) generate.disabled = locked;
+  const status = document.querySelector("#retouch-status");
+  if (status) status.textContent = retouchStatusText(project, active);
+  const errorNode = document.querySelector("#retouch-error");
+  const errorText = retouchErrorText(project, active);
+  if (errorNode) {
+    errorNode.textContent = errorText;
+    errorNode.classList.toggle("hidden", !errorText);
+  }
+  const note = document.querySelector("#retouch-advanced-note");
+  if (note) {
+    note.textContent = active.node === "shot"
+      ? "只读这一镜的提示词。不改整份投喂稿。"
+      : "手改原文在这张图卡片的「高级 / 调试」里，不是修片主路径。";
+  }
+  const prompt = document.querySelector("#retouch-prompt");
+  const promptText = currentBlockPrompt(project, active);
+  if (prompt && prompt.textContent !== promptText) prompt.textContent = promptText;
+  const diff = promptDiffFor(project);
+  const diffKey = diff
+    ? [project.id, diff.node || "", diff.target_id || "", diff.at || "", diff.before || "", diff.after || "", diff.suggestion || ""].join("\u0001")
+    : project.id + "\u0001";
+  const selectionKey = active.node + ":" + active.targetId;
+  const errorId = retouchErrorIdentity(project);
+  if (errorId && errorId !== seenRetouchError) {
+    seenRetouchError = errorId;
+    const details = document.querySelector("#retouch-diff");
+    if (details) details.open = true;
+  }
+  if (diffKey !== retouchDiffKey) {
+    retouchDiffKey = diffKey;
+    retouchDiffSelection = selectionKey;
+    const details = document.querySelector("#retouch-diff");
+    if (details) details.open = true;
+    paintPromptDiff(diff, active);
+  } else if (selectionKey !== retouchDiffSelection) {
+    retouchDiffSelection = selectionKey;
+    const meta = document.querySelector("#retouch-diff-meta");
+    if (meta) meta.textContent = diffMetaText(diff, active);
+  }
+  syncRetouchChrome();
+}
+
+function selectRetouch(node, targetId) {
+  if (!current || !hasProducedOutput(current)) return;
+  const id = String(targetId || "");
+  if (!id || (node !== "asset" && node !== "shot")) return;
+  const same = retouchSelection && retouchSelection.node === node && retouchSelection.targetId === id;
+  if (!same) retouchLocalError = "";
+  retouchSelection = { node: node, targetId: id };
+  syncRetouchPanel(current);
+}
+
+function clearRetouchSelection() {
+  if (!retouchSelection && !retouchLocalError) {
+    syncRetouchPanel(current);
+    return;
+  }
+  retouchSelection = null;
+  retouchLocalError = "";
+  syncRetouchPanel(current);
+}
+
+function rememberRetouchDraft() {
+  const suggestion = document.querySelector("#retouch-suggestion");
+  if (!current || !retouchSelection || !suggestion) return "";
+  const text = suggestion.value || "";
+  retouchDrafts[retouchDraftKey(current, retouchSelection.node, retouchSelection.targetId)] = text;
+  return text.trim();
+}
+
+async function submitRetouch() {
+  if (!current || !retouchSelection || retouchLocked(current)) return;
+  const projectId = current.id;
+  const node = retouchSelection.node;
+  const targetId = retouchSelection.targetId;
+  const suggestion = rememberRetouchDraft();
+  if (!suggestion) {
+    retouchLocalError = "先写一下想怎么改";
+    syncRetouchPanel(current);
+    return;
+  }
+  retouchLocalError = "";
+  retouchPending = true;
+  syncRetouchPanel(current);
+  try {
+    const project = await rpc("projects.retouch", {
+      id: projectId,
+      node: node,
+      target_id: targetId,
+      suggestion: suggestion,
+    });
+    if (!current || current.id !== projectId) return;
+    retouchLocalError = "";
+    adoptQuiet(project);
+    watch();
+  } catch (error) {
+    if (!current || current.id !== projectId) return;
+    retouchLocalError = rpcMissing(error)
+      ? "修片还没接到 End。需要 projects.retouch，以及 progress.retouching、prompt_diff、retouch_error。"
+      : (error.message || "没有完成");
+  } finally {
+    if (current && current.id === projectId) {
+      retouchPending = false;
+      syncRetouchPanel(current);
+    }
+  }
+}
+
+async function submitRetouchGenerate() {
+  if (!current || !retouchSelection || retouchLocked(current)) return;
+  const projectId = current.id;
+  const node = retouchSelection.node;
+  const targetId = retouchSelection.targetId;
+  retouchLocalError = "";
+  retouchPending = true;
+  syncRetouchPanel(current);
+  try {
+    const project = await rpc("projects.rerun", {
+      id: projectId,
+      node: node,
+      target_id: targetId,
+      grade: "generate",
+    });
+    if (!current || current.id !== projectId) return;
+    retouchLocalError = "";
+    adoptQuiet(project);
+    watch();
+  } catch (error) {
+    if (!current || current.id !== projectId) return;
+    retouchLocalError = rpcMissing(error)
+      ? "成片档还没接到 End。需要 projects.rerun，grade 为 generate。重修仍只自动排队预览档。"
+      : (error.message || "没有完成");
+  } finally {
+    if (current && current.id === projectId) {
+      retouchPending = false;
+      syncRetouchPanel(current);
+    }
+  }
+}
+
+function onCanvasClick(event) {
+  if (pointer.moved) return;
+  if (!canvasWrap || !canvasWrap.contains(event.target)) return;
+  const asset = event.target.closest(".wf-asset");
+  if (asset) {
+    if (event.target.closest("textarea, input, button, a, .wf-upload")) return;
+    selectRetouch("asset", asset.dataset.asset);
+    return;
+  }
+  const node = event.target.closest(".wf-node");
+  if (node && node.dataset.kind === "shot") {
+    if (event.target.closest("video, textarea, input, button, a")) return;
+    selectRetouch("shot", node.dataset.id);
+    return;
+  }
+  if (!node) clearRetouchSelection();
+}
+
+function bindRetouch() {
+  const panel = document.querySelector("#retouch-panel");
+  if (!panel || panel.dataset.bound) return;
+  panel.dataset.bound = "1";
+  const suggestion = document.querySelector("#retouch-suggestion");
+  if (suggestion) {
+    suggestion.addEventListener("input", () => {
+      rememberRetouchDraft();
+    });
+    suggestion.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        submitRetouch();
+      }
+    });
+  }
+  const submit = document.querySelector("#retouch-submit");
+  if (submit) submit.addEventListener("click", () => submitRetouch());
+  const generate = document.querySelector("#retouch-generate");
+  if (generate) generate.addEventListener("click", () => submitRetouchGenerate());
+  const close = document.querySelector("#retouch-close");
+  if (close) close.addEventListener("click", () => clearRetouchSelection());
+  if (canvasWrap) canvasWrap.addEventListener("click", onCanvasClick);
+}
+
 function bindCanvas() {
+  const crewToggle = document.querySelector("#crew-toggle");
+  const crewBox = document.querySelector("#crew");
+  if (crewToggle && crewBox && !crewToggle.dataset.bound) {
+    crewToggle.dataset.bound = "1";
+    crewToggle.addEventListener("click", () => {
+      const open = crewBox.classList.toggle("open");
+      crewToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
   if (!canvasWrap || canvasWrap.dataset.bound) return;
   canvasWrap.dataset.bound = "1";
   canvasWrap.addEventListener("pointerdown", onCanvasPointerDown);
@@ -3040,6 +3631,7 @@ function bindCanvas() {
 }
 
 bindCanvas();
+bindRetouch();
 
 async function loadConfig() {
   try {
@@ -3127,7 +3719,7 @@ function refitCanvas() {
   });
 }
 
-function setChatOpen(open) {
+function setChatOpen(open, persist) {
   if (main) main.classList.toggle("chat-collapsed", !open);
   const button = document.querySelector("#chat-toggle");
   if (button) {
@@ -3139,17 +3731,24 @@ function setChatOpen(open) {
     if (label) label.textContent = open ? "收起" : "对话";
   }
   if (!open) setSettingsOpen(false);
-  try {
-    localStorage.setItem("aivideo.chat_open", open ? "1" : "0");
-  } catch (_error) {}
+  if (persist !== false) {
+    try {
+      localStorage.setItem("aivideo.chat_open", open ? "1" : "0");
+    } catch (_error) {}
+  }
   refitCanvas();
 }
 
-let chatOpen = false;
-try {
-  chatOpen = localStorage.getItem("aivideo.chat_open") === "1";
-} catch (_error) {}
-setChatOpen(chatOpen);
+function storedChatOpen() {
+  try {
+    const saved = localStorage.getItem("aivideo.chat_open");
+    if (saved === "0") return false;
+    if (saved === "1") return true;
+  } catch (_error) {}
+  return true;
+}
+
+setChatOpen(storedChatOpen(), false);
 const chatToggle = document.querySelector("#chat-toggle");
 if (chatToggle) {
   chatToggle.addEventListener("click", () => {

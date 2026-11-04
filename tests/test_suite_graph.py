@@ -151,6 +151,30 @@ class SuiteGraphTest(unittest.TestCase):
             "任务：独立质检",
         ))
         self.assertIn("short-drama-director/references/h3-adapter.md", suite_files("qc", qc))
+        self.assertEqual(suite_files("qc", qc)[-1], "short-drama-director/references/h3-adapter.md")
+
+    def test_h3_feed_leads_with_the_adapter(self):
+        brief = "\n".join((
+            "阶段：P4",
+            "赛道：1",
+            "来源：1",
+            "动作档：none",
+            "模型：h3",
+            "素材形态：M1",
+            "",
+            "任务：提示词封装",
+        ))
+        files = suite_files("feed", brief)
+        adapter = "short-drama-director/references/h3-adapter.md"
+        seven = "short-drama-director/references/model-adapters.md"
+        self.assertEqual(files[0], adapter)
+        self.assertLess(files.index(adapter), files.index(seven))
+        self.assertEqual(pack_cohorts(files)[0], [adapter])
+        prompt = merge_prompt("feed", brief)
+        self.assertIn("<d>[Chinese]", prompt)
+        self.assertIn("六段英文正文", prompt)
+        seedance = "\n".join(("阶段：P4", "模型：2.5", "任务：提示词封装"))
+        self.assertNotIn("<d>[Chinese]", merge_prompt("feed", seedance))
 
     def test_skill_prompt_is_one_file_without_the_director(self):
         prompt = skill_node_prompt("sd-storyboard-engine/SKILL.md")

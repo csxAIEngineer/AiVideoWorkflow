@@ -9,7 +9,7 @@
       if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
     } catch (_error) {}
   </script>
-  <link rel="stylesheet" href="/styles.css?v=43" />
+  <link rel="stylesheet" href="/styles.css?v=45" />
 </head>
 <body>
   <aside id="app-menu" class="sidebar" aria-label="项目菜单">
@@ -29,6 +29,12 @@
       <div class="stage-switch" role="tablist" aria-label="中心视图">
         <button id="view-canvas" class="seg on" type="button">画布</button>
         <button id="view-preview" class="seg" type="button">预览</button>
+      </div>
+      <div id="crew" class="crew settled">
+        <button id="crew-toggle" class="crew-toggle" type="button" aria-expanded="false" aria-controls="crew-line" aria-label="分工，现在没有人在写">
+          <span class="crew-roles" role="list"></span>
+        </button>
+        <p id="crew-line" class="crew-line"></p>
       </div>
       <div class="stage-zoom">
         <button id="zoom-out" type="button" aria-label="缩小">−</button>
@@ -59,12 +65,48 @@
         <div id="preview-stage" class="preview-stage"></div>
         <p id="preview-empty" class="preview-empty">还没有可以预览的片子</p>
       </div>
+      <aside id="retouch-panel" class="retouch-panel hidden" aria-label="修片" aria-hidden="true">
+        <div class="retouch-head">
+          <b>修片</b>
+          <button id="retouch-close" type="button" aria-label="关闭修片">关闭</button>
+        </div>
+        <p id="retouch-target" class="retouch-target"></p>
+        <p id="retouch-scope" class="retouch-scope"></p>
+        <label class="retouch-feeling" for="retouch-suggestion">感觉 / 方向</label>
+        <textarea id="retouch-suggestion" rows="3" placeholder="更冷一点、镜头再近、别这么油腻"></textarea>
+        <p class="retouch-hint">确认后按预览档自动重跑。成片档另走下面的按钮。</p>
+        <div class="retouch-actions">
+          <button id="retouch-submit" class="retouch-submit" type="button">按这个感觉重修</button>
+          <button id="retouch-generate" class="retouch-generate" type="button">出成片档</button>
+        </div>
+        <p id="retouch-status" class="retouch-status"></p>
+        <p id="retouch-error" class="retouch-error hidden"></p>
+        <details id="retouch-diff" class="retouch-diff" open>
+          <summary>提示词差量</summary>
+          <p id="retouch-diff-meta" class="retouch-diff-meta"></p>
+          <div class="retouch-diff-cols">
+            <div>
+              <h4>改前</h4>
+              <div id="retouch-before" class="retouch-diff-body"></div>
+            </div>
+            <div>
+              <h4>改后</h4>
+              <div id="retouch-after" class="retouch-diff-body"></div>
+            </div>
+          </div>
+        </details>
+        <details id="retouch-advanced" class="retouch-advanced">
+          <summary>高级 / 调试</summary>
+          <p id="retouch-advanced-note" class="retouch-advanced-note"></p>
+          <pre id="retouch-prompt" class="retouch-prompt"></pre>
+        </details>
+      </aside>
       <div id="shot-strip" class="shot-strip" aria-label="镜头"></div>
       </div>
       <div id="chat-column" class="chat-column">
-        <button id="chat-toggle" class="chat-toggle" type="button" aria-expanded="false" aria-controls="thread">
-          <span class="chat-toggle-mark" aria-hidden="true">‹</span>
-          <span class="chat-toggle-label">对话</span>
+        <button id="chat-toggle" class="chat-toggle" type="button" aria-expanded="true" aria-controls="thread">
+          <span class="chat-toggle-mark" aria-hidden="true">›</span>
+          <span class="chat-toggle-label">收起</span>
         </button>
         <section id="thread" class="thread hidden"></section>
           <form id="composer" class="composer">
@@ -153,6 +195,6 @@
     </div>
   </main>
   <script src="/rpc.js?v=1"></script>
-    <script src="/app.js?v=72"></script>
+    <script src="/app.js?v=76"></script>
 </body>
 </html>

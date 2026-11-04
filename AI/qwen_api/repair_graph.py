@@ -19,6 +19,21 @@ _SYSTEM = "\n".join((
     "不要写其他图或其他段。",
     "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。改完的这一块放在 text。",
 ))
+_P45_SKELETON = "\n".join((
+    "这一块是预演故事板。改完仍要能过 P45 机检，标签用这些原文：",
+    "每一段以「## 段 N」单独成行。",
+    "段内写上：本段要验什么、风险提示、故事板提示词（N 格）、第 1 格：、看图先看这三点。",
+    "每一格写全六问：谁在哪、朝哪、看哪、做什么、镜头在哪、光从哪来。",
+    "文末保留「预演故事板：段1~段N ✅」。",
+    "不要写成「段N验证」摘要，不要删掉已有的第 k 格。",
+))
+
+
+def repair_system(brief):
+    """Storyboard repairs must see the P45 labels the gate checks."""
+    if "阶段：storyboard" in str(brief or ""):
+        return _SYSTEM + "\n" + _P45_SKELETON
+    return _SYSTEM
 _ASSET_REPAIR_TOKENS = 2000
 _ASSET_REPAIR_RETRY_TOKENS = 4000
 _ASSET_REPAIR_TIMEOUT = 120
@@ -173,7 +188,7 @@ def _repair_node(unit, model, kind, tokens=None, retry_tokens=None, timeout=None
         _mark(state, unit["id"], "进行中")
         try:
             messages = [
-                {"role": "system", "content": _SYSTEM},
+                {"role": "system", "content": repair_system(state.get("brief") or "")},
                 {"role": "user", "content": _unit_user(unit)},
             ]
             _record(state.get("trace_path") or "", messages)
