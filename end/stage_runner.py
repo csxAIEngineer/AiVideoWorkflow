@@ -1049,7 +1049,8 @@ def auto_gate_action(outcome):
     """Decide what End does after execute returns a gate.
 
     Script, polish, and an already-open per-block question stay human.
-    Recon, asset, storyboard, and feed advance on pass and repair on fail.
+    Recon, asset, storyboard, and feed advance on pass. A failed asset,
+    storyboard, or feed gate is repaired by rules first, then by the model.
     """
     if not outcome or outcome.get("terminal") != "gate":
         return "stop"

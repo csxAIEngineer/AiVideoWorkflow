@@ -907,6 +907,89 @@ def _settle_writer_outcome(project, outcome):
     )
 
 
+_DRAFT_NAME = {"asset": "assets.md", "storyboard": "分镜.md", "feed": "feed.md"}
+_SPEC_FIELD = {"asset": "image_prompts", "storyboard": "storyboard", "feed": "feed"}
+
+
+def _draft_path(folder, stage):
+    name = _DRAFT_NAME.get(stage)
+    if not name:
+        return None
+    return Path(folder) / "_内部_" / name
+
+
+def _sync_spec_field(folder, stage, text):
+    key = _SPEC_FIELD.get(stage)
+    path = Path(folder) / "spec.json"
+    if not key or not path.is_file():
+        return
+    try:
+        spec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(spec, dict):
+        return
+    spec[key] = str(text or "").strip()
+    path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _recheck_after_rules(folder, locks, pipeline, path, title):
+    stage = str(pipeline.get("current") or "")
+    if str(pipeline.get("check") or "") == "machine" and stage == "feed":
+        from end.stage_runner import check_prompt
+
+        code, report = check_prompt(path, (locks or {}).get("model") or "h3", (locks or {}).get("track") or "1")
+        return code == 0, report or ""
+    from end.stage_runner import check_stage
+
+    return check_stage(folder, stage, locks, title or "")
+
+
+def _rule_repair(project, folder, locks, pipeline):
+    """Apply matching rules and re-check. None when no rule changed the draft.
+
+    A rule that clears the failure does not increment ``repairs``. A rule that
+    leaves a failure updates the report and still leaves the AI attempt unused.
+    """
+    stage = str(pipeline.get("current") or "")
+    if stage not in _DRAFT_NAME or pipeline.get("passed"):
+        return None
+    report = str(pipeline.get("report") or pipeline.get("repair") or "")
+    path = _draft_path(folder, stage)
+    if path is None or not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    from end.repair_rules import run_rules
+
+    updated, applied = run_rules(
+        stage,
+        report,
+        text,
+        {"folder": str(folder), "locks": locks or {}, "stage": stage, "report": report},
+    )
+    if not applied:
+        return None
+    body = updated if updated.endswith("\n") else updated + "\n"
+    path.write_text(body, encoding="utf-8")
+    _sync_spec_field(folder, stage, body)
+    pipeline = dict(pipeline)
+    pipeline["rule_repairs"] = int(pipeline.get("rule_repairs") or 0) + len(applied)
+    passed, new_report = _recheck_after_rules(folder, locks, pipeline, path, project.get("title") or "")
+    if passed:
+        pipeline["passed"] = True
+        pipeline["report"] = ""
+        pipeline["repair"] = ""
+        pipeline["check"] = ""
+        return pipeline
+    pipeline["passed"] = False
+    pipeline["report"] = new_report or report
+    pipeline["repair"] = pipeline["report"]
+    return pipeline
+
+
 def _follow_auto_gate(project, folder, locks, outcome):
     """Chain the next write for automatic stages. None leaves the human gate in place."""
     action = auto_gate_action(outcome)
@@ -925,16 +1008,22 @@ def _follow_auto_gate(project, folder, locks, outcome):
         pipeline["repairs"] = 0
         return _mark_writing(project, pipeline, _AUTO_LABEL.get(current, "再写这一段"))
     if action == "rewrite":
-        if str(pipeline.get("check") or "") == "machine":
-            pipeline["machine_repairs"] = int(pipeline.get("machine_repairs") or 0) + 1
-            pipeline["repairs"] = 0
-        pipeline["action"] = "rewrite"
-        pipeline["repair"] = pipeline.get("report") or pipeline.get("repair") or ""
-        pipeline["check"] = ""
-        pipeline["retry_write"] = False
-        pipeline.pop("repair_choices", None)
-        pipeline.pop("repair_round", None)
-        return _mark_writing(project, pipeline, _AUTO_LABEL.get(current, "重写这一段"))
+        ruled = _rule_repair(project, folder, locks, pipeline)
+        if ruled is not None:
+            pipeline = ruled
+            if ruled.get("passed"):
+                action = "advance"
+        if action == "rewrite":
+            if str(pipeline.get("check") or "") == "machine":
+                pipeline["machine_repairs"] = int(pipeline.get("machine_repairs") or 0) + 1
+                pipeline["repairs"] = 0
+            pipeline["action"] = "rewrite"
+            pipeline["repair"] = pipeline.get("report") or pipeline.get("repair") or ""
+            pipeline["check"] = ""
+            pipeline["retry_write"] = False
+            pipeline.pop("repair_choices", None)
+            pipeline.pop("repair_round", None)
+            return _mark_writing(project, pipeline, _AUTO_LABEL.get(current, "重写这一段"))
     if current == "recon":
         locks = copy_locks(locks)
         locks["intel_confirmed"] = True
