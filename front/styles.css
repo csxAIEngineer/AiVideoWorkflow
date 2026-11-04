@@ -1155,6 +1155,7 @@ a.download {
 }
 
 .stage-center {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -2100,4 +2101,248 @@ html[data-theme="dark"] #send:disabled { background: #3a3a40; }
 html[data-theme="dark"] mark {
   background: #5a4a20;
   color: inherit;
+}
+
+.retouch-panel {
+  position: absolute;
+  z-index: 6;
+  top: 12px;
+  right: 12px;
+  bottom: 72px;
+  width: min(380px, calc(100% - 24px));
+  overflow: auto;
+  padding: 14px 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+  box-shadow: 0 16px 40px rgba(20, 24, 40, 0.16);
+}
+
+.retouch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.retouch-head b { font-size: 16px; }
+
+.retouch-head button,
+.retouch-generate {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.retouch-target {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.retouch-scope,
+.retouch-hint,
+.retouch-advanced-note,
+.retouch-diff-meta {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.retouch-feeling {
+  display: block;
+  margin: 8px 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.retouch-panel textarea {
+  width: 100%;
+  min-height: 72px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 10px;
+  resize: vertical;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.retouch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.retouch-submit {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: linear-gradient(180deg, #f2c27a, #d4892a);
+  color: #2a1c08;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.retouch-submit:disabled,
+.retouch-generate:disabled,
+.retouch-head button:disabled,
+.retouch-panel textarea:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.retouch-status {
+  margin: 0 0 8px;
+  min-height: 1.2em;
+  font-size: 13px;
+  color: #9a6410;
+}
+
+.retouch-error {
+  margin: 0 0 8px;
+  color: #b42318;
+  background: #fff2f0;
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.retouch-diff,
+.retouch-advanced,
+.wf-advanced {
+  margin-top: 8px;
+}
+
+.retouch-diff,
+.retouch-advanced {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.retouch-diff summary,
+.retouch-advanced summary,
+.wf-advanced summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.wf-advanced summary {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.wf-advanced textarea { margin-top: 6px; }
+
+.retouch-diff-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.retouch-diff-cols h4 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.retouch-diff-body,
+.retouch-prompt {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 10px;
+  background: #f6f3ee;
+  padding: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.retouch-line.removed { background: rgba(217, 45, 32, 0.16); }
+.retouch-line.added { background: rgba(18, 138, 78, 0.18); }
+
+.retouch-diff-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.wf-asset.is-selected,
+.wf-node.shot.is-selected {
+  border-color: #e2a04a;
+  box-shadow: 0 0 0 1px #e2a04a;
+}
+
+html[data-theme="dark"] .retouch-panel {
+  background: #1c1c20;
+  border-color: #34343a;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+
+html[data-theme="dark"] .retouch-head button,
+html[data-theme="dark"] .retouch-generate {
+  background: #141416;
+  color: var(--text);
+  border-color: #34343a;
+}
+
+html[data-theme="dark"] .retouch-submit {
+  background: linear-gradient(180deg, #f0b45a, #c47a22);
+  color: #1c1408;
+}
+
+html[data-theme="dark"] .retouch-panel textarea,
+html[data-theme="dark"] .retouch-diff-body,
+html[data-theme="dark"] .retouch-prompt {
+  background: #141416;
+  color: var(--text);
+  border-color: #34343a;
+}
+
+html[data-theme="dark"] .retouch-error {
+  background: #3a2220;
+  color: #f0a8a2;
+}
+
+html[data-theme="dark"] .retouch-status { color: #e2c07a; }
+
+html[data-theme="dark"] .retouch-line.removed { background: rgba(240, 168, 162, 0.16); }
+html[data-theme="dark"] .retouch-line.added { background: rgba(141, 206, 168, 0.16); }
+
+html[data-theme="dark"] .wf-asset.is-selected,
+html[data-theme="dark"] .wf-node.shot.is-selected {
+  border-color: #e2a04a;
+  box-shadow: 0 0 0 1px #e2a04a, 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+@media (max-width: 900px) {
+  .retouch-panel {
+    left: 12px;
+    right: 12px;
+    top: auto;
+    width: auto;
+    max-height: min(58vh, 480px);
+    bottom: 72px;
+  }
+
+  .retouch-diff-cols { grid-template-columns: 1fr; }
 }
