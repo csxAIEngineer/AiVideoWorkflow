@@ -271,6 +271,12 @@ def remember(project, status, stage, progress=None):
                 project["progress"]["question"] = stored.get("question") or None
             elif prev.get("question"):
                 project["progress"]["question"] = prev.get("question")
+            for key in ("prompt_diff", "retouching", "retouch_error", "video_submit_mode"):
+                if key in stored:
+                    if stored.get(key):
+                        project["progress"][key] = stored.get(key)
+                elif prev.get(key):
+                    project["progress"][key] = prev.get(key)
             if "calls" in stored:
                 calls = stored.get("calls") or []
                 project["progress"]["calls"] = list(calls) if isinstance(calls, list) else []
@@ -1203,8 +1209,11 @@ def _seedance_only(project):
     return public_view(read_project(project["id"]) or project)
 
 
-def _start_explicit_render(project):
+def _start_explicit_render(project, keep_done=None, video_submit_mode="generate"):
+    from end.render_loop import normalize_video_submit_mode
+
     project_id = project["id"]
+    mode = normalize_video_submit_mode(video_submit_mode)
     spec = load_spec(project_id)
     if not isinstance(spec, dict):
         raise RpcError(409, "还没有提示词")
@@ -1216,7 +1225,13 @@ def _start_explicit_render(project):
         return _ask_aspect(project)
     _store_aspect(project, aspect)
     project = read_project(project_id) or project
-    project["tasks"] = task_plan(spec, soundtrack=project_soundtrack(project))
+    tasks = task_plan(spec, soundtrack=project_soundtrack(project))
+    kept = {str(step_id) for step_id in (keep_done or ())}
+    for task in tasks:
+        if str(task.get("id") or "") in kept:
+            task["state"] = "done"
+            task["detail"] = "已完成"
+    project["tasks"] = tasks
     project["error"] = None
     project["finished_at"] = None
     write_project(project)
@@ -1229,6 +1244,7 @@ def _start_explicit_render(project):
             "phase": "building",
             "message": "出图出片",
             "debug_llm": project_debug_llm(project),
+            "video_submit_mode": mode,
         },
     )
     if _yield_if_paused(project_id):
@@ -1238,7 +1254,10 @@ def _start_explicit_render(project):
             _PIPELINE_HANDOFF[project_id] = "yielded"
             return public_view(read_project(project_id) or project)
         _PIPELINE_HANDOFF[project_id] = "render"
-    start_render_thread(project_id, replace=True)
+    if mode == "preview":
+        start_render_thread(project_id, replace=True, video_submit_mode="preview")
+    else:
+        start_render_thread(project_id, replace=True)
     return public_view(read_project(project_id) or project)
 
 
@@ -1363,6 +1382,17 @@ def handle_agent_task(task):
         return
     if task.kind == "write":
         run_project(task.project_id, debug_llm=bool((task.payload or {}).get("debug_llm")))
+        return
+    if task.kind == "revise":
+        from end.revise import perform_revise
+
+        perform_revise(task.project_id)
+        return
+    if task.kind == "retouch":
+        from end.retouch import perform_retouch
+
+        perform_retouch(task.project_id)
+        return
 
 
 _AGENT_QUEUE = None
@@ -1397,6 +1427,15 @@ def fail_project(project_id, error):
     progress = None
     if "投喂稿机检未通过" in str(error):
         progress = {"phase": "error", "message": "机检未通过"}
+    job = (project.get("progress") or {}).get("retouching") or {}
+    if job:
+        from end.retouch import retouch_failure
+
+        progress = dict(progress or {})
+        progress.setdefault("phase", "error")
+        progress.setdefault("message", "重修失败")
+        progress["retouching"] = None
+        progress["retouch_error"] = retouch_failure(job, error, now())
     remember(project, "error", "失败", progress=progress)
 
 
@@ -1464,15 +1503,15 @@ def finish_image_debug(project, result):
     )
 
 
-def execute_render(project_id, project=None):
+def execute_render(project_id, project=None, video_submit_mode="generate"):
     token = _bind_job(project_id)
     try:
-        _execute_render(project_id, project=project)
+        _execute_render(project_id, project=project, video_submit_mode=video_submit_mode)
     finally:
         _JOB_PROJECT.reset(token)
 
 
-def _execute_render(project_id, project=None):
+def _execute_render(project_id, project=None, video_submit_mode="generate"):
     from end.render_loop import register_thread
 
     register_thread(project_id)
@@ -1494,6 +1533,11 @@ def _execute_render(project_id, project=None):
             payload["debug_llm"] = True
         remember(project, status, message, progress=payload)
 
+    from end.render_loop import normalize_video_submit_mode
+
+    mode = normalize_video_submit_mode(
+        video_submit_mode or (project.get("progress") or {}).get("video_submit_mode")
+    )
     result = run_local_pipeline(
         spec,
         folder,
@@ -1503,6 +1547,7 @@ def _execute_render(project_id, project=None):
         soundtrack=project_soundtrack(project),
         brief=project.get("brief") or "",
         template=project.get("template"),
+        video_submit_mode=mode,
     )
     if result.get("stopped_after") == "images":
         finish_image_debug(project, result)
@@ -1522,14 +1567,18 @@ def _execute_render(project_id, project=None):
             "message": "成片已生成，可以下载",
             "task_id": "subtitles",
             "task_state": "done",
+            "retouching": None,
+            "retouch_error": None,
         },
     )
 
 
-def start_render_thread(project_id, replace=False):
+def start_render_thread(project_id, replace=False, video_submit_mode="generate"):
+    mode = video_submit_mode
+
     def target():
         try:
-            execute_render(project_id)
+            execute_render(project_id, video_submit_mode=mode)
         except Exception as error:
             fail_project(project_id, error)
 
@@ -1630,13 +1679,14 @@ def resume_render(project):
         return read_project(project_id) or fresh
     if action == "aspect":
         return _ask_aspect(fresh)
+    kept_mode = (fresh.get("progress") or {}).get("video_submit_mode") or "generate"
     remember(
         fresh,
         "rendering",
         "继续出片",
         progress={"phase": "images", "message": "继续出片", "project_status": "rendering"},
     )
-    start_render_thread(project_id, replace=True)
+    start_render_thread(project_id, replace=True, video_submit_mode=kept_mode)
     return read_project(project_id) or fresh
 
 
@@ -1675,43 +1725,26 @@ def _spec_asset(spec, asset_id):
 
 
 def save_project_content(project_id, body):
-    """Write script, storyboard, and asset prompts onto the project and spec.json."""
+    """Write canvas text through the rerun persist path, including one shot unit."""
+    from end.rerun import apply_saved_content, persist_edits
+
     if not isinstance(body, dict):
         raise ValueError("内容格式不对")
     with project_lock(project_id):
         project = read_project(project_id)
         if project is None:
             raise KeyError("没有这个项目")
-        spec = load_spec(project_id) or {}
-        changed = False
-        if "script" in body:
-            project["script"] = "" if body.get("script") is None else str(body.get("script"))
-            spec["script"] = project["script"]
-            changed = True
-        if "storyboard" in body:
-            project["storyboard"] = "" if body.get("storyboard") is None else str(body.get("storyboard"))
-            spec["storyboard"] = project["storyboard"]
-            changed = True
-        if "assets" in body:
-            incoming = body.get("assets")
-            if not isinstance(incoming, list):
-                raise ValueError("资产格式不对")
-            if not isinstance(spec.get("assets"), list):
-                raise ValueError("还没有资产")
-            for item in incoming:
-                if not isinstance(item, dict) or "id" not in item:
-                    raise ValueError("资产格式不对")
-                target = _spec_asset(spec, str(item.get("id") or ""))
-                if target is None:
-                    raise ValueError("没有资产 " + str(item.get("id") or ""))
-                if "prompt" in item:
-                    target["prompt"] = "" if item.get("prompt") is None else str(item.get("prompt"))
-            changed = True
-        if not changed:
-            raise ValueError("没有要保存的内容")
+        spec = apply_saved_content(load_spec(project_id) or {}, body)
         folder = project_dir(project_id)
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+        persist_edits(folder, spec, body)
+        if "script" in body:
+            project["script"] = spec.get("script") or ""
+        if "storyboard" in body:
+            project["storyboard"] = spec.get("storyboard") or ""
+        if "assets" in body:
+            project["image_prompts"] = spec.get("image_prompts") or ""
         project["updated_at"] = now()
         write_project(project)
         return project
@@ -2167,6 +2200,54 @@ def rpc_control(action, params):
     return public_view(read_project(project["id"]))
 
 
+def rpc_retouch(params):
+    """Revise one rendered still or shot from a feeling, then preview the affected steps."""
+    from end.retouch import accept_retouch
+
+    project_id = str((params or {}).get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目")
+    try:
+        project = accept_retouch(
+            project_id,
+            (params or {}).get("node"),
+            (params or {}).get("target_id"),
+            (params or {}).get("suggestion"),
+        )
+    except KeyError as error:
+        raise RpcError(404, str(error))
+    except ValueError as error:
+        raise RpcError(400, str(error))
+    except RuntimeError as error:
+        raise RpcError(409, str(error))
+    return public_view(project or read_project(project_id))
+
+
+def rpc_rerun(params):
+    """Rerun one still or shot. Omitted grade is preview; 出成片档 sends generate."""
+    from end.retouch import rerun_selected
+
+    project_id = str((params or {}).get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目")
+    try:
+        view = rerun_selected(
+            project_id,
+            (params or {}).get("node"),
+            (params or {}).get("target_id"),
+            (params or {}).get("grade") if "grade" in (params or {}) else None,
+        )
+    except KeyError as error:
+        raise RpcError(404, str(error))
+    except ValueError as error:
+        raise RpcError(400, str(error))
+    except RuntimeError as error:
+        raise RpcError(409, str(error))
+    if view is None:
+        return public_view(read_project(project_id))
+    return view
+
+
 def rpc_save_content(params):
     project_id = str(params.get("id") or "")
     if not valid_id(project_id):
@@ -2339,6 +2420,10 @@ def rpc_call(method, params):
         return rpc_control("reset", params)
     if method == "projects.save_content":
         return rpc_save_content(params)
+    if method == "projects.retouch":
+        return rpc_retouch(params)
+    if method == "projects.rerun":
+        return rpc_rerun(params)
     if method == "projects.set_asset_image":
         return rpc_set_asset_image(params)
     if method == "projects.logs":

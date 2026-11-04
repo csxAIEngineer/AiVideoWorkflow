@@ -134,6 +134,21 @@ def thread_alive(project_id):
     return thread is not None and thread.is_alive()
 
 
+def thread_is_current(project_id):
+    """True when this thread is the one registered for the project."""
+    with _GUARD:
+        thread = _THREADS.get(project_id)
+    return thread is not None and thread is threading.current_thread()
+
+
+def normalize_video_submit_mode(value):
+    """Parameter profile for a clip submit. Retouch uses preview; a full render uses generate."""
+    text = str(value or "").strip().lower()
+    if text in ("preview", "generate"):
+        return text
+    return "generate"
+
+
 def empty_state():
     return {
         "phase": "",
@@ -222,6 +237,57 @@ def _output_file(work_dir, relative):
     if path.is_absolute() or ".." in path.parts:
         return None
     return Path(work_dir) / "outputs" / path
+
+
+def _unlink_render_output(path):
+    if path is None:
+        return
+    for candidate in (path, Path(str(path) + ".part")):
+        try:
+            if candidate.is_file():
+                candidate.unlink()
+        except OSError:
+            pass
+
+
+def invalidate_steps(work_dir, project_id, steps):
+    """Mark the listed steps pending and delete their outputs. Every other step stays done."""
+    folder = Path(work_dir)
+    lock = project_lock(project_id or str(folder))
+    with lock:
+        state = load_run_state(folder)
+        stored = state.setdefault("steps", {})
+        for step_id, kind in steps:
+            kind = str(kind or "image")
+            step = dict(stored.get(step_id) or blank_step(kind))
+            previous = _output_file(folder, step.get("output_file"))
+            canonical, _relative = output_paths(folder, step_id, kind)
+            _unlink_render_output(previous)
+            _unlink_render_output(canonical)
+            if kind == "subtitles":
+                _unlink_render_output(folder / "outputs" / "字幕.ass")
+            step["kind"] = kind
+            step["status"] = "pending"
+            step["remote_task_id"] = ""
+            step["poll_url"] = ""
+            step["idempotency_key"] = ""
+            step["attempts"] = 0
+            step["epoch"] = int(step.get("epoch") or 0) + 1
+            step["output_file"] = ""
+            step["public_url"] = ""
+            step["local_override"] = False
+            step["error"] = ""
+            step.pop("video_mode", None)
+            step.pop("video_platform", None)
+            stored[step_id] = step
+        if steps:
+            state["current_step"] = steps[0][0]
+            state["phase"] = ""
+            state["paused"] = False
+            state["pause_reason"] = ""
+            state["paused_by"] = ""
+        save_run_state(folder, state)
+        return state
 
 
 def _reset_target(state):
@@ -1139,10 +1205,12 @@ class RenderContext(object):
         duration_of=None,
         template=None,
         aspect="",
+        video_submit_mode="generate",
     ):
         self.work_dir = Path(work_dir)
         self.template = template
         self.aspect = aspect or ""
+        self.video_submit_mode = normalize_video_submit_mode(video_submit_mode)
         self.on_progress = on_progress
         self.project_id = project_id or ""
         self.icreat = icreat
@@ -1975,6 +2043,7 @@ def run_local_pipeline(
     duration_of=None,
     template=None,
     aspect="",
+    video_submit_mode="generate",
 ):
     """Generate stills, then clips, join them, optionally mix a soundtrack, then burn 字幕.ass.
 
@@ -2019,6 +2088,7 @@ def run_local_pipeline(
         duration_of=duration_of,
         template=template,
         aspect=aspect,
+        video_submit_mode=video_submit_mode,
     )
     if project_id:
         register_thread(project_id)
@@ -2168,7 +2238,7 @@ def run_local_pipeline(
                 raise RuntimeError("没有锁定画幅，不能默认竖屏")
             ratio = ctx.aspect if mode == "text" else None
             # Shot media mode is text, frames, or reference. Parameter mode
-            # is separate: final render uses the generate parameter set.
+            # is separate: a full render uses generate; a retouch rerun uses preview.
             return cr.submit_video(
                 text,
                 model=VIDEO_MODE_MODELS[mode],
@@ -2177,7 +2247,7 @@ def run_local_pipeline(
                 images=media or None,
                 idempotency_key=key,
                 timeout=180,
-                mode="generate",
+                mode=ctx.video_submit_mode,
             )
 
         def poll(task_id, shot_id=shot_id):

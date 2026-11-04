@@ -10,7 +10,7 @@ from pathlib import Path
 
 from end.prompt_gate import align_feed_unit_headers, delivery_units
 from end.repair_units import asset_pieces
-from end.render_loop import invalidate_steps, load_run_state
+from end.render_loop import invalidate_steps, load_run_state, thread_is_current
 from end.stage_runner import markdown_from_asset_items, stages_for
 from end.trace import clear_downstream, write_internal
 from end.workflow_from_spec import _safe_id, collect_steps
@@ -158,8 +158,12 @@ def rerun_ready(project, folder):
     return False
 
 
-def rerun_from(project_id, node, target_id=""):
-    """Rerun from a canvas node. Returns a public view when render must ask first."""
+def rerun_from(project_id, node, target_id="", video_submit_mode="generate"):
+    """Rerun from a canvas node. Returns a public view when render must ask first.
+
+    video_submit_mode selects the clip parameter profile. The default is generate.
+    Retouch passes preview so the automatic rerun stays on the cheaper route.
+    """
     from end import server as site
 
     node = str(node or "")
@@ -192,14 +196,28 @@ def rerun_from(project_id, node, target_id=""):
         site.gate_for(project_id).resume()
         if resume is not None:
             return _rerun_writing(site, project, spec, folder, node, steps, resume)
-        return _rerun_render(site, project, folder, steps)
+        return _rerun_render(
+            site,
+            project,
+            folder,
+            steps,
+            video_submit_mode=video_submit_mode,
+        )
 
 
 def _worker_busy(site, project_id):
-    """The write queue thread stays alive after it yields. Only a live handoff is busy."""
+    """The write queue thread stays alive after it yields. Only a live handoff is busy.
+
+    The thread that already owns the handoff may continue into a rerun. Another
+    request still has to wait.
+    """
     if not site.thread_alive(project_id):
         return False
-    return site._PIPELINE_HANDOFF.get(project_id) in ("writer", "render")
+    if site._PIPELINE_HANDOFF.get(project_id) not in ("writer", "render"):
+        return False
+    if thread_is_current(project_id):
+        return False
+    return True
 
 
 def _figure_block(number, old_body, prompt):
@@ -470,7 +488,7 @@ def _rerun_writing(site, project, spec, folder, node, steps, resume):
     return None
 
 
-def _rerun_render(site, project, folder, steps):
+def _rerun_render(site, project, folder, steps, video_submit_mode="generate"):
     invalidate_steps(folder, project["id"], steps)
     if any(kind in ("join", "subtitles", "video") for _step_id, kind in steps):
         _drop_film(folder, project)
@@ -479,4 +497,8 @@ def _rerun_render(site, project, folder, steps):
     project["error"] = None
     site.write_project(project)
     fresh = site.read_project(project["id"]) or project
-    return site._start_explicit_render(fresh, keep_done=kept)
+    return site._start_explicit_render(
+        fresh,
+        keep_done=kept,
+        video_submit_mode=video_submit_mode,
+    )
