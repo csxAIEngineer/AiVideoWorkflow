@@ -9,7 +9,7 @@
       if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
     } catch (_error) {}
   </script>
-  <link rel="stylesheet" href="/styles.css?v=43" />
+  <link rel="stylesheet" href="/styles.css?v=44" />
 </head>
 <body>
   <aside id="app-menu" class="sidebar" aria-label="项目菜单">
@@ -29,6 +29,12 @@
       <div class="stage-switch" role="tablist" aria-label="中心视图">
         <button id="view-canvas" class="seg on" type="button">画布</button>
         <button id="view-preview" class="seg" type="button">预览</button>
+      </div>
+      <div id="crew" class="crew settled">
+        <button id="crew-toggle" class="crew-toggle" type="button" aria-expanded="false" aria-controls="crew-line" aria-label="分工，现在没有人在写">
+          <span class="crew-roles" role="list"></span>
+        </button>
+        <p id="crew-line" class="crew-line"></p>
       </div>
       <div class="stage-zoom">
         <button id="zoom-out" type="button" aria-label="缩小">−</button>
@@ -153,6 +159,6 @@
     </div>
   </main>
   <script src="/rpc.js?v=1"></script>
-    <script src="/app.js?v=73"></script>
+    <script src="/app.js?v=74"></script>
 </body>
 </html>

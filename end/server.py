@@ -43,6 +43,7 @@ from end.ai_client import (
     drill as ai_drill,
     write as ai_write,
 )
+from end.crew import attach_crew
 from end.db import DATA, connect, delete_project, list_projects, project_dir, read_project, write_project
 from end.image_store import get_image_store
 from end.render_loop import (
@@ -413,7 +414,7 @@ def public_view(project):
         "images": list_output_images(project["id"]),
         "clips": list_output_clips(project["id"]),
         "materials": public_materials(project["id"]),
-        "progress": project.get("progress") or {"percent": 0, "phase": "", "message": project.get("stage") or ""},
+        "progress": attach_crew(project),
         "question": (project.get("progress") or {}).get("question") or None,
         "deliverables": list_deliverables(folder),
     }

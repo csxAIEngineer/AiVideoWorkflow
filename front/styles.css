@@ -1424,6 +1424,100 @@ a.download {
   min-width: 3em;
 }
 
+.crew {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.stage-bar .crew-toggle {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  color: inherit;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.stage-bar .crew-toggle:hover,
+.stage-bar .crew-toggle:focus-visible {
+  border-color: transparent;
+  color: inherit;
+}
+
+.crew-roles {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.crew-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.crew-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #d2c9bd;
+  flex: none;
+}
+
+.crew-role.on {
+  color: var(--accent);
+  background: #e8f0ff;
+  border-color: #c9d4ff;
+}
+
+.crew-role.on .crew-dot { background: var(--accent); }
+
+.crew-role.live .crew-dot {
+  animation: crew-breathe 2.8s ease-in-out infinite;
+}
+
+.crew.settled .crew-role { color: #b3aa9f; }
+
+.crew-line {
+  display: none;
+  margin: 0;
+  min-width: 0;
+  max-width: min(32ch, 34vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.crew:hover .crew-line,
+.crew.open .crew-line { display: block; }
+
+@keyframes crew-breathe {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crew-role.live .crew-dot { animation: none; opacity: 1; }
+}
+
 .dock-toggle { display: inline-flex; }
 
 .canvas-wrap {
@@ -1846,11 +1940,26 @@ html[data-theme="dark"] #minimax-video {
 html[data-theme="dark"] .side-tabs button.on,
 html[data-theme="dark"] .stage-bar button.on,
 html[data-theme="dark"] .shot-chip.on,
-html[data-theme="dark"] .choice-rec {
+html[data-theme="dark"] .choice-rec,
+html[data-theme="dark"] .crew-role.on {
   background: #22283a;
   border-color: #4a5680;
   color: var(--accent);
 }
+
+html[data-theme="dark"] .stage-bar .crew-toggle {
+  background: transparent;
+  border-color: transparent;
+  color: inherit;
+}
+
+html[data-theme="dark"] .crew-dot { background: #4e4a45; }
+
+html[data-theme="dark"] .crew-role.on .crew-dot { background: var(--accent); }
+
+html[data-theme="dark"] .crew.settled .crew-role { color: #6f6a64; }
+
+html[data-theme="dark"] .crew-line { color: var(--muted); }
 
 html[data-theme="dark"] .item-row.active,
 html[data-theme="dark"] .item-row:hover,
