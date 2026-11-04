@@ -1033,6 +1033,8 @@ function syncComposer() {
   if (materialFile) materialFile.disabled = !showBrief || sending;
   if (showOther) briefEl.placeholder = "写下你的方向";
   else if (showBrief) briefEl.placeholder = "文字决定要拍成什么样：时长、广告、感觉、情节和结尾。用户没写的部分，用读图补上身份和场景。";
+  // The ready reply is painted while `sending` is still true, and a done project stops polling.
+  if (current) syncControlButtons(current);
 }
 
 function workflowMode(project) {
