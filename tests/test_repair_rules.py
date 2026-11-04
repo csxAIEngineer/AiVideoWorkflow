@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import end.db as db
 from end.db import project_dir, read_project, write_project
-from end.gates import GATE_CHECK, check_feed, check_gate
+from end.gates import GATE_CHECK, check_feed, check_gate, check_p45
 from end.locks import prepare_locks, write_locks
 from end.repair_rules import run_rules
 from end.server import run_project
@@ -236,6 +236,138 @@ class RuleBeforeModelTest(unittest.TestCase):
         self.assertEqual(saved["progress"]["pipeline"]["rule_repairs"], 3)
         self.assertIn("未找到投喂单元", saved["messages"][-1]["content"])
         self.assertIn("缺【画幅风格】", saved["messages"][-1]["content"])
+
+
+_SIXQ = "P453 段3 第2格缺六问：朝哪、做什么"
+_DJY = Path(__file__).resolve().parent / "fixtures" / "djy-sb.md"
+_DJY_REPORT = "\n".join((
+    "[i] 都江堰风与水的重逢-预演故事板.md · 段 4",
+    "[!] WARN: P453 段1 第2格疑似缺：朝哪",
+    "[-] FAIL: " + _SIXQ,
+    "[-] 1 error(s)",
+))
+_STORYBOARD = "分镜稿保持原样\n"
+_SYNTH = "\n".join((
+    "素材形态：M1",
+    "",
+    "## 段 1",
+    "**本段要验什么**：站位",
+    "**风险提示**：左右不要对调",
+    "### 故事板提示词（3 格）",
+    "第 1 格：两人站在桥上相对而立，身体微侧，视线看向前方，镜头平视中景，光从上方照来。",
+    "第 2 格：远处只剩背影，面向江面，视线望向对岸，双手握紧，镜头平视中景，光从侧上方照来。",
+    "第 3 格：男主站在堤边，视线看向水面，右手伸出，镜头在侧面中景，光从上方照来。",
+    "看图先看这三点：人、位、光",
+    "",
+    "预演故事板：段1~段1 ✅",
+    "",
+))
+
+
+class StoryboardP453SixqRuleTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, report, text=_STORYBOARD):
+        return run_rules("storyboard", report, text, {"folder": str(self.folder)})
+
+    def test_djy_sixq_error_is_cleared_on_previs_and_stays_put(self):
+        original = _DJY.read_text(encoding="utf-8")
+        internal = self.folder / "_内部_"
+        internal.mkdir()
+        previs = internal / "previs.md"
+        previs.write_text(original, encoding="utf-8")
+        copy = self.folder / "都江堰风与水的重逢-预演故事板.md"
+        copy.write_text(original, encoding="utf-8")
+        code, before = check_p45(previs)
+        self.assertNotEqual(code, 0)
+        self.assertIn(_SIXQ, before)
+
+        updated, applied = self._run(_DJY_REPORT)
+        self.assertEqual(applied, ["storyboard-p453-sixq"])
+        self.assertEqual(updated, _STORYBOARD)
+        patched = previs.read_text(encoding="utf-8")
+        self.assertEqual(copy.read_text(encoding="utf-8"), patched)
+        self.assertNotEqual(patched, original)
+        self.assertIn("男主和女主在索桥中央面对面站立，男主在左女主在右", patched)
+        self.assertIn("两人保持面对面正对站立，身体静止停住", patched)
+        self.assertIn("女主双手自然下垂停住", patched)
+        self.assertIn("身体微侧身", patched)
+        self.assertIn("平稳踩停", patched)
+        self.assertIn("并肩站立", patched)
+        self.assertNotIn("并肩而立", patched)
+        self.assertIn("全景背影", patched)
+        self.assertNotIn("背影站在", patched)
+        self.assertIn("，身体正对前方", patched)
+        code, after = check_p45(previs)
+        self.assertEqual(code, 0, after)
+        self.assertNotIn("缺六问", after)
+        self.assertNotIn("疑似缺", after)
+
+        again_text = previs.read_text(encoding="utf-8")
+        again, second = self._run(_DJY_REPORT)
+        self.assertEqual(second, [])
+        self.assertEqual(again, _STORYBOARD)
+        self.assertEqual(previs.read_text(encoding="utf-8"), again_text)
+        self.assertEqual(copy.read_text(encoding="utf-8"), again_text)
+
+    def test_match_ignores_other_reports_and_stages(self):
+        original = _DJY.read_text(encoding="utf-8")
+        internal = self.folder / "_内部_"
+        internal.mkdir()
+        previs = internal / "previs.md"
+        previs.write_text(original, encoding="utf-8")
+        cases = (
+            ("storyboard", "[!] WARN: P453 段1 第2格疑似缺：朝哪"),
+            ("storyboard", "FAIL: P451 段1 缺「本段要验什么」"),
+            ("feed", _DJY_REPORT),
+            ("asset", _DJY_REPORT),
+        )
+        for stage, report in cases:
+            updated, applied = run_rules(stage, report, _STORYBOARD, {"folder": str(self.folder)})
+            self.assertEqual(applied, [], report)
+            self.assertEqual(updated, _STORYBOARD)
+            self.assertEqual(previs.read_text(encoding="utf-8"), original)
+        updated, applied = run_rules("storyboard", _DJY_REPORT, _STORYBOARD, {})
+        self.assertEqual(applied, [])
+        self.assertEqual(updated, _STORYBOARD)
+
+    def test_bridges_fillers_and_board_fallback(self):
+        from end.repair_rules.storyboard_p453_sixq import _BRIDGES, _FILLERS, _checker
+
+        checker = _checker()
+        self.assertEqual(set(_FILLERS), set(checker.SIX))
+        self.assertTrue({key for key, _pattern, _replacement in _BRIDGES} <= set(checker.SIX))
+        board = self.folder / "样例-预演故事板.md"
+        board.write_text(_SYNTH, encoding="utf-8")
+        code, before = check_p45(board)
+        self.assertNotEqual(code, 0)
+        self.assertIn("缺六问", before)
+
+        updated, applied = self._run("FAIL: P453 段1 第1格缺六问：朝哪、做什么")
+        self.assertEqual(applied, ["storyboard-p453-sixq"])
+        self.assertEqual(updated, _STORYBOARD)
+        previs = self.folder / "_内部_" / "previs.md"
+        patched = previs.read_text(encoding="utf-8")
+        self.assertEqual(board.read_text(encoding="utf-8"), patched)
+        self.assertIn("相对面朝而立", patched)
+        self.assertIn("身体微侧身", patched)
+        self.assertIn("，动作停住", patched)
+        self.assertIn("背影站在", patched)
+        self.assertNotIn("人物站在画面中", patched)
+        self.assertIn("，身体正对前方", patched)
+        code, after = check_p45(previs)
+        self.assertEqual(code, 0, after)
+        self.assertNotIn("缺六问", after)
+        self.assertNotIn("疑似缺", after)
+        snapshot = patched
+        _again, second = self._run("FAIL: P453 段1 第1格缺六问：朝哪、做什么")
+        self.assertEqual(second, [])
+        self.assertEqual(previs.read_text(encoding="utf-8"), snapshot)
 
 
 if __name__ == "__main__":
