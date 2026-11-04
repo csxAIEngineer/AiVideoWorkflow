@@ -986,6 +986,8 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
             reply = "投喂机检没过。根据建议修改会按下面这些项改。"
         else:
             reply = "机检没过。根据建议修改会按下面这些项改。"
+        if tries:
+            reply = "已自动改了%d次，还是没过。%s" % (tries, reply)
         if tail:
             reply = reply + "\n" + tail
         options = [ASSET_REVISE]
@@ -1041,6 +1043,46 @@ def gate_result(stage, passed, report, pipeline, has_draft=False):
             "cards": [],
         },
     }
+
+
+def auto_gate_action(outcome):
+    """Decide what End does after execute returns a gate.
+
+    Script, polish, and an already-open per-block question stay human.
+    Recon, asset, storyboard, and feed advance on pass. A failed asset,
+    storyboard, or feed gate is repaired by rules first, then by the model.
+    """
+    if not outcome or outcome.get("terminal") != "gate":
+        return "stop"
+    progress = outcome.get("progress") or {}
+    pipeline = progress.get("pipeline") or {}
+    question = progress.get("question") or {}
+    if question.get("id") in ("script_revise", "asset_repair_choice"):
+        return "stop"
+    current = str(pipeline.get("current") or "")
+    passed = bool(pipeline.get("passed"))
+    retries = int(pipeline.get("auto_retries") or 0)
+    repairs = int(pipeline.get("repairs") or 0)
+    needs_retry = bool(pipeline.get("retry_write")) and not passed
+    if current == "script":
+        if needs_retry and retries < REPAIR_LIMIT - 1:
+            return "retry_write"
+        return "stop"
+    if current not in ("recon", "asset", "storyboard", "feed"):
+        return "stop"
+    if needs_retry:
+        if retries >= REPAIR_LIMIT - 1:
+            return "stop"
+        return "retry_write"
+    if not passed:
+        if str(pipeline.get("check") or "") == "machine":
+            if int(pipeline.get("machine_repairs") or 0) >= REPAIR_LIMIT:
+                return "stop"
+            return "rewrite"
+        if repairs >= REPAIR_LIMIT:
+            return "stop"
+        return "rewrite"
+    return "advance"
 
 
 def _spec_patch(stage, result, previous):
@@ -2927,7 +2969,11 @@ def _done(project, folder, locks, pipeline, write_model):
 
 
 def execute(project, folder, locks, write_model, load_pack):
-    """Write the current stage, or finish. Stop at the gate. Do not continue into the next stage."""
+    """Write the current stage, or finish. Stop at the gate. Do not continue into the next stage.
+
+    Asset, storyboard, and feed still return after one attempt. The server chains
+    the next repair or the next stage so those gates are not a human click.
+    """
     progress = project.get("progress") or {}
     pipeline = dict(progress.get("pipeline") or {})
     only = pipeline.get("only") or ""
@@ -2968,7 +3014,13 @@ def execute(project, folder, locks, write_model, load_pack):
     checked = False
     spec = _load_spec(folder)
     attempts = 0
+    if action == "rewrite" and current in ("asset", "storyboard", "feed"):
+        attempts = int(pipeline.get("repairs") or 0)
     while True:
+        if attempts >= REPAIR_LIMIT and current in ("asset", "storyboard", "feed"):
+            passed = bool(pipeline.get("passed"))
+            report = str(pipeline.get("report") or "")
+            break
         project = _project_with_pipeline(project, pipeline)
         from end.trace import finish_trace, stage_output
 
@@ -3120,35 +3172,10 @@ def execute(project, folder, locks, write_model, load_pack):
         pipeline,
         has_draft=storyboard_has_draft(folder),
     )
-    if current == "asset" and not passed and pipeline.get("repair_round"):
-        from end.repair_units import reopen_asset_question
-
-        kept, question = reopen_asset_question(
-            _read(Path(folder) / "_内部_" / "assets.md"),
-            pipeline.get("repair_choices") or {},
-        )
-        if question:
-            outcome = _attach_asset_choice(outcome, question, kept)
     outcome["spec"] = spec
     outcome["used_stage"] = current
     outcome["mount"] = mount_header(current, locks, carried_text(folder, current), only)
     return outcome
-
-
-def _attach_asset_choice(outcome, question, choices):
-    """Replace the generic gate with one block's direction question."""
-    progress = dict(outcome.get("progress") or {})
-    pipeline = dict(progress.get("pipeline") or {})
-    pipeline["repair_choices"] = choices
-    pipeline["repair_round"] = True
-    pipeline["action"] = "wait"
-    progress["pipeline"] = pipeline
-    progress["question"] = question
-    progress["message"] = "选一个改法"
-    attached = dict(outcome)
-    attached["progress"] = progress
-    attached["message"] = question_message(question)
-    return attached
 
 
 def question_message(question):
@@ -3188,6 +3215,13 @@ def accept_pipeline(pipeline, locks):
     pipeline["accepted"] = accepted
     stages = stages_for(locks, pipeline.get("only") or "")
     nxt = next_pending(stages, accepted)
+    pipeline["repairs"] = 0
+    pipeline["auto_retries"] = 0
+    pipeline["repair"] = ""
+    pipeline["report"] = ""
+    pipeline["retry_write"] = False
+    if nxt and nxt != "feed":
+        pipeline["machine_repairs"] = 0
     if not nxt:
         pipeline["action"] = "finish"
         pipeline["current"] = current

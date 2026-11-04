@@ -100,7 +100,81 @@ function isDebugProject(project) {
   return !!(project && (project.debug_llm || (project.progress && project.progress.debug_llm) || phase === "llm_debug" || phase === "image_debug"));
 }
 
+// Non-script stages End runs by itself after the script gate. Copy comes from
+// phase, crew role, and the pipeline already on the project.
+function autoStageKey(project) {
+  const progress = (project && project.progress) || {};
+  const pipeline = progress.pipeline || {};
+  const phase = String(progress.phase || "");
+  const role = String(progress.active_role || "");
+  const current = String(pipeline.current || "");
+  const action = String(pipeline.action || "");
+  const message = String(progress.message || (project && project.stage) || "");
+  if (phase === "gate_machine" || phase === "qc" || action === "finish" || role === "check" || pipeline.check === "machine") return "check";
+  if ((message.indexOf("机检") >= 0 || message.indexOf("质检") >= 0) && message.indexOf("已过") < 0 && phase.indexOf("gate_") !== 0) return "check";
+  if (current === "asset" || current === "storyboard" || current === "feed" || current === "script" || current === "recon") return current;
+  if (role === "asset" || role === "storyboard" || role === "feed") return role;
+  if (message.indexOf("资产") >= 0) return "asset";
+  if (message.indexOf("分镜") >= 0) return "storyboard";
+  if (message.indexOf("投喂") >= 0 || message.indexOf("封装") >= 0) return "feed";
+  if (message.indexOf("剧本") >= 0) return "script";
+  if (message.indexOf("分流") >= 0 || message.indexOf("对标") >= 0) return "recon";
+  return "";
+}
+
+function repairAttempt(pipeline) {
+  const stored = pipeline || {};
+  const action = String(stored.action || "");
+  const machine = Number(stored.machine_repairs) || 0;
+  const repairs = Number(stored.repairs) || 0;
+  const retries = Number(stored.auto_retries) || 0;
+  if (action === "rewrite") {
+    if (machine > 0 && repairs <= 0) return machine;
+    if (repairs > 0) return repairs;
+    if (machine > 0) return machine;
+  }
+  if (retries > 0 && action === "write") return retries;
+  return 0;
+}
+
+function autoRun(project) {
+  if (!project || project.status !== "writing") return null;
+  if (isIntentDebug(project) || isPromptDebug(project) || isDebugProject(project)) return null;
+  const progress = project.progress || {};
+  const phase = progress.phase || "";
+  if (phase && phase !== "writing" && phase !== "qc") return null;
+  const key = autoStageKey(project);
+  if (key !== "asset" && key !== "storyboard" && key !== "feed" && key !== "check") return null;
+  const attempt = repairAttempt(progress.pipeline || {});
+  let text = key === "check" ? "正在机检…" : ({
+    asset: "正在自动写资产…",
+    storyboard: "正在自动写分镜…",
+    feed: "正在自动写投喂…",
+  })[key];
+  if (attempt) text += "，自动返修第 " + attempt + " 次";
+  return { key: key, text: text, attempt: attempt };
+}
+
+function continueCue(text) {
+  const raw = String(text || "");
+  return raw.indexOf("继续才") >= 0
+    || raw.indexOf("继续就") >= 0
+    || raw.indexOf("继续之后") >= 0
+    || raw.indexOf("点继续") >= 0
+    || raw.indexOf("确认后才") >= 0;
+}
+
+function liveNodeKind(project) {
+  if (!project || project.status !== "writing") return "";
+  const key = autoStageKey(project);
+  if (key === "asset") return "image";
+  if (key === "storyboard" || key === "script") return key;
+  return "";
+}
+
 function statusText(project) {
+  const running = autoRun(project);
+  if (running) return running.text;
   if (project.status === "gate") return project.stage || "停在门上";
   if (project.status === "drilling") {
     const phase = project.progress && project.progress.phase;
@@ -178,6 +252,10 @@ function jobIndex(project) {
       gate_fail: 6,
     };
     if (gateSteps[phase] != null) return gateSteps[phase];
+  }
+  if (project.status === "writing") {
+    const mapped = { recon: 1, script: 2, asset: 3, storyboard: 4, feed: 5, check: 6 }[autoStageKey(project)];
+    if (mapped != null) return mapped;
   }
   if (phase === "prompts_ready" || project.has_board) return JOB_STEPS.length;
   if (project.status === "done" || project.status === "building" || project.status === "rendering") return JOB_STEPS.length;
@@ -424,13 +502,14 @@ function progressPanel(project) {
       : isDebugProject(project)
         ? ["建立项目", "写提示词", "生图", "Debug 结束"]
         : JOB_STEPS;
+  const running = autoRun(project);
   stepLabels.forEach((label, step) => {
     const item = document.createElement("li");
     const earlyStop = isDebugProject(project) && (project.progress || {}).phase === "llm_debug";
     const done = (project.status === "done" && !earlyStop) || step < index;
     if (done) item.className = "done";
     else if ((project.status === "error" || project.status === "paused") && step === index) item.className = project.status === "paused" ? "paused" : "failed";
-    else if (step === index) item.className = "current";
+    else if (step === index) item.className = running ? "current live" : "current";
     item.textContent = label;
     steps.append(item);
   });
@@ -450,8 +529,8 @@ function progressPanel(project) {
   panel.append(barWrap);
 
   const message = document.createElement("p");
-  message.className = "job-message";
-  message.textContent = progress.message || project.stage || (project.status === "error" ? "未完成" : "处理中");
+  message.className = "job-message" + (running ? " auto-run" : "");
+  message.textContent = running ? running.text : (progress.message || project.stage || (project.status === "error" ? "未完成" : "处理中"));
   panel.append(message);
   const calls = Array.isArray(progress.calls) ? progress.calls : [];
   if (calls.length) {
@@ -1147,6 +1226,7 @@ function syncCrew(project) {
   if (!box || !toggle || !roles || !line) return;
   if (!project) {
     box.classList.add("settled");
+    box.classList.remove("speaking");
     box.classList.remove("open");
     toggle.setAttribute("aria-expanded", "false");
     toggle.setAttribute("aria-label", "分工，现在没有人在写");
@@ -1158,10 +1238,12 @@ function syncCrew(project) {
   const progress = project.progress || {};
   const crew = Array.isArray(progress.crew) && progress.crew.length ? progress.crew : CREW_FALLBACK;
   const active = String(progress.active_role || "");
+  const running = autoRun(project);
   const live = !!(active && project.status === "writing");
-  const note = crewNote(project);
+  const note = running ? running.text : crewNote(project);
   const sig = crew.map((item) => (item.id || "") + ":" + (item.name || "")).join("|") + "#" + active + (live ? "*" : "") + "#" + note;
   box.classList.toggle("settled", !active);
+  box.classList.toggle("speaking", !!running);
   if (syncCrew.projectId !== project.id) {
     box.classList.remove("open");
     toggle.setAttribute("aria-expanded", "false");
@@ -1170,7 +1252,7 @@ function syncCrew(project) {
   const activeName = (crew.find((item) => item.id === active) || {}).name || "";
   toggle.setAttribute(
     "aria-label",
-    activeName ? activeName + (live ? "正在进行" : "停在这一步") : "分工，现在没有人在写"
+    running ? running.text : (activeName ? activeName + (live ? "正在进行" : "停在这一步") : "分工，现在没有人在写")
   );
   line.textContent = note;
   if (syncCrew.sig === sig) return;
@@ -1195,8 +1277,57 @@ function syncCrew(project) {
   });
 }
 
+function liveCopy(project, kind) {
+  const running = autoRun(project);
+  if (!running || liveNodeKind(project) !== kind) return "";
+  return running.text;
+}
+
+function restingMeta(project, node) {
+  const kind = node.dataset.kind;
+  if (kind === "image") return ((project.assets || []).length) + " 张 · 必须";
+  if (kind === "shot") {
+    const shot = (project.shots || []).find((item) => item.id === node.dataset.id);
+    if (shot && shot.duration != null && shot.duration !== "") return shot.duration + " 秒";
+    const count = node.querySelectorAll(".wf-thumb").length;
+    return count ? count + " 张" : "";
+  }
+  return "";
+}
+
+function syncStageLive(project) {
+  const bar = document.querySelector("#stage-livebar");
+  const line = document.querySelector("#stage-live");
+  const strip = document.querySelector("#stage-strip");
+  if (!bar || !line || !strip) return;
+  const running = project && workflowMode(project) ? autoRun(project) : null;
+  const show = !!(project && workflowMode(project) && (running || project.status === "writing"));
+  bar.classList.toggle("hidden", !show);
+  if (!show) {
+    line.textContent = "";
+    strip.replaceChildren();
+    syncStageLive.sig = "";
+    return;
+  }
+  line.textContent = running ? running.text : (project.stage || "");
+  line.classList.toggle("live", !!running);
+  const index = jobIndex(project);
+  const sig = line.textContent + "#" + index + "#" + project.status + "#" + (running ? running.key : "");
+  if (syncStageLive.sig === sig && strip.childElementCount) return;
+  syncStageLive.sig = sig;
+  strip.replaceChildren();
+  JOB_STEPS.forEach((label, step) => {
+    const item = document.createElement("li");
+    if (step < index) item.className = "done";
+    else if (step === index) item.className = running ? "current live" : "current";
+    item.textContent = label;
+    strip.append(item);
+  });
+}
+
 function hideWorkflow() {
   syncCrew(null);
+  syncStageLive(null);
   if (stageBar) stageBar.classList.add("hidden");
   if (debugDock) {
     debugDock.classList.add("hidden");
@@ -1211,6 +1342,7 @@ function hideWorkflow() {
 
 function showWorkflow() {
   syncCrew(current);
+  syncStageLive(current);
   if (stageBar) stageBar.classList.remove("hidden");
   if (debugDock) debugDock.classList.remove("hidden");
   if (thread) thread.classList.remove("hidden");
@@ -1276,6 +1408,13 @@ function transcriptKey(project) {
     progress.phase,
     progress.percent,
     progress.message,
+    progress.active_role,
+    (progress.pipeline || {}).current,
+    (progress.pipeline || {}).action,
+    (progress.pipeline || {}).check,
+    (progress.pipeline || {}).repairs,
+    (progress.pipeline || {}).machine_repairs,
+    (progress.pipeline || {}).auto_retries,
     (progress.calls || []).map((item) => `${item.name}:${item.status}`).join(","),
     messages.length,
     last.role,
@@ -1323,8 +1462,11 @@ function paintTranscript(options, full) {
     const traces = traceList(current);
     if (traces) wrap.append(traces);
   }
+  const running = autoRun(current);
   visibleMessages(current).forEach((message) => {
-    wrap.append(messageBubble(message.role, message.content || ""));
+    const bubble = messageBubble(message.role, message.content || "");
+    if (running && message.role !== "user" && continueCue(message.content)) bubble.classList.add("aside");
+    wrap.append(bubble);
   });
   if (current.status === "gate" && (current.progress || {}).phase === "gate_script" && current.script) {
     const gatePassed = ((current.progress || {}).pipeline || {}).passed !== false;
@@ -1342,7 +1484,13 @@ function paintTranscript(options, full) {
   if (current.can_reply && choice) {
     wrap.append(choiceList(choice));
   }
-  if (current.status === "gate" || (current.progress || {}).phase === "lock_wait") {
+  if (running) {
+    const note = document.createElement("p");
+    note.className = "stage auto-run";
+    note.textContent = running.text;
+    wrap.append(note);
+  }
+  if (current.status === "gate" || (current.progress || {}).phase === "lock_wait" || running) {
     wrap.append(progressPanel(current));
   }
   if (current.status === "drilling" && !current.can_reply) {
@@ -1360,8 +1508,11 @@ function paintTranscript(options, full) {
   if (!full) {
     thread.append(wrap);
     syncComposer();
+    const runKey = running ? running.key + ":" + running.attempt : "";
+    const jumped = !!(runKey && runKey !== paintTranscript.runKey);
+    paintTranscript.runKey = runKey;
     if (opts.scroll === "top") thread.scrollTop = 0;
-    else if (opts.scroll === "bottom") thread.scrollTop = thread.scrollHeight;
+    else if (opts.scroll === "bottom" || jumped) thread.scrollTop = thread.scrollHeight;
     else thread.scrollTop = prevScroll;
     return;
   }
@@ -1953,8 +2104,15 @@ function nodeState(project, kind, id) {
   }
   const task = taskById(project, id);
   if (task && task.state) return task.state;
+  const live = liveNodeKind(project);
   if (kind === "script" || kind === "storyboard") {
     const text = kind === "script" ? project.script : project.storyboard;
+    if (live || autoRun(project)) {
+      if (live === kind) return "running";
+      if (text) return "done";
+      if (project.status === "paused" && !text) return "paused";
+      return "pending";
+    }
     if (project.status === "writing" || project.status === "building") return "running";
     if (project.status === "paused" && !text) return "paused";
     if (text) return "done";
@@ -1971,6 +2129,7 @@ function nodeState(project, kind, id) {
     const tasks = (project.tasks || []).filter((task) => task.kind === "image");
     if (tasks.some((task) => task.state === "error" || task.state === "failed")) return "error";
     if (tasks.some((task) => task.state === "running" || task.state === "retrying")) return "running";
+    if (live === "image") return "running";
     if (tasks.length && tasks.every((task) => task.state === "done")) return "done";
     if ((project.assets || []).length && (project.images || []).length >= (project.assets || []).length) return "done";
     if (project.status === "paused") return "paused";
@@ -2335,7 +2494,11 @@ function renderNode(project, info) {
   const title = document.createElement("b");
   title.textContent = info.title || info.id;
   const meta = document.createElement("small");
-  if (info.kind === "image") meta.textContent = (info.assets || []).length + " 张 · 必须";
+  const liveText = liveCopy(project, info.kind);
+  if (liveText) {
+    node.classList.add("is-live");
+    meta.textContent = liveText;
+  } else if (info.kind === "image") meta.textContent = (info.assets || []).length + " 张 · 必须";
   else if (info.kind === "shot" && info.shot) meta.textContent = (info.shot.duration || "?") + " 秒";
   else if (info.kind === "shot") meta.textContent = (info.assets || []).length + " 张";
   head.append(dot, title, meta);
@@ -2504,6 +2667,13 @@ function patchCanvas(project) {
     const kind = node.dataset.kind;
     const dot = node.querySelector(".wf-dot");
     if (dot) dot.className = "wf-dot " + nodeState(project, kind, id);
+    const liveText = liveCopy(project, kind);
+    node.classList.toggle("is-live", !!liveText);
+    const meta = node.querySelector(".wf-head small");
+    if (meta) {
+      const next = liveText || restingMeta(project, node);
+      if (meta.textContent !== next) meta.textContent = next;
+    }
     node.querySelectorAll("[data-field]").forEach((field) => {
       const key = field.dataset.field;
       if (document.activeElement === field || pendingSaves.has(key)) return;

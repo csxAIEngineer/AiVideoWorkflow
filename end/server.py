@@ -91,7 +91,9 @@ from end.locks import (
 from end.prompt_gate import build_board, feed_text, project_markdown, validate_feed
 from end.repair_units import choice_action, next_asset_question
 from end.stage_runner import (
+    _PERCENT,
     accept_pipeline,
+    auto_gate_action,
     detect_only,
     execute,
     initial_pipeline,
@@ -696,19 +698,6 @@ def _ask_asset_choice(project, pipeline, question):
     return public_view(read_project(project["id"]) or project)
 
 
-def _open_asset_choices(project, pipeline):
-    pipeline = dict(pipeline or {})
-    pipeline["repair_choices"] = {}
-    question = next_asset_question(_asset_text(project), {})
-    if question is None:
-        pipeline["action"] = "rewrite"
-        pipeline["repair_round"] = True
-        pipeline["repair"] = pipeline.get("report") or pipeline.get("repair") or "按块修补"
-        _enqueue_stage(project, pipeline, "资产门")
-        return public_view(read_project(project["id"]) or project)
-    return _ask_asset_choice(project, pipeline, question)
-
-
 def _take_asset_choice(project, pipeline, body, question):
     picked = choice_action(body)
     options = list((question or {}).get("options") or [])
@@ -742,6 +731,8 @@ def answer_gate(project, text):
         pipeline["revise_note"] = note
         pipeline["action"] = "rewrite"
         pipeline["current"] = "script"
+        pipeline["repairs"] = 0
+        pipeline["auto_retries"] = 0
         _enqueue_stage(project, pipeline, "剧本")
         return public_view(read_project(project["id"]) or project)
     if question.get("id") == "asset_repair_choice":
@@ -781,6 +772,9 @@ def answer_gate(project, text):
         pipeline["passed"] = True
         pipeline["repair"] = ""
         pipeline["report"] = ""
+        pipeline["repairs"] = 0
+        pipeline["auto_retries"] = 0
+        pipeline["machine_repairs"] = 0
         # region agent log
         try:
             import json as _json
@@ -806,8 +800,6 @@ def answer_gate(project, text):
         # endregion
         _enqueue_stage(project, pipeline, project.get("stage") or "再写这一段")
         return public_view(read_project(project["id"]) or project)
-    if body == ASSET_REVISE and current == "asset" and not passed:
-        return _open_asset_choices(project, pipeline)
     if body == STORYBOARD_KEEP and current == "storyboard" and not passed:
         folder = project_dir(project["id"])
         if not storyboard_has_draft(folder):
@@ -823,6 +815,11 @@ def answer_gate(project, text):
         pipeline["report"] = ""
         passed = True
     if not passed:
+        pipeline["repairs"] = 0
+        pipeline["auto_retries"] = 0
+        pipeline["machine_repairs"] = 0
+        pipeline.pop("repair_choices", None)
+        pipeline.pop("repair_round", None)
         pipeline["action"] = "rewrite"
         pipeline["repair"] = pipeline.get("report") or pipeline.get("repair") or ""
         _enqueue_stage(project, pipeline, project.get("stage") or "重写这一段")
@@ -853,6 +850,213 @@ def answer_gate(project, text):
     return public_view(read_project(project["id"]) or project)
 
 
+_AUTO_LABEL = {
+    "recon": "对标情报",
+    "script": "剧本",
+    "asset": "资产锁定",
+    "storyboard": "分镜",
+    "feed": "提示词封装",
+}
+_AUTO_CHAIN_LIMIT = 24
+
+
+def _mark_writing(project, pipeline, label):
+    previous = project.get("progress") or {}
+    progress = {
+        "percent": _PERCENT.get(pipeline.get("current") or "", int(previous.get("percent") or 12)),
+        "phase": "writing",
+        "message": label,
+        "lock_machine": True,
+        "pipeline": pipeline,
+        "question": None,
+        "debug_llm": bool(previous.get("debug_llm")),
+        "debug_stop": previous.get("debug_stop") or "",
+    }
+    remember(project, "writing", label, progress=progress)
+    return read_project(project["id"]) or project
+
+
+def _settle_writer_outcome(project, outcome):
+    project = read_project(project["id"]) or project
+    folder = project_dir(project["id"])
+    if outcome.get("terminal") == "ready":
+        if (read_locks(folder).get("model") or "") != "h3":
+            note = "提示词已就绪。Seedance 只交付提示词。"
+        else:
+            note = "提示词已就绪。要出图出片，点按钮或发送「出图」。"
+        messages = list(project.get("messages") or [])
+        messages.append({"role": "assistant", "content": note})
+        project["messages"] = messages
+        write_project(project)
+        if project_stops_at_prompts(project):
+            finish_prompt_debug(project)
+            return
+        finish_prompts_ready(project)
+        return
+    if outcome.get("message"):
+        messages = list(project.get("messages") or [])
+        messages.append(outcome["message"])
+        project["messages"] = messages
+    progress = dict(outcome.get("progress") or {})
+    progress["lock_machine"] = True
+    remember(
+        project,
+        outcome.get("status") or "gate",
+        outcome.get("stage") or "停在门上",
+        progress=progress,
+    )
+
+
+_DRAFT_NAME = {"asset": "assets.md", "storyboard": "分镜.md", "feed": "feed.md"}
+_SPEC_FIELD = {"asset": "image_prompts", "storyboard": "storyboard", "feed": "feed"}
+
+
+def _draft_path(folder, stage):
+    name = _DRAFT_NAME.get(stage)
+    if not name:
+        return None
+    return Path(folder) / "_内部_" / name
+
+
+def _sync_spec_field(folder, stage, text):
+    key = _SPEC_FIELD.get(stage)
+    path = Path(folder) / "spec.json"
+    if not key or not path.is_file():
+        return
+    try:
+        spec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(spec, dict):
+        return
+    spec[key] = str(text or "").strip()
+    path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _recheck_after_rules(folder, locks, pipeline, path, title):
+    stage = str(pipeline.get("current") or "")
+    if str(pipeline.get("check") or "") == "machine" and stage == "feed":
+        from end.stage_runner import check_prompt
+
+        code, report = check_prompt(path, (locks or {}).get("model") or "h3", (locks or {}).get("track") or "1")
+        return code == 0, report or ""
+    from end.stage_runner import check_stage
+
+    return check_stage(folder, stage, locks, title or "")
+
+
+def _rule_repair(project, folder, locks, pipeline):
+    """Apply matching rules and re-check. None when no rule changed the draft.
+
+    A rule that clears the failure does not increment ``repairs``. A rule that
+    leaves a failure updates the report and still leaves the AI attempt unused.
+    """
+    stage = str(pipeline.get("current") or "")
+    if stage not in _DRAFT_NAME or pipeline.get("passed"):
+        return None
+    report = str(pipeline.get("report") or pipeline.get("repair") or "")
+    path = _draft_path(folder, stage)
+    if path is None or not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    from end.repair_rules import run_rules
+
+    updated, applied = run_rules(
+        stage,
+        report,
+        text,
+        {"folder": str(folder), "locks": locks or {}, "stage": stage, "report": report},
+    )
+    if not applied:
+        return None
+    body = updated if updated.endswith("\n") else updated + "\n"
+    path.write_text(body, encoding="utf-8")
+    _sync_spec_field(folder, stage, body)
+    pipeline = dict(pipeline)
+    pipeline["rule_repairs"] = int(pipeline.get("rule_repairs") or 0) + len(applied)
+    passed, new_report = _recheck_after_rules(folder, locks, pipeline, path, project.get("title") or "")
+    if passed:
+        pipeline["passed"] = True
+        pipeline["report"] = ""
+        pipeline["repair"] = ""
+        pipeline["check"] = ""
+        return pipeline
+    pipeline["passed"] = False
+    pipeline["report"] = new_report or report
+    pipeline["repair"] = pipeline["report"]
+    return pipeline
+
+
+def _follow_auto_gate(project, folder, locks, outcome):
+    """Chain the next write for automatic stages. None leaves the human gate in place."""
+    action = auto_gate_action(outcome)
+    if action == "stop":
+        return None
+    pipeline = dict(((outcome.get("progress") or {}).get("pipeline")) or {})
+    current = str(pipeline.get("current") or "")
+    if action == "retry_write":
+        pipeline["auto_retries"] = int(pipeline.get("auto_retries") or 0) + 1
+        pipeline["action"] = "write"
+        pipeline["retry_write"] = False
+        pipeline["passed"] = True
+        pipeline["repair"] = ""
+        pipeline["report"] = ""
+        pipeline["check"] = ""
+        pipeline["repairs"] = 0
+        return _mark_writing(project, pipeline, _AUTO_LABEL.get(current, "再写这一段"))
+    if action == "rewrite":
+        ruled = _rule_repair(project, folder, locks, pipeline)
+        if ruled is not None:
+            pipeline = ruled
+            if ruled.get("passed"):
+                action = "advance"
+        if action == "rewrite":
+            if str(pipeline.get("check") or "") == "machine":
+                pipeline["machine_repairs"] = int(pipeline.get("machine_repairs") or 0) + 1
+                pipeline["repairs"] = 0
+            pipeline["action"] = "rewrite"
+            pipeline["repair"] = pipeline.get("report") or pipeline.get("repair") or ""
+            pipeline["check"] = ""
+            pipeline["retry_write"] = False
+            pipeline.pop("repair_choices", None)
+            pipeline.pop("repair_round", None)
+            return _mark_writing(project, pipeline, _AUTO_LABEL.get(current, "重写这一段"))
+    if current == "recon":
+        locks = copy_locks(locks)
+        locks["intel_confirmed"] = True
+        brief = project.get("brief") or ""
+        locks = prepare_locks(
+            locks,
+            brief,
+            material_text=corpus(brief, project.get("messages")),
+            has_images=bool(load_intake(folder)),
+        )
+        write_locks(folder, locks)
+        accepted = list(pipeline.get("accepted") or [])
+        if current not in accepted:
+            accepted.append(current)
+        pipeline["accepted"] = accepted
+        pipeline["passed"] = True
+        pipeline["current"] = current
+        if not ready_to_write(locks):
+            progress = dict(project.get("progress") or {})
+            progress["pipeline"] = pipeline
+            progress["lock_machine"] = True
+            project = read_project(project["id"]) or project
+            project["progress"] = progress
+            _ask_lock(project, _open_question(locks, brief))
+            return "lock"
+        messages = list(project.get("messages") or [])
+        messages.append({"role": "assistant", "content": "对标情报已确认，开始写剧本。"})
+        project["messages"] = messages
+    pipeline, step = accept_pipeline(pipeline, locks)
+    label = "投喂机检" if step == "finish" else _AUTO_LABEL.get(pipeline.get("current") or "", "下一段")
+    return _mark_writing(project, pipeline, label)
+
+
 def run_project_gated(project_id, debug_llm=False):
     register_thread(project_id)
     with project_lock(project_id):
@@ -861,48 +1065,40 @@ def run_project_gated(project_id, debug_llm=False):
         project = read_project(project_id)
         if project is None or not is_running(project_id):
             return
-        folder = project_dir(project_id)
-        locks = read_locks(folder)
-        outcome = execute(
-            project,
-            folder,
-            locks,
-            write_model=call_deepseek,
-            load_pack=load_skill_pack,
-        )
-        absorb_model_output(folder, outcome.get("spec") or {})
-        if outcome.get("spec"):
-            saved = _save_written_spec(project_id, outcome["spec"])
-            if saved is None or not is_running(project_id):
+        outcome = None
+        for _step in range(_AUTO_CHAIN_LIMIT):
+            if project is None or not is_running(project_id):
                 return
-        if not is_running(project_id):
-            return
-        project = read_project(project_id) or project
-        if outcome.get("message"):
-            messages = list(project.get("messages") or [])
-            messages.append(outcome["message"])
-            project["messages"] = messages
-        if outcome.get("terminal") == "ready":
-            if (read_locks(folder).get("model") or "") != "h3":
-                note = "提示词已就绪。Seedance 只交付提示词。"
-            else:
-                note = "提示词已就绪。要出图出片，点按钮或发送「出图」。"
-            messages = list(project.get("messages") or [])
-            messages.append({"role": "assistant", "content": note})
-            project["messages"] = messages
-            if project_stops_at_prompts(project):
-                finish_prompt_debug(project)
+            folder = project_dir(project_id)
+            locks = read_locks(folder)
+            outcome = execute(
+                project,
+                folder,
+                locks,
+                write_model=call_deepseek,
+                load_pack=load_skill_pack,
+            )
+            absorb_model_output(folder, outcome.get("spec") or {})
+            if outcome.get("spec"):
+                saved = _save_written_spec(project_id, outcome["spec"])
+                if saved is None or not is_running(project_id):
+                    return
+                project = saved
+            if not is_running(project_id):
                 return
-            finish_prompts_ready(project)
-            return
-        progress = dict(outcome.get("progress") or {})
-        progress["lock_machine"] = True
-        remember(
-            project,
-            outcome.get("status") or "gate",
-            outcome.get("stage") or "停在门上",
-            progress=progress,
-        )
+            project = read_project(project_id) or project
+            if outcome.get("terminal") == "ready":
+                _settle_writer_outcome(project, outcome)
+                return
+            follow = _follow_auto_gate(project, folder, locks, outcome)
+            if follow == "lock":
+                return
+            if not isinstance(follow, dict):
+                _settle_writer_outcome(project, outcome)
+                return
+            project = follow
+        if outcome is not None:
+            _settle_writer_outcome(read_project(project_id) or project, outcome)
     except Exception as error:
         fail_project(project_id, error)
     finally:
