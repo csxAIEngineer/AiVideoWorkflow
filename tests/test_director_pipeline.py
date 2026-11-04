@@ -1861,6 +1861,10 @@ class PageTest(unittest.TestCase):
         self.assertIn("if (chatHome(current))", app)
         self.assertIn("seam-option", css)
         self.assertIn("style-card", css)
+        self.assertIn("function syncCrew", app)
+        self.assertIn("active_role", app)
+        self.assertIn("crew-role", css)
+        self.assertIn("crew-breathe", css)
 
 
 if __name__ == "__main__":

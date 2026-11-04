@@ -56,6 +56,13 @@ let seamKept = new Set();
 const MAX_MATERIALS = 8;
 
 const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "离线看板"];
+const CREW_FALLBACK = [
+  { id: "script", name: "编剧" },
+  { id: "asset", name: "资产" },
+  { id: "storyboard", name: "分镜" },
+  { id: "check", name: "机检" },
+  { id: "feed", name: "投喂" },
+];
 const DEBUG_FILE_LABELS = {
   skill_pack: "Skill 规则",
   system_prompt: "System Prompt",
@@ -1111,7 +1118,75 @@ function syncSideMode() {
   if (historyBtn) historyBtn.classList.toggle("on", workflow && !docs);
 }
 
+function crewNote(project) {
+  const progress = (project && project.progress) || {};
+  let text = String(progress.message || (project && project.stage) || "").replace(/\s+/g, " ").trim();
+  const split = text.indexOf(" · ");
+  if (split >= 0) text = text.slice(0, split).trim();
+  text = text.replace(/^.{1,48}?正在/, "正在");
+  text = text.split(/[。\n]/)[0].trim();
+  if (text.length > 32) text = text.slice(0, 32) + "…";
+  return text;
+}
+
+function syncCrew(project) {
+  const box = document.querySelector("#crew");
+  const toggle = document.querySelector("#crew-toggle");
+  const roles = document.querySelector("#crew .crew-roles");
+  const line = document.querySelector("#crew-line");
+  if (!box || !toggle || !roles || !line) return;
+  if (!project) {
+    box.classList.add("settled");
+    box.classList.remove("open");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-label", "分工，现在没有人在写");
+    line.textContent = "";
+    syncCrew.sig = "";
+    syncCrew.projectId = "";
+    return;
+  }
+  const progress = project.progress || {};
+  const crew = Array.isArray(progress.crew) && progress.crew.length ? progress.crew : CREW_FALLBACK;
+  const active = String(progress.active_role || "");
+  const live = !!(active && project.status === "writing");
+  const note = crewNote(project);
+  const sig = crew.map((item) => (item.id || "") + ":" + (item.name || "")).join("|") + "#" + active + (live ? "*" : "") + "#" + note;
+  box.classList.toggle("settled", !active);
+  if (syncCrew.projectId !== project.id) {
+    box.classList.remove("open");
+    toggle.setAttribute("aria-expanded", "false");
+    syncCrew.projectId = project.id;
+  }
+  const activeName = (crew.find((item) => item.id === active) || {}).name || "";
+  toggle.setAttribute(
+    "aria-label",
+    activeName ? activeName + (live ? "正在进行" : "停在这一步") : "分工，现在没有人在写"
+  );
+  line.textContent = note;
+  if (syncCrew.sig === sig) return;
+  syncCrew.sig = sig;
+  roles.replaceChildren();
+  crew.forEach((item) => {
+    const pill = document.createElement("span");
+    pill.className = "crew-role";
+    if (item.id && item.id === active) {
+      pill.classList.add("on");
+      if (live) pill.classList.add("live");
+      pill.setAttribute("aria-current", "true");
+    }
+    pill.setAttribute("role", "listitem");
+    const dot = document.createElement("span");
+    dot.className = "crew-dot";
+    dot.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.textContent = item.name || "";
+    pill.append(dot, label);
+    roles.append(pill);
+  });
+}
+
 function hideWorkflow() {
+  syncCrew(null);
   if (stageBar) stageBar.classList.add("hidden");
   if (debugDock) {
     debugDock.classList.add("hidden");
@@ -1125,6 +1200,7 @@ function hideWorkflow() {
 }
 
 function showWorkflow() {
+  syncCrew(current);
   if (stageBar) stageBar.classList.remove("hidden");
   if (debugDock) debugDock.classList.remove("hidden");
   if (thread) thread.classList.remove("hidden");
@@ -2500,6 +2576,7 @@ function syncControlButtons(project) {
 }
 
 function syncDock(project) {
+  syncCrew(project);
   if (!debugDock) return;
   const phase = document.querySelector("#dock-phase");
   const percentNode = document.querySelector("#dock-percent");
@@ -2950,6 +3027,15 @@ function syncShotStrip(project) {
 }
 
 function bindCanvas() {
+  const crewToggle = document.querySelector("#crew-toggle");
+  const crewBox = document.querySelector("#crew");
+  if (crewToggle && crewBox && !crewToggle.dataset.bound) {
+    crewToggle.dataset.bound = "1";
+    crewToggle.addEventListener("click", () => {
+      const open = crewBox.classList.toggle("open");
+      crewToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
   if (!canvasWrap || canvasWrap.dataset.bound) return;
   canvasWrap.dataset.bound = "1";
   canvasWrap.addEventListener("pointerdown", onCanvasPointerDown);
