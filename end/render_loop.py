@@ -44,6 +44,8 @@ def _probe_media_url(url):
 MAX_ATTEMPTS = 5
 IMAGE_POLL_SEC = 4
 VIDEO_POLL_SEC = 10
+# wan2.7-image rejects a reference still smaller than 240 on either side.
+MIN_REFERENCE_SIDE = 240
 FACE_LOCK = "参考图是同一身份的定妆，必须锁定同一张脸和外形，不要换脸。\n"
 TRANSIENT_HTTP = {429, 502, 503, 504}
 IMAGE_SUCCESS = {"SUCCEEDED"}
@@ -361,6 +363,9 @@ def note_local_image(work_dir, project_id, asset_id, public_url=None):
     reuse it through depends_on. An opening upload uses the same flag, and
     Image 2 still reads that public URL when an asset lists it in references.
     A step that already has a remote task keeps that request.
+
+    A file under 240px on either side is enlarged and republished before the
+    URL is stored, so a later retry does not keep sending the tiny object.
     """
     with project_lock(project_id or str(Path(work_dir))):
         state = load_run_state(work_dir)
@@ -371,9 +376,13 @@ def note_local_image(work_dir, project_id, asset_id, public_url=None):
         hosted = str(public_url or "").strip()
         if not _http_media_url(hosted):
             hosted = get_image_store().url(project_id, "%s.png" % asset_id)
+        canonical, _relative = output_paths(work_dir, asset_id, "image")
+        hosted, published = ensure_reference_min_side(
+            work_dir, project_id, asset_id, hosted, source=canonical
+        )
         step["kind"] = "image"
         step["status"] = "done"
-        step["output_file"] = "images/%s.png" % asset_id
+        step["output_file"] = published or ("images/%s.png" % asset_id)
         step["public_url"] = hosted
         step["local_override"] = True
         step["error"] = ""
@@ -1922,12 +1931,212 @@ def dependent_image_url(ctx, asset):
     return url
 
 
+def _cover_min_side(width, height, minimum=MIN_REFERENCE_SIDE):
+    """Scale by max(minimum/w, minimum/h) and ceil so both sides are >= minimum."""
+    width = int(width)
+    height = int(height)
+    if width <= 0 or height <= 0:
+        raise RuntimeError("参考图尺寸无效")
+    if width >= minimum and height >= minimum:
+        return width, height
+    if width <= height:
+        new_width = minimum
+        new_height = (height * minimum + width - 1) // width
+    else:
+        new_height = minimum
+        new_width = (width * minimum + height - 1) // height
+    if new_width < minimum:
+        new_width = minimum
+    if new_height < minimum:
+        new_height = minimum
+    return new_width, new_height
+
+
+def _reference_publish_name(source_name):
+    """Stable new object name. U2.png becomes U2_ref.png, matching the manual fix."""
+    source = Path(str(source_name or "still.png"))
+    suffix = source.suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
+        suffix = ".png"
+    candidate = "%s_ref%s" % (source.stem or "still", suffix)
+    if re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.(?:png|jpe?g|webp)$", candidate, re.IGNORECASE):
+        return candidate
+    if re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.(?:png|jpe?g|webp)$", source.name, re.IGNORECASE):
+        return source.name
+    return ""
+
+
+def _cache_bust(url, previous):
+    """Same object key as the URL that already failed gets a fresh query."""
+
+    def bare(value):
+        return str(value or "").split("#", 1)[0].split("?", 1)[0]
+
+    if not url or bare(url) != bare(previous):
+        return url
+    joiner = "&" if "?" in str(url) else "?"
+    return "%s%sv=%d" % (url, joiner, int(time.time() * 1000))
+
+
+def _append_render_log(work_dir, text):
+    path = Path(work_dir) / "outputs" / "render.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = str(text)
+    if not line.endswith("\n"):
+        line += "\n"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line)
+
+
+def _ffmpeg_cover_still(source, dest, width, height):
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise RuntimeError(
+            "本机没有 ffmpeg，不能把参考图放大到 %d×%d" % (MIN_REFERENCE_SIDE, MIN_REFERENCE_SIDE)
+        )
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temporary = dest.with_name(dest.stem + ".part" + dest.suffix)
+    proc = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source),
+            "-vf",
+            "scale=%d:%d:flags=lanczos" % (width, height),
+            "-frames:v",
+            "1",
+            str(temporary),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if proc.returncode != 0 or not temporary.is_file() or temporary.stat().st_size <= 0:
+        try:
+            if temporary.is_file():
+                temporary.unlink()
+        except OSError:
+            pass
+        detail = (proc.stdout or "").strip()
+        raise RuntimeError("参考图放大失败：%s" % (detail[-300:] or "ffmpeg 没有写出图片"))
+    temporary.replace(dest)
+    return dest
+
+
+def ensure_reference_min_side(work_dir, project_id, asset_id, public_url="", source=None):
+    """Enlarge a reference still that wan2.7-image would reject.
+
+    Returns (url, output_file). output_file is relative to outputs/ and empty
+    when this file is already large enough or not a readable image. The url is
+    the one a later image= submit should send.
+    """
+    public_url = str(public_url or "").strip()
+    path = Path(source) if source else None
+    if path is None or not path.is_file():
+        return public_url, ""
+    size = image_size(path)
+    if not size:
+        return public_url, ""
+    width, height = size
+    if width >= MIN_REFERENCE_SIDE and height >= MIN_REFERENCE_SIDE:
+        return public_url, ""
+    if not project_id:
+        raise RuntimeError(
+            "参考图 %s 小于 %d×%d，没有项目编号，不能重新发布"
+            % (asset_id, MIN_REFERENCE_SIDE, MIN_REFERENCE_SIDE)
+        )
+    filename = _reference_publish_name(path.name)
+    if not filename:
+        raise RuntimeError("参考图 %s 的文件名无法重新发布" % asset_id)
+    target_w, target_h = _cover_min_side(width, height, MIN_REFERENCE_SIDE)
+    dest = path.with_name(filename)
+    same_file = dest.resolve() == path.resolve()
+    written = path.with_name(path.stem + "_upscaled" + (path.suffix or ".png")) if same_file else dest
+    _ffmpeg_cover_still(path, written, target_w, target_h)
+    measured = image_size(written)
+    if not measured or measured[0] < MIN_REFERENCE_SIDE or measured[1] < MIN_REFERENCE_SIDE:
+        raise RuntimeError(
+            "参考图 %s 放大后仍小于 %d×%d（%s）"
+            % (asset_id, MIN_REFERENCE_SIDE, MIN_REFERENCE_SIDE, measured)
+        )
+    if same_file:
+        written.replace(path)
+        written = path
+    hosted = get_image_store().publish(project_id, filename, written.read_bytes())
+    hosted = _cache_bust(hosted, hosted if same_file else public_url)
+    _append_render_log(
+        work_dir,
+        "参考图 %s 小于 %d×%d（%d×%d），已放大到 %d×%d 并重新发布 %s"
+        % (
+            asset_id,
+            MIN_REFERENCE_SIDE,
+            MIN_REFERENCE_SIDE,
+            width,
+            height,
+            measured[0],
+            measured[1],
+            hosted,
+        ),
+    )
+    return hosted, "images/%s" % filename
+
+
+def _reference_still_path(work_dir, asset_id, step):
+    """Prefer the file this step already publishes. Fall back to images/{id}.png."""
+    saved = _output_file(work_dir, (step or {}).get("output_file") or "")
+    if saved is not None and saved.is_file():
+        return saved
+    canonical, _relative = output_paths(work_dir, asset_id, "image")
+    if canonical.is_file():
+        return canonical
+    return None
+
+
+def _remember_published_reference(work_dir, project_id, asset_id, url, output_file):
+    with project_lock(project_id or str(Path(work_dir))):
+        state = load_run_state(work_dir)
+        steps = state.setdefault("steps", {})
+        step = steps.get(asset_id)
+        if not step:
+            step = blank_step("image")
+            steps[asset_id] = step
+        if url:
+            step["public_url"] = url
+        if output_file:
+            step["output_file"] = output_file
+        save_run_state(work_dir, state)
+
+
+def _prepare_reference_still(ctx, asset_id, step):
+    """Safety net: a stored tiny URL is replaced before submit, including retries."""
+    source = _reference_still_path(ctx.work_dir, asset_id, step)
+    hosted, relative = ensure_reference_min_side(
+        ctx.work_dir,
+        ctx.project_id,
+        asset_id,
+        str((step or {}).get("public_url") or ""),
+        source=source,
+    )
+    if not relative:
+        return step
+    _remember_published_reference(ctx.work_dir, ctx.project_id, asset_id, hosted, relative)
+    return ctx.reload_step(asset_id, "image")
+
+
 def image_input_urls(ctx, asset):
     """Image 2 `image` urls for one generated asset.
 
     references: the upload public URLs, even when that step is local_override.
     depends_on, and no references: the previous generated still.
     neither: no image is sent.
+
+    A reference file under 240×240 is enlarged and republished first, so
+    wan2.7-image and its retries do not receive the tiny URL.
     """
     asset = asset or {}
     refs = [str(ref).strip() for ref in (asset.get("references") or []) if str(ref).strip()]
@@ -1935,6 +2144,7 @@ def image_input_urls(ctx, asset):
         urls = []
         for ref_id in refs:
             step = ctx.reload_step(ref_id, "image")
+            step = _prepare_reference_still(ctx, ref_id, step)
             url = _publish_step_url(ctx, ref_id, step)
             if not _http_media_url(url):
                 raise RuntimeError("资产 %s 的参考图 %s 没有公网地址" % (asset.get("id") or "", ref_id))

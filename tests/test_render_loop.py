@@ -13,21 +13,25 @@ from AI.qwen_api.client import QwenError
 from AI.qwen_api.image import ImageTask
 from AI.qwen_api.video import VideoTask
 from end.render_loop import (
+    _ffmpeg_bin,
     _missing_subtitle_glyphs,
     assemble_shot_media,
     blank_step,
     build_subtitle_ass,
     choose_video_mode,
     delivery_prompt,
+    ensure_reference_min_side,
     image_prompt,
     display_caption,
     gate_for,
+    image_input_urls,
     image_size,
     load_run_state,
     mark_user_pause,
     _reference_url,
     nearest_aspect_ratio,
     note_local_image,
+    RenderContext,
     reset_current_step,
     resume_paused,
     run_local_pipeline as _run_local_pipeline,
@@ -1077,6 +1081,66 @@ class RenderLoopTest(unittest.TestCase):
         )
         self.assertTrue(any(item.get("message") == "没有旁白，保留镜头原声" for item in quiet))
         self.assertTrue(all(item.get("soundtrack_note") == "没有旁白" for item in quiet))
+
+    def test_tiny_reference_still_is_enlarged_before_wan_submit(self):
+        if not _ffmpeg_bin():
+            self.skipTest("本机没有 ffmpeg")
+        project_id = "tinyref"
+        source = _write_png(self.work / "outputs" / "images" / "U2.png", _png(299, 168))
+        self.assertEqual(image_size(source), (299, 168))
+        hosted, relative = ensure_reference_min_side(
+            self.work,
+            project_id,
+            "U2",
+            "https://cdn.example/U2.png",
+            source=source,
+        )
+        enlarged = self.work / "outputs" / relative
+        width, height = image_size(enlarged)
+        self.assertGreaterEqual(width, 240)
+        self.assertGreaterEqual(height, 240)
+        self.assertLess(abs((width / float(height)) - (299 / 168.0)), 0.02)
+        self.assertTrue(hosted.split("?", 1)[0].endswith("/U2_ref.png"))
+        self.assertEqual(image_size(source), (299, 168))
+        log = (self.work / "outputs" / "render.log").read_text(encoding="utf-8")
+        self.assertIn("参考图 U2 小于 240×240（299×168）", log)
+        self.assertIn("已放大到", log)
+
+        # A still that was published before this guard keeps the tiny URL in
+        # run_state. The submit path has to replace it, and a retry must reuse
+        # the enlarged URL instead of the original object.
+        stale = self.work / "stale"
+        stale_png = _write_png(stale / "outputs" / "images" / "U2.png", _png(299, 168))
+        step = blank_step("image")
+        step["status"] = "done"
+        step["output_file"] = "images/U2.png"
+        step["public_url"] = "https://cdn.example/U2.png"
+        step["local_override"] = True
+        state = load_run_state(stale)
+        state["steps"]["U2"] = step
+        save_run_state(stale, state)
+        icreat = FakeICreat()
+        ctx = RenderContext(stale, project_id=project_id, icreat=icreat, sleeper=_noop_sleep)
+        asset = {"id": "A1", "prompt": "风与水的重逢", "references": ["U2"]}
+        urls = image_input_urls(ctx, asset)
+        icreat.submit_image("风与水的重逢", image=urls or None)
+        self.assertEqual(len(icreat.submits), 1)
+        submitted = icreat.submits[0]["image"]
+        self.assertEqual(submitted, urls)
+        self.assertEqual(len(submitted), 1)
+        self.assertTrue(submitted[0].split("?", 1)[0].endswith("/U2_ref.png"))
+        self.assertNotIn("cdn.example", submitted[0])
+        saved = load_run_state(stale)["steps"]["U2"]
+        self.assertEqual(saved["public_url"], submitted[0])
+        self.assertEqual(saved["output_file"], "images/U2_ref.png")
+        enlarged_width, enlarged_height = image_size(stale / "outputs" / "images" / "U2_ref.png")
+        self.assertGreaterEqual(enlarged_width, 240)
+        self.assertGreaterEqual(enlarged_height, 240)
+        self.assertEqual(image_size(stale_png), (299, 168))
+        self.assertEqual(image_input_urls(ctx, asset), submitted)
+        stale_log = (stale / "outputs" / "render.log").read_text(encoding="utf-8")
+        self.assertEqual(stale_log.count("已放大到"), 1)
+        self.assertIn("299×168", stale_log)
 
     def test_text_aspect_comes_from_the_brief_and_a_missing_lock_does_not_default(self):
         wide = {
