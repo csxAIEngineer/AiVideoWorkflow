@@ -205,9 +205,10 @@ class ProjectApiTest(unittest.TestCase):
         step = load_run_state(project_dir(project_id))["steps"]["A1"]
         self.assertTrue(step["local_override"])
         self.assertTrue(step["public_url"].startswith(PUBLIC_BASE))
+        # 1×1 is under wan2.7-image's 240px floor, so the stored URL is the enlarged copy.
         self.assertEqual(
             step["public_url"],
-            "%s/media/projects/%s/images/A1.png" % (PUBLIC_BASE, project_id),
+            "%s/media/projects/%s/images/A1_ref.png" % (PUBLIC_BASE, project_id),
         )
         self.assertEqual(step["status"], "done")
         image = next(item for item in body["images"] if item["name"] == "A1.png")
@@ -413,9 +414,10 @@ class ProjectApiTest(unittest.TestCase):
         step = load_run_state(folder)["steps"]["U1"]
         self.assertTrue(step["local_override"])
         self.assertTrue(step["public_url"].startswith(PUBLIC_BASE))
+        # 1×1 is under wan2.7-image's 240px floor, so the stored URL is the enlarged copy.
         self.assertEqual(
             step["public_url"],
-            "%s/media/projects/%s/images/U1.png" % (PUBLIC_BASE, payload["id"]),
+            "%s/media/projects/%s/images/U1_ref.png" % (PUBLIC_BASE, payload["id"]),
         )
 
     def test_opening_upload_stores_the_reading_for_the_writer(self):
