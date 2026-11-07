@@ -1,6 +1,7 @@
 """Rule repairs run before the model and do not spend an AI attempt."""
 
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,8 +11,10 @@ import end.db as db
 from end.db import project_dir, read_project, write_project
 from end.gates import GATE_CHECK, check_feed, check_gate, check_p45
 from end.locks import prepare_locks, write_locks
+from end.prompt_gate import delivery_units
 from end.repair_rules import run_rules
 from end.server import run_project
+from end.stage_runner import feed_from_result, render_feed_text
 from tests.test_auto_gates import _ready_locks
 from tests.test_director_pipeline import make_project
 
@@ -42,6 +45,25 @@ _H3 = "\n".join((
     "non_diegetic_music",
     "none.",
 ))
+
+
+def _h3_unit(index):
+    return "\n".join((
+        "## 【投喂单元 %s/3】" % index,
+        "subject_definitions:",
+        "<Subject 1> is a woman standing indoors.",
+        "summary:",
+        "summary %s." % index,
+        "retention_analysis:",
+        "<Subject 1>: fully_preserved for the woman.",
+        "detailed_description:",
+        "[Shot 1] She stands inside.",
+        "[Shot 2] At 00:04.000, the camera cuts closer.",
+        "overall_soundscape:",
+        "Room tone.",
+        "non_diegetic_music:",
+        "none.",
+    ))
 
 
 def _parse_units(text):
@@ -99,6 +121,132 @@ class FeedUnitHeaderRuleTest(unittest.TestCase):
         self.assertEqual(updated, _SEEDANCE)
         updated, applied = run_rules("asset", _MISSING, _SEEDANCE, {})
         self.assertEqual(applied, [])
+
+    def test_duration_json_shell_becomes_line_start_units(self):
+        inner = "\n\n".join(_h3_unit(index) for index in (1, 2, 3))
+        shell = "duration: 6\n" + json.dumps({"feed": inner}, ensure_ascii=False, indent=2)
+        self.assertEqual(delivery_units(shell), [])
+        self.assertEqual(_parse_units(shell), [])
+        self.assertNotRegex(shell, r"(?m)^#{1,6}[^\n]*投喂单元")
+
+        rendered = render_feed_text(shell)
+        self.assertEqual(len(delivery_units(rendered)), 3)
+        self.assertNotIn('"feed"', rendered)
+        for index in (1, 2, 3):
+            self.assertIn("## 【投喂单元 %s/3】" % index, rendered)
+            self.assertIn("summary %s." % index, rendered)
+
+        updated, applied = _apply(shell)
+        self.assertEqual(applied, ["feed-unit-headers"])
+        self.assertEqual(len(delivery_units(updated)), 3)
+        self.assertRegex(updated, r"(?m)^## 【投喂单元 1/3】")
+        self.assertNotRegex(updated.lstrip(), r"^duration\s*[:=]")
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(updated, encoding="utf-8")
+        _code, report = check_feed(path, "h3", "M2", "1")
+        self.assertNotIn("未找到投喂单元", report)
+
+        wrapped = "duration: 6\n" + json.dumps({"feed": json.dumps({"feed": inner}, ensure_ascii=False)}, ensure_ascii=False)
+        self.assertEqual(len(delivery_units(render_feed_text(wrapped))), 3)
+        self.assertEqual(len(delivery_units(render_feed_text({"feed": inner}))), 3)
+        loose = "duration: 4\n" + json.dumps({"feed": _H3}, ensure_ascii=False)
+        recovered, loose_applied = _apply(loose)
+        self.assertEqual(loose_applied, ["feed-unit-headers"])
+        self.assertTrue(delivery_units(recovered))
+        self.assertIn("## 【投喂单元", recovered)
+        self.assertIn("<Subject 1> is a woman standing indoors.", recovered)
+
+    def test_nested_seedance_shell_is_visible_to_the_gate(self):
+        inner = "\n\n".join((
+            "\n".join((
+                "## 【投喂单元 1/2】",
+                "【画幅风格】16:9 写实",
+                "【时间轴分镜】",
+                "【镜头1】00:00-00:04 她站在门内。",
+            )),
+            "\n".join((
+                "## 【投喂单元 2/2】",
+                "【画幅风格】16:9 写实",
+                "【时间轴分镜】",
+                "【镜头1】00:00-00:04 她离开。",
+            )),
+        ))
+        shell = "```json\n" + json.dumps({"feed": inner}, ensure_ascii=False) + "\n```"
+        self.assertEqual(_parse_units(shell), [])
+        updated, applied = _apply("duration: 6\n" + shell)
+        self.assertEqual(applied, ["feed-unit-headers"])
+        self.assertEqual(len(_parse_units(updated)), 2)
+        self.assertEqual(len(delivery_units(updated)), 2)
+        self.assertIn("她站在门内。", updated)
+        self.assertIn("她离开。", updated)
+
+    def test_clean_headed_feed_is_unchanged_in_substance(self):
+        clean = "\n".join((
+            "## 【投喂单元 1/1】",
+            "duration: 6",
+            "subject_definitions:",
+            "<Subject 1> is a woman standing indoors.",
+            "summary:",
+            "She waits. A note reads {\"feed\": \"keep\"}.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved for the woman.",
+            "detailed_description:",
+            "[Shot 1] She stands inside.",
+            "[Shot 2] At 00:06.000, the camera cuts closer.",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+            "",
+        ))
+        self.assertEqual(render_feed_text(clean), clean)
+        updated, applied = _apply(clean)
+        self.assertEqual(applied, [])
+        self.assertEqual(updated, clean)
+        self.assertEqual(delivery_units(updated), delivery_units(clean))
+        prefixed = "duration: 6\n" + clean
+        kept = render_feed_text(prefixed)
+        self.assertEqual(len(delivery_units(kept)), 1)
+        self.assertIn("<Subject 1> is a woman standing indoors.", kept)
+        self.assertIn('{"feed": "keep"}.', kept)
+        self.assertNotRegex(kept.lstrip(), r"^\{")
+
+    def test_empty_and_garbage_shells_stay_without_units(self):
+        samples = (
+            "",
+            "duration: 6\n{\"feed\": \"nothing to parse\"}",
+            "{\"feed\": \"\"}",
+            "duration: 6\n{not json",
+            "totally unrelated prose",
+            "{\"title\": \"长发公主\"}",
+        )
+        for sample in samples:
+            rendered = render_feed_text(sample)
+            self.assertEqual(delivery_units(rendered), [], sample)
+            self.assertNotIn("## 【投喂单元", rendered)
+            updated, applied = _apply(sample)
+            self.assertEqual(applied, [], sample)
+            self.assertEqual(delivery_units(updated), [], sample)
+            self.assertNotIn("## 【投喂单元", updated)
+
+    def test_write_path_stores_the_unwrapped_markdown(self):
+        inner = "\n\n".join(_h3_unit(index) for index in (1, 2, 3))
+        shell = "duration: 6\n" + json.dumps({"feed": inner}, ensure_ascii=False, indent=2)
+        stored = feed_from_result({"feed": shell})
+        self.assertEqual(len(delivery_units(stored)), 3)
+        self.assertNotIn('"feed"', stored)
+        self.assertRegex(stored, r"(?m)^## 【投喂单元 1/3】")
+        nested = {"feed": {"segments": [{
+            "time_range": "0:00-0:15",
+            "content": {
+                "subject_definitions": "<Subject 1> is a woman standing indoors.",
+                "summary": "She waits.",
+            },
+        }]}}
+        from_segments = render_feed_text(nested)
+        self.assertTrue(from_segments.startswith("## 【投喂单元 1/1"))
+        self.assertIn("\nsubject_definitions:\n", from_segments)
+        self.assertIn("duration: 15", from_segments)
 
 
 class RuleBeforeModelTest(unittest.TestCase):

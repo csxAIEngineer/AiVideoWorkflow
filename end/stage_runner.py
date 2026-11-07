@@ -145,7 +145,7 @@ def _repair_with_graph(
     )
     if stage == "feed" and isinstance(applied, dict):
         applied = dict(applied)
-        applied["feed"] = normalize_h3_shot_cuts(applied.get("feed") or feed)
+        applied["feed"] = render_feed_text(applied.get("feed") or feed)
     if stage == "storyboard" and isinstance(applied, dict):
         applied = dict(applied)
         applied["previs"] = coerce_previs(applied.get("previs") or previs)
@@ -1576,10 +1576,39 @@ _H3_SECTION_FIELDS = (
 )
 
 
+_FEED_FENCE = re.compile(
+    r"^```(?:json|text|markdown)?[ \t]*\r?\n(.*)\r?\n```[ \t]*$",
+    re.S | re.I,
+)
+_LEADING_DURATION = re.compile(
+    r"^(?:[ \t]*(?:duration|duration_seconds)[ \t]*[:=：][^\n]*\n)+",
+    re.I,
+)
+
+
+def _strip_feed_fence(text):
+    raw = str(text or "").strip()
+    match = _FEED_FENCE.match(raw)
+    if not match:
+        return raw
+    return match.group(1).strip()
+
+
+def _jsonish_feed_text(value):
+    """Drop a leading duration line or fence when a JSON object is the draft."""
+    raw = _strip_feed_fence(str(value or "").strip().lstrip("\ufeff"))
+    if not raw:
+        return ""
+    peeled = _strip_feed_fence(_LEADING_DURATION.sub("", raw, count=1).strip())
+    if peeled[:1] in "{[":
+        return peeled
+    return raw
+
+
 def _feed_payload(value):
     if isinstance(value, (dict, list)):
         return value
-    text = str(value or "").strip()
+    text = _jsonish_feed_text(value)
     if not text or text[0] not in "{[":
         return None
     try:
@@ -2291,6 +2320,43 @@ def _looks_like_feed_text(text):
     )
 
 
+_NESTED_FEED_KEYS = ("feed", "text", "markdown", "body", "content")
+
+
+def _nested_feed_markdown(value, depth=0):
+    """Markdown trapped under a JSON ``feed`` string. Empty when this is not that shell.
+
+    Structured ``segments`` stay on the segment renderer. A clean headed draft
+    does not start with ``{``, so it is left untouched.
+    """
+    if depth > 4 or value in (None, ""):
+        return ""
+    payload = value if isinstance(value, (dict, list)) else _feed_payload(value)
+    if isinstance(payload, dict):
+        if _feed_segments(payload):
+            return ""
+        for key in _NESTED_FEED_KEYS:
+            if key not in payload:
+                continue
+            inner = payload.get(key)
+            if isinstance(inner, (dict, list)):
+                found = _nested_feed_markdown(inner, depth + 1)
+                if found:
+                    return found
+                continue
+            if not isinstance(inner, str) or not inner.strip():
+                continue
+            found = _nested_feed_markdown(inner, depth + 1)
+            if found:
+                return found
+            if _looks_like_feed_text(inner):
+                return inner
+        return ""
+    if isinstance(value, str) and depth and _looks_like_feed_text(value):
+        return value
+    return ""
+
+
 def feed_from_result(result):
     """The feed draft, even when the merge put the six sections in text."""
     result = result if isinstance(result, dict) else {}
@@ -2310,10 +2376,24 @@ def feed_from_result(result):
 
 
 def render_feed_text(value):
-    """Write an H3 segment object as one six-section block per segment."""
+    """Write an H3 segment object as one six-section block per segment.
+
+    A ``duration:`` line wrapped around ``{"feed": "<markdown>"}`` is unwrapped
+    first, so unit heads land at line start. The gate still requires those heads.
+    """
     payload = _feed_payload(value)
     segments = _feed_segments(payload) if payload is not None else []
+    if not segments and isinstance(payload, dict):
+        for key in _NESTED_FEED_KEYS:
+            nested = payload.get(key)
+            if isinstance(nested, (dict, list)):
+                segments = _feed_segments(nested)
+                if segments:
+                    break
     if not segments:
+        inner = _nested_feed_markdown(value)
+        if inner:
+            return _normalize_loose_h3(inner)
         return _normalize_loose_h3(str(value or ""))
     total = len(segments)
     blocks = []
