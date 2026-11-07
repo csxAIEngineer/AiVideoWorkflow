@@ -145,7 +145,9 @@ def _repair_with_graph(
     )
     if stage == "feed" and isinstance(applied, dict):
         applied = dict(applied)
-        applied["feed"] = render_feed_text(applied.get("feed") or feed)
+        from end.repair_rules.feed_unit_headers import recover_feed_units
+
+        applied["feed"] = recover_feed_units(applied.get("feed") or feed)
     if stage == "storyboard" and isinstance(applied, dict):
         applied = dict(applied)
         applied["previs"] = coerce_previs(applied.get("previs") or previs)
@@ -927,9 +929,12 @@ def store_stage(folder, stage, result):
             result["previs"] = previs
             _write_internal(folder, "previs.md", previs)
     elif stage == "feed":
+        from end.repair_rules.feed_unit_headers import recover_feed_units
+
         loaded = _load_spec(folder)
-        bound, _groups = bind_feed_document(result.get("feed") or "", loaded.get("assets") or [])
-        result["feed"] = bound
+        draft = recover_feed_units(result.get("feed") or "")
+        bound, _groups = bind_feed_document(draft, loaded.get("assets") or [])
+        result["feed"] = bound or draft
         _write_internal(folder, "feed.md", result.get("feed") or "")
     return result
 
@@ -1223,8 +1228,10 @@ def check_stage(folder, stage, locks, title=""):
                 return False, report
         return True, ""
     if stage == "feed":
+        from end.repair_rules.feed_unit_headers import recover_feed_units
+
         path = internal / "feed.md"
-        text = render_feed_text(_read(path))
+        text = recover_feed_units(_read(path))
         bound, _groups = bind_feed_document(text, _load_spec(folder).get("assets") or [])
         if bound.strip():
             text = bound
@@ -2357,10 +2364,39 @@ def _nested_feed_markdown(value, depth=0):
     return ""
 
 
+def _pregate_feed(folder, pipeline):
+    """Heal a nested feed shell before a model call.
+
+    Return ``(result, healed)``. ``healed`` is true only when line-start units
+    were recovered and the report is not asking for some other fix, so the
+    caller must not spend an AI repair attempt.
+    """
+    from end.prompt_gate import delivery_units
+    from end.repair_rules.feed_unit_headers import feed_has_unit_head, recover_feed_units
+
+    stored = _read(Path(folder) / "_内部_" / "feed.md")
+    recovered = recover_feed_units(stored)
+    gained = (
+        bool(recovered.strip())
+        and recovered.strip() != stored.strip()
+        and bool(delivery_units(recovered))
+        and not feed_has_unit_head(stored)
+    )
+    if not gained:
+        return None, False
+    report = str((pipeline or {}).get("repair") or (pipeline or {}).get("report") or "")
+    if "FAIL" in report:
+        _write_internal(folder, "feed.md", recovered)
+        return None, False
+    return {"feed": recovered}, True
+
+
 def feed_from_result(result):
     """The feed draft, even when the merge put the six sections in text."""
+    from end.repair_rules.feed_unit_headers import recover_feed_units
+
     result = result if isinstance(result, dict) else {}
-    rendered = render_feed_text(result.get("feed") or "")
+    rendered = recover_feed_units(result.get("feed") or "")
     if _looks_like_feed_text(rendered) or rendered.strip():
         if rendered.strip():
             return rendered
@@ -2369,7 +2405,7 @@ def feed_from_result(result):
         if isinstance(item, dict):
             candidates.append(item.get("text"))
     for candidate in candidates:
-        rendered_alt = render_feed_text(candidate or "")
+        rendered_alt = recover_feed_units(candidate or "")
         if _looks_like_feed_text(rendered_alt):
             return rendered_alt
     return rendered
@@ -3105,15 +3141,13 @@ def execute(project, folder, locks, write_model, load_pack):
         from end.trace import finish_trace, stage_output
 
         try:
-            stored_feed = _read(Path(folder) / "_内部_" / "feed.md") if current == "feed" else ""
-            rendered_feed = render_feed_text(stored_feed) if current == "feed" else ""
-            reuse_wrapped_feed = (
-                current == "feed"
-                and bool(rendered_feed.strip())
-                and rendered_feed.strip() != stored_feed.strip()
-            )
-            if reuse_wrapped_feed:
-                result = {"feed": rendered_feed}
+            healed_feed = False
+            if current == "feed":
+                pregated, healed_feed = _pregate_feed(folder, pipeline)
+            else:
+                pregated = None
+            if pregated is not None:
+                result = pregated
             else:
                 result = _produce(project, folder, current, locks, only, write_model, load_pack)
             if current == "script":
@@ -3222,8 +3256,11 @@ def execute(project, folder, locks, write_model, load_pack):
         spec = _spec_patch(current, result, spec)
         passed, report = check_stage(folder, current, locks, spec.get("title") or "")
         checked = True
-        attempts += 1
-        pipeline["repairs"] = attempts
+        if healed_feed:
+            pipeline["rule_repairs"] = int(pipeline.get("rule_repairs") or 0) + 1
+        else:
+            attempts += 1
+            pipeline["repairs"] = attempts
         pipeline["repair"] = "" if passed else (report or "")
         if current == "script" and not passed and not pipeline["repair"]:
             pipeline["repair"] = "机检没过"

@@ -13,8 +13,9 @@ from end.gates import GATE_CHECK, check_feed, check_gate, check_p45
 from end.locks import prepare_locks, write_locks
 from end.prompt_gate import delivery_units
 from end.repair_rules import run_rules
+from end.repair_rules.feed_unit_headers import recover_feed_units
 from end.server import run_project
-from end.stage_runner import feed_from_result, render_feed_text
+from end.stage_runner import feed_from_result, render_feed_text, store_stage
 from tests.test_auto_gates import _ready_locks
 from tests.test_director_pipeline import make_project
 
@@ -200,6 +201,8 @@ class FeedUnitHeaderRuleTest(unittest.TestCase):
             "",
         ))
         self.assertEqual(render_feed_text(clean), clean)
+        self.assertEqual(recover_feed_units(clean), clean)
+        self.assertEqual(feed_from_result({"feed": clean}), clean)
         updated, applied = _apply(clean)
         self.assertEqual(applied, [])
         self.assertEqual(updated, clean)
@@ -228,6 +231,9 @@ class FeedUnitHeaderRuleTest(unittest.TestCase):
             self.assertEqual(applied, [], sample)
             self.assertEqual(delivery_units(updated), [], sample)
             self.assertNotIn("## 【投喂单元", updated)
+            healed = recover_feed_units(sample)
+            self.assertEqual(delivery_units(healed), [], sample)
+            self.assertNotIn("## 【投喂单元", healed)
 
     def test_write_path_stores_the_unwrapped_markdown(self):
         inner = "\n\n".join(_h3_unit(index) for index in (1, 2, 3))
@@ -236,6 +242,15 @@ class FeedUnitHeaderRuleTest(unittest.TestCase):
         self.assertEqual(len(delivery_units(stored)), 3)
         self.assertNotIn('"feed"', stored)
         self.assertRegex(stored, r"(?m)^## 【投喂单元 1/3】")
+        again = recover_feed_units(stored)
+        self.assertEqual(again.strip(), stored.strip())
+        folder = Path(tempfile.mkdtemp())
+        (folder / "spec.json").write_text("{}", encoding="utf-8")
+        store_stage(folder, "feed", {"feed": shell})
+        written = (folder / "_内部_" / "feed.md").read_text(encoding="utf-8")
+        self.assertRegex(written, r"(?m)^## 【投喂单元 1/3】")
+        self.assertNotIn('"feed"', written)
+        self.assertEqual(len(delivery_units(written)), 3)
         nested = {"feed": {"segments": [{
             "time_range": "0:00-0:15",
             "content": {
@@ -384,6 +399,41 @@ class RuleBeforeModelTest(unittest.TestCase):
         self.assertEqual(saved["progress"]["pipeline"]["rule_repairs"], 3)
         self.assertIn("未找到投喂单元", saved["messages"][-1]["content"])
         self.assertIn("缺【画幅风格】", saved["messages"][-1]["content"])
+
+    def test_shell_unwrap_does_not_spend_an_ai_attempt(self):
+        inner = "\n\n".join(_h3_unit(index) for index in (1, 2, 3))
+        shell = "duration: 6\n" + json.dumps({"feed": inner}, ensure_ascii=False, indent=2)
+        folder = self._gate("p-shell-rule", shell, _MISSING)
+        project = read_project("p-shell-rule")
+        project["progress"]["pipeline"]["action"] = "rewrite"
+        write_project(project)
+        calls = []
+
+        def writer(*_args, **_kwargs):
+            calls.append("ai")
+            raise AssertionError("壳已经能拆开，不应叫模型")
+
+        def check(folder, stage, locks, title=""):
+            del locks, title
+            text = (Path(folder) / "_内部_" / "feed.md").read_text(encoding="utf-8")
+            if stage == "feed" and "## 【投喂单元" not in text:
+                return False, _MISSING
+            return True, ""
+
+        with patch("end.stage_runner.check_stage", check), patch(
+            "end.stage_runner.check_prompt", return_value=(0, "PASSED")
+        ), patch("end.server.template_policy", return_value="drama_still"), patch(
+            "end.server.call_deepseek", writer
+        ), patch("end.server.load_skill_pack", return_value="pack"):
+            run_project("p-shell-rule")
+        saved = read_project("p-shell-rule")
+        stored = (folder / "_内部_" / "feed.md").read_text(encoding="utf-8")
+        self.assertEqual(calls, [])
+        self.assertRegex(stored, r"(?m)^## 【投喂单元 1/3】")
+        self.assertNotIn('"feed"', stored)
+        self.assertEqual(saved["status"], "done")
+        self.assertEqual((saved["progress"].get("pipeline") or {}).get("repairs") or 0, 0)
+        self.assertGreaterEqual((saved["progress"].get("pipeline") or {}).get("rule_repairs") or 0, 1)
 
 
 _SIXQ = "P453 段3 第2格缺六问：朝哪、做什么"
