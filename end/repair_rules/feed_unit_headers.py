@@ -4,6 +4,8 @@ import re
 
 _MARK = "未找到投喂单元"
 _UNIT_LINE = re.compile(r"^#{1,6}[^\n]*投喂单元")
+# The gate accepts ``## 【投喂单元`` at line start. A bare ``## 投喂单元`` does not.
+_GATE_UNIT_HEAD = re.compile(r"(?m)^##[ \t]*【投喂单元")
 
 
 def _canonical_heads(text):
@@ -30,6 +32,30 @@ def _canonical_heads(text):
     return out
 
 
+def feed_has_unit_head(text):
+    """True when a unit head is already at line start in the form the gate splits on."""
+    return bool(_GATE_UNIT_HEAD.search(str(text or "")))
+
+
+def recover_feed_units(value):
+    """Unwrap a duration/JSON shell, then add line-start unit heads when the body can be split.
+
+    A draft that already has ``## 【投喂单元`` is left as ``render_feed_text`` wrote it.
+    A body that still yields no delivery unit is returned without an invented head.
+    """
+    from end.prompt_gate import delivery_units
+    from end.stage_runner import render_feed_text
+
+    rendered = render_feed_text(value or "")
+    text = rendered if str(rendered or "").strip() else str(value or "")
+    if feed_has_unit_head(text):
+        return text
+    recovered = _canonical_heads(text)
+    if delivery_units(recovered):
+        return recovered
+    return text
+
+
 class FeedUnitHeaderRule(object):
     id = "feed-unit-headers"
     stages = ("feed",)
@@ -40,9 +66,4 @@ class FeedUnitHeaderRule(object):
 
     def apply(self, text, context):
         del context
-        from end.stage_runner import render_feed_text
-
-        rendered = render_feed_text(text or "")
-        if str(rendered or "").strip():
-            text = rendered
-        return _canonical_heads(text)
+        return recover_feed_units(text)
