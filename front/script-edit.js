@@ -8,12 +8,15 @@
   const GET_METHOD = "projects.script_revision.get";
   const SAVE_METHOD = "projects.script_revision.save";
   const RETRY_METHOD = "projects.script_revision.retry_review";
+  const OPINION_METHOD = "projects.script_revision.opinion";
+  const OPINION_RETRY_METHOD = "projects.script_revision.opinion_retry";
   const REFRESH_METHOD = "projects.get";
 
   let session = null;
   let keydownHandler = null;
   const pendingQueue = new Map();
   const revisionViews = new Map();
+  const outsideNotices = new Map();
   let retryingReview = false;
   const PENDING_PREFIX = "aivideo.scriptRevision.pending.";
 
@@ -39,13 +42,114 @@
   function revisionSignature(projectId) {
     const view = revisionFor(projectId);
     const pending = readPending(projectId);
-    if (!view && !pending) return "";
+    const notice = outsideNotices.get(projectId);
+    if (!view && !pending && !notice) return "";
     return [
       view && view.review_state || "",
       view && view.review_retryable === true ? "1" : "0",
       view && view.base_token || "",
       pending ? "1" : "0",
+      notice && notice.review_state || "",
+      notice && notice.message || "",
     ].join(":");
+  }
+
+  function noticeFromView(view) {
+    if (!view || !view.opinion_state || view.opinion_state === "none") return null;
+    if (view.opinion_stale === true) {
+      return { kind: "opinion", opinion_state: view.opinion_state, stale: true, message: "底稿或要求已经变了，这轮意见候选不能确认。意见还留着。", error: "" };
+    }
+    if (view.opinion_state === "ready") return { kind: "opinion", opinion_state: "ready", message: "意见候选已生成，可查看确认", error: "" };
+    if (view.opinion_state === "running") return { kind: "opinion", opinion_state: "running", message: "正在按意见改稿", error: "" };
+    if (view.opinion_state === "pending") return { kind: "opinion", opinion_state: "pending", message: "意见已记下，改稿还没确认排上", error: "" };
+    if (view.opinion_state === "failed") return { kind: "opinion", opinion_state: "failed", message: view.opinion_error || "意见改稿没有完成", error: view.opinion_error || "" };
+    return null;
+  }
+
+  function progressText(notice) {
+    if (!notice) return "";
+    if (notice.kind === "opinion") {
+      if (notice.stale === true) return "";
+      if (notice.opinion_state === "failed") return notice.error || "意见改稿没有完成";
+      if (notice.opinion_state === "ready") return "";
+      if (notice.opinion_state === "pending") return "";
+      if (notice.opinion_state === "running") return "";
+      return "";
+    }
+    if (notice.review_state === "done") return "审稿已结束";
+    const progress = notice.progress || {};
+    const action = (progress.pipeline && progress.pipeline.action) || "";
+    const message = progress.message || "";
+    if (action === "script_review") return message || "正在重新审稿";
+    return message;
+  }
+
+  function fillOutside(node, notice) {
+    const message = node.querySelector(".script-revision-outside-message");
+    const progress = node.querySelector(".script-revision-outside-progress");
+    if (message) message.textContent = notice.message || "";
+    const line = progressText(notice);
+    if (progress) {
+      progress.textContent = line;
+      progress.hidden = !line;
+    }
+  }
+
+  function buildOutside(projectId, notice) {
+    const node = document.createElement("div");
+    node.className = "script-revision-outside";
+    node.dataset.projectId = projectId;
+    node.setAttribute("role", "status");
+    node.setAttribute("aria-live", "polite");
+    const message = document.createElement("p");
+    message.className = "script-revision-outside-message";
+    const progress = document.createElement("p");
+    progress.className = "script-revision-outside-progress";
+    node.append(message, progress);
+    fillOutside(node, notice);
+    return node;
+  }
+
+  function clearOpinionOutside(projectId) {
+    const current = outsideNotices.get(projectId);
+    if (!current || current.kind !== "opinion") return;
+    outsideNotices.delete(projectId);
+    const node = document.querySelector('.script-revision-outside[data-project-id="' + projectId + '"]');
+    if (node && node.parentNode) node.parentNode.removeChild(node);
+  }
+
+  function publishOutside(projectId, notice) {
+    if (!projectId || !notice) return;
+    outsideNotices.set(projectId, notice);
+    const node = document.querySelector('.script-revision-outside[data-project-id="' + projectId + '"]');
+    if (node) {
+      fillOutside(node, notice);
+      return;
+    }
+    const created = buildOutside(projectId, notice);
+    const anchor = document.querySelector(".script-revision-entry-block");
+    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(created, anchor);
+    else {
+      const stop = document.querySelector("#stop");
+      if (stop) stop.insertBefore(created, stop.firstChild);
+      else document.body.append(created);
+    }
+  }
+
+  function createOutside(project) {
+    if (!project || !project.id) return null;
+    const notice = outsideNotices.get(project.id);
+    if (!notice) return null;
+    if (notice.review_state !== "done" && project.progress) notice.progress = project.progress;
+    return buildOutside(project.id, notice);
+  }
+
+  function settleSuccessClose() {
+    if (!session || session.closed) return;
+    if (session.textarea) session.loaded = session.textarea.value;
+    session.phase = "ready";
+    session.held = null;
+    closeSession();
   }
 
   function readPending(projectId) {
@@ -119,6 +223,7 @@
   function shouldShowEntry(project, view) {
     if (!project || !project.id) return false;
     const revision = view || revisionFor(project.id);
+    if (revision && (revision.opinion_retryable === true || revision.opinion_model_retryable === true || (revision.opinion_state === "ready" && revision.opinion_stale !== true))) return true;
     if (revision && revision.review_retryable === true) return true;
     const pending = readPending(project.id);
     if (pending && !serverSettled(revision, pending)) return true;
@@ -371,6 +476,11 @@
 
   function applyBase(base) {
     session.base = base;
+    if (session.opinionBase) {
+      session.opinionBase.textContent = base === "draft"
+        ? "这条意见对着最新未采用候选。正式稿不会因此改写。"
+        : "这条意见对着正式原稿。正式稿不会因此改写。";
+    }
     const next = textForBase(base);
     session.textarea.value = next;
     session.loaded = next;
@@ -502,11 +612,78 @@
     session.dialog.dataset.baseToken = session.token;
     session.dialog.dataset.draftSource = snapshot && snapshot.draft_source ? String(snapshot.draft_source) : "none";
     renderPermission();
-    applyBase("official");
+    noteRevision(snapshot);
+    if (snapshot.opinion_text && session.opinion && !String(session.opinion.value || "").trim()) {
+      session.opinion.value = snapshot.opinion_text;
+    }
+    if (snapshot.opinion_state === "ready" && snapshot.opinion_stale !== true && snapshot.opinion_candidate_text) {
+      session.base = snapshot.opinion_base === "draft" ? "draft" : "official";
+      session.textarea.value = snapshot.opinion_candidate_text;
+      session.loaded = snapshot.opinion_candidate_text;
+      if (session.officialRadio) session.officialRadio.checked = session.base !== "draft";
+      if (session.draftRadio) session.draftRadio.checked = session.base === "draft";
+      if (session.opinionBase) {
+        session.opinionBase.textContent = session.base === "draft"
+          ? "这条意见对着最新未采用候选。正式稿不会因此改写。"
+          : "这条意见对着正式原稿。正式稿不会因此改写。";
+      }
+    } else {
+      applyBase(session.base === "draft" ? "draft" : "official");
+    }
     lockText(false);
     showRetry(false);
+    syncOpinionChrome(snapshot);
     syncSaveEnabled();
-    setMessage(permissionNote(snapshot));
+    if (snapshot.opinion_stale === true) setMessage("这轮意见已经过期，不能确认。意见还留着，编辑区里的文字也还在。");
+    else if (snapshot.opinion_state === "failed") setMessage(snapshot.opinion_error || "意见改稿没有完成");
+    else if (snapshot.opinion_state === "pending") setMessage("意见已记下，改稿还没确认排上。打开和刷新不会提交。");
+    else if (snapshot.opinion_state === "running") setMessage("正在按意见改稿");
+    else if (snapshot.opinion_state === "ready") setMessage("意见候选已写好。可以改全文，再确认。这还不是正式稿。");
+    else setMessage(permissionNote(snapshot));
+  }
+
+  function syncOpinionChrome(snapshot) {
+    if (!session) return;
+    const retryable = snapshot && snapshot.opinion_retryable === true;
+    const modelRetry = snapshot && snapshot.opinion_model_retryable === true;
+    const remaining = snapshot && Number(snapshot.opinion_model_remaining);
+    const canConfirm = snapshot && snapshot.can_confirm_opinion === true && snapshot.opinion_stale !== true;
+    const exhausted = snapshot && snapshot.opinion_state === "failed" && snapshot.opinion_stale !== true && remaining === 0;
+    if (session.opinionButton) session.opinionButton.textContent = "让AI按意见改稿";
+    if (session.opinionRetryButton) session.opinionRetryButton.classList.toggle("hidden", !retryable);
+    if (session.opinionModelButton) {
+      session.opinionModelButton.classList.toggle("hidden", !modelRetry);
+      if (modelRetry) session.opinionModelButton.textContent = "再次按这些意见改稿（剩余" + remaining + "次）";
+    }
+    if (session.opinionBudget) {
+      session.opinionBudget.textContent = exhausted ? "这组底稿和意见的模型次数已用完。意见还留着，仍可以手工改全文。" : "";
+    }
+    if (session.confirmOpinionButton) session.confirmOpinionButton.classList.toggle("hidden", !canConfirm);
+  }
+
+  function opinionPayload(base, token, opinion, key) {
+    return {
+      id: session.projectId,
+      base: base,
+      base_token: token,
+      opinion: opinion,
+      idempotency_key: key,
+    };
+  }
+
+  async function refreshOpinion(projectId, gen) {
+    try {
+      const project = await session.options.rpc(REFRESH_METHOD, { id: projectId });
+      if (!alive(gen, projectId)) return;
+      if (project && project.id === projectId && session.options.applyProject) session.options.applyProject(project);
+    } catch (_error) {
+      if (!alive(gen, projectId)) return;
+    }
+    try {
+      await prepareRevision(session.options, projectId);
+    } catch (_error) {
+      return;
+    }
   }
 
   function showReadError(text) {
@@ -594,6 +771,13 @@
       setMessage(plan.message);
       return;
     }
+    if (mode === "confirm") {
+      const snap = session.snapshot || {};
+      if (snap.can_confirm_opinion !== true || snap.opinion_stale === true || !snap.opinion_id || snap.opinion_revision == null || snap.opinion_revision === "") {
+        setMessage("这轮意见不能确认。意见和编辑区里的文字都还在，正式稿没有改。");
+        return;
+      }
+    }
     const projectId = session.projectId;
     const gen = session.generation;
     const wasRequeue = session.phase === "requeue";
@@ -604,16 +788,21 @@
       session.loaded = plan.text;
     }
     setBusy(true);
-    setMessage(mode === "requeue" ? "正在用原来的保存编号再试。" : (mode === "retry" ? "正在按原样重试。" : "正在保存。"));
+    setMessage(mode === "confirm" ? "正在确认这版意见候选。" : (mode === "requeue" ? "正在用原来的保存编号再试。" : (mode === "retry" ? "正在按原样重试。" : "正在保存。")));
     let result = null;
+    const saveBody = {
+      id: projectId,
+      text: plan.text,
+      base_token: plan.token,
+      idempotency_key: plan.key,
+      source: "human_edit",
+    };
+    if (mode === "confirm") {
+      saveBody.opinion_id = session.snapshot.opinion_id;
+      saveBody.opinion_revision = session.snapshot.opinion_revision;
+    }
     try {
-      result = await session.options.rpc(SAVE_METHOD, {
-        id: projectId,
-        text: plan.text,
-        base_token: plan.token,
-        idempotency_key: plan.key,
-        source: "human_edit",
-      });
+      result = await session.options.rpc(SAVE_METHOD, saveBody);
     } catch (error) {
       if (!alive(gen, projectId)) return;
       const outcome = outcomeFromError(error);
@@ -691,21 +880,188 @@
       lockText(false);
       lockBases(false);
       setBusy(false);
-      setMessage(shown);
+      const notice = {
+        message: shown,
+        review_state: "queued",
+        review_queued: true,
+        progress: null,
+      };
+      publishOutside(projectId, notice);
       try {
         const project = await session.options.rpc(REFRESH_METHOD, { id: projectId });
         if (!alive(gen, projectId)) return;
+        if (project && project.progress) notice.progress = project.progress;
+        publishOutside(projectId, notice);
         if (project && project.id === projectId && session.options.applyProject) session.options.applyProject(project);
       } catch (_error) {
         if (!alive(gen, projectId)) return;
-        setMessage(shown);
       }
+      settleSuccessClose();
       return;
     }
     session.phase = "ready";
     session.held = null;
     setBusy(false);
     setMessage(shown);
+  }
+
+  function requestOpinion() {
+    return sendOpinion(false);
+  }
+
+  function resubmitFailedOpinion(options, projectId) {
+    return sendFailedAgain(options || (session && session.options), projectId || (session && session.projectId));
+  }
+
+  async function sendOpinion(failedAgain) {
+    if (!session || session.closed || session.phase === "inflight") return { did: "skip" };
+    const snap = session.snapshot || {};
+    const base = failedAgain ? (snap.opinion_base === "draft" ? "draft" : "official") : (session.base === "draft" ? "draft" : "official");
+    const opinion = failedAgain ? String(snap.opinion_text || "") : (session.opinion ? session.opinion.value : "");
+    const token = session.token || snap.base_token || "";
+    if (!String(opinion).trim()) {
+      setMessage("先写下剧情修改意见，再让 AI 按意见改稿。");
+      return { did: "skip" };
+    }
+    if (failedAgain && snap.opinion_model_retryable !== true) {
+      const remaining = Number(snap.opinion_model_remaining);
+      setMessage(remaining === 0
+        ? "这组底稿和意见的模型次数已用完。意见还留着，仍可以手工改全文。换一个保存编号也不能再调用模型。"
+        : "现在不能再按这些意见改稿。意见还留着。");
+      return { did: "skip" };
+    }
+    if (!token) {
+      setMessage("还没有读到底稿版本，这次没有提交。");
+      return { did: "skip" };
+    }
+    const sameHeld = session.opinionHeld
+      && session.opinionHeld.reason
+      && session.opinionHeld.base === base
+      && session.opinionHeld.token === token
+      && session.opinionHeld.opinion === opinion;
+    const key = failedAgain || !sameHeld ? newIdempotencyKey() : session.opinionHeld.key;
+    const projectId = session.projectId;
+    const gen = session.generation;
+    session.phase = "inflight";
+    session.opinionHeld = { key: key, token: token, base: base, opinion: opinion, reason: "" };
+    setBusy(true);
+    setMessage(failedAgain ? "正在用新的保存编号再按这些意见改稿。" : "正在提交意见。正式稿还不会改。");
+    let result = null;
+    try {
+      result = await session.options.rpc(OPINION_METHOD, opinionPayload(base, token, opinion, key));
+    } catch (error) {
+      if (!alive(gen, projectId)) return { did: "error" };
+      session.phase = "ready";
+      setBusy(false);
+      const data = error && error.data || {};
+      const lead = (error && error.message) || "没有提交";
+      if (session.opinion) session.opinion.value = opinion;
+      if (data.reason === "opinion_not_queued" || data.reason === "opinion_ack_unconfirmed") {
+        session.opinionHeld.reason = data.reason;
+      } else {
+        session.opinionHeld = null;
+      }
+      setMessage(lead);
+      try { await prepareRevision(session.options, projectId); } catch (_error) { return { did: "error", message: lead }; }
+      if (session && session.snapshot) syncOpinionChrome(session.snapshot);
+      return { did: "error", message: lead };
+    }
+    if (!alive(gen, projectId)) return { did: "skip" };
+    session.phase = "ready";
+    setBusy(false);
+    const message = result && typeof result.message === "string" ? result.message : "";
+    if (!(result && result.ok === true && result.official_saved === false && result.opinion_state === "running")) {
+      if (session.opinion) session.opinion.value = opinion;
+      setMessage(message || "意见没有送出。正式稿没有改。");
+      return { did: "result", message: message };
+    }
+    session.opinionHeld = null;
+    publishOutside(projectId, { kind: "opinion", opinion_state: "running", message: message, error: "" });
+    await refreshOpinion(projectId, gen);
+    if (!alive(gen, projectId)) return { did: "success", message: message };
+    settleSuccessClose();
+    return { did: "success", message: message };
+  }
+
+  async function sendFailedAgain(options, projectId) {
+    const id = projectId || (options && options.getProjectId && options.getProjectId());
+    if (!id || !options || !options.rpc) return { did: "skip" };
+    let view = revisionFor(id);
+    if (!view || !view.base_token) view = await prepareRevision(options, id);
+    if (!view || view.opinion_model_retryable !== true) {
+      const note = document.querySelector(".script-revision-entry-note");
+      const remaining = view && Number(view.opinion_model_remaining);
+      const text = remaining === 0
+        ? "这组底稿和意见的模型次数已用完。意见还留着，仍可以手工改全文。换一个保存编号也不能再调用模型。"
+        : "现在不能再按这些意见改稿。意见还留着。";
+      if (note) note.textContent = text;
+      if (session && session.projectId === id) setMessage(text);
+      return { did: "skip" };
+    }
+    const key = newIdempotencyKey();
+    let result = null;
+    try {
+      result = await options.rpc(OPINION_METHOD, {
+      id: id,
+      base: view.opinion_base === "draft" ? "draft" : "official",
+      base_token: view.base_token,
+      opinion: view.opinion_text,
+      idempotency_key: key,
+    });
+    } catch (error) {
+      const lead = (error && error.message) || "没有提交";
+      publishOutside(id, { kind: "opinion", opinion_state: "failed", message: lead, error: lead });
+      if (session && session.projectId === id) setMessage(lead);
+      return { did: "error", message: lead };
+    }
+    const message = result && typeof result.message === "string" ? result.message : "";
+    if (!(result && result.ok === true && result.official_saved === false && result.opinion_state === "running")) {
+      publishOutside(id, { kind: "opinion", opinion_state: "failed", message: message || "意见没有送出。正式稿没有改。", error: message });
+      return { did: "result", message: message };
+    }
+    publishOutside(id, { kind: "opinion", opinion_state: "running", message: message, error: "" });
+    try {
+      const project = await options.rpc(REFRESH_METHOD, { id: id });
+      if (project && project.id === id && options.applyProject && (!options.getProjectId || options.getProjectId() === id)) options.applyProject(project);
+    } catch (_error) { return { did: "success", message: message }; }
+    try { await prepareRevision(options, id); } catch (_error) { return { did: "success", message: message }; }
+    if (session && session.projectId === id) settleSuccessClose();
+    return { did: "success", message: message, key: key };
+  }
+
+  async function retryOpinion(options, projectId) {
+    const id = projectId || (options && options.getProjectId && options.getProjectId()) || (session && session.projectId);
+    const rpc = (options && options.rpc) || (session && session.options && session.options.rpc);
+    if (!id || !rpc) return { did: "skip" };
+    let view = revisionFor(id);
+    if (!view || !view.base_token) view = await prepareRevision(options || session.options, id);
+    if (!view || !view.base_token) return { did: "skip" };
+    try {
+      const result = await rpc(OPINION_RETRY_METHOD, { id: id, base_token: view.base_token });
+      const message = result && typeof result.message === "string" ? result.message : "";
+      if (!(result && result.ok === true && result.official_saved === false && (result.opinion_state === "running" || result.opinion_state === "ready"))) {
+        if (session && session.projectId === id) setMessage(message || "没有补排。正式稿没有改。");
+        return { did: "result", message: message };
+      }
+      publishOutside(id, { kind: "opinion", opinion_state: result.opinion_state, message: message, error: "" });
+      try {
+        const project = await rpc(REFRESH_METHOD, { id: id });
+        if (project && project.id === id && options && options.applyProject && (!options.getProjectId || options.getProjectId() === id)) options.applyProject(project);
+      } catch (_error) { return { did: "success", message: message }; }
+      try { await prepareRevision(options || session.options, id); } catch (_error) { return { did: "success", message: message }; }
+      if (session && session.projectId === id) settleSuccessClose();
+      return { did: "success", message: message };
+    } catch (error) {
+      const data = error && error.data || {};
+      const lead = (error && error.message) || "没有补排";
+      publishOutside(id, { kind: "opinion", opinion_state: "failed", message: lead, error: lead });
+      if (session && session.projectId === id && session.opinion && view.opinion_text && !String(session.opinion.value || "").trim()) {
+        session.opinion.value = view.opinion_text;
+      }
+      if (session && session.projectId === id) setMessage(lead);
+      showRecoveryMessage(lead);
+      return { did: "error", message: lead, saved: data.saved === true, official_saved: data.official_saved === true, reason: data.reason || "" };
+    }
   }
 
   function buildDialog(projectId) {
@@ -784,6 +1140,39 @@
       if (session.textarea.value !== session.held.text) session.textarea.value = session.held.text;
     });
 
+    const opinionLabel = document.createElement("label");
+    opinionLabel.className = "script-revision-opinion-label";
+    opinionLabel.setAttribute("for", "script-revision-opinion");
+    opinionLabel.textContent = "剧情修改意见";
+    const opinion = document.createElement("textarea");
+    opinion.id = "script-revision-opinion";
+    opinion.className = "script-revision-opinion";
+    opinion.rows = 4;
+    opinion.setAttribute("aria-label", "剧情修改意见");
+    const opinionBase = document.createElement("p");
+    opinionBase.className = "script-revision-opinion-base";
+    opinionBase.textContent = "这条意见对着正式原稿。正式稿不会因此改写。";
+    const opinionActions = document.createElement("div");
+    opinionActions.className = "script-revision-opinion-actions";
+    const opinionButton = document.createElement("button");
+    opinionButton.type = "button";
+    opinionButton.className = "script-revision-opinion-submit";
+    opinionButton.textContent = "让AI按意见改稿";
+    opinionButton.addEventListener("click", requestOpinion);
+    const opinionRetry = document.createElement("button");
+    opinionRetry.type = "button";
+    opinionRetry.className = "script-revision-opinion-retry hidden";
+    opinionRetry.textContent = "补排意见改稿";
+    opinionRetry.addEventListener("click", () => retryOpinion(session && session.options, session && session.projectId));
+    const opinionModel = document.createElement("button");
+    opinionModel.type = "button";
+    opinionModel.className = "script-revision-opinion-model hidden";
+    opinionModel.textContent = "再次按这些意见改稿（剩余0次）";
+    opinionModel.addEventListener("click", () => resubmitFailedOpinion());
+    const opinionBudget = document.createElement("p");
+    opinionBudget.className = "script-revision-opinion-budget";
+    opinionActions.append(opinionButton, opinionRetry, opinionModel, opinionBudget);
+
     const message = document.createElement("p");
     message.className = "script-revision-message";
     message.setAttribute("role", "status");
@@ -810,7 +1199,12 @@
     save.textContent = "保存并重新审稿";
     save.disabled = true;
     save.addEventListener("click", () => submit("submit"));
-    actions.append(cancel, retry, save);
+    const confirmOpinion = document.createElement("button");
+    confirmOpinion.type = "button";
+    confirmOpinion.className = "script-revision-confirm-opinion hidden";
+    confirmOpinion.textContent = "确认这版意见候选";
+    confirmOpinion.addEventListener("click", () => submit("confirm"));
+    actions.append(cancel, retry, confirmOpinion, save);
 
     const confirm = document.createElement("div");
     confirm.className = "script-revision-confirm hidden";
@@ -833,7 +1227,7 @@
     confirmActions.append(stay, abandon);
     confirm.append(confirmText, confirmActions);
 
-    dialog.append(head, status, reason, permission, diag, fieldset, textLabel, textarea, message, actions, confirm);
+    dialog.append(head, status, reason, permission, diag, fieldset, textLabel, textarea, opinionLabel, opinion, opinionBase, opinionActions, message, actions, confirm);
     layer.append(dialog);
     layer.addEventListener("click", (event) => {
       if (event.target === layer) requestClose();
@@ -859,6 +1253,12 @@
       draftRadio: draftRadio,
       draftNote: draftNote,
       textarea: textarea,
+      opinion: opinion,
+      opinionBase: opinionBase,
+      opinionRetryButton: opinionRetry,
+      opinionModelButton: opinionModel,
+      opinionBudget: opinionBudget,
+      confirmOpinionButton: confirmOpinion,
       message: message,
       saveButton: save,
       retryButton: retry,
@@ -931,6 +1331,12 @@
       draftRadio: built.draftRadio,
       draftNote: built.draftNote,
       textarea: built.textarea,
+      opinion: built.opinion,
+      opinionBase: built.opinionBase,
+      opinionRetryButton: built.opinionRetryButton,
+      opinionModelButton: built.opinionModelButton,
+      opinionBudget: built.opinionBudget,
+      confirmOpinionButton: built.confirmOpinionButton,
       message: built.message,
       saveButton: built.saveButton,
       retryButton: built.retryButton,
@@ -951,6 +1357,12 @@
     const view = await options.rpc(GET_METHOD, { id: id });
     if (!view || view.id !== id) return null;
     noteRevision(view);
+    if (!view.opinion_state || view.opinion_state === "none") clearOpinionOutside(view.id);
+    else {
+      const derived = noticeFromView(view);
+      const current = outsideNotices.get(view.id);
+      if (derived && (!current || current.kind === "opinion")) publishOutside(view.id, derived);
+    }
     if (view.review_retryable !== true && (view.review_state === "none" || view.review_state === "queued" || view.review_state === "done")) {
       clearPending(id);
     }
@@ -981,14 +1393,24 @@
         }
         clearPending(id);
         showRecoveryMessage(message);
+        const notice = {
+          message: message,
+          review_state: result.review_state,
+          review_queued: result.review_queued === true,
+          progress: null,
+        };
+        publishOutside(id, notice);
         try {
           const project = await options.rpc(REFRESH_METHOD, { id: id });
+          if (result.review_state !== "done" && project && project.progress) notice.progress = project.progress;
+          publishOutside(id, notice);
           if (project && project.id === id && options.applyProject && (!options.getProjectId || options.getProjectId() === id)) {
             options.applyProject(project);
           }
         } catch (_error) {
           showRecoveryMessage(message);
         }
+        settleSuccessClose();
         return { did: "success", message: message };
       }
       showRecoveryMessage(message);
@@ -1053,7 +1475,45 @@
     note.className = "script-revision-entry-note";
     note.textContent = copy.note;
     box.append(button, note);
+    if (revision && revision.opinion_state === "ready" && revision.opinion_stale !== true) {
+      const openCandidate = document.createElement("button");
+      openCandidate.type = "button";
+      openCandidate.className = "choice script-revision-opinion-open";
+      openCandidate.id = "script-revision-opinion-open";
+      openCandidate.textContent = "查看意见候选";
+      openCandidate.addEventListener("click", () => openEditor(options, openCandidate));
+      box.append(openCandidate);
+    }
+    if (revision && revision.opinion_retryable === true) {
+      const queue = document.createElement("button");
+      queue.type = "button";
+      queue.className = "choice script-revision-opinion-retry";
+      queue.id = "script-revision-opinion-retry";
+      queue.textContent = "补排意见改稿";
+      queue.addEventListener("click", () => retryOpinion(options, projectId));
+      box.append(queue);
+    }
+    if (revision && revision.opinion_model_retryable === true) {
+      const again = document.createElement("button");
+      again.type = "button";
+      again.className = "choice script-revision-opinion-model";
+      again.id = "script-revision-opinion-model";
+      again.textContent = "再次按这些意见改稿（剩余" + Number(revision.opinion_model_remaining) + "次）";
+      again.addEventListener("click", () => resubmitFailedOpinion(options, projectId));
+      box.append(again);
+    } else if (revision && revision.opinion_state === "failed" && revision.opinion_stale !== true && Number(revision.opinion_model_remaining) === 0) {
+      const spent = document.createElement("p");
+      spent.className = "script-revision-opinion-budget";
+      spent.textContent = "这组底稿和意见的模型次数已用完。意见还留着，仍可以手工改全文。";
+      box.append(spent);
+    }
     return box;
+  }
+
+  function opinionInFlight(projectId) {
+    const view = revisionFor(projectId);
+    if (!view) return false;
+    return view.opinion_state === "pending" || view.opinion_state === "running";
   }
 
   function confirmLeave(nextId) {
@@ -1100,11 +1560,15 @@
     revisionSignature: revisionSignature,
     noteRevision: noteRevision,
     retryReview: retryReview,
+    retryOpinion: retryOpinion,
+    resubmitFailedOpinion: resubmitFailedOpinion,
+    opinionInFlight: opinionInFlight,
     probeServerPending: probeServerPending,
     configurePendingRead: configurePendingRead,
     clearPending: clearPending,
     readPending: readPending,
     createEntry: createEntry,
+    createOutside: createOutside,
     confirmLeave: confirmLeave,
     planSubmit: planSubmit,
     outcomeFromError: outcomeFromError,

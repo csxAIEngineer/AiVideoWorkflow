@@ -2441,11 +2441,50 @@ html[data-theme="dark"] .wf-node.shot.is-selected {
   .retouch-diff-cols { grid-template-columns: 1fr; }
 }
 
-.script-revision-entry-block {
+.script-revision-entry-block,
+.script-revision-stack {
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin: 0 0 14px;
+}
+
+.script-revision-outside {
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: #f4f7ff;
+}
+
+.script-revision-outside-message,
+.script-revision-outside-progress,
+.script-revision-opinion-base,
+.script-revision-opinion-label {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.script-revision-outside-progress,
+.script-revision-opinion-base {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.script-revision-opinion {
+  width: 100%;
+  min-height: 88px;
+  margin-top: 6px;
+  box-sizing: border-box;
+}
+
+.script-revision-opinion-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
 }
 
 .script-revision-entry {
@@ -2642,6 +2681,11 @@ html[data-theme="dark"] .wf-node.shot.is-selected {
 html[data-theme="dark"] .script-revision-entry {
   background: #22283a;
   color: var(--accent);
+}
+
+html[data-theme="dark"] .script-revision-outside {
+  background: #22283a;
+  color: var(--text);
 }
 
 html[data-theme="dark"] .script-revision-save {

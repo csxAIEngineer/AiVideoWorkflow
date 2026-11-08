@@ -373,6 +373,29 @@ async function runBrowser(origin) {
   await waitText(".script-revision-status", "未通过审稿");
   const reopened = await evalValue("document.querySelector('#script-revision-text').value");
   check("reopen loads official text", reopened.indexOf("正式原稿") === 0, reopened);
+  const opinionCalls = await evalValue("__fixture.calls().length");
+  const opinionDraft = await evalValue("document.querySelector('#script-revision-text').value");
+  await evalValue("document.querySelector('#script-revision-opinion').value = ''");
+  await evalValue("document.querySelector('.script-revision-opinion-submit').click()");
+  await waitText(".script-revision-message", "先写下剧情修改意见");
+  check("empty opinion does not submit", await evalValue("__fixture.calls().length") === opinionCalls);
+  await evalValue("document.querySelector('input[value=draft]').click()");
+  const opinionBase = await evalValue("document.querySelector('.script-revision-opinion-base').textContent");
+  const afterBase = await evalValue("__fixture.calls().length");
+  check("opinion base switch is read only", opinionBase.indexOf("未采用候选") >= 0 && afterBase === opinionCalls, opinionBase);
+  await evalValue("document.querySelector('input[value=official]').click()");
+  await evalValue("document.querySelector('#script-revision-opinion').value = '让她把瓶子放下，改成当面道歉。'");
+  await evalValue("document.querySelector('.script-revision-opinion-submit').click()");
+  await waitText(".script-revision-outside-message", "正在按意见改稿");
+  const opinionCall = await evalValue("var rows = __fixture.calls().filter((item) => item.method === 'projects.script_revision.opinion'); JSON.stringify(rows[rows.length - 1].params)");
+  const opinionBody = JSON.parse(opinionCall);
+  const opinionSaved = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.save').length");
+  const opinionClosed = await evalValue("!document.querySelector('.script-revision-dialog')");
+  check("opinion submit uses base token and a new key", opinionBody.base === "official" && opinionBody.opinion === "让她把瓶子放下，改成当面道歉。" && !!opinionBody.idempotency_key && !!opinionBody.base_token && !opinionBody.text, opinionCall);
+  check("opinion submit does not save the manuscript", opinionSaved === 0 && opinionClosed === true);
+  check("opinion submit does not change the editor source", opinionDraft.indexOf("正式原稿") === 0);
+  await evalValue("document.querySelector('#script-revision-open').click()");
+  await waitText(".script-revision-status", "未通过审稿");
   await evalValue("document.querySelector('#script-revision-text').value = '人工改过的全文'");
   const before = await evalValue("__fixture.calls().length");
   await evalValue("__fixture.arm('hang'); document.querySelector('.script-revision-save').click(); document.querySelector('.script-revision-save').click()");
@@ -382,23 +405,31 @@ async function runBrowser(origin) {
   const leave = await evalValue("ScriptRevisionEdit.confirmLeave('p-other')");
   check("in-flight save blocks project switch", leave === false);
   await evalValue("__fixture.release()");
-  await waitText(".script-revision-message", "已保存，正在重新审稿");
-  const success = await evalValue("document.querySelector('.script-revision-message').textContent");
-  check("success uses the server message", success === "已保存，正在重新审稿", success);
+  await waitText(".script-revision-outside-message", "已保存，正在重新审稿");
+  const success = await evalValue("document.querySelector('.script-revision-outside-message').textContent");
+  const successClosed = await evalValue("!document.querySelector('.script-revision-dialog')");
+  const successVisible = await evalValue("(() => { const node = document.querySelector('.script-revision-outside'); const box = node ? node.getBoundingClientRect() : { height: 0 }; return box.height > 0; })()");
+  check("success uses the server message outside the dialog", success === "已保存，正在重新审稿", success);
+  check("success closes the dialog", successClosed === true);
+  check("success status is visible", successVisible === true);
   check("success does not claim review passed", success.indexOf("已审通过") < 0);
   const queued = await evalValue("__fixture.queueCount()");
   check("success queues one review", queued === 1, String(queued));
   const methods = await evalValue("JSON.stringify(__fixture.calls().slice(" + before + ").map((item) => item.method))");
   check("success refreshes with projects.get", methods.indexOf("projects.get") >= 0, methods);
   check("success does not render reset or save_content", ["projects.render", "projects.rerun", "projects.reset", "projects.save_content"].every((name) => methods.indexOf(name) < 0), methods);
-  const applied = await evalValue("__fixture.state.applied.length === 1 && __fixture.state.applied[0].id === 'p-rev'");
+  const applied = await evalValue("__fixture.state.applied.length > 0 && __fixture.state.applied[__fixture.state.applied.length - 1].id === 'p-rev'");
   check("refresh applies the same project", applied === true);
   await shot("script_revision_saved_rereview.png");
 
+  await evalValue("document.querySelector('#script-revision-open').click()");
+  await waitText(".script-revision-status", "未通过审稿");
   const getsBefore = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.get').length");
   await evalValue("document.querySelector('#script-revision-text').value = __fixture.OFFICIAL; document.querySelector('.script-revision-save').click()");
   await waitText(".script-revision-message", "稿件没有变化");
+  const unchangedOpen = await evalValue("!!document.querySelector('.script-revision-dialog')");
   const unchanged = await evalValue("document.querySelector('.script-revision-message').textContent.indexOf('正在重新审稿') < 0");
+  check("unchanged keeps the dialog open", unchangedOpen === true);
   const getsAfter = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.get').length");
   const queueAfter = await evalValue("__fixture.queueCount()");
   check("unchanged does not claim a queued review", unchanged === true);
@@ -472,6 +503,7 @@ async function runBrowser(origin) {
     check(item.name + " keeps the saved draft", queueDraft === item.draft, queueDraft);
     check(item.name + " shows the server message", queueFailText === item.message, queueFailText);
     check(item.name + " is not shown as reviewing", queueFailText.indexOf("已保存，正在重新审稿") < 0 && queueFailText.indexOf("正在审稿") < 0 && queueFailText.indexOf("已审通过") < 0, queueFailText);
+    check(item.name + " keeps the dialog open", await evalValue("!!document.querySelector('.script-revision-dialog')") === true);
     if (item.name === "review_ack_unconfirmed") {
       check("ack unconfirmed is not called definitely unqueued", queueFailText.indexOf("还没排上") < 0 && queueFailText.indexOf("未排队") < 0, queueFailText);
     }
@@ -546,8 +578,19 @@ async function runBrowser(origin) {
   await waitText(".script-revision-entry-note", "审稿已结束");
   const doneMessage = await evalValue("document.querySelector('.script-revision-entry-note').textContent");
   const doneRetriesAfter = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.retry_review').length");
-  check("done with review_queued false is success", doneMessage === "审稿已结束" && doneMessage.indexOf("正在审稿") < 0 && doneMessage.indexOf("队列") < 0, doneMessage);
+  const doneOutside = await evalValue("(document.querySelector('.script-revision-outside-message') || {}).textContent || ''");
+  const doneProgress = await evalValue("(document.querySelector('.script-revision-outside-progress') || {}).textContent || ''");
+  check("done with review_queued false is success", doneMessage === "审稿已结束" && doneMessage.indexOf("正在审稿") < 0 && doneMessage.indexOf("队列") < 0 && doneOutside === "审稿已结束" && doneProgress === "审稿已结束" && doneProgress.indexOf("正在审稿") < 0, doneMessage + " / " + doneProgress);
   check("done does not queue another review", await evalValue("__fixture.queueCount()") === doneBefore && doneRetriesAfter === doneRetries + 1, String(doneRetriesAfter));
+  await evalValue("__fixture.state.opinionView = { opinion_state: 'none', opinion_stale: false, can_confirm_opinion: false }");
+  await evalValue("ScriptRevisionEdit.prepareRevision({ rpc: rpc, project: { id: 'p-rev' }, getProjectId: function () { return 'p-rev'; } }, 'p-rev')");
+  const noneKeptReview = await evalValue("(document.querySelector('.script-revision-outside-message') || {}).textContent || ''");
+  check("opinion none does not erase the finished review", noneKeptReview === "审稿已结束", noneKeptReview);
+  await evalValue("__fixture.state.opinionView = { opinion_state: 'ready', opinion_stale: false, can_confirm_opinion: true, opinion_candidate_text: '不该盖住审稿状态' }");
+  await evalValue("ScriptRevisionEdit.prepareRevision({ rpc: rpc, project: { id: 'p-rev' }, getProjectId: function () { return 'p-rev'; } }, 'p-rev')");
+  const readyKeptReview = await evalValue("(document.querySelector('.script-revision-outside-message') || {}).textContent || ''");
+  check("a later opinion get does not erase the finished review", readyKeptReview === "审稿已结束", readyKeptReview);
+  await evalValue("__fixture.state.opinionView = null");
 
   await evalValue("__fixture.state.forceDone = false; __fixture.state.reviewPending = false; __fixture.state.reviewQueued = false; __fixture.setMode('repair')");
   await evalValue("ScriptRevisionEdit.prepareRevision({ rpc: rpc, project: { id: 'p-rev' }, getProjectId: function () { return 'p-rev'; } }, 'p-rev')");
@@ -569,15 +612,20 @@ async function runBrowser(origin) {
   check("retryable busy does not auto retry", busyStill === busyOnce);
   const firstKey = await evalValue("var rows = __fixture.calls().filter((item) => item.method === 'projects.script_revision.save'); rows[rows.length - 1].params.idempotency_key");
   await evalValue("document.querySelector('.script-revision-retry').click()");
-  await waitText(".script-revision-message", "已保存，正在重新审稿");
+  await waitText(".script-revision-outside-message", "已保存，正在重新审稿");
+  check("explicit retry closes after queueing", await evalValue("!document.querySelector('.script-revision-dialog')") === true);
   const secondKey = await evalValue("var rows = __fixture.calls().filter((item) => item.method === 'projects.script_revision.save'); rows[rows.length - 1].params.idempotency_key");
   check("explicit retry reuses the key", firstKey && firstKey === secondKey, firstKey + " / " + secondKey);
 
+  await evalValue("document.querySelector('#script-revision-open').click()");
+  await waitText(".script-revision-status", "未通过审稿");
   await evalValue("document.querySelector('#script-revision-text').value = '换了正文'");
   await evalValue("document.querySelector('.script-revision-save').click()");
-  await waitText(".script-revision-message", "已保存，正在重新审稿");
+  await waitText(".script-revision-outside-message", "已保存，正在重新审稿");
   const thirdKey = await evalValue("var rows = __fixture.calls().filter((item) => item.method === 'projects.script_revision.save'); rows[rows.length - 1].params.idempotency_key");
   check("changed text uses a new key", thirdKey && thirdKey !== secondKey, thirdKey);
+  await evalValue("document.querySelector('#script-revision-open').click()");
+  await waitText(".script-revision-status", "未通过审稿");
 
   const keysPresent = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.save').every((item) => item.params.idempotency_key && item.params.base_token && item.params.source === 'human_edit')");
   check("every save sends key token and source", keysPresent === true);
@@ -593,13 +641,15 @@ async function runBrowser(origin) {
   const noAuto = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.save').length");
   check("unknown result does not auto retry", true);
   await evalValue("document.querySelector('.script-revision-save').click()");
-  await waitText(".script-revision-message", "已保存，正在重新审稿");
+  await waitText(".script-revision-outside-message", "已保存，正在重新审稿");
   const replayKey = await evalValue("var rows = __fixture.calls().filter((item) => item.method === 'projects.script_revision.save'); rows[rows.length - 1].params.idempotency_key");
   const queueAfterReplay = await evalValue("__fixture.queueCount()");
   check("replay uses the same key", lostKey === replayKey, lostKey + " / " + replayKey);
   check("replay does not queue twice", queueAfterReplay === queueAtLoss, queueAtLoss + "->" + queueAfterReplay);
   void noAuto;
 
+  await evalValue("document.querySelector('#script-revision-open').click()");
+  await waitText(".script-revision-status", "未通过审稿");
   await evalValue("__fixture.setProjectId('p-other'); document.querySelector('#script-revision-text').value = '不该串到别的项目'");
   await evalValue("__fixture.arm('hang'); const button = document.querySelector('.script-revision-save'); button.disabled = false; button.click()");
   await delay(40);
@@ -610,6 +660,66 @@ async function runBrowser(origin) {
 
   const forbidden = await evalValue("JSON.stringify(__fixture.calls().map((item) => item.method))");
   check("fixture never called render rerun reset or save_content", ["projects.render", "projects.rerun", "projects.reset", "projects.save_content"].every((name) => forbidden.indexOf(name) < 0), forbidden);
+  await evalValue("document.querySelectorAll('.script-revision-layer').forEach(function (node) { node.remove(); })");
+
+  await evalValue(`__fixture.state.opinionView = { opinion_state: 'running', opinion_stale: false, can_confirm_opinion: false, opinion_candidate_text: '', opinion_text: '先停一下' };
+    window.__showOpinion = function (id) {
+      var stop = document.querySelector('#stop');
+      stop.replaceChildren();
+      var project = { id: id, status: 'gate', progress: { phase: 'gate_script', question: { id: 'script_candidate', options: ['查看未采用候选', '保持原稿'] } } };
+      var options = { project: project, rpc: rpc, getProjectId: function () { return id; }, applyProject: function () {} };
+      var outside = ScriptRevisionEdit.createOutside(project);
+      var entry = ScriptRevisionEdit.shouldShowEntry(project) ? ScriptRevisionEdit.createEntry(options) : null;
+      if (outside) stop.append(outside);
+      if (entry) stop.append(entry);
+      return true;
+    };`);
+  await evalValue("ScriptRevisionEdit.prepareRevision({ rpc: rpc, project: { id: 'p-opinion' }, getProjectId: function () { return 'p-opinion'; } }, 'p-opinion')");
+  await evalValue("__showOpinion('p-opinion')");
+  const runningShown = await evalValue("(document.querySelector('.script-revision-outside-message') || {}).textContent || ''");
+  check("get running shows the opinion is still running", runningShown === "正在按意见改稿", runningShown);
+  await evalValue("__fixture.state.opinionView = { opinion_state: 'ready', opinion_stale: false, can_confirm_opinion: false, opinion_candidate_text: '她按意见离开了。', opinion_text: '让她离开。', opinion_id: 'op-ready', opinion_revision: 3, opinion_base: 'official' }");
+  await evalValue("ScriptRevisionEdit.prepareRevision({ rpc: rpc, project: { id: 'p-opinion' }, getProjectId: function () { return 'p-opinion'; } }, 'p-opinion')");
+  await evalValue("__showOpinion('p-opinion')");
+  const readyShown = await evalValue("(document.querySelector('.script-revision-outside-message') || {}).textContent || ''");
+  const readyOpen = await evalValue("(document.querySelector('#script-revision-opinion-open') || {}).textContent || ''");
+  check("get ready replaces running and offers a view entry", readyShown === "意见候选已生成，可查看确认" && readyShown.indexOf("正在按意见改稿") < 0 && readyOpen === "查看意见候选", readyShown + " / " + readyOpen);
+  const opinionCallsBeforeOpen = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.opinion' || item.method === 'projects.script_revision.save' || item.method === 'projects.script_revision.opinion_retry').length");
+  await evalValue("document.querySelector('#script-revision-opinion-open').click()");
+  let readyValue = "";
+  for (let i = 0; i < 40; i += 1) {
+    readyValue = await evalValue("(document.querySelector('#script-revision-text') || {}).value || ''");
+    if (readyValue.indexOf("她按意见离开了") >= 0) break;
+    await delay(50);
+  }
+  const readyConfirmHidden = await evalValue("!document.querySelector('.script-revision-confirm-opinion') || document.querySelector('.script-revision-confirm-opinion').classList.contains('hidden')");
+  const opinionCallsAfterOpen = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.opinion' || item.method === 'projects.script_revision.save' || item.method === 'projects.script_revision.opinion_retry').length");
+  check("opening a ready candidate does not submit and does not assume confirm", readyValue.indexOf("她按意见离开了") >= 0 && readyConfirmHidden === true && opinionCallsAfterOpen === opinionCallsBeforeOpen, readyValue);
+  await evalValue("__fixture.state.opinionView.can_confirm_opinion = true");
+  await evalValue("if (document.querySelector('.script-revision-cancel')) document.querySelector('.script-revision-cancel').click()");
+  await evalValue("ScriptRevisionEdit.prepareRevision({ rpc: rpc, project: { id: 'p-opinion' }, getProjectId: function () { return 'p-opinion'; } }, 'p-opinion')");
+  await evalValue("__showOpinion('p-opinion')");
+  await evalValue("document.querySelector('#script-revision-opinion-open').click()");
+  for (let i = 0; i < 40; i += 1) {
+    const shown = await evalValue("!!document.querySelector('.script-revision-confirm-opinion') && !document.querySelector('.script-revision-confirm-opinion').classList.contains('hidden')");
+    if (shown === true) break;
+    await delay(50);
+  }
+  const confirmFollowsFlag = await evalValue("!!document.querySelector('.script-revision-confirm-opinion') && !document.querySelector('.script-revision-confirm-opinion').classList.contains('hidden')");
+  check("confirm appears only when can_confirm_opinion is true", confirmFollowsFlag === true);
+  await evalValue("if (document.querySelector('.script-revision-cancel')) document.querySelector('.script-revision-cancel').click()");
+  await evalValue("__fixture.state.opinionView = { opinion_state: 'ready', opinion_stale: true, can_confirm_opinion: false, opinion_text: '让她离开。', opinion_candidate_text: '' }");
+  await evalValue("ScriptRevisionEdit.prepareRevision({ rpc: rpc, project: { id: 'p-opinion' }, getProjectId: function () { return 'p-opinion'; } }, 'p-opinion')");
+  await evalValue("__showOpinion('p-opinion')");
+  const staleShown = await evalValue("(document.querySelector('.script-revision-outside-message') || {}).textContent || ''");
+  const staleOpenGone = await evalValue("!document.querySelector('#script-revision-opinion-open')");
+  check("stale get explains the candidate cannot be confirmed", staleShown.indexOf("不能确认") >= 0 && staleShown.indexOf("正在按意见改稿") < 0 && staleOpenGone === true, staleShown);
+  await evalValue("__fixture.state.opinionView = { opinion_state: 'none', opinion_stale: false, can_confirm_opinion: false }");
+  await evalValue("ScriptRevisionEdit.prepareRevision({ rpc: rpc, project: { id: 'p-opinion' }, getProjectId: function () { return 'p-opinion'; } }, 'p-opinion')");
+  await evalValue("__showOpinion('p-opinion')");
+  const noneShown = await evalValue("(document.querySelector('.script-revision-outside-message') || {}).textContent || ''");
+  check("opinion none clears the old running status", noneShown.indexOf("正在按意见改稿") < 0 && noneShown.indexOf("意见候选已生成") < 0 && noneShown === "", noneShown);
+  await evalValue("__fixture.state.opinionView = null");
 
   browser.ws.close();
   browser.chrome.kill();

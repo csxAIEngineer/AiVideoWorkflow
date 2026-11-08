@@ -1627,8 +1627,16 @@ function scriptRevisionOptions() {
 }
 
 function scriptRevisionBox(project) {
-  if (typeof ScriptRevisionEdit === "undefined" || !project || !ScriptRevisionEdit.shouldShowEntry(project)) return null;
-  return ScriptRevisionEdit.createEntry(scriptRevisionOptions());
+  if (typeof ScriptRevisionEdit === "undefined" || !project) return null;
+  const entry = ScriptRevisionEdit.shouldShowEntry(project) ? ScriptRevisionEdit.createEntry(scriptRevisionOptions()) : null;
+  const outside = ScriptRevisionEdit.createOutside(project);
+  if (!entry && !outside) return null;
+  if (entry && !outside) return entry;
+  const stack = document.createElement("div");
+  stack.className = "script-revision-stack";
+  if (outside) stack.append(outside);
+  if (entry) stack.append(entry);
+  return stack;
 }
 
 async function probeRevision(project) {
@@ -1636,7 +1644,8 @@ async function probeRevision(project) {
   const progress = project.progress || {};
   const action = (progress.pipeline && progress.pipeline.action) || "";
   const mark = project.id + "|" + (project.status || "") + "|" + (progress.phase || "") + "|" + action;
-  if (probeRevision.mark === mark) return;
+  const follow = ScriptRevisionEdit.opinionInFlight && ScriptRevisionEdit.opinionInFlight(project.id);
+  if (probeRevision.mark === mark && !follow) return;
   probeRevision.mark = mark;
   try {
     await ScriptRevisionEdit.prepareRevision(scriptRevisionOptions(), project.id);

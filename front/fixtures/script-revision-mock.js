@@ -110,7 +110,22 @@
       base_token: "sr1.opaque-rejected",
       review_state: "none",
       review_retryable: false,
+      opinion_state: "none",
+      opinion_stale: false,
+      opinion_id: "",
+      opinion_revision: 0,
+      opinion_base: "",
+      opinion_text: "",
+      opinion_candidate_text: "",
+      opinion_error: "",
+      opinion_retryable: false,
+      opinion_model_remaining: 2,
+      opinion_model_retryable: false,
+      can_confirm_opinion: false,
     };
+    if (state.opinionView) {
+      Object.keys(state.opinionView).forEach(function (key) { row[key] = state.opinionView[key]; });
+    }
     if (state.mode === "repair") {
       row.can_edit = false;
       row.can_save = false;
@@ -279,6 +294,61 @@
     return result;
   }
 
+  function submitOpinion(params) {
+    const body = params || {};
+    if (!body.idempotency_key) throw rpcError(400, "没有保存编号", "invalid_request", false, false, false);
+    if (!String(body.opinion || "").trim()) throw rpcError(400, "意见是空的", "empty_opinion", false, false, false);
+    if (body.base !== "official" && body.base !== "draft") throw rpcError(400, "底稿只能是正式稿或未采用候选", "invalid_request", false, false, false);
+    if (state.opinionReplayKey && body.idempotency_key === state.opinionReplayKey) {
+      return { ok: true, official_saved: false, opinion_state: "failed", unchanged: true, opinion_id: "opfixturefail", base_token: body.base_token, message: "意见改稿没有完成：模型失败" };
+    }
+    if (state.opinionBudget === 0) throw rpcError(409, "这组底稿和意见的模型次数已用完", "budget_exhausted", false, false, false);
+    state.opinionCalls = (state.opinionCalls || 0) + 1;
+    state.opinionView = {
+      opinion_state: "running",
+      opinion_stale: false,
+      opinion_id: "opfixture0001",
+      opinion_revision: 1,
+      opinion_base: body.base,
+      opinion_text: body.opinion,
+      opinion_candidate_text: "",
+      opinion_error: "",
+      opinion_retryable: false,
+      opinion_model_remaining: 2,
+      opinion_model_retryable: false,
+      can_confirm_opinion: false,
+    };
+    return {
+      ok: true,
+      official_saved: false,
+      opinion_state: "running",
+      unchanged: false,
+      opinion_id: "opfixture0001",
+      base_token: body.base_token,
+      message: "正在按意见改稿",
+    };
+  }
+
+  function retryOpinionCall(params) {
+    const body = params || {};
+    if (body.opinion || body.idempotency_key || body.source || body.text) {
+      throw rpcError(400, "补排不接受正文或新编号", "invalid_request", false, false, false);
+    }
+    if (state.opinionView && state.opinionView.opinion_state === "failed") {
+      const error = rpcError(409, "这次意见改稿没有完成。补排不会再调模型。", "opinion_failed", false, true, false);
+      error.data.official_saved = false;
+      error.data.model_remaining = state.opinionView.opinion_model_remaining;
+      throw error;
+    }
+    state.opinionView = Object.assign({}, state.opinionView, {
+      opinion_state: "running",
+      opinion_stale: false,
+      opinion_retryable: false,
+      can_confirm_opinion: false,
+    });
+    return { ok: true, official_saved: false, opinion_state: "running", unchanged: true, base_token: body.base_token, message: "正在按意见改稿" };
+  }
+
   async function handle(method, params) {
     state.calls.push({ method: method, params: params || {} });
     if (method === "config.get") return { models: [], templates: [], debug_llm: false };
@@ -288,6 +358,8 @@
     if (method === "projects.send_message") return gateProject(params.id);
     if (method === "projects.script_revision.save") return save(params);
     if (method === "projects.script_revision.retry_review") return retryReview(params);
+    if (method === "projects.script_revision.opinion") return submitOpinion(params);
+    if (method === "projects.script_revision.opinion_retry") return retryOpinionCall(params);
     const blocked = {
       "projects.render": true,
       "projects.rerun": true,
