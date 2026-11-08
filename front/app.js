@@ -1429,6 +1429,9 @@ function transcriptKey(project) {
     (project.traces || []).map((row) => [row.id, row.label, row.error, row.pending].join(":")).join("|"),
     (project.images || []).length,
     (project.shots || []).length,
+    (typeof ScriptRevisionEdit !== "undefined" && ScriptRevisionEdit.revisionSignature)
+      ? ScriptRevisionEdit.revisionSignature(project.id)
+      : "",
   ].join("\u0001");
 }
 
@@ -1480,6 +1483,8 @@ function paintTranscript(options, full) {
     const scriptNode = section("这一稿", current.script);
     if (scriptNode) wrap.append(scriptNode);
   }
+  const revisionBox = scriptRevisionBox(current);
+  if (revisionBox) wrap.append(revisionBox);
   const choice = latestChoiceMessage(current);
   if (current.can_reply && choice) {
     wrap.append(choiceList(choice));
@@ -1608,7 +1613,45 @@ async function refreshList() {
   renderThread();
 }
 
+function scriptRevisionOptions() {
+  return {
+    project: current,
+    rpc: rpc,
+    getProjectId: function () { return current ? current.id : ""; },
+    applyProject: function (next) {
+      if (!next || !current || next.id !== current.id) return;
+      adoptQuiet(next);
+      watch();
+    },
+  };
+}
+
+function scriptRevisionBox(project) {
+  if (typeof ScriptRevisionEdit === "undefined" || !project || !ScriptRevisionEdit.shouldShowEntry(project)) return null;
+  return ScriptRevisionEdit.createEntry(scriptRevisionOptions());
+}
+
+async function probeRevision(project) {
+  if (!project || !project.id || typeof ScriptRevisionEdit === "undefined") return;
+  const progress = project.progress || {};
+  const action = (progress.pipeline && progress.pipeline.action) || "";
+  const mark = project.id + "|" + (project.status || "") + "|" + (progress.phase || "") + "|" + action;
+  if (probeRevision.mark === mark) return;
+  probeRevision.mark = mark;
+  try {
+    await ScriptRevisionEdit.prepareRevision(scriptRevisionOptions(), project.id);
+    if (!current || current.id !== project.id) return;
+    renderThread();
+  } catch (_error) {
+    if (probeRevision.mark === mark) probeRevision.mark = "";
+  }
+}
+
 async function openProject(id) {
+  if (typeof ScriptRevisionEdit !== "undefined") {
+    const allowed = await ScriptRevisionEdit.confirmLeave(id);
+    if (!allowed) return;
+  }
   setMenuOpen(false);
   const switching = !current || current.id !== id;
   try {
@@ -1628,8 +1671,10 @@ async function openProject(id) {
   }
   showProjectModel(current);
   showProjectTemplate(current);
+  if (switching) probeRevision.mark = "";
   renderHistory();
   renderThread({ scroll: current.status === "drilling" ? "bottom" : "top" });
+  probeRevision(current);
   watch();
 }
 
@@ -1657,11 +1702,16 @@ function watch() {
     if (listed) Object.assign(listed, current);
     renderHistory();
     renderThread();
+    probeRevision(current);
     if (!keepWatching(current)) clearInterval(timer);
   }, 2000);
 }
 
-newChat.addEventListener("click", () => {
+newChat.addEventListener("click", async () => {
+  if (typeof ScriptRevisionEdit !== "undefined") {
+    const allowed = await ScriptRevisionEdit.confirmLeave("");
+    if (!allowed) return;
+  }
   setMenuOpen(false);
   current = null;
   otherOpen = false;

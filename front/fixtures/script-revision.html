@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>script revision fixture</title>
+  <link rel="stylesheet" href="/styles.css?v=47" />
+</head>
+<body>
+  <main class="main workflow">
+    <p id="decoy-script"></p>
+    <div id="stop"></div>
+  </main>
+  <script src="/fixtures/script-revision-mock.js"></script>
+  <script src="/rpc.js?v=2"></script>
+  <script src="/script-edit.js?v=1"></script>
+  <script>
+    document.querySelector("#decoy-script").textContent = __fixture.DECOY;
+    function projectView(status) {
+      const repair = status === "repair";
+      const writing = status === "writing" || repair;
+      return {
+        id: "p-rev",
+        status: writing ? "writing" : (status || "gate"),
+        script: __fixture.DECOY,
+        progress: writing
+          ? { phase: "writing", pipeline: { action: repair ? "script_repair" : "script_review" }, question: null }
+          : {
+            phase: "gate_script",
+            question: { id: "script_candidate", options: ["查看未采用候选", "保持原稿"] },
+          },
+      };
+    }
+    function mount(status) {
+      const stop = document.querySelector("#stop");
+      stop.replaceChildren();
+      const project = projectView(status);
+      if (ScriptRevisionEdit.shouldShowEntry(project)) {
+        stop.append(ScriptRevisionEdit.createEntry({
+          project: project,
+          rpc: rpc,
+          getProjectId: function () { return __fixture.state.projectId; },
+          applyProject: function (next) { __fixture.state.applied.push(next); },
+        }));
+      }
+      ["查看未采用候选", "保持原稿"].forEach(function (label) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "choice";
+        button.dataset.choice = label;
+        button.textContent = label;
+        button.addEventListener("click", function () {
+          rpc("projects.send_message", { id: "p-rev", text: label });
+        });
+        stop.append(button);
+      });
+    }
+    mount();
+  </script>
+</body>
+</html>

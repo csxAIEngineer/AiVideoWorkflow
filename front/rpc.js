@@ -18,9 +18,12 @@ async function rpc(method, params) {
     body = null;
   }
   if (!body || body.error) {
-    const message = (body && body.error && body.error.message) || "没有完成";
+    const rpcError = body && body.error;
+    const message = (rpcError && rpcError.message) || "没有完成";
     const error = new Error(message);
-    error.code = body && body.error ? body.error.code : 0;
+    error.code = rpcError ? rpcError.code : 0;
+    error.data = rpcError && rpcError.data != null ? rpcError.data : null;
+    error.rpcKnown = !!rpcError;
     throw error;
   }
   return body.result;
