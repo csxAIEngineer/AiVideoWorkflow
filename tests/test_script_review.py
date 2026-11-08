@@ -538,12 +538,13 @@ class GateContractTest(unittest.TestCase):
             self.assertNotIn("TAIL_MARK", bare)
             self.assertIn("TAIL_MARK", tailed)
             self.assertEqual(tailed, planned_video_text(spec, spec["shots"][1], 1, has_tail=True))
-            self.assertTrue(lease_still_current(self.folder))
+            self.assertTrue(lease_still_current(self.folder, "video", "S02"))
+            self.assertFalse(lease_still_current(self.folder, "image", "A1"))
             disk = json.loads((self.folder / "spec.json").read_text(encoding="utf-8"))
             disk["script"] = "另一稿"
             (self.folder / "spec.json").write_text(json.dumps(disk, ensure_ascii=False), encoding="utf-8")
             (self.folder / "_内部_" / "剧本.md").write_text("另一稿\n", encoding="utf-8")
-            self.assertFalse(lease_still_current(self.folder))
+            self.assertFalse(lease_still_current(self.folder, "video", "S02"))
             disk["script"] = spec["script"]
             (self.folder / "spec.json").write_text(json.dumps(disk, ensure_ascii=False), encoding="utf-8")
             (self.folder / "_内部_" / "剧本.md").write_text(spec["script"] + "\n", encoding="utf-8")

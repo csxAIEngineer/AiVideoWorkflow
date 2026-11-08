@@ -812,9 +812,13 @@ class RenderLoopTest(unittest.TestCase):
             },
         )
         icreat = FakeICreat()
-        run_local_pipeline(ONE, self.work, icreat=icreat, sleeper=_noop_sleep, images_only=True)
+        from end.script_review import GenerationBlocked
+
+        with self.assertRaises(GenerationBlocked):
+            run_local_pipeline(ONE, self.work, icreat=icreat, sleeper=_noop_sleep, images_only=True)
         self.assertEqual(icreat.submits, [])
         self.assertIn("img-keep", icreat.queries)
+        self.assertNotEqual(load_run_state(self.work)["steps"]["A1"]["status"], "done")
 
     def test_uploaded_still_is_not_a_reference_for_new_assets(self):
         project_id = "local-parent"

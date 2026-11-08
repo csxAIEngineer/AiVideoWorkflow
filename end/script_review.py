@@ -774,10 +774,9 @@ def authorize_video_submit(folder, shot_id, has_tail, user_image_ids=(), templat
                 "review→submit 窗口内磁盘上的稿件变了",
                 {"ok": False, "status": "failed", "owner": "feed", "reason": "提交前持久内容变了"},
             )
-        state = load_reviews(folder)
-        state["submit_lease"] = {
+        _store_lease(folder, {
             "kind": "video",
-            "shot_id": shot_id,
+            "step_id": shot_id,
             "has_tail": bool(has_tail),
             "user_image_ids": [str(item) for item in (user_image_ids or [])],
             "template": template or "",
@@ -785,8 +784,7 @@ def authorize_video_submit(folder, shot_id, has_tail, user_image_ids=(), templat
             "brief": brief or "",
             "source_hash": first["source_hash"],
             "payload_hash": first["hash"],
-        }
-        save_reviews(folder, state)
+        })
         return first["text"]
 
 
@@ -816,21 +814,36 @@ def authorize_image_submit(folder, asset_id, reference, template=None, brief="",
                 "review→submit 窗口内磁盘上的稿件变了",
                 {"ok": False, "status": "failed", "owner": "asset", "reason": "提交前持久内容变了"},
             )
+        _store_lease(folder, {
+            "kind": "image",
+            "step_id": asset_id,
+            "reference": bool(reference),
+            "template": template or "",
+            "brief": brief or "",
+            "source_hash": first["source_hash"],
+            "payload_hash": first["hash"],
+        })
         return first["text"]
 
 
-def lease_still_current(folder):
-    """Re-read disk after a download. False means the bytes must not become the current result."""
-    lease = (load_reviews(folder) or {}).get("submit_lease") or {}
-    if not lease:
-        return True
+def _lease_key(kind, step_id):
+    return "%s:%s" % (kind, step_id)
+
+
+def _store_lease(folder, lease):
+    state = load_reviews(folder)
+    leases = dict(state.get("submit_leases") or {})
+    leases[_lease_key(lease["kind"], lease["step_id"])] = lease
+    state["submit_leases"] = leases
+    save_reviews(folder, state)
+
+
+def _video_lease_current(folder, lease):
     if disk_source_hash(folder, lease.get("brief") or "") != lease.get("source_hash"):
         return False
-    if lease.get("kind") != "video":
-        return True
     spec = _spec(folder, None)
     _assets, shots = _assets_shots(spec)
-    shot_id = lease.get("shot_id")
+    shot_id = lease.get("step_id")
     index = next((i for i, shot in enumerate(shots) if shot.get("id") == shot_id), None)
     if index is None:
         return False
@@ -855,16 +868,58 @@ def lease_still_current(folder):
     return payload["hash"] == lease.get("payload_hash")
 
 
-def quarantine_stale_download(folder, path):
-    """Move a download aside when the disk changed before it could be accepted."""
-    from end.history_keep import archive_file
+def _image_lease_current(folder, lease):
+    if disk_source_hash(folder, lease.get("brief") or "") != lease.get("source_hash"):
+        return False
+    from end.render_loop import image_prompt
 
-    archive_file(folder, path, "stale-download")
+    spec = _spec(folder, None)
+    assets, _shots = _assets_shots(spec)
+    asset = next((item for item in assets if item.get("id") == lease.get("step_id")), None)
+    if asset is None:
+        return False
+    text = image_prompt(asset, reference=bool(lease.get("reference")), template=lease.get("template") or None)
+    payload = _payload(text, _binding(lease.get("step_id"), "image", False, [], "", bool(lease.get("reference"))))
+    return payload["hash"] == lease.get("payload_hash")
+
+
+def lease_still_current(folder, kind, step_id):
+    """Re-read disk for this image or video step. A missing lease is not current.
+
+    An image step never borrows a video lease, and the other way around.
+    """
+    if kind not in ("image", "video") or not step_id:
+        return False
+    leases = (load_reviews(folder) or {}).get("submit_leases") or {}
+    lease = leases.get(_lease_key(kind, step_id))
+    if not isinstance(lease, dict) or lease.get("kind") != kind or lease.get("step_id") != step_id:
+        return False
+    if kind == "image":
+        return _image_lease_current(folder, lease)
+    return _video_lease_current(folder, lease)
+
+
+def quarantine_stale_download(folder, path):
+    """Archive a rejected download. Return True only when the active file is gone.
+
+    A failed copy leaves the active file in place. Callers must not describe
+    that as archived, and must not delete it themselves.
+    """
+    from end.history_keep import ArchiveError, archive_file
+
+    if path is None or not Path(path).is_file():
+        return False
     try:
-        if path is not None and Path(path).is_file():
-            Path(path).unlink()
+        archived = archive_file(folder, path, "stale-download")
+    except ArchiveError:
+        return False
+    if archived is None:
+        return False
+    try:
+        Path(path).unlink()
     except OSError:
-        pass
+        return False
+    return not Path(path).is_file()
 
 
 def assert_generation_prompt(folder, text):

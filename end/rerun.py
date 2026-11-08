@@ -449,9 +449,14 @@ def _drop_film(folder, project):
     if name and "/" not in name and ".." not in name:
         path = Path(folder) / "outputs" / name
         if path.is_file():
-            from end.history_keep import archive_file
+            from end.history_keep import ArchiveError, archive_file
 
-            archive_file(folder, path, "retire-film")
+            try:
+                archived = archive_file(folder, path, "retire-film")
+            except ArchiveError:
+                return
+            if archived is None:
+                return
             path.unlink()
     project["video_file"] = ""
 

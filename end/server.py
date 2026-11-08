@@ -886,14 +886,44 @@ def answer_gate(project, text):
     brief = project.get("brief") or ""
     if body == "再审一次":
         return _rereview_semantic(project, pipeline)
+    explicit_script_accept = False
     if body == "接受可疑项并继续" and current == "script":
         from end.script_review import confirm_script
 
         ok, reason = confirm_script(folder, accept_suspects=True, brief=brief)
         if not ok:
             return _repeat_gate(project, reason)
+        explicit_script_accept = True
         body = "继续"
         passed = True
+    if (
+        body == ASSET_REVISE
+        and current == "script"
+        and pipeline.get("semantic_scope") == "script"
+        and pipeline.get("semantic_status") in ("suspect", "blocked", "failed")
+    ):
+        from end.script_review import load_reviews, save_reviews
+
+        state = load_reviews(folder)
+        state.pop("confirmed_script_hash", None)
+        state.pop("confirmed_context_hash", None)
+        row = dict(state.get("script") or {})
+        for key in ("accepted_suspects", "accepted_by", "accepted_script_hash", "accepted_context_hash"):
+            row.pop(key, None)
+        if row:
+            state["script"] = row
+        save_reviews(folder, state)
+        pipeline["passed"] = False
+        pipeline["action"] = "rewrite"
+        pipeline["current"] = "script"
+        pipeline["retry_write"] = False
+        pipeline["repairs"] = 0
+        pipeline["auto_retries"] = 0
+        pipeline["machine_repairs"] = 0
+        pipeline["report"] = str(pipeline.get("report") or (question.get("reply") if isinstance(question, dict) else "") or "")
+        pipeline["repair"] = pipeline["report"]
+        _enqueue_stage(project, pipeline, "剧本")
+        return public_view(read_project(project["id"]) or project)
     if body == "接受可疑项并出片":
         from end.script_review import accept_delivery_suspects
 
@@ -991,7 +1021,15 @@ def answer_gate(project, text):
         _enqueue_stage(project, pipeline, project.get("stage") or "重写这一段")
         return public_view(read_project(project["id"]) or project)
     folder, locks = _lock_inputs(project)
-    if current == "script" and passed and body in ("继续", "接受", "确认"):
+    if (
+        current == "script"
+        and pipeline.get("semantic_scope") == "script"
+        and pipeline.get("semantic_status") == "suspect"
+        and body in ("继续", "接受", "确认")
+        and not explicit_script_accept
+    ):
+        return _repeat_gate(project, "有可疑项。普通继续不能代替「接受可疑项并继续」。")
+    if current == "script" and passed and body in ("继续", "接受", "确认") and not explicit_script_accept:
         from end.script_review import confirm_script
 
         ok, reason = confirm_script(folder, accept_suspects=False, brief=brief)

@@ -263,23 +263,43 @@ def write_internal(folder, name, text):
     _put_text(folder, name, text)
 
 
-def clear_downstream(folder, stage):
-    """Retire every saved writing stage that comes after `stage`.
-
-    Bytes are copied under history/ first. The active files are then removed
-    so the next write cannot reuse them as the current draft.
-    """
-    from end.history_keep import archive_paths
-
-    relative = []
-    for later in _AFTER.get(str(stage or ""), ()):
-        for name in _FILES.get(later, ()):
+def _affected_rels(folder, stages):
+    """Spec, the whole script chain, and the markdown those stages would drop."""
+    folder = Path(folder)
+    relative = ["spec.json"]
+    chain = folder / "_内部_" / "剧本链"
+    if chain.is_dir():
+        for path in sorted(chain.rglob("*")):
+            if path.is_file():
+                relative.append(str(path.relative_to(folder)))
+    for stage in stages or ():
+        for name in _FILES.get(stage, ()):
             relative.append("_内部_/" + name)
             if name == "feed.md":
                 relative.append("feed.md")
-    archive_paths(folder, "clear-%s" % (stage or "downstream"), relative)
-    for later in _AFTER.get(str(stage or ""), ()):
-        _clear_stage(folder, later)
+    return relative
+
+
+def _snapshot_or_stop(folder, reason, stages):
+    """Snapshot first. A failed snapshot raises and must not be followed by a delete."""
+    from end.history_keep import ArchiveError, snapshot_project
+
+    try:
+        return snapshot_project(folder, reason, _affected_rels(folder, stages))
+    except ArchiveError as error:
+        raise ValueError(str(error)) from error
+
+
+def clear_downstream(folder, stage):
+    """Retire every saved writing stage that comes after `stage`.
+
+    spec.json, the script chain, and the markdown are copied under history/
+    first. If that copy cannot be checked, the active files stay where they are.
+    """
+    later = list(_AFTER.get(str(stage or ""), ()))
+    _snapshot_or_stop(folder, "clear-%s" % (stage or "downstream"), later)
+    for name in later:
+        _clear_stage(folder, name)
 
 
 def _put_text(folder, name, text):
@@ -477,6 +497,10 @@ def restore_trace(folder, trace_id, locks, only):
         raise ValueError("这一次不能重放")
     output = record.get("output") if isinstance(record.get("output"), dict) else {}
     step = str(record.get("step") or "")
+    touched = [stage] + list(_AFTER.get(stage, ()))
+    if stage == "script":
+        touched = ["script"] + list(_AFTER.get("script", ()))
+    _snapshot_or_stop(folder, "restore-%s" % number, touched)
     if stage == "script" and step:
         nxt_row = _restore_script_step(folder, step, output)
         for later in _AFTER.get("script", ()):

@@ -17,51 +17,91 @@ def _safe(reason):
     return text.strip("-")[:40] or "retire"
 
 
-def _sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+class ArchiveError(RuntimeError):
+    """A snapshot did not land. Callers must not delete or rewrite the originals."""
 
 
-def archive_paths(folder, reason, relative_paths):
-    """Copy existing files. Returns the archive directory, or None when nothing was copied."""
+def _fingerprint(path):
+    """Hash and size. A size change while reading is a failed snapshot."""
+    path = Path(path)
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        if path.stat().st_size != size:
+            raise ArchiveError("源在读取期间变了，已停止删除")
+    except ArchiveError:
+        raise
+    except OSError as error:
+        raise ArchiveError("归档读文件失败，已停止删除：%s" % error) from error
+    return {"bytes": size, "sha256": digest.hexdigest()}
+
+
+def _same(left, right):
+    return left["bytes"] == right["bytes"] and left["sha256"] == right["sha256"]
+
+
+def snapshot_project(folder, reason, relative_paths):
+    """Copy every existing path, then check each copy against the pre-copy source.
+
+    The source hash and size are recorded before ``copy2``. After every file
+    has been copied, each copy's hash and size must match that record, and the
+    source must still match it. Any miss raises. This function does not delete
+    or rewrite the sources.
+    """
     folder = Path(folder)
-    copied = []
+    existing = []
     seen = set()
     for relative in relative_paths or []:
         rel = str(relative or "").strip().lstrip("/")
         if not rel or rel in seen or rel.startswith("history/"):
             continue
         seen.add(rel)
-        source = folder / rel
-        if not source.is_file():
-            continue
-        copied.append((rel, source))
-    if not copied:
+        if (folder / rel).is_file():
+            existing.append(rel)
+    if not existing:
         return None
+    before = {rel: _fingerprint(folder / rel) for rel in existing}
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     dest = folder / "history" / ("%s-%s" % (stamp, _safe(reason)))
-    dest.mkdir(parents=True, exist_ok=True)
-    manifest = []
-    for rel, source in copied:
-        target = dest / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-        manifest.append({
-            "path": rel,
-            "bytes": source.stat().st_size,
-            "sha256": _sha256(source),
-        })
-    (dest / "manifest.json").write_text(
-        json.dumps({"reason": str(reason or ""), "files": manifest}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        for rel in existing:
+            source = folder / rel
+            if not _same(_fingerprint(source), before[rel]):
+                raise ArchiveError("源在复制前变了，已停止删除：%s" % rel)
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        verified = []
+        for rel in existing:
+            if not _same(_fingerprint(folder / rel), before[rel]):
+                raise ArchiveError("源在复制期间变了，已停止删除：%s" % rel)
+            target = dest / rel
+            if not target.is_file():
+                raise ArchiveError("归档缺文件，已停止删除：%s" % rel)
+            if not _same(_fingerprint(target), before[rel]):
+                raise ArchiveError("副本与复制前的源不一致，已停止删除：%s" % rel)
+            verified.append({"path": rel, "bytes": before[rel]["bytes"], "sha256": before[rel]["sha256"]})
+        (dest / "manifest.json").write_text(
+            json.dumps({"reason": str(reason or ""), "files": verified}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except ArchiveError:
+        raise
+    except OSError as error:
+        raise ArchiveError("归档失败，已停止删除：%s" % error) from error
     return dest
+
+
+def archive_paths(folder, reason, relative_paths):
+    """Copy existing files and verify the copies. Returns None when nothing existed."""
+    return snapshot_project(folder, reason, relative_paths)
 
 
 def archive_file(folder, path, reason):

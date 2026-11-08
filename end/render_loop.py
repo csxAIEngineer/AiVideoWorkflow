@@ -242,12 +242,19 @@ def _output_file(work_dir, relative):
 
 
 def _unlink_render_output(path, folder=None, reason="retire-output"):
+    """Delete one output only after its verified archive exists."""
     if path is None:
         return
-    if folder is not None:
-        from end.history_keep import archive_file
+    path = Path(path)
+    if folder is not None and path.is_file():
+        from end.history_keep import ArchiveError, archive_file
 
-        archive_file(folder, path, reason)
+        try:
+            archived = archive_file(folder, path, reason)
+        except ArchiveError:
+            return
+        if archived is None:
+            return
     for candidate in (path, Path(str(path) + ".part")):
         try:
             if candidate.is_file():
@@ -263,15 +270,37 @@ def invalidate_steps(work_dir, project_id, steps):
     with lock:
         state = load_run_state(folder)
         stored = state.setdefault("steps", {})
+        pending_paths = []
+        for step_id, kind in steps:
+            kind = str(kind or "image")
+            step = stored.get(step_id) or {}
+            previous = _output_file(folder, step.get("output_file"))
+            canonical, _relative = output_paths(folder, step_id, kind)
+            pending_paths.extend((previous, canonical))
+            if kind == "subtitles":
+                pending_paths.append(folder / "outputs" / "字幕.ass")
+        relative = []
+        for path in pending_paths:
+            if path is None:
+                continue
+            path = Path(path)
+            if not path.is_file():
+                continue
+            try:
+                relative.append(str(path.resolve().relative_to(folder.resolve())))
+            except ValueError:
+                continue
+        from end.history_keep import ArchiveError, snapshot_project
+
+        try:
+            snapshot_project(folder, "invalidate", relative)
+        except ArchiveError:
+            return state
+        for path in pending_paths:
+            _unlink_render_output(path)
         for step_id, kind in steps:
             kind = str(kind or "image")
             step = dict(stored.get(step_id) or blank_step(kind))
-            previous = _output_file(folder, step.get("output_file"))
-            canonical, _relative = output_paths(folder, step_id, kind)
-            _unlink_render_output(previous, folder, "invalidate-%s" % step_id)
-            _unlink_render_output(canonical, folder, "invalidate-%s" % step_id)
-            if kind == "subtitles":
-                _unlink_render_output(folder / "outputs" / "字幕.ass", folder, "invalidate-subtitles")
             step["kind"] = kind
             step["status"] = "pending"
             step["remote_task_id"] = ""
@@ -323,7 +352,22 @@ def reset_current_step(work_dir, project_id=None):
             kind = step.get("kind") or "image"
             path, relative = output_paths(work_dir, step_id, kind)
             step["output_file"] = relative
-        for candidate in (path, Path(str(path) + ".part"), path.with_suffix(path.suffix + ".part")):
+        targets = [path, Path(str(path) + ".part"), path.with_suffix(path.suffix + ".part")]
+        relative = []
+        for candidate in targets:
+            if not candidate.is_file():
+                continue
+            try:
+                relative.append(str(candidate.resolve().relative_to(Path(work_dir).resolve())))
+            except ValueError:
+                continue
+        from end.history_keep import ArchiveError, snapshot_project
+
+        try:
+            snapshot_project(work_dir, "reset-%s" % step_id, relative)
+        except ArchiveError:
+            raise RuntimeError("归档失败，这一步没有重置")
+        for candidate in targets:
             if candidate.is_file():
                 candidate.unlink()
         step["remote_task_id"] = ""
@@ -1225,6 +1269,9 @@ def _continuation_tail_url(ctx, previous_clip, shot_id):
 
 
 def _should_skip(step, path):
+    """A file left by a rejected download is not a finished result."""
+    if (step or {}).get("unaccepted"):
+        return False
     if not path.is_file() or path.stat().st_size <= 0:
         return False
     return step.get("status") in ("done", "running")
@@ -1505,6 +1552,13 @@ class RenderContext(object):
         with self.lock:
             state = self.load_locked()
             step = state["steps"].get(step_id) or blank_step(kind)
+            if step.get("unaccepted"):
+                from end.script_review import GenerationBlocked
+
+                raise GenerationBlocked(
+                    "未验收的下载不能记成完成",
+                    {"ok": False, "status": "failed", "owner": "feed", "reason": "未验收的下载不能记成完成"},
+                )
             state["steps"][step_id] = step
             step["kind"] = kind
             step["status"] = "done"
@@ -1527,6 +1581,27 @@ class RenderContext(object):
         while True:
             self.block_while_paused()
             step = self.reload_step(step_id, kind)
+            if step.get("unaccepted"):
+                removed = False
+                if path.is_file():
+                    from end.script_review import quarantine_stale_download
+
+                    removed = quarantine_stale_download(self.work_dir, path)
+                    self._note_unaccepted(step_id, kind, relative, cleared=removed or not path.is_file())
+                if path.is_file():
+                    raise GenerationBlocked(
+                        "归档仍未成功，活动文件保留并继续标记为不可接纳，不会当成当前结果，也不会重新提交",
+                        {"ok": False, "status": "failed", "owner": "feed", "reason": "归档仍未成功"},
+                    )
+                if removed:
+                    raise GenerationBlocked(
+                        "重试归档已经成功，活动残留已清除，不会当成当前结果，也不会重新提交",
+                        {"ok": False, "status": "failed", "owner": "feed", "reason": "活动残留已清除"},
+                    )
+                raise GenerationBlocked(
+                    "这份下载未被接受，不会当成当前结果，也不会重新提交",
+                    {"ok": False, "status": "failed", "owner": "feed", "reason": "下载未被接受"},
+                )
             if (
                 not step.get("remote_task_id")
                 and step.get("video_mode") == "text"
@@ -1605,11 +1680,16 @@ class RenderContext(object):
                     continue
                 from end.script_review import lease_still_current, quarantine_stale_download
 
-                if not lease_still_current(self.work_dir):
-                    quarantine_stale_download(self.work_dir, path)
+                if not lease_still_current(self.work_dir, kind, step_id):
+                    removed = quarantine_stale_download(self.work_dir, path)
+                    self._note_unaccepted(step_id, kind, relative, cleared=removed)
+                    if removed:
+                        reason = "下载与当前审查不一致，已归档并移出活动路径，不会当成当前结果，也不会重新提交"
+                    else:
+                        reason = "下载与当前审查不一致，归档没有成功，活动文件保留并标记为不可接纳，不会当成当前结果，也不会重新提交"
                     raise GenerationBlocked(
-                        "下载完成前磁盘上的稿件变了，这份文件已归档，不会当成当前结果",
-                        {"ok": False, "status": "failed", "owner": "feed", "reason": "下载完成前持久内容变了"},
+                        reason,
+                        {"ok": False, "status": "failed", "owner": "feed", "reason": reason},
                     )
                 self.mark_done(step_id, kind, relative, public_url, generated=True)
                 self.done_steps += 1
@@ -1629,9 +1709,55 @@ class RenderContext(object):
                 continue
             self.sleep(interval)
 
+    def _note_unaccepted(self, step_id, kind, relative, cleared):
+        """Persist a rejected download. Restart reads this from run_state."""
+        with self.lock:
+            state = self.load_locked()
+            step = dict(state["steps"].get(step_id) or blank_step(kind))
+            step["kind"] = kind
+            step["status"] = "held"
+            step["unaccepted"] = True
+            step["output_file"] = "" if cleared else relative
+            step["error"] = "未验收，不重新提交"
+            state["steps"][step_id] = step
+            state["current_step"] = step_id
+            self.write_locked()
+
+    def _unaccepted_clip(self, clip):
+        clip = Path(clip)
+        state = self.load_locked()
+        try:
+            target = clip.resolve()
+        except OSError:
+            target = clip
+        for step_id, step in (state.get("steps") or {}).items():
+            if not isinstance(step, dict) or not step.get("unaccepted"):
+                continue
+            named = _output_file(self.work_dir, step.get("output_file") or "")
+            kind = step.get("kind") or "video"
+            canonical, _relative = output_paths(self.work_dir, step_id, kind if kind in ("image", "video", "join") else "video")
+            for candidate in (named, canonical):
+                if candidate is None:
+                    continue
+                try:
+                    if Path(candidate).resolve() == target:
+                        return True
+                except OSError:
+                    if Path(candidate) == clip:
+                        return True
+        return False
+
     def run_join(self, clips):
         step_id = "join"
         path, relative = output_paths(self.work_dir, step_id, "join")
+        from end.script_review import GenerationBlocked
+
+        for clip in clips or []:
+            if self._unaccepted_clip(clip):
+                raise GenerationBlocked(
+                    "未验收的下载不能拼进成片",
+                    {"ok": False, "status": "failed", "owner": "feed", "reason": "未验收的下载不能拼进成片"},
+                )
         while True:
             self.block_while_paused()
             step = self.reload_step(step_id, "join")
@@ -1939,6 +2065,8 @@ def dependent_image_url(ctx, asset):
     if not parent_id:
         return None
     step = ctx.reload_step(parent_id, "image")
+    if step.get("unaccepted"):
+        raise RuntimeError("资产 %s 依赖的 %s 还不能当作当前图" % (asset.get("id") or "", parent_id))
     if step.get("local_override"):
         return None
     url = str(step.get("public_url") or "")
@@ -2216,7 +2344,7 @@ def _saved_image(ctx, asset_id):
     with ctx.lock:
         state = ctx.load_locked()
         step = dict((state.get("steps") or {}).get(asset_id) or {})
-    if not step:
+    if not step or step.get("unaccepted"):
         return None
     path, _relative = output_paths(ctx.work_dir, asset_id, "image")
     saved = _output_file(ctx.work_dir, step.get("output_file") or "")
