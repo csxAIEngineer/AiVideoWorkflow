@@ -518,6 +518,8 @@ def run_script_repair(folder, requirements, complete, model=""):
         return row
     app = compile_script_repair_graph(complete)
     try:
+        from end.script_opinion import intent_for_script
+
         state = app.invoke({
             "requirements": str(requirements or ""),
             "script": before,
@@ -525,6 +527,7 @@ def run_script_repair(folder, requirements, complete, model=""):
             "model": str(model or ""),
             "calls": [],
             "status": "",
+            "user_intent": intent_for_script(folder, content_hash(before)) or {},
         })
     except Exception as error:
         state = {"status": "error", "reason": str(error), "calls": []}

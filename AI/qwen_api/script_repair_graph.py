@@ -26,6 +26,7 @@ class RepairState(TypedDict, total=False):
     status: str
     reason: str
     calls: list
+    user_intent: dict
 
 
 def _object(raw):
@@ -187,7 +188,7 @@ def build_script_repair_graph(complete):
             return {}
         plan = state.get("revision_plan") or {}
         raw = complete("review", [
-            {"role": "system", "content": "独立审稿。不要重写，不要交替换稿。逐项对照每个问题 id 的实际改动，不要拿原稿里本来就有的旧句代替改动。每个 resolution 写 change 和 aligned：change 是该问题对应的具体改动并且要出现在候选里，aligned 为 true 才表示你核对过这条改动对应该问题。uncertain 是未确定约束，不能当成依据。方向里的否定、借修复改目标或加机制，写入 new_contradictions 或 unsupported。回复 JSON：{\"passed\":false,\"theme_ok\":false,\"resolutions\":[{\"id\":\"\",\"resolved\":false,\"evidence\":\"\",\"change\":\"\",\"aligned\":false}],\"unsupported\":[],\"new_contradictions\":[]}"},
+            {"role": "system", "content": "独立审稿。不要重写，不要交替换稿。逐项对照每个问题 id 的实际改动，不要拿原稿里本来就有的旧句代替改动。每个 resolution 写 change 和 aligned：change 是该问题对应的具体改动并且要出现在候选里，aligned 为 true 才表示你核对过这条改动对应该问题。uncertain 是未确定约束，不能当成依据。若有 user_intent 且为 user_directed，意见里的主题或机制变更是有意的，不要压回旧主题，也不要因为意见原文不在原稿里就判无依据。方向里的否定、借修复改目标或加机制，写入 new_contradictions 或 unsupported。回复 JSON：{\"passed\":false,\"theme_ok\":false,\"resolutions\":[{\"id\":\"\",\"resolved\":false,\"evidence\":\"\",\"change\":\"\",\"aligned\":false}],\"unsupported\":[],\"new_contradictions\":[]}"},
             {"role": "user", "content": json.dumps({
                 "requirements": state.get("requirements") or "",
                 "original": state.get("script") or "",
@@ -197,6 +198,7 @@ def build_script_repair_graph(complete):
                 "revision_plan": plan,
                 "sourced": plan.get("sourced") or [],
                 "uncertain": plan.get("uncertain") or [],
+                "user_intent": state.get("user_intent") or {},
             }, ensure_ascii=False)},
         ])
         data = _object(raw) or {}

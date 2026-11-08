@@ -1961,6 +1961,11 @@ def handle_agent_task(task):
     if task.kind == "script_review":
         run_script_revision_review(task.project_id)
         return
+    if task.kind == "opinion_revise":
+        from end.script_opinion import run_opinion_task
+
+        run_opinion_task(task.project_id, (task.payload or {}).get("opinion_id"), (task.payload or {}).get("generation"))
+        return
     if task.kind == "revise":
         from end.revise import perform_revise
 
@@ -2602,12 +2607,20 @@ def resume_agent_tasks():
             if pipeline.get("action") == "script_review":
                 from end.script_revision import manual_resume_decision
 
-                if manual_resume_decision(project) == "hold":
-                    _present_stale_manual_review(project)
-                    started += 1
-                    continue
-                if submit_agent_task(Task("script_review", project["id"], {})):
-                    started += 1
+                # list_projects can go stale before submit. The handler writes
+                # the gate under this lock and only then drops the queue key,
+                # so hold the lock from the fresh read through submit.
+                with project_lock(project["id"]):
+                    fresh = read_project(project["id"]) or project
+                    fresh_pipeline = (fresh.get("progress") or {}).get("pipeline") or {}
+                    if fresh.get("status") != "writing" or fresh_pipeline.get("action") != "script_review":
+                        continue
+                    if manual_resume_decision(fresh) == "hold":
+                        _present_stale_manual_review(fresh)
+                        started += 1
+                        continue
+                    if submit_agent_task(Task("script_review", fresh["id"], {})):
+                        started += 1
                 continue
             if pipeline.get("action") == "script_repair":
                 from end.script_repair import budget_identity, issue_rows, load_candidate, official_script, same_budget
@@ -2977,12 +2990,16 @@ def _revision_call(fn):
     try:
         return fn()
     except RevisionError as error:
-        raise RpcError(error.code, error.message, {
+        data = {
             "reason": error.reason,
             "retryable": error.retryable,
             "saved": error.saved,
             "retry_same_key": error.retry_same_key,
-        })
+            "official_saved": error.official_saved,
+        }
+        if getattr(error, "model_remaining", None) is not None:
+            data["model_remaining"] = error.model_remaining
+        raise RpcError(error.code, error.message, data)
 
 
 def rpc_script_revision_get(params):
@@ -3013,6 +3030,8 @@ def rpc_script_revision_save(params):
         params.get("base_token"),
         params.get("idempotency_key"),
         params.get("source") or "",
+        params.get("opinion_id"),
+        params.get("opinion_revision"),
     ))
 
 
@@ -3027,6 +3046,34 @@ def rpc_script_revision_retry(params):
     from end.script_revision import revision_retry
 
     return _revision_call(lambda: revision_retry(project, params.get("base_token")))
+
+
+def rpc_script_opinion(params):
+    params = params or {}
+    project_id = str(params.get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False})
+    project = read_project(project_id)
+    if project is None:
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False})
+    from end.script_opinion import submit_opinion
+
+    return _revision_call(lambda: submit_opinion(
+        project, params.get("base"), params.get("opinion"), params.get("base_token"), params.get("idempotency_key"),
+    ))
+
+
+def rpc_script_opinion_retry(params):
+    params = params or {}
+    project_id = str(params.get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False})
+    project = read_project(project_id)
+    if project is None:
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False})
+    from end.script_opinion import retry_opinion
+
+    return _revision_call(lambda: retry_opinion(project, params.get("base_token")))
 
 
 def run_script_revision_review(project_id):
@@ -3218,6 +3265,10 @@ def rpc_call(method, params):
         return rpc_script_revision_save(params)
     if method == "projects.script_revision.retry_review":
         return rpc_script_revision_retry(params)
+    if method == "projects.script_revision.opinion":
+        return rpc_script_opinion(params)
+    if method == "projects.script_revision.opinion_retry":
+        return rpc_script_opinion_retry(params)
     if method == "projects.retouch":
         return rpc_retouch(params)
     if method == "projects.rerun":

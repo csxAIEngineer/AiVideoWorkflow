@@ -372,6 +372,15 @@ def review_script(folder, spec=None, brief="", force=False, complete=None):
         return row
     context = story_context(folder, brief)
     script_hash = content_hash(script)
+    from end.script_opinion import intent_for_script
+
+    intent = intent_for_script(folder, script_hash)
+    if intent:
+        context = context + (
+            "\n\n用户本轮有意变更：%s\n这条意见优先于原要求里的主题和机制。"
+            "不要把有意改掉的主题或机制压回旧要求，也不要因为意见原文不在旧稿里就判无依据。"
+            % intent.get("opinion")
+        )
     context_hash = content_hash(context)
     cache_key = script_hash + ":" + context_hash
     messages = [

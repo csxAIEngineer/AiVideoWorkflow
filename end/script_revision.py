@@ -20,7 +20,7 @@ _CANDIDATE_REL = "_内部_/剧本候选.json"
 
 
 class RevisionError(Exception):
-    def __init__(self, code, message, reason, retryable, saved=False, retry_same_key=False):
+    def __init__(self, code, message, reason, retryable, saved=False, retry_same_key=False, official_saved=False):
         super().__init__(message)
         self.code = int(code)
         self.message = str(message)
@@ -28,10 +28,11 @@ class RevisionError(Exception):
         self.retryable = bool(retryable)
         self.saved = bool(saved)
         self.retry_same_key = bool(retry_same_key)
+        self.official_saved = bool(official_saved)
 
 
-def _fail(code, message, reason, retryable, saved=False, retry_same_key=False):
-    raise RevisionError(code, message, reason, retryable, saved, retry_same_key)
+def _fail(code, message, reason, retryable, saved=False, retry_same_key=False, official_saved=False):
+    raise RevisionError(code, message, reason, retryable, saved, retry_same_key, official_saved)
 
 
 def _candidate_stamp(row):
@@ -93,6 +94,8 @@ def _busy_reason(project):
         return "rendering"
     if action == "script_review":
         return "reviewing"
+    if action == "opinion_revise":
+        return "opinion"
     if status in ("writing", "building") or action in ("script_repair", "rewrite", "write"):
         return "writing"
     return ""
@@ -147,7 +150,14 @@ def revision_get(project):
         "review_state": review_state,
         "review_retryable": review_retryable,
         "base_token": revision_token(project["id"], official, row),
+        **_opinion_fields(project, official, row),
     }
+
+
+def _opinion_fields(project, official, row):
+    from end.script_opinion import opinion_view
+
+    return opinion_view(project, official, row)
 
 
 def _bound_review_record(entries, project_id, official, row):
@@ -289,7 +299,7 @@ def _check_token(project_id, token, official, row):
         _fail(409, "稿件版本已经变了，编辑区不会被覆盖", "version_conflict", False)
 
 
-def revision_save(project, text, base_token, idempotency_key, source=""):
+def revision_save(project, text, base_token, idempotency_key, source="", opinion_id=None, opinion_revision=None):
     """Save a human manuscript and queue one full script review. Does not adopt or generate."""
     from end.db import project_dir, write_project
     from end.server import now, submit_agent_task
@@ -323,6 +333,11 @@ def revision_save(project, text, base_token, idempotency_key, source=""):
             _fail(409, "正在处理，还不能再保存", "busy", True, False, True)
         if not _at_script_gate(project):
             _fail(409, "现在不是剧本修订停点", "invalid_phase", False)
+        from end.script_opinion import attach_confirmed_intent, confirmation_intent
+
+        intent = confirmation_intent(
+            folder, project, base_token, official, row, opinion_id, opinion_revision,
+        )
         if stripped == official.strip():
             result = {
                 "ok": True,
@@ -350,6 +365,8 @@ def revision_save(project, text, base_token, idempotency_key, source=""):
         try:
             _write_script(folder, project, stripped)
             _clear_confirmation(folder)
+            if intent is not None:
+                attach_confirmed_intent(folder, official_script(folder), intent)
             fresh_official = official_script(folder)
             fresh_row = load_candidate(folder)
             result = {
@@ -433,6 +450,7 @@ def _finish_queue(project, folder, entries, key, record, submit_agent_task, Task
                 True,
                 True,
                 True,
+                True,
             )
     record["queued"] = True
     entries[key] = record
@@ -445,6 +463,7 @@ def _finish_queue(project, folder, entries, key, record, submit_agent_task, Task
             409,
             "稿已保存。审稿可能已经排上，但确认记录没写完。%s，不要改编辑区，也不要换新编号。" % again,
             "review_ack_unconfirmed",
+            True,
             True,
             True,
             True,

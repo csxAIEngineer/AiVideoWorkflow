@@ -12,7 +12,7 @@ from end.db import project_dir, read_project, write_project
 from end.history_keep import ArchiveError
 from end.render_loop import project_lock
 from end.script_repair import _save_candidate, load_candidate, official_script
-from end.script_review import load_reviews, save_reviews, set_reviewer
+from end.script_review import content_hash, load_reviews, save_reviews, set_reviewer
 from end.server import RpcError, agent_queue, resume_agent_tasks, rpc_call
 
 _SCRIPT = "正式原稿。她抬手，指尖凝聚出一瓶。"
@@ -66,6 +66,12 @@ class ScriptRevisionRpcTest(unittest.TestCase):
 
     def _review(self, _messages):
         self.reviews.append(1)
+        entered = getattr(self, "review_entered", None)
+        release = getattr(self, "review_release", None)
+        if entered is not None:
+            entered.set()
+        if release is not None and not release.wait(5):
+            raise AssertionError("审稿屏障没有放开")
         return json.dumps({"issues": []}, ensure_ascii=False)
 
     def _project(self, project_id="a1b2c3d4e511", question_id="script_candidate"):
@@ -521,27 +527,129 @@ class ScriptRevisionRpcTest(unittest.TestCase):
         folder = self._project()
         token = self._get()["base_token"]
         self.fail_submit = 1
+        self.review_entered = threading.Event()
+        self.review_release = threading.Event()
         with self.assertRaises(RpcError):
             self._save(edited, token, "manual-match")
         script_bytes = (folder / "_内部_" / "剧本.md").read_bytes()
         self.assertEqual(resume_agent_tasks(), 1)
+        self.assertTrue(self.review_entered.wait(5))
         self.assertEqual(resume_agent_tasks(), 0)
+        self.assertEqual(resume_agent_tasks(), 0)
+        self.assertEqual(len(self.reviews), 1)
         self.assertEqual([item[0] for item in self.tasks], ["script_review"])
+        running = read_project("a1b2c3d4e511")
+        self.assertEqual(running["status"], "writing")
+        self.assertEqual(running["progress"]["pipeline"]["action"], "script_review")
         self.assertEqual((folder / "_内部_" / "剧本.md").read_bytes(), script_bytes)
         self.assertEqual(load_candidate(folder)["attempts"], 2)
+        self.review_release.set()
         self.assertTrue(agent_queue().wait_until_idle(5))
+        settled = read_project("a1b2c3d4e511")
+        self.assertEqual(settled["status"], "gate")
+        self.assertEqual(settled["progress"]["phase"], "gate_script")
+        self.assertEqual(settled["progress"]["pipeline"]["action"], "wait")
+        self.assertEqual(load_reviews(folder)["script"]["status"], "passed")
+        self.assertEqual(resume_agent_tasks(), 0)
+        self.assertEqual(resume_agent_tasks(), 0)
+        self.assertTrue(agent_queue().wait_until_idle(5))
+        self.assertEqual(len(self.reviews), 1)
+        self.assertEqual([item[0] for item in self.tasks], ["script_review"])
+        self.assertEqual(read_project("a1b2c3d4e511")["status"], "gate")
+        self.assertEqual((folder / "_内部_" / "剧本.md").read_bytes(), script_bytes)
+        self.assertEqual(load_candidate(folder)["attempts"], 2)
+        stored = json.loads((folder / "_内部_" / "剧本修订幂等.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["entries"]["manual-match"]["saved_script_hash"], content_hash(edited))
 
+        self.review_entered = threading.Event()
+        self.review_release = threading.Event()
+        self.tasks.clear()
+        self.reviews.clear()
         bare = self._project("c1b2c3d4e513", "script")
         project = read_project("c1b2c3d4e513")
         project["status"] = "writing"
         project["progress"]["phase"] = "writing"
         project["progress"]["pipeline"] = {"current": "script", "action": "script_review", "passed": False}
         write_project(project)
-        self.tasks.clear()
+        self.assertFalse((bare / "_内部_" / "剧本修订幂等.json").is_file())
         self.assertEqual(resume_agent_tasks(), 1)
+        self.assertTrue(self.review_entered.wait(5))
+        self.assertEqual(resume_agent_tasks(), 0)
+        self.assertEqual(len(self.reviews), 1)
+        self.assertEqual([item[0] for item in self.tasks], ["script_review"])
+        self.assertEqual(read_project("c1b2c3d4e513")["status"], "writing")
+        self.review_release.set()
+        self.assertTrue(agent_queue().wait_until_idle(5))
+        self.assertEqual(read_project("c1b2c3d4e513")["status"], "gate")
+        self.assertEqual(len(self.reviews), 1)
+        self.assertEqual(resume_agent_tasks(), 0)
+        self.assertEqual(resume_agent_tasks(), 0)
+        self.assertTrue(agent_queue().wait_until_idle(5))
+        self.assertEqual(len(self.reviews), 1)
         self.assertEqual([item[0] for item in self.tasks], ["script_review"])
         self.assertEqual(official_script(bare), _SCRIPT)
+        self.assertFalse((bare / "_内部_" / "剧本修订幂等.json").is_file())
         del attempts
+
+    def test_stale_writing_snapshot_does_not_queue_a_second_review(self):
+        import end.server as server
+
+        def racing_resume():
+            real_list = server.list_projects
+            calls = {"n": 0}
+
+            def racing_list():
+                calls["n"] += 1
+                rows = real_list()
+                if calls["n"] >= 2:
+                    self.review_release.set()
+                    self.assertTrue(agent_queue().wait_until_idle(5))
+                return rows
+
+            with patch("end.server.list_projects", side_effect=racing_list):
+                self.assertEqual(resume_agent_tasks(), 1)
+                self.assertTrue(self.review_entered.wait(5))
+                self.assertEqual(resume_agent_tasks(), 0)
+            self.assertTrue(agent_queue().wait_until_idle(5))
+
+        folder = self._project()
+        token = self._get()["base_token"]
+        edited = _SCRIPT + "手动保存的稿。"
+        self.fail_submit = 1
+        self.review_entered = threading.Event()
+        self.review_release = threading.Event()
+        with self.assertRaises(RpcError):
+            self._save(edited, token, "manual-stale")
+        script_bytes = (folder / "_内部_" / "剧本.md").read_bytes()
+        racing_resume()
+        self.assertEqual(len(self.reviews), 1)
+        self.assertEqual([item[0] for item in self.tasks], ["script_review"])
+        shown = read_project("a1b2c3d4e511")
+        self.assertEqual(shown["status"], "gate")
+        self.assertEqual(shown["progress"]["pipeline"]["action"], "wait")
+        self.assertEqual(load_reviews(folder)["script"]["status"], "passed")
+        self.assertEqual((folder / "_内部_" / "剧本.md").read_bytes(), script_bytes)
+        self.assertEqual(load_candidate(folder)["attempts"], 2)
+        self.assertEqual(resume_agent_tasks(), 0)
+        self.assertEqual(len(self.reviews), 1)
+
+        self.review_entered = threading.Event()
+        self.review_release = threading.Event()
+        self.tasks.clear()
+        self.reviews.clear()
+        bare = self._project("c1b2c3d4e513", "script")
+        project = read_project("c1b2c3d4e513")
+        project["status"] = "writing"
+        project["progress"]["phase"] = "writing"
+        project["progress"]["pipeline"] = {"current": "script", "action": "script_review", "passed": False}
+        write_project(project)
+        racing_resume()
+        self.assertEqual(len(self.reviews), 1)
+        self.assertEqual([item[0] for item in self.tasks], ["script_review"])
+        self.assertEqual(read_project("c1b2c3d4e513")["status"], "gate")
+        self.assertEqual(official_script(bare), _SCRIPT)
+        self.assertEqual(resume_agent_tasks(), 0)
+        self.assertEqual(len(self.reviews), 1)
 
 
 if __name__ == "__main__":
