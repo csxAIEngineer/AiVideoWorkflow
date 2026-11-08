@@ -602,6 +602,134 @@ def _begin_writing(project):
     return public_view(read_project(project["id"]) or project)
 
 
+def _enqueue_script_repair(project, pipeline):
+    """Semantic script revision. Not the generic full-stage rewrite."""
+    remember(
+        project,
+        "writing",
+        "剧本修订",
+        progress={
+            "percent": int((project.get("progress") or {}).get("percent") or 40),
+            "phase": "writing",
+            "message": "剧本修订",
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": None,
+        },
+    )
+    submit_agent_task(Task("script_repair", project["id"], {"model": project.get("model") or ""}))
+
+
+def _present_script_candidate(project, row):
+    from end.script_repair import candidate_question
+
+    reply, options = candidate_question(row)
+    question = {"id": "script_candidate", "kind": "single", "reply": reply, "options": options, "cards": []}
+    messages = list(project.get("messages") or [])
+    messages.append(question_message(question))
+    project["messages"] = messages
+    pipeline = dict((project.get("progress") or {}).get("pipeline") or {})
+    pipeline["action"] = "wait"
+    pipeline["current"] = "script"
+    pipeline["repair"] = ""
+    remember(
+        project,
+        "gate",
+        "剧本候选",
+        progress={
+            "percent": 48,
+            "phase": "gate_script",
+            "message": reply.split("\n", 1)[0],
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": question,
+        },
+    )
+    return public_view(read_project(project["id"]) or project)
+
+
+def _answer_script_candidate(project, body, brief):
+    from end.script_repair import MAX_ATTEMPTS, load_candidate, promote_candidate
+
+    folder = project_dir(project["id"])
+    if body == "采用这版剧本":
+        ok, reason = promote_candidate(folder, brief or project.get("brief") or "", project_id=project["id"])
+        if not ok:
+            return _repeat_gate(project, reason)
+        fresh = read_project(project["id"]) or project
+        return _present_script_gate(fresh, force=True)
+    if body == "再修一次":
+        from end.script_repair import repair_budget_open
+
+        if not repair_budget_open(folder, brief or project.get("brief") or ""):
+            return _repeat_gate(project, "同一原稿和问题的修订已到上限，正式剧本没有改")
+        pipeline = dict((project.get("progress") or {}).get("pipeline") or {})
+        pipeline["action"] = "script_repair"
+        pipeline["current"] = "script"
+        pipeline["repair"] = ""
+        _enqueue_script_repair(project, pipeline)
+        return public_view(read_project(project["id"]) or project)
+    if body == "保持原稿":
+        from end.script_repair import repair_budget_open
+
+        reply = "保持原稿。正式剧本没有改。"
+        options = ["根据建议修改"]
+        if not repair_budget_open(folder, brief or project.get("brief") or ""):
+            reply += "同一原稿和问题的修订次数已用完。改了原稿或问题之后才有新的次数。"
+            options = []
+        question = {
+            "id": "script",
+            "kind": "single",
+            "reply": reply,
+            "options": options,
+            "cards": [],
+        }
+        messages = list(project.get("messages") or [])
+        messages.append(question_message(question))
+        project["messages"] = messages
+        pipeline = dict((project.get("progress") or {}).get("pipeline") or {})
+        pipeline["action"] = "wait"
+        pipeline["current"] = "script"
+        pipeline["repair"] = ""
+        remember(
+            project,
+            "gate",
+            "剧本",
+            progress={
+                "percent": 48,
+                "phase": "gate_script",
+                "message": reply.split("\n", 1)[0],
+                "lock_machine": True,
+                "pipeline": pipeline,
+                "question": question,
+            },
+        )
+        return public_view(read_project(project["id"]) or project)
+    return _repeat_gate(project, "这一步只接受采用候选或保持原稿")
+
+
+def run_script_repair(project_id):
+    """Semantic repair entry. It stores a candidate and does not render."""
+    from end.script_repair import default_complete, run_script_repair as propose
+
+    project = read_project(project_id)
+    if project is None:
+        return
+    folder = project_dir(project_id)
+    try:
+        row = propose(
+            folder,
+            project.get("brief") or "",
+            default_complete(project.get("model") or ""),
+            model=project.get("model") or "",
+        )
+    except Exception as error:
+        fail_project(project_id, error)
+        return
+    fresh = read_project(project_id) or project
+    _present_script_candidate(fresh, row)
+
+
 def _enqueue_stage(project, pipeline, label):
     progress = project.get("progress") or {}
     remember(
@@ -912,18 +1040,26 @@ def answer_gate(project, text):
             row.pop(key, None)
         if row:
             state["script"] = row
+        from end.script_repair import repair_budget_open
+
+        if not str(brief or "").strip():
+            return _repeat_gate(project, "缺少创作要求，不能判断主旨，需要人工确认")
+        if not repair_budget_open(folder, brief):
+            return _repeat_gate(project, "同一原稿和问题的修订已到上限。正式剧本没有改。")
         save_reviews(folder, state)
         pipeline["passed"] = False
-        pipeline["action"] = "rewrite"
+        pipeline["action"] = "script_repair"
         pipeline["current"] = "script"
         pipeline["retry_write"] = False
         pipeline["repairs"] = 0
         pipeline["auto_retries"] = 0
         pipeline["machine_repairs"] = 0
         pipeline["report"] = str(pipeline.get("report") or (question.get("reply") if isinstance(question, dict) else "") or "")
-        pipeline["repair"] = pipeline["report"]
-        _enqueue_stage(project, pipeline, "剧本")
+        pipeline["repair"] = ""
+        _enqueue_script_repair(project, pipeline)
         return public_view(read_project(project["id"]) or project)
+    if question.get("id") == "script_candidate":
+        return _answer_script_candidate(project, body, brief)
     if body == "接受可疑项并出片":
         from end.script_review import accept_delivery_suspects
 
@@ -1812,6 +1948,9 @@ def handle_agent_task(task):
     if task.kind == "write":
         run_project(task.project_id, debug_llm=bool((task.payload or {}).get("debug_llm")))
         return
+    if task.kind == "script_repair":
+        run_script_repair(task.project_id)
+        return
     if task.kind == "revise":
         from end.revise import perform_revise
 
@@ -2346,6 +2485,24 @@ def resume_agent_tasks():
                 started += 1
             continue
         if status == "writing":
+            pipeline = (project.get("progress") or {}).get("pipeline") or {}
+            if pipeline.get("action") == "script_repair":
+                from end.script_repair import budget_identity, issue_rows, load_candidate, official_script, same_budget
+
+                folder = project_dir(project["id"])
+                row = load_candidate(folder)
+                identity = budget_identity(
+                    official_script(folder),
+                    project.get("brief") or "",
+                    issue_rows(folder),
+                )
+                if row and same_budget(row, identity) and row.get("status") in ("passed", "blocked", "error"):
+                    _present_script_candidate(project, row)
+                    started += 1
+                    continue
+                if submit_agent_task(Task("script_repair", project["id"], {"model": project.get("model") or ""})):
+                    started += 1
+                continue
             if submit_agent_task(
                 Task("write", project["id"], {"debug_llm": project_debug_llm(project)})
             ):

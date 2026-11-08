@@ -3094,6 +3094,33 @@ def execute(project, folder, locks, write_model, load_pack):
     pipeline = dict(progress.get("pipeline") or {})
     only = pipeline.get("only") or ""
     action = pipeline.get("action") or "write"
+    if action == "script_repair":
+        from end.script_repair import candidate_question, load_candidate
+
+        pipeline = dict(pipeline)
+        pipeline["action"] = "wait"
+        pipeline["repair"] = ""
+        reply, options = candidate_question(load_candidate(folder))
+        question = {"id": "script_candidate", "kind": "single", "reply": reply, "options": options, "cards": []}
+        return {
+            "terminal": "gate",
+            "status": "gate",
+            "stage": "剧本候选",
+            "progress": {
+                "percent": 48,
+                "phase": "gate_script",
+                "message": reply.split("\n", 1)[0],
+                "pipeline": pipeline,
+                "question": question,
+            },
+            "message": {
+                "role": "assistant",
+                "content": reply,
+                "options": options,
+                "choice_kind": "single",
+                "cards": [],
+            },
+        }
     if action == "finish":
         return _done(project, folder, locks, pipeline, write_model)
     if action == "wait":

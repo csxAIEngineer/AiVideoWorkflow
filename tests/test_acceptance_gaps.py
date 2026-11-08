@@ -222,9 +222,10 @@ class SuspectGateDispatchTest(_GapBase):
         self.assertEqual(view["status"], "writing")
         pipeline = view["progress"]["pipeline"]
         self.assertEqual(pipeline.get("current"), "script")
-        self.assertEqual(pipeline.get("action"), "rewrite")
+        self.assertEqual(pipeline.get("action"), "script_repair")
+        self.assertEqual(pipeline.get("repair"), "")
         self.assertEqual(len(tasks), 1)
-        self.assertEqual(tasks[0].kind, "write")
+        self.assertEqual(tasks[0].kind, "script_repair")
         state = load_reviews(folder)
         self.assertFalse(state.get("confirmed_script_hash"))
         self.assertNotEqual((state.get("script") or {}).get("accepted_by"), "human")
