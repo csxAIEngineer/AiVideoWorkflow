@@ -158,7 +158,7 @@ def build_script_repair_graph(complete):
         if state.get("status") in ("blocked", "error"):
             return {}
         raw = complete("revise", [
-            {"role": "system", "content": "按方案改一版候选剧本。动作可以跨句或合句改写，不要靠标点判断边界。每一处动作细化都要申报：before 是原稿里的原句片段，after 是候选里的对应片段，declaration 必须整段摘自该问题的 revision。没有这条绑定就不要改情节。不要写机检、审稿、阻断这类说明。回复 JSON：{\"script\":\"\",\"added\":[{\"issue_id\":\"\",\"before\":\"\",\"after\":\"\",\"declaration\":\"\",\"basis\":\"\"}]}"},
+            {"role": "system", "content": "按方案改一版候选剧本。动作可以跨句或合句改写。declaration 用自己的话写下这一处动作调整，不必逐字复制 revision 或 direction。before 是原稿里被替换的片段，after 是候选里的对应片段；两个都空也可以，语义是否兑现交给下一步核对。不要写机检、审稿、阻断这类说明。回复 JSON：{\"script\":\"\",\"added\":[{\"issue_id\":\"\",\"before\":\"\",\"after\":\"\",\"declaration\":\"\",\"basis\":\"\"}]}"},
             {"role": "user", "content": json.dumps({
                 "requirements": state.get("requirements") or "",
                 "script": state.get("script") or "",
@@ -187,7 +187,7 @@ def build_script_repair_graph(complete):
             return {}
         plan = state.get("revision_plan") or {}
         raw = complete("review", [
-            {"role": "system", "content": "独立审稿。不要重写，不要交替换稿。逐项对照 added 的 after 是否兑现该条 declaration、方案 direction 和 sourced 约束。uncertain 是未确定约束，不能当成依据，也不能拿来改目标。方向里的否定也要核对。after 违背否定、借修复改变目标或加入新机制时，写入 new_contradictions 或 unsupported。结构上对得上不等于语义已经许可。回复 JSON：{\"passed\":false,\"theme_ok\":false,\"resolutions\":[{\"id\":\"\",\"resolved\":false,\"evidence\":\"\"}],\"unsupported\":[],\"new_contradictions\":[]}"},
+            {"role": "system", "content": "独立审稿。不要重写，不要交替换稿。逐项对照每个问题 id 的实际改动，不要拿原稿里本来就有的旧句代替改动。每个 resolution 写 change 和 aligned：change 是该问题对应的具体改动并且要出现在候选里，aligned 为 true 才表示你核对过这条改动对应该问题。uncertain 是未确定约束，不能当成依据。方向里的否定、借修复改目标或加机制，写入 new_contradictions 或 unsupported。回复 JSON：{\"passed\":false,\"theme_ok\":false,\"resolutions\":[{\"id\":\"\",\"resolved\":false,\"evidence\":\"\",\"change\":\"\",\"aligned\":false}],\"unsupported\":[],\"new_contradictions\":[]}"},
             {"role": "user", "content": json.dumps({
                 "requirements": state.get("requirements") or "",
                 "original": state.get("script") or "",

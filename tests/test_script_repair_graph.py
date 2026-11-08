@@ -57,7 +57,7 @@ class GraphShapeTest(unittest.TestCase):
             if node == "revise":
                 return json.dumps({"script": _SCRIPT + _REACH, "added": [{"issue_id": "S01", "text": _REACH, "basis": "悬在半空"}]}, ensure_ascii=False)
             if node == "review":
-                return json.dumps({"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": _REACH}], "unsupported": [], "new_contradictions": []}, ensure_ascii=False)
+                return json.dumps({"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": _REACH, "change": _REACH, "aligned": True}], "unsupported": [], "new_contradictions": []}, ensure_ascii=False)
             raise AssertionError(node)
 
         app = compile_script_repair_graph(complete)
@@ -165,7 +165,7 @@ class RepairContractTest(unittest.TestCase):
         return json.dumps({
             "passed": passed,
             "theme_ok": passed,
-            "resolutions": [{"id": "S01", "resolved": passed, "evidence": evidence}],
+            "resolutions": [{"id": "S01", "resolved": passed, "evidence": evidence, "change": evidence, "aligned": bool(passed and evidence)}],
             "unsupported": [] if passed else ["塔底软垫"],
             "new_contradictions": [],
         }, ensure_ascii=False)
@@ -336,7 +336,7 @@ class RepairContractTest(unittest.TestCase):
             "split": "她抬手探入袖中。取出一瓶小巧精致的“100年润发控油小茶瓶”。",
             "merged": "她抬手探入袖中，取出一瓶小巧精致的“100年润发控油小茶瓶”。瓶身透明，液体呈淡金色，伴有微弱粒子流光。",
         }
-        review_ok = {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "探入袖中"}], "unsupported": [], "new_contradictions": []}
+        review_ok = {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "探入袖中", "change": "探入袖中", "aligned": True}], "unsupported": [], "new_contradictions": []}
         for name, bottle in forms.items():
             body = original.replace("她抬手，指尖凝聚出一瓶小巧精致的“100年润发控油小茶瓶”。", bottle)
             body = body.replace("音效：清脆的玻璃碰撞声+魔法施放音。", "音效：清脆的玻璃碰撞声。")
@@ -374,7 +374,7 @@ class RepairContractTest(unittest.TestCase):
             requirements, labeled, cleaned,
             [{"id": "S01", "evidence": "滴落后用石槽积水冲洗发根", "severity": "block", "revision": "删掉机检标签，保留冲洗。"}],
             [{"issue_id": "S01", "before": "动作逻辑修正", "after": "动作逻辑", "declaration": "删掉机检标签"}],
-            {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "滴落后用石槽积水冲洗发根"}], "unsupported": [], "new_contradictions": []},
+            {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "滴落后用石槽积水冲洗发根", "change": "动作逻辑", "aligned": True}], "unsupported": [], "new_contradictions": []},
             plan={"changes": [{"issue_id": "S01", "direction": "删掉机检标签，保留原来的冲洗动作。", "linked": False}]},
         )
         self.assertEqual(status, "passed", reason)
@@ -400,7 +400,7 @@ class RepairContractTest(unittest.TestCase):
                     "added": [{"issue_id": "S01", "before": "指尖凝聚出", "after": "探入袖中，取出", "declaration": "从腰间/袖中掏出"}],
                 }, ensure_ascii=False)
             if node == "review":
-                return json.dumps({"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "探入袖中"}], "unsupported": [], "new_contradictions": []}, ensure_ascii=False)
+                return json.dumps({"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "探入袖中", "change": "探入袖中", "aligned": True}], "unsupported": [], "new_contradictions": []}, ensure_ascii=False)
             raise AssertionError(node)
 
         app = compile_script_repair_graph(complete)
@@ -631,7 +631,7 @@ class RepairContractTest(unittest.TestCase):
 
         original = "她抬手，指尖凝聚出一瓶小巧精致的小茶瓶。"
         issues = [{"id": "S01", "evidence": "指尖凝聚出一瓶", "severity": "suspect", "revision": "改为从腰间/袖中掏出。"}]
-        review_ok = {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "探入袖中"}], "unsupported": [], "new_contradictions": []}
+        review_ok = {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "探入袖中", "change": "探入袖中", "aligned": True}], "unsupported": [], "new_contradictions": []}
         candidate = "她抬手探入袖中，取出一瓶小巧精致的小茶瓶。"
         overlap, overlap_reason, overlap_validation = judge_candidate(
             "取出小茶瓶。",
@@ -639,11 +639,11 @@ class RepairContractTest(unittest.TestCase):
             candidate,
             issues,
             [{"issue_id": "S01", "before": "指尖凝聚出", "after": "探入袖中，取出", "declaration": "从腰间/袖中掏出"}],
-            review_ok,
+            {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "探入袖中"}], "unsupported": [], "new_contradictions": ["方向写了不要改取瓶动作，候选却改了动作"]},
             plan={"changes": [{"issue_id": "S01", "direction": "保留腰间镜头，不要改取瓶动作", "linked": False}]},
         )
         self.assertEqual(overlap, "blocked")
-        self.assertEqual(overlap_validation["source"], "unbound_direction")
+        self.assertEqual(overlap_validation["source"], "review_contradiction")
         status, reason, validation = judge_candidate(
             "取出小茶瓶。",
             original,
@@ -668,7 +668,8 @@ class RepairContractTest(unittest.TestCase):
         self.assertIn("声明是空的", reply)
         self.assertNotIn("缺少创作要求", reply)
         self.assertEqual(shown["progress"]["question"]["reply"], reply)
-        self.assertEqual(shown["progress"]["question"]["options"], ["保持原稿"])
+        self.assertEqual(shown["progress"]["question"]["options"], ["再修一次", "查看未采用候选", "保持原稿"])
+        self.assertNotIn("采用这版剧本", shown["progress"]["question"]["options"])
 
         project = read_project("a1b2c3d4e511")
         project["status"] = "writing"
@@ -778,12 +779,270 @@ class RepairContractTest(unittest.TestCase):
             tower,
             issues,
             [{"issue_id": "S01", "before": "指尖凝聚出", "after": "放弃救人并召唤雷电毁掉高塔，仍拿着", "declaration": "从腰间/袖中掏出"}],
-            {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "毁掉高塔"}], "unsupported": [], "new_contradictions": []},
+            {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "毁掉高塔", "change": "毁掉高塔", "aligned": True}], "unsupported": [], "new_contradictions": []},
             plan={"changes": [{"issue_id": "S01", "direction": "改为从腰间/袖中掏出。", "linked": False}], "sourced": [], "uncertain": [{"text": "不要毁塔", "source": "不确定"}]},
         )
         self.assertEqual(leaked, "passed", leaked_reason)
         self.assertEqual(leaked_validation["source"], "refinement")
         del reason
+
+    def test_direction_wording_is_not_an_unbound_declaration_and_budget_can_be_viewed(self):
+        from end.script_repair import _save_candidate, budget_identity, issue_rows, judge_candidate, promote_candidate
+        from end.server import resume_agent_tasks
+        from end.stage_runner import execute
+
+        original = "\n".join((
+            "【12-24s】阿青丝低头看着狼狈的柳公子，眉头微蹙。她抬手，指尖凝聚出一瓶小巧精致的“100年润发控油小茶瓶”。瓶身透明，液体呈淡金色，伴有微弱粒子流光。背景出现丁达尔效应光束，照亮尘埃。",
+            "音效：清脆的玻璃碰撞声+魔法施放音。",
+            "台词：阿青丝（冷静/短句）：“太油了。”",
+            "动作：阿青丝拔开瓶盖，将洗发液轻轻泼洒在垂落的发丝上。",
+            "【24-40s】特效镜头：洗发液接触发丝的刹那，黑色油垢迅速剥离、消散，化作点点星光。原本黏腻成团的发丝瞬间炸开，变得根根分明、蓬松轻盈，如同丝绸般顺滑流动。柳公子感到束缚解除，身体猛地一松。",
+            "音效：水流冲刷声+轻快的风铃声。",
+            "台词：柳公子（惊讶/回声）：“诶？松了？”",
+            "动作：柳公子顺势从顺滑的发丝上快速滑下，落地姿态优雅。",
+        ))
+        candidate = original.replace("指尖凝聚出", "从袖中取出").replace(
+            "动作：柳公子顺势从顺滑的发丝上快速滑下，落地姿态优雅。",
+            "动作：去油后不再粘连皮肤/衣物，摩擦力降低至可滑动范围，同时保留蓬松视觉；柳公子顺势从顺滑的发丝上快速滑下，落地姿态优雅。",
+        )
+        s01 = "将“指尖凝聚”改为更写实的动作（如从袖中/腰间取出），以符合原文“取出”的描述，避免引入未授权的魔法设定。"
+        s02 = "在滑下前的特效或旁白中，强调“去油后不再粘连皮肤/衣物”，而非单纯依赖“蓬松导致顺滑”。解释物理逻辑：油垢作为粘合剂消失后，摩擦力降低至可滑动范围，同时保留蓬松视觉。"
+        issues = [
+            {"id": "S01", "severity": "suspect", "evidence": "她抬手，指尖凝聚出一瓶小巧精致的“100年润发控油小茶瓶”", "revision": "确认是否允许“魔法式取物”作为风格化处理；若需更写实，改为“从腰间/袖中掏出”。"},
+            {"id": "S02", "severity": "block", "evidence": "柳公子感到束缚解除，身体猛地一松... 顺势从顺滑的发丝上快速滑下", "revision": "补充柳公子滑下的动作细节，例如“因发丝恢复弹性与顺滑，不再粘连皮肤，得以顺畅下滑”，或在视觉表现上强调“剥离粘附感”而非单纯的“蓬松”。"},
+        ]
+        plan = {
+            "changes": [
+                {"issue_id": "S01", "direction": s01, "linked": True},
+                {"issue_id": "S02", "direction": s02, "linked": True},
+            ],
+            "sourced": [
+                {"text": "阿青丝取出100年润发控油小茶瓶洗发", "quote": "危急时刻，阿青丝取出100年润发控油小茶瓶洗发", "source": "已有依据"},
+            ],
+            "uncertain": [],
+        }
+        review = {
+            "passed": True,
+            "theme_ok": True,
+            "resolutions": [
+                {"id": "S01", "resolved": True, "evidence": "Candidate text changed '指尖凝聚出' to '从袖中取出'.", "change": "从袖中取出", "aligned": True},
+                {"id": "S02", "resolved": True, "evidence": "Candidate text added '去油后不再粘连皮肤/衣物，摩擦力降低至可滑动范围，同时保留蓬松视觉'.", "change": "去油后不再粘连皮肤/衣物，摩擦力降低至可滑动范围，同时保留蓬松视觉", "aligned": True},
+            ],
+            "unsupported": [],
+            "new_contradictions": [],
+        }
+        added = [
+            {"issue_id": "S01", "declaration": s01},
+            {"issue_id": "S02", "declaration": s02},
+        ]
+        status, reason, validation = judge_candidate("", original, candidate, issues, added, review, plan=plan)
+        self.assertEqual(status, "passed", reason)
+        self.assertNotEqual(validation["source"], "unbound_declaration")
+        self.assertIn("魔法施放音", candidate)
+        bare, bare_reason, bare_validation = judge_candidate(
+            "", original, candidate, issues, added,
+            {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "已处理"}, {"id": "S02", "resolved": True, "evidence": "已处理"}], "unsupported": [], "new_contradictions": []},
+            plan=plan,
+        )
+        self.assertEqual(bare, "blocked")
+        self.assertEqual(bare_validation["source"], "missing_evidence")
+        self.assertNotIn("危急时刻", bare_reason)
+        unresolved, _unresolved_reason, unresolved_validation = judge_candidate(
+            "", original, candidate, issues, added,
+            {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "从袖中取出"}, {"id": "S02", "resolved": False, "evidence": ""}], "unsupported": [], "new_contradictions": []},
+            plan=plan,
+        )
+        self.assertEqual(unresolved, "blocked")
+        self.assertEqual(unresolved_validation["source"], "missing_evidence")
+        padded = candidate + "塔底铺着软垫。"
+        extra, _extra_reason, extra_validation = judge_candidate("", original, padded, issues, added, review, plan=plan)
+        self.assertEqual(extra, "blocked")
+        self.assertEqual(extra_validation["source"], "unclassified")
+        self.assertIn("软垫", extra_validation["evidence"])
+        from AI.qwen_api.script_repair_graph import compile_script_repair_graph
+
+        sleeve = original.replace("指尖凝聚出", "从袖中取出")
+
+        def complete(node, _messages):
+            if node == "locate":
+                return json.dumps({"locations": [{"issue_id": "S01", "paragraphs": ["指尖凝聚出"]}]}, ensure_ascii=False)
+            if node == "plan":
+                return json.dumps({"changes": [{"issue_id": "S01", "direction": s01, "linked": True}], "constraints": [{"text": "不要毁塔", "quote": "不要毁塔"}]}, ensure_ascii=False)
+            if node == "revise":
+                return json.dumps({"script": sleeve, "added": [{"issue_id": "S01", "declaration": s01}]}, ensure_ascii=False)
+            if node == "review":
+                return json.dumps({"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "从袖中取出", "change": "从袖中取出", "aligned": True}], "unsupported": [], "new_contradictions": []}, ensure_ascii=False)
+            raise AssertionError(node)
+
+        state = compile_script_repair_graph(complete).invoke({
+            "requirements": "",
+            "script": original,
+            "issues": [issues[0]],
+            "calls": [],
+            "status": "",
+        })
+        self.assertEqual(state["calls"], ["locate", "plan", "revise", "review"])
+        self.assertEqual(state["added"][0]["declaration"], s01)
+        self.assertEqual(state["revision_plan"]["uncertain"][0]["text"], "不要毁塔")
+        graph_status, graph_reason, graph_validation = judge_candidate(
+            "", original, state["candidate"], [issues[0]], state["added"], state["review_notes"], plan=state["revision_plan"],
+        )
+        self.assertEqual(graph_status, "passed", graph_reason)
+        self.assertNotEqual(graph_validation["source"], "unbound_declaration")
+
+        folder = self._project()
+        identity = budget_identity(official_script(folder), _REQUIREMENTS, issue_rows(folder))
+        _save_candidate(folder, {
+            "status": "blocked",
+            "needs_human": True,
+            "reason": "旧记录",
+            "rejected_text": candidate,
+            "candidate": "",
+            "attempts": 2,
+            **identity,
+        })
+        ok, why = promote_candidate(folder, _REQUIREMENTS, project_id="a1b2c3d4e511")
+        self.assertFalse(ok)
+        self.assertEqual(official_script(folder), _SCRIPT)
+        project = read_project("a1b2c3d4e511")
+        project["status"] = "writing"
+        project["progress"]["phase"] = "writing"
+        project["progress"]["pipeline"]["action"] = "script_repair"
+        write_project(project)
+        before = len(self.tasks)
+        resume_agent_tasks()
+        restored = read_project("a1b2c3d4e511")
+        self.assertEqual(len(self.tasks), before)
+        self.assertIn("查看未采用候选", restored["progress"]["question"]["options"])
+        self.assertNotIn("再修一次", restored["progress"]["question"]["options"])
+        self.assertNotIn("采用这版剧本", restored["progress"]["question"]["options"])
+        self.assertEqual(load_candidate(folder)["attempts"], 2)
+        viewed = rpc_send_message({"id": "a1b2c3d4e511", "text": "查看未采用候选"})
+        self.assertIn("从袖中取出", viewed["messages"][-1]["content"])
+        self.assertEqual(load_candidate(folder)["attempts"], 2)
+        self.assertEqual(official_script(folder), _SCRIPT)
+        self.assertEqual(len(self.tasks), before)
+        kept = rpc_send_message({"id": "a1b2c3d4e511", "text": "保持原稿"})
+        self.assertNotIn("根据建议修改", kept["progress"]["question"]["options"])
+        self.assertNotIn("改了原稿", kept["messages"][-1]["content"])
+        self.assertEqual(load_candidate(folder)["attempts"], 2)
+        outcome = execute(
+            {"progress": {"pipeline": {"action": "script_repair"}}},
+            folder,
+            {},
+            lambda *_args, **_kwargs: None,
+            lambda *_args, **_kwargs: "",
+        )
+        self.assertIn("查看未采用候选", outcome["progress"]["question"]["options"])
+        self.assertNotIn("再修一次", outcome["progress"]["question"]["options"])
+        del bare_reason
+
+    def test_old_text_and_old_shape_do_not_count_as_a_linked_change(self):
+        from end.script_repair import judge_candidate
+
+        original = "她抬手，指尖凝聚出一瓶小巧精致的小茶瓶。柳公子顺着发丝滑下。"
+        candidate = "她抬手，从袖中取出一瓶小巧精致的小茶瓶。柳公子顺着发丝滑下。"
+        issues = [
+            {"id": "S01", "severity": "suspect", "revision": "改为从腰间/袖中掏出。"},
+            {"id": "S02", "severity": "block", "revision": "补充下滑时不再粘连。"},
+        ]
+        plan = {"changes": [
+            {"issue_id": "S01", "direction": "将指尖凝聚改为从袖中取出。", "linked": True},
+            {"issue_id": "S02", "direction": "把下滑写成去油后不再粘连，保留蓬松。", "linked": True},
+        ]}
+        misbound, reason, validation = judge_candidate(
+            "",
+            original,
+            candidate,
+            issues,
+            [{"issue_id": "S02", "declaration": "这是下滑问题不是取瓶", "before": "指尖凝聚出", "after": "从袖中取出"}],
+            {"passed": True, "theme_ok": True, "resolutions": [
+                {"id": "S01", "resolved": True, "evidence": "小巧精致的小茶瓶", "change": "小巧精致的小茶瓶", "aligned": True},
+                {"id": "S02", "resolved": True, "evidence": "小巧精致的小茶瓶"},
+            ], "unsupported": [], "new_contradictions": []},
+            plan=plan,
+        )
+        self.assertNotEqual(misbound, "passed", reason)
+        self.assertIn(validation["source"], ("missing_change_check", "unlinked_change"))
+        self.assertNotEqual(validation["source"], "refinement")
+        cited_old, old_reason, old_validation = judge_candidate(
+            "",
+            original,
+            candidate,
+            [issues[1]],
+            [{"issue_id": "S02", "declaration": "这是下滑问题不是取瓶", "before": "指尖凝聚出", "after": "从袖中取出"}],
+            {"passed": True, "theme_ok": True, "resolutions": [
+                {"id": "S02", "resolved": True, "evidence": "小巧精致的小茶瓶", "change": "小巧精致的小茶瓶", "aligned": True},
+            ], "unsupported": [], "new_contradictions": []},
+            plan=plan,
+        )
+        self.assertNotEqual(cited_old, "passed", old_reason)
+        self.assertEqual(old_validation["source"], "unlinked_change")
+        legacy, legacy_reason, legacy_validation = judge_candidate(
+            "她取出小茶瓶。",
+            original,
+            candidate + "塔底铺着软垫。",
+            [issues[0]],
+            [{"issue_id": "S01", "text": "塔底铺着软垫", "basis": ""}],
+            {"passed": True, "theme_ok": True, "resolutions": [{"id": "S01", "resolved": True, "evidence": "从袖中取出", "change": "从袖中取出", "aligned": True}], "unsupported": [], "new_contradictions": []},
+            plan=plan,
+        )
+        self.assertEqual(legacy, "blocked")
+        self.assertEqual(legacy_validation["source"], "missing_basis")
+        self.assertNotIn("新增情节没有原文依据", legacy_reason)
+        self.assertIn("不能据此判断", legacy_reason)
+
+    def test_empty_brief_resume_does_not_requeue_and_a_real_save_asks_for_review(self):
+        from end.script_repair import _save_candidate, budget_identity, issue_rows, load_candidate
+        from end.server import resume_agent_tasks, save_project_content
+
+        folder = self._project()
+        identity = budget_identity(official_script(folder), _REQUIREMENTS, issue_rows(folder))
+        stored = {
+            "status": "blocked",
+            "needs_human": True,
+            "reason": "先前的拒绝还在",
+            "validation": {"stage": "judge", "source": "unbound_declaration", "evidence": "旧声明"},
+            "rejected_text": "未采用的候选正文",
+            "candidate": "",
+            "attempts": 2,
+            **identity,
+        }
+        _save_candidate(folder, stored)
+        project = read_project("a1b2c3d4e511")
+        project["brief"] = ""
+        project["status"] = "writing"
+        project["progress"]["phase"] = "writing"
+        project["progress"]["pipeline"]["action"] = "script_repair"
+        write_project(project)
+        resume_agent_tasks()
+        resume_agent_tasks()
+        self.assertEqual(self.tasks, [])
+        shown = read_project("a1b2c3d4e511")
+        self.assertIn("缺少创作要求", shown["progress"]["question"]["reply"])
+        self.assertNotIn("再修一次", shown["progress"]["question"]["options"])
+        self.assertNotIn("采用这版剧本", shown["progress"]["question"]["options"])
+        kept = load_candidate(folder)
+        self.assertEqual(kept["attempts"], 2)
+        self.assertEqual(kept["validation"]["source"], "unbound_declaration")
+        self.assertEqual(kept["rejected_text"], "未采用的候选正文")
+        self.assertEqual(official_script(folder), _SCRIPT)
+
+        project = read_project("a1b2c3d4e511")
+        project["brief"] = _REQUIREMENTS
+        project["status"] = "gate"
+        project["progress"]["phase"] = "gate_script"
+        project["progress"]["question"] = {"id": "script_candidate", "kind": "single", "reply": "次数用完", "options": ["保持原稿"], "cards": []}
+        write_project(project)
+        save_project_content("a1b2c3d4e511", {"script": _SCRIPT + "\n她改了一处真实稿件。"})
+        refreshed = read_project("a1b2c3d4e511")
+        self.assertEqual(refreshed["progress"]["question"]["options"], ["再审一次"])
+        self.assertNotIn("采用这版剧本", refreshed["progress"]["question"]["options"])
+        self.assertNotIn("根据建议修改", refreshed["progress"]["question"]["options"])
+        self.assertIn("没有采用", refreshed["messages"][-1]["content"])
+        self.assertEqual(load_candidate(folder)["attempts"], 2)
+        self.assertIn("她改了一处真实稿件", official_script(folder))
+        self.assertEqual(self.tasks, [])
 
 
 if __name__ == "__main__":

@@ -675,8 +675,11 @@ def _answer_script_candidate(project, body, brief):
         reply = "保持原稿。正式剧本没有改。"
         options = ["根据建议修改"]
         if not repair_budget_open(folder, brief or project.get("brief") or ""):
-            reply += "同一原稿和问题的修订次数已用完。改了原稿或问题之后才有新的次数。"
-            options = []
+            reply += "这一原稿和问题的模型修订次数已用完，不会因此清零。"
+            saved = str((load_candidate(folder) or {}).get("rejected_text") or "").strip()
+            options = ["查看未采用候选"] if saved else []
+            if saved:
+                reply += "未采用的候选还在，可以查看。"
         question = {
             "id": "script",
             "kind": "single",
@@ -1012,6 +1015,10 @@ def answer_gate(project, text):
         return public_view(read_project(project["id"]) or project)
     folder = project_dir(project["id"])
     brief = project.get("brief") or ""
+    if body == "查看未采用候选":
+        from end.script_repair import load_candidate
+
+        return _present_script_candidate(project, load_candidate(folder))
     if body == "再审一次":
         return _rereview_semantic(project, pipeline)
     explicit_script_accept = False
@@ -2311,6 +2318,9 @@ def save_project_content(project_id, body):
         spec = apply_saved_content(load_spec(project_id) or {}, body)
         folder = project_dir(project_id)
         folder.mkdir(parents=True, exist_ok=True)
+        from end.script_repair import official_script
+
+        previous_script = official_script(folder) if "script" in body else ""
         (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
         persist_edits(folder, spec, body)
         if "script" in body:
@@ -2321,7 +2331,49 @@ def save_project_content(project_id, body):
             project["image_prompts"] = spec.get("image_prompts") or ""
         project["updated_at"] = now()
         write_project(project)
-        return project
+        if "script" in body:
+            _refresh_gate_after_script_save(project, previous_script, spec.get("script") or "")
+        return read_project(project_id) or project
+
+
+def _refresh_gate_after_script_save(project, previous_script, new_script):
+    """A real manuscript edit leaves the repair gate. It does not adopt the old candidate or add attempts."""
+    from end.script_repair import load_candidate
+    from end.script_review import content_hash
+
+    if str(previous_script or "").strip() == str(new_script or "").strip():
+        return
+    row = load_candidate(project_dir(project["id"]))
+    if not row:
+        return
+    if row.get("source_hash") == content_hash(str(new_script or "").strip()):
+        return
+    question = (project.get("progress") or {}).get("question") or {}
+    if question.get("id") not in ("script_candidate", "script"):
+        return
+    reply = "稿件已保存。上一版修订候选没有采用，修订次数也没有清零。新稿要先重新审查，确认后才能继续。保存本身不会再给模型修订次数。"
+    fresh = {"id": "script", "kind": "single", "reply": reply, "options": ["再审一次"], "cards": []}
+    messages = list(project.get("messages") or [])
+    messages.append(question_message(fresh))
+    project["messages"] = messages
+    pipeline = dict((project.get("progress") or {}).get("pipeline") or {})
+    pipeline["action"] = "wait"
+    pipeline["current"] = "script"
+    pipeline["repair"] = ""
+    pipeline["passed"] = False
+    remember(
+        project,
+        "gate",
+        "剧本",
+        progress={
+            "percent": int((project.get("progress") or {}).get("percent") or 48),
+            "phase": "gate_script",
+            "message": reply.split("\n", 1)[0],
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": fresh,
+        },
+    )
 
 
 def _image_kind(data):
@@ -2474,6 +2526,37 @@ def project_logs(project_id):
     }
 
 
+def _present_missing_repair_context(project, row):
+    """An empty brief is not a new repair. Do not queue the model or clear the saved rejection."""
+    saved = str((row or {}).get("rejected_text") or "").strip()
+    reply = "缺少创作要求，不能判断主旨，需要人工确认。正式剧本没有改。没有因此重新排队修订。"
+    options = ["查看未采用候选", "保持原稿"] if saved else ["保持原稿"]
+    if (row or {}).get("reason") and not str(row.get("reason")).startswith("缺少创作要求"):
+        reply += "\n先前的记录还在：" + str(row.get("reason"))
+    question = {"id": "script_candidate", "kind": "single", "reply": reply, "options": options, "cards": []}
+    messages = list(project.get("messages") or [])
+    messages.append(question_message(question))
+    project["messages"] = messages
+    pipeline = dict((project.get("progress") or {}).get("pipeline") or {})
+    pipeline["action"] = "wait"
+    pipeline["current"] = "script"
+    pipeline["repair"] = ""
+    remember(
+        project,
+        "gate",
+        "剧本候选",
+        progress={
+            "percent": 48,
+            "phase": "gate_script",
+            "message": reply.split("\n", 1)[0],
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": question,
+        },
+    )
+    return public_view(read_project(project["id"]) or project)
+
+
 def resume_agent_tasks():
     """Put interrupted drill and script calls back on the queue after a restart."""
     started = 0
@@ -2491,6 +2574,10 @@ def resume_agent_tasks():
 
                 folder = project_dir(project["id"])
                 row = load_candidate(folder)
+                if not str(project.get("brief") or "").strip():
+                    _present_missing_repair_context(project, row or {})
+                    started += 1
+                    continue
                 identity = budget_identity(
                     official_script(folder),
                     project.get("brief") or "",
