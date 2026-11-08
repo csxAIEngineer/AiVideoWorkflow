@@ -466,6 +466,14 @@ def _kept_done(folder, steps):
 
 
 def _rerun_writing(site, project, spec, folder, node, steps, resume):
+    if str(node) == "script":
+        from end.script_review import downstream_allowed
+
+        fresh = site.read_project(project["id"]) or project
+        allowed, _reason = downstream_allowed(folder, spec, fresh.get("brief") or "")
+        if not allowed:
+            site._present_script_gate(fresh)
+            return None
     stage = node
     pipeline, nxt = resume
     _lock_stage_text(folder, spec, project, node)

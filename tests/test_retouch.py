@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import end.db as db
+from end.script_review import set_reviewer
 from end.db import project_dir, read_project, write_project
 from end.locks import write_locks
 from end.render_loop import load_run_state
@@ -82,8 +83,10 @@ class RetouchTest(unittest.TestCase):
         db._CONN = None
         db.DATA.mkdir()
         self.ids = []
+        set_reviewer(lambda _messages: '{"issues":[]}')
 
     def tearDown(self):
+        set_reviewer(None)
         for project_id in self.ids:
             _PIPELINE_HANDOFF.pop(project_id, None)
         conn = db._CONN
@@ -531,6 +534,9 @@ class RetouchTest(unittest.TestCase):
         write_locks(folder, {"aspect": "16:9", "model": "h3"})
         if rendered:
             self._seed_outputs(folder)
+        from tests.test_rerun_from import RerunProjectTest
+
+        RerunProjectTest._allow(None, folder, project.get("brief") or "")
         return folder
 
     def _seed_outputs(self, folder):

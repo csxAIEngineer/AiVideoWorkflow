@@ -10,11 +10,20 @@ from pathlib import Path
 from unittest.mock import patch
 
 import end.db as db
+from end.script_review import set_reviewer
 from AI.agent.agent import CONTINUE_LEAD
 from AI.agent.batch import CATALOG_LEAD, CATALOG_TOKENS, REPAIR_CATALOG_LEAD, batch_tokens, overlong_chars
 from AI.agent.layout import AgentLayout
 from AI.skills.registry import LOCK_FILES, pack_cohorts
 from AI.agent.model import LLMModel
+def setUpModule():
+    set_reviewer(lambda _messages: '{"issues":[]}')
+
+
+def tearDownModule():
+    set_reviewer(None)
+
+
 from AI.script import call_drill as pipeline_drill
 from end.server import (
     call_deepseek,
@@ -968,16 +977,13 @@ class EndHandoffTest(unittest.TestCase):
         saved = db.read_project(project_id)
         view = public_view(saved)
         self.assertEqual(saved["script"], "写完的剧本")
-        self.assertEqual(saved["storyboard"], "写完的分镜")
-        self.assertEqual(saved["status"], "done")
-        self.assertEqual(saved["progress"]["phase"], "prompt_debug")
+        self.assertEqual(saved["status"], "gate")
+        self.assertEqual(saved["progress"]["phase"], "gate_script")
         self.assertEqual(saved["progress"]["debug_stop"], "prompts")
         self.assertFalse(saved["progress"]["debug_llm"])
-        self.assertTrue(saved["tasks"])
-        self.assertTrue(all(task["state"] == "muted" for task in saved["tasks"]))
         self.assertEqual(view["debug_stop"], "prompts")
         self.assertFalse(view["debug_llm"])
-        self.assertEqual(view["stage"], "Debug：已停在提示词")
+        self.assertIn("继续", saved["messages"][-1]["options"])
 
     def test_create_keeps_prompt_stop_ahead_of_image_debug(self):
         old = os.environ.get("AIVIDEO_DEBUG_LLM")
@@ -1025,9 +1031,10 @@ class EndHandoffTest(unittest.TestCase):
             run_project(project_id)
         start.assert_not_called()
         saved = db.read_project(project_id)
-        self.assertEqual(saved["status"], "done")
-        self.assertEqual(saved["progress"]["phase"], "prompts_ready")
+        self.assertEqual(saved["status"], "gate")
+        self.assertEqual(saved["progress"]["phase"], "gate_script")
         self.assertEqual(saved["script"], "写完的剧本")
+        self.assertIn("继续", saved["messages"][-1]["options"])
 
     def test_restart_requeues_an_open_model_call(self):
         make_project(

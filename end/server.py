@@ -165,6 +165,15 @@ def _phase(project):
     return (project.get("progress") or {}).get("phase") or ""
 
 
+def _public_semantic(project, spec):
+    from end.script_review import public_semantic
+
+    try:
+        return public_semantic(project_dir(project["id"]), spec, project.get("brief") or "")
+    except Exception as error:
+        return {"script_status": "failed", "script_reason": str(error), "confirmed": False, "delivery_status": "failed"}
+
+
 def prompts_ready(project):
     return bool(project) and project.get("status") == "done" and _phase(project) == "prompts_ready"
 
@@ -422,6 +431,7 @@ def public_view(project):
         "images": list_output_images(project["id"]),
         "clips": list_output_clips(project["id"]),
         "materials": public_materials(project["id"]),
+        "semantic": _public_semantic(project, spec),
         "progress": attach_crew(project),
         "question": (project.get("progress") or {}).get("question") or None,
         "deliverables": list_deliverables(folder),
@@ -565,7 +575,12 @@ def _begin_writing(project):
     pipeline = dict(progress.get("pipeline") or {})
     if pipeline.get("accepted"):
         folder = project_dir(project["id"])
-        pipeline, _action = accept_pipeline(pipeline, read_locks(folder))
+        pipeline, _action = accept_pipeline(
+            pipeline,
+            read_locks(folder),
+            folder=folder,
+            brief=project.get("brief") or "",
+        )
         label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
         _enqueue_stage(project, pipeline, label)
         return public_view(read_project(project["id"]) or project)
@@ -717,6 +732,138 @@ def _take_asset_choice(project, pipeline, body, question):
     return public_view(read_project(project["id"]) or project)
 
 
+def _repeat_gate(project, reason):
+    """Show the current gate again. Does not delete drafts or media."""
+    progress = dict(project.get("progress") or {})
+    question = dict(progress.get("question") or {})
+    reply = str(reason or "还不能继续")
+    if question.get("reply"):
+        reply = reply + "\n" + question["reply"]
+    question["reply"] = reply
+    message = question_message(question)
+    messages = list(project.get("messages") or [])
+    messages.append(message)
+    project["messages"] = messages
+    progress["question"] = question
+    progress["message"] = reply.split("\n", 1)[0]
+    phase = progress.get("phase") or "gate_script"
+    if not str(phase).startswith("gate_"):
+        phase = "gate_script"
+    progress["phase"] = phase
+    remember(project, "gate", project.get("stage") or "停在门上", progress=progress)
+    return public_view(read_project(project["id"]) or project)
+
+
+def _present_script_gate(project, force=False):
+    """Format gate plus semantic review. The script text is not rewritten."""
+    from end.script_review import apply_script_review_gate
+    from end.stage_runner import gate_result
+
+    project = read_project(project["id"]) or project
+    folder = project_dir(project["id"])
+    spec = load_spec(project["id"]) or {}
+    text = str(spec.get("script") or project.get("script") or "").strip()
+    script_path = folder / "_内部_" / "剧本.md"
+    if text and not script_path.is_file():
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(text + "\n", encoding="utf-8")
+    pipeline = dict((project.get("progress") or {}).get("pipeline") or {})
+    pipeline.setdefault("only", "")
+    pipeline.setdefault("accepted", [])
+    pipeline["current"] = "script"
+    pipeline["action"] = "wait"
+    pipeline["passed"] = True
+    outcome = gate_result("script", True, "", pipeline)
+    outcome = apply_script_review_gate(
+        folder,
+        spec,
+        read_locks(folder),
+        project.get("brief") or "",
+        outcome,
+        force=force,
+    )
+    previous = project.get("progress") or {}
+    outcome["progress"]["lock_machine"] = True
+    outcome["progress"]["pipeline"]["semantic_scope"] = "script"
+    if previous.get("debug_stop"):
+        outcome["progress"]["debug_stop"] = previous.get("debug_stop")
+    outcome["progress"]["debug_llm"] = bool(previous.get("debug_llm"))
+    _settle_writer_outcome(project, outcome)
+    return read_project(project["id"]) or project
+
+
+def _hold_delivery(project, decision):
+    """Stop before submit. Keep every file already on disk."""
+    from end.script_review import public_semantic
+
+    project = read_project(project["id"]) or project
+    folder = project_dir(project["id"])
+    owner = decision.get("owner") or "feed"
+    if owner not in ("script", "asset", "storyboard", "feed"):
+        owner = "feed"
+    pipeline = dict((project.get("progress") or {}).get("pipeline") or {})
+    pipeline["current"] = owner
+    pipeline["action"] = "wait"
+    pipeline["passed"] = False
+    pipeline["retry_write"] = False
+    pipeline["semantic_scope"] = "delivery"
+    pipeline["semantic_status"] = decision.get("status") or "failed"
+    pipeline["semantic_owner"] = owner
+    pipeline["report"] = decision.get("reason") or ""
+    pipeline["repair"] = pipeline["report"]
+    reply = "出片前的语义审查未通过。审查没有改剧本，也没有删除已有图和成片。\n" + (decision.get("reason") or "")
+    options = list(decision.get("options") or ["根据建议修改"])
+    question = {"id": owner, "kind": "single", "reply": reply, "options": options, "cards": []}
+    messages = list(project.get("messages") or [])
+    messages.append(question_message(question))
+    project["messages"] = messages
+    project["finished_at"] = None
+    project["error"] = None
+    remember(
+        project,
+        "gate",
+        "出片审查",
+        progress={
+            "percent": int((project.get("progress") or {}).get("percent") or 80),
+            "phase": "gate_%s" % owner,
+            "message": reply.split("\n", 1)[0],
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": question,
+            "semantic": public_semantic(folder, load_spec(project["id"]), project.get("brief") or ""),
+            "semantic_scope": "delivery",
+        },
+    )
+    return public_view(read_project(project["id"]) or project)
+
+
+def _rereview_semantic(project, pipeline):
+    scope = str((pipeline or {}).get("semantic_scope") or (project.get("progress") or {}).get("semantic_scope") or "script")
+    if scope == "delivery":
+        from end.script_review import delivery_decision, review_delivery, user_image_ids
+
+        folder = project_dir(project["id"])
+        spec = load_spec(project["id"]) or {}
+
+        def ids_for(shot, _index):
+            return user_image_ids(folder, shot)
+
+        row = review_delivery(
+            folder,
+            spec,
+            brief=project.get("brief") or "",
+            template=project.get("template"),
+            soundtrack=project_soundtrack(project),
+            user_ids_for=ids_for,
+            force=True,
+        )
+        decision = delivery_decision(row)
+        if decision["ok"]:
+            return _start_explicit_render(project)
+        return _hold_delivery(project, decision)
+    return _present_script_gate(project, force=True)
+
+
 def answer_gate(project, text):
     progress = project.get("progress") or {}
     pipeline = dict(progress.get("pipeline") or {})
@@ -735,6 +882,25 @@ def answer_gate(project, text):
         pipeline["auto_retries"] = 0
         _enqueue_stage(project, pipeline, "剧本")
         return public_view(read_project(project["id"]) or project)
+    folder = project_dir(project["id"])
+    brief = project.get("brief") or ""
+    if body == "再审一次":
+        return _rereview_semantic(project, pipeline)
+    if body == "接受可疑项并继续" and current == "script":
+        from end.script_review import confirm_script
+
+        ok, reason = confirm_script(folder, accept_suspects=True, brief=brief)
+        if not ok:
+            return _repeat_gate(project, reason)
+        body = "继续"
+        passed = True
+    if body == "接受可疑项并出片":
+        from end.script_review import accept_delivery_suspects
+
+        ok, reason = accept_delivery_suspects(folder)
+        if not ok:
+            return _repeat_gate(project, reason)
+        return _start_explicit_render(project)
     if question.get("id") == "asset_repair_choice":
         return _take_asset_choice(project, pipeline, body, question)
     if body == "精修" and current == "script" and passed:
@@ -825,6 +991,12 @@ def answer_gate(project, text):
         _enqueue_stage(project, pipeline, project.get("stage") or "重写这一段")
         return public_view(read_project(project["id"]) or project)
     folder, locks = _lock_inputs(project)
+    if current == "script" and passed and body in ("继续", "接受", "确认"):
+        from end.script_review import confirm_script
+
+        ok, reason = confirm_script(folder, accept_suspects=False, brief=brief)
+        if not ok:
+            return _repeat_gate(project, reason)
     if current == "recon":
         locks["intel_confirmed"] = True
         locks = prepare_locks(
@@ -844,7 +1016,9 @@ def answer_gate(project, text):
             project = read_project(project["id"]) or project
             project["progress"] = progress
             return _ask_lock(project, _open_question(locks, project.get("brief") or ""))
-    pipeline, _action = accept_pipeline(pipeline, locks)
+    pipeline, _action = accept_pipeline(pipeline, locks, folder=folder, brief=brief)
+    if pipeline.get("action") == "wait" and pipeline.get("current") == "script":
+        return _repeat_gate(project, pipeline.get("report") or "剧本还不能进入下游")
     label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
     _enqueue_stage(project, pipeline, label)
     return public_view(read_project(project["id"]) or project)
@@ -1052,7 +1226,9 @@ def _follow_auto_gate(project, folder, locks, outcome):
         messages = list(project.get("messages") or [])
         messages.append({"role": "assistant", "content": "对标情报已确认，开始写剧本。"})
         project["messages"] = messages
-    pipeline, step = accept_pipeline(pipeline, locks)
+    pipeline, step = accept_pipeline(pipeline, locks, folder=folder, brief=project.get("brief") or "")
+    if step == "wait":
+        return None
     label = "投喂机检" if step == "finish" else _AUTO_LABEL.get(pipeline.get("current") or "", "下一段")
     return _mark_writing(project, pipeline, label)
 
@@ -1419,6 +1595,22 @@ def _start_explicit_render(project, keep_done=None, video_submit_mode="generate"
     aspect = locks.get("aspect") or locked_aspect(project.get("brief") or "") or locked_aspect(str(spec.get("aspect_ratio") or ""))
     if not aspect:
         return _ask_aspect(project)
+    from end.script_review import delivery_decision, review_delivery, user_image_ids
+
+    def ids_for(shot, _index):
+        return user_image_ids(project_dir(project_id), shot)
+
+    row = review_delivery(
+        project_dir(project_id),
+        spec,
+        brief=project.get("brief") or "",
+        template=project.get("template"),
+        soundtrack=project_soundtrack(project),
+        user_ids_for=ids_for,
+    )
+    decision = delivery_decision(row)
+    if not decision["ok"]:
+        return _hold_delivery(project, decision)
     _store_aspect(project, aspect)
     project = read_project(project_id) or project
     tasks = task_plan(spec, soundtrack=project_soundtrack(project))
@@ -1519,6 +1711,9 @@ def _run_project(project_id, debug_llm=False):
             spec = _merge_spec(spec, written)
             fresh = _save_written_spec(project_id, spec)
             if fresh is None or _yield_if_paused(project_id):
+                return
+            if stage == "P1":
+                _present_script_gate(fresh)
                 return
         feed_path, markdown_path = _write_prompt_files(project_id, spec, brief)
         aspect = locked_aspect(brief)
@@ -1734,17 +1929,23 @@ def _execute_render(project_id, project=None, video_submit_mode="generate"):
     mode = normalize_video_submit_mode(
         video_submit_mode or (project.get("progress") or {}).get("video_submit_mode")
     )
-    result = run_local_pipeline(
-        spec,
-        folder,
-        on_progress=on_progress,
-        project_id=project_id,
-        images_only=images_only,
-        soundtrack=project_soundtrack(project),
-        brief=project.get("brief") or "",
-        template=project.get("template"),
-        video_submit_mode=mode,
-    )
+    from end.script_review import GenerationBlocked
+
+    try:
+        result = run_local_pipeline(
+            spec,
+            folder,
+            on_progress=on_progress,
+            project_id=project_id,
+            images_only=images_only,
+            soundtrack=project_soundtrack(project),
+            brief=project.get("brief") or "",
+            template=project.get("template"),
+            video_submit_mode=mode,
+        )
+    except GenerationBlocked as blocked:
+        _hold_delivery(read_project(project_id) or project, blocked.decision or {"reason": str(blocked), "owner": "feed"})
+        return
     if result.get("stopped_after") == "images":
         finish_image_debug(project, result)
         return

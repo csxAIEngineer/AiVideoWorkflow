@@ -8,9 +8,18 @@ from unittest.mock import patch
 import end.db as db
 from end.db import project_dir, read_project
 from end.locks import prepare_locks, read_locks, write_locks as save_locks
+from end.script_review import set_reviewer
 from end.server import answer_gate, run_project
 from end.stage_runner import REPAIR_LIMIT, auto_gate_action
 from tests.test_director_pipeline import _base_locks, make_project
+
+
+def setUpModule():
+    set_reviewer(lambda _messages: '{"issues":[]}')
+
+
+def tearDownModule():
+    set_reviewer(None)
 
 
 def _gate(stage, passed, repairs=0, retry_write=False, options=None, check="", auto_retries=0, machine_repairs=0, question_id=""):
@@ -209,7 +218,7 @@ class AutoAdvanceTest(unittest.TestCase):
                 return True, ""
             if stage == "storyboard":
                 text = (internal / "previs.md").read_text(encoding="utf-8") if (internal / "previs.md").is_file() else ""
-                if "改过" not in text:
+                if "改过" not in text and "身体正对前方" not in text:
                     return False, "FAIL: 段1 缺六问"
                 return True, ""
             if stage == "feed":
@@ -237,7 +246,7 @@ class AutoAdvanceTest(unittest.TestCase):
         self.assertIn("任务：资产锁定", joined)
         self.assertIn("阶段：asset", joined)
         self.assertIn("任务：分镜", joined)
-        self.assertIn("阶段：storyboard", joined)
+        self.assertIn("预演：1", joined)
         self.assertIn("任务：提示词封装", joined)
         self.assertIn("阶段：feed", joined)
         self.assertIn("改过的资产", (project_dir("p-chain") / "_内部_" / "assets.md").read_text(encoding="utf-8"))

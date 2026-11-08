@@ -7,8 +7,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from end.script_review import set_reviewer
 from end.stage_runner import execute
 from end.trace import begin_trace, finish_trace, list_traces, restore_trace
+
+
+def setUpModule():
+    set_reviewer(lambda _messages: '{"issues":[]}')
+
+
+def tearDownModule():
+    set_reviewer(None)
 
 
 class TraceReplayTest(unittest.TestCase):

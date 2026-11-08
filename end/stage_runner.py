@@ -3289,6 +3289,16 @@ def execute(project, folder, locks, write_model, load_pack):
         pipeline,
         has_draft=storyboard_has_draft(folder),
     )
+    if current == "script" and passed:
+        from end.script_review import apply_script_review_gate
+
+        outcome = apply_script_review_gate(
+            folder,
+            spec,
+            locks,
+            project.get("brief") or "",
+            outcome,
+        )
     outcome["spec"] = spec
     outcome["used_stage"] = current
     outcome["mount"] = mount_header(current, locks, carried_text(folder, current), only)
@@ -3318,11 +3328,30 @@ def initial_pipeline(only):
     }
 
 
-def accept_pipeline(pipeline, locks):
-    """Move to the next stage after a passed gate. A failed gate rewrites the same stage."""
+def accept_pipeline(pipeline, locks, folder=None, brief=""):
+    """Move to the next stage after a passed gate. A failed gate rewrites the same stage.
+
+    Leaving the script stage also requires a semantic pass and a human
+    confirmation of this exact script. The check does not delete later drafts.
+    """
     pipeline = dict(pipeline or {})
     locks = locks or {}
     current = pipeline.get("current") or ""
+    if current == "script" and pipeline.get("passed"):
+        from end.script_review import downstream_allowed
+
+        if folder is None:
+            ok, reason = False, "缺少项目目录，不能进入下游"
+        else:
+            ok, reason = downstream_allowed(folder, brief=brief)
+        if not ok:
+            pipeline["action"] = "wait"
+            pipeline["current"] = "script"
+            pipeline["passed"] = False
+            pipeline["retry_write"] = False
+            pipeline["report"] = reason
+            pipeline["repair"] = reason
+            return pipeline, "wait"
     if not pipeline.get("passed"):
         pipeline["action"] = "rewrite"
         return pipeline, "write"

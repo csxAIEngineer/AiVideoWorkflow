@@ -8,8 +8,17 @@ from unittest.mock import patch
 
 import end.db as db
 from end.db import project_dir, read_project, write_project
+from end.script_review import set_reviewer
 from end.delivery import list_deliverables, publish
 from end.gates import check_feed, check_prompt, feed_uses_h3
+def setUpModule():
+    set_reviewer(lambda _messages: '{"issues":[]}')
+
+
+def tearDownModule():
+    set_reviewer(None)
+
+
 from end.locks import (
     SEAM_OPTIONS,
     TRACK_OPTIONS,

@@ -1514,6 +1514,8 @@ class RenderContext(object):
             return dict(step)
 
     def run_remote(self, step_id, kind, label, phase, submit, poll, download, interval, index, group_total):
+        from end.script_review import GenerationBlocked
+
         path, relative = output_paths(self.work_dir, step_id, kind)
         success = IMAGE_SUCCESS if kind == "image" else VIDEO_SUCCESS
         failure = IMAGE_FAILURE if kind == "image" else VIDEO_FAILURE
@@ -1554,16 +1556,18 @@ class RenderContext(object):
                     current=index,
                     total=group_total,
                 )
-                try:
-                    step = self.submit_once(step_id, kind, submit)
-                except (OSError, RuntimeError) as error:
-                    self.on_submit_error(step_id, kind, label, error)
-                    seen = None
-                    continue
-                if not step.get("remote_task_id"):
-                    seen = None
-                    continue
+            try:
+                step = self.submit_once(step_id, kind, submit)
+            except GenerationBlocked:
+                raise
+            except (OSError, RuntimeError) as error:
+                self.on_submit_error(step_id, kind, label, error)
                 seen = None
+                continue
+            if not step.get("remote_task_id"):
+                seen = None
+                continue
+            seen = None
             try:
                 current = poll(step["remote_task_id"])
             except (OSError, RuntimeError) as error:
@@ -2284,6 +2288,7 @@ def run_local_pipeline(
     template=None,
     aspect="",
     video_submit_mode="generate",
+    reviewer=None,
 ):
     """Generate stills, then clips, join them, optionally mix a soundtrack, then burn 字幕.ass.
 
@@ -2332,6 +2337,30 @@ def run_local_pipeline(
     )
     if project_id:
         register_thread(project_id)
+    from end.script_review import (
+        GenerationBlocked,
+        assert_generation_prompt,
+        delivery_decision,
+        planned_video_text,
+        review_delivery,
+        user_image_ids,
+    )
+
+    def ids_for(shot, _index):
+        return user_image_ids(ctx.work_dir, shot)
+
+    reviewed = review_delivery(
+        ctx.work_dir,
+        spec,
+        brief=ctx.brief,
+        template=ctx.template,
+        soundtrack=ctx.soundtrack,
+        user_ids_for=ids_for,
+        complete=reviewer,
+    )
+    decision = delivery_decision(reviewed)
+    if not decision["ok"]:
+        raise GenerationBlocked(decision["reason"] or "出片语义审查未通过", decision)
     ctx.work_dir.mkdir(parents=True, exist_ok=True)
     (ctx.work_dir / "outputs" / "images").mkdir(parents=True, exist_ok=True)
     (ctx.work_dir / "outputs" / "clips").mkdir(parents=True, exist_ok=True)
@@ -2364,8 +2393,10 @@ def run_local_pipeline(
             if ctx.aspect in FRAME_SIZES:
                 width, height = FRAME_SIZES[ctx.aspect]
                 size = "%d*%d" % (width, height)
+            text = image_prompt(current, reference=bool(urls), template=ctx.template)
+            assert_generation_prompt(ctx.work_dir, text)
             return icreat.submit_image(
-                image_prompt(current, reference=bool(urls), template=ctx.template),
+                text,
                 image=image,
                 size=size,
             )
@@ -2463,15 +2494,15 @@ def run_local_pipeline(
                 return url, info.get("path")
 
             _aspect, media = assemble_shot_media(current, mode, url_for, tail_url)
-            text = delivery_prompt(
+            text = planned_video_text(
+                fresh or spec,
                 current,
-                spoken,
                 prompt_index,
-                bool(tail_url),
-                mode,
-                soundtrack=ctx.soundtrack,
                 template=ctx.template,
+                soundtrack=ctx.soundtrack,
+                user_image_ids=user_ids,
             )
+            assert_generation_prompt(ctx.work_dir, text)
             _remember_video_mode(ctx, shot_id, mode)
             # Only text-to-video accepts aspect_ratio. Image and reference follow the input image.
             if mode == "text" and not ctx.aspect:

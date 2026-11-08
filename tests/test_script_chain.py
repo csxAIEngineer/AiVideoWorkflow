@@ -8,8 +8,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from AI.skills.registry import build_system_prompt, load_skill_pack, script_step_pack
+from end.script_review import set_reviewer
 from end.stage_runner import execute
 from end.trace import begin_trace, finish_trace, restore_trace
+
+
+def setUpModule():
+    set_reviewer(lambda _messages: '{"issues":[]}')
+
+
+def tearDownModule():
+    set_reviewer(None)
 
 
 class ScriptStepSourceTest(unittest.TestCase):

@@ -43,12 +43,62 @@ from end.render_loop import (
 from end.workflow_from_spec import collect_steps, task_plan
 
 
+def _prime_review(work, spec, brief="", template=None, soundtrack="off"):
+    """Let render cases pass the semantic gate with a fake that reports no issues.
+
+    The production path still refuses a folder that has no review.
+    """
+    from end.script_review import confirm_script, review_delivery, review_script, set_reviewer, user_image_ids
+
+    folder = Path(work)
+    folder.mkdir(parents=True, exist_ok=True)
+    body = dict(spec or {})
+    if not str(body.get("script") or "").strip():
+        body["script"] = "她在雨里等车。"
+    spec_path = folder / "spec.json"
+    if not spec_path.is_file():
+        spec_path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    internal = folder / "_内部_"
+    internal.mkdir(parents=True, exist_ok=True)
+    (internal / "剧本.md").write_text(body["script"] + "\n", encoding="utf-8")
+    set_reviewer(lambda _messages: '{"issues":[]}')
+    try:
+        review_script(folder, body, brief=brief)
+        confirm_script(folder, brief=brief)
+
+        def ids_for(shot, _index):
+            return user_image_ids(folder, shot)
+
+        review_delivery(
+            folder,
+            body,
+            brief=brief,
+            template=template,
+            soundtrack=soundtrack,
+            user_ids_for=ids_for,
+        )
+    finally:
+        set_reviewer(None)
+    return body
+
+
 def run_local_pipeline(spec, *args, **kwargs):
     """Existing cases lock 9:16 when the spec never named a frame."""
     copied = dict(spec or {})
     brief = kwargs.get("brief") or ""
     if not copied.get("aspect_ratio") and not kwargs.get("aspect") and "画幅" not in str(brief):
         copied["aspect_ratio"] = "9:16"
+    work = args[0] if args else kwargs.get("work_dir")
+    if work is not None and kwargs.get("reviewer") is None:
+        from end.soundtrack import normalize_soundtrack
+
+        copied = _prime_review(
+            work,
+            copied,
+            brief=brief,
+            template=kwargs.get("template"),
+            soundtrack=normalize_soundtrack(kwargs.get("soundtrack") or "off"),
+        )
     return _run_local_pipeline(copied, *args, **kwargs)
 
 SPEC = {
@@ -713,14 +763,13 @@ class RenderLoopTest(unittest.TestCase):
 
         icreat = FakeICreat()
         cr = FakeCR()
-        run_local_pipeline(stale, self.work, icreat=icreat, cr=cr, sleeper=_noop_sleep, burner=burner)
-        self.assertIn("新的提示词", icreat.submits[0]["prompt"])
-        self.assertNotIn("旧的提示词", icreat.submits[0]["prompt"])
-        self.assertIn("新的镜头", cr.submits[0]["text"])
-        self.assertIn("新的对白", cr.submits[0]["text"])
-        self.assertNotIn("旧的镜头", cr.submits[0]["text"])
-        self.assertIn("新的对白", burned[0])
-        self.assertNotIn("旧对白", burned[0])
+        from end.script_review import GenerationBlocked
+
+        with self.assertRaises(GenerationBlocked):
+            run_local_pipeline(stale, self.work, icreat=icreat, cr=cr, sleeper=_noop_sleep, burner=burner)
+        self.assertEqual(icreat.submits, [])
+        self.assertEqual(cr.submits, [])
+        self.assertIn("新的提示词", (self.work / "spec.json").read_text(encoding="utf-8"))
 
     def test_open_task_does_not_resubmit_when_spec_changes(self):
         changed = {
@@ -1149,9 +1198,11 @@ class RenderLoopTest(unittest.TestCase):
             "shots": [{"id": "S01", "duration": 4, "prompt": "海面慢慢亮起来", "images": []}],
         }
         cr = FakeCR()
+        wide_dir = self.work / "wide"
+        primed = _prime_review(wide_dir, wide, brief="画幅：16:9")
         _run_local_pipeline(
-            wide,
-            self.work / "wide",
+            primed,
+            wide_dir,
             icreat=FakeICreat(),
             cr=cr,
             sleeper=_noop_sleep,

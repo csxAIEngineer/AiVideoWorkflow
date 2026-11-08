@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import end.db as db
+from end.script_review import confirm_script, review_delivery, review_script, set_reviewer, user_image_ids
 from end.db import project_dir, read_project, write_project
 from end.locks import write_locks
 from end.render_loop import load_run_state
@@ -126,8 +127,10 @@ class RerunProjectTest(unittest.TestCase):
         self._catalog.enter_context(
             patch("end.server.template_label", side_effect=lambda value: value or "短剧")
         )
+        set_reviewer(lambda _messages: '{"issues":[]}')
 
     def tearDown(self):
+        set_reviewer(None)
         self._catalog.close()
         conn = db._CONN
         db.DATA, db.DB_PATH, db._CONN = self._old
@@ -185,8 +188,8 @@ class RerunProjectTest(unittest.TestCase):
         project_id = "5c11b7000002"
         folder = self._ready(project_id, {"script": "新剧本", "storyboard": "旧分镜"})
         internal = folder / "_内部_"
-        internal.mkdir()
-        (internal / "剧本.md").write_text("旧剧本\n", encoding="utf-8")
+        internal.mkdir(exist_ok=True)
+        (internal / "剧本.md").write_text("新剧本\n", encoding="utf-8")
         (internal / "assets.md").write_text("#### 图1\n旧\n", encoding="utf-8")
         (internal / "分镜.md").write_text("旧分镜\n", encoding="utf-8")
         (internal / "previs.md").write_text("旧预览\n", encoding="utf-8")
@@ -219,7 +222,7 @@ class RerunProjectTest(unittest.TestCase):
         project_id = "5704b0a7d003"
         folder = self._ready(project_id, {"storyboard": "新分镜"})
         internal = folder / "_内部_"
-        internal.mkdir()
+        internal.mkdir(exist_ok=True)
         (internal / "assets.md").write_text("资产留下\n", encoding="utf-8")
         (internal / "分镜.md").write_text("旧分镜\n", encoding="utf-8")
         (internal / "previs.md").write_text("预览留下\n", encoding="utf-8")
@@ -289,7 +292,7 @@ class RerunProjectTest(unittest.TestCase):
     def test_rerun_rejected_while_a_thread_is_alive(self):
         project_id = "b17570000006"
         folder = self._ready(project_id, {"script": "新剧本"})
-        (folder / "_内部_").mkdir()
+        (folder / "_内部_").mkdir(exist_ok=True)
         (folder / "_内部_" / "剧本.md").write_text("保持\n", encoding="utf-8")
         _PIPELINE_HANDOFF[project_id] = "writer"
         try:
@@ -324,7 +327,7 @@ class RerunProjectTest(unittest.TestCase):
         progress["pipeline"] = pipeline
         project["progress"] = progress
         write_project(project)
-        (folder / "_内部_").mkdir()
+        (folder / "_内部_").mkdir(exist_ok=True)
         (folder / "_内部_" / "剧本.md").write_text("保持\n", encoding="utf-8")
         self._file(folder, "images/A1.png")
         with patch("end.server.submit_agent_task") as submit:
@@ -370,7 +373,26 @@ class RerunProjectTest(unittest.TestCase):
         write_locks(folder, {"aspect": "16:9", "model": "h3"})
         if outputs:
             self._seed_outputs(folder)
+        self._allow(folder, project.get("brief") or "")
         return folder
+
+    def _allow(self, folder, brief):
+        spec_path = folder / "spec.json"
+        spec = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.is_file() else {}
+        script = str(spec.get("script") or "").strip()
+        if script:
+            internal = folder / "_内部_"
+            internal.mkdir(parents=True, exist_ok=True)
+            path = internal / "剧本.md"
+            if not path.is_file():
+                path.write_text(script + "\n", encoding="utf-8")
+        review_script(folder, spec, brief=brief)
+        confirm_script(folder, brief=brief)
+
+        def ids_for(shot, _index):
+            return user_image_ids(folder, shot)
+
+        review_delivery(folder, spec, brief=brief, template="short-drama-director", user_ids_for=ids_for)
 
     def _seed_outputs(self, folder):
         for name in ("A1", "A2", "A3"):
