@@ -1958,6 +1958,9 @@ def handle_agent_task(task):
     if task.kind == "script_repair":
         run_script_repair(task.project_id)
         return
+    if task.kind == "script_review":
+        run_script_revision_review(task.project_id)
+        return
     if task.kind == "revise":
         from end.revise import perform_revise
 
@@ -2557,6 +2560,33 @@ def _present_missing_repair_context(project, row):
     return public_view(read_project(project["id"]) or project)
 
 
+def _present_stale_manual_review(project):
+    """The manuscript no longer matches the manual save. Do not queue or rewrite it."""
+    reply = "正式稿已经变了，上次保存对应的审稿不能自动继续。没有改这一稿，也没有重排审稿。请重新审查。"
+    question = {"id": "script", "kind": "single", "reply": reply, "options": ["再审一次"], "cards": []}
+    messages = list(project.get("messages") or [])
+    messages.append(question_message(question))
+    project["messages"] = messages
+    pipeline = dict((project.get("progress") or {}).get("pipeline") or {})
+    pipeline["action"] = "wait"
+    pipeline["current"] = "script"
+    pipeline["repair"] = ""
+    remember(
+        project,
+        "gate",
+        "剧本",
+        progress={
+            "percent": int((project.get("progress") or {}).get("percent") or 48),
+            "phase": "gate_script",
+            "message": reply.split("\n", 1)[0],
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": question,
+        },
+    )
+    return read_project(project["id"]) or project
+
+
 def resume_agent_tasks():
     """Put interrupted drill and script calls back on the queue after a restart."""
     started = 0
@@ -2569,6 +2599,16 @@ def resume_agent_tasks():
             continue
         if status == "writing":
             pipeline = (project.get("progress") or {}).get("pipeline") or {}
+            if pipeline.get("action") == "script_review":
+                from end.script_revision import manual_resume_decision
+
+                if manual_resume_decision(project) == "hold":
+                    _present_stale_manual_review(project)
+                    started += 1
+                    continue
+                if submit_agent_task(Task("script_review", project["id"], {})):
+                    started += 1
+                continue
             if pipeline.get("action") == "script_repair":
                 from end.script_repair import budget_identity, issue_rows, load_candidate, official_script, same_budget
 
@@ -2632,17 +2672,21 @@ def resume_rendering_projects():
 
 
 class RpcError(Exception):
-    def __init__(self, code, message):
+    def __init__(self, code, message, data=None):
         super().__init__(message)
         self.code = int(code)
         self.message = str(message)
+        self.data = data
 
 
 def _rpc_body(request_id, result=None, error=None):
     if error is not None:
+        body = {"code": error.code, "message": error.message}
+        if getattr(error, "data", None):
+            body["data"] = error.data
         return {
             "jsonrpc": "2.0",
-            "error": {"code": error.code, "message": error.message},
+            "error": body,
             "id": request_id,
         }
     return {"jsonrpc": "2.0", "result": result, "id": request_id}
@@ -2927,6 +2971,75 @@ def rpc_rerun(params):
     return view
 
 
+def _revision_call(fn):
+    from end.script_revision import RevisionError
+
+    try:
+        return fn()
+    except RevisionError as error:
+        raise RpcError(error.code, error.message, {
+            "reason": error.reason,
+            "retryable": error.retryable,
+            "saved": error.saved,
+            "retry_same_key": error.retry_same_key,
+        })
+
+
+def rpc_script_revision_get(params):
+    project_id = str((params or {}).get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False})
+    project = read_project(project_id)
+    if project is None:
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False})
+    from end.script_revision import revision_get
+
+    return revision_get(project)
+
+
+def rpc_script_revision_save(params):
+    params = params or {}
+    project_id = str(params.get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False})
+    project = read_project(project_id)
+    if project is None:
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False})
+    from end.script_revision import revision_save
+
+    return _revision_call(lambda: revision_save(
+        project,
+        params.get("text"),
+        params.get("base_token"),
+        params.get("idempotency_key"),
+        params.get("source") or "",
+    ))
+
+
+def rpc_script_revision_retry(params):
+    params = params or {}
+    project_id = str(params.get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False})
+    project = read_project(project_id)
+    if project is None:
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False})
+    from end.script_revision import revision_retry
+
+    return _revision_call(lambda: revision_retry(project, params.get("base_token")))
+
+
+def run_script_revision_review(project_id):
+    """Full script review for a human manuscript. Does not repair or generate."""
+    project = read_project(project_id)
+    if project is None:
+        return
+    try:
+        _present_script_gate(read_project(project_id) or project, force=True)
+    except Exception as error:
+        fail_project(project_id, error)
+
+
 def rpc_save_content(params):
     project_id = str(params.get("id") or "")
     if not valid_id(project_id):
@@ -3099,6 +3212,12 @@ def rpc_call(method, params):
         return rpc_control("reset", params)
     if method == "projects.save_content":
         return rpc_save_content(params)
+    if method == "projects.script_revision.get":
+        return rpc_script_revision_get(params)
+    if method == "projects.script_revision.save":
+        return rpc_script_revision_save(params)
+    if method == "projects.script_revision.retry_review":
+        return rpc_script_revision_retry(params)
     if method == "projects.retouch":
         return rpc_retouch(params)
     if method == "projects.rerun":
