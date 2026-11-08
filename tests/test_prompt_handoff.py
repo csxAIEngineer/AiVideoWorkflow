@@ -2,6 +2,16 @@
 
 import unittest
 
+from tests.offline_guard import install, uninstall
+
+
+def setUpModule():
+    install()
+
+
+def tearDownModule():
+    uninstall()
+
 from end.board_shots import apply_feed_binding, apply_storyboard_shots, shots_from_storyboard
 from end.prompt_gate import feed_text
 from end.render_loop import delivery_prompt, image_prompt, subtitle_cues

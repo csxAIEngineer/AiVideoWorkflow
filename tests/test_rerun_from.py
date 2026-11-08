@@ -127,10 +127,16 @@ class RerunProjectTest(unittest.TestCase):
         self._catalog.enter_context(
             patch("end.server.template_label", side_effect=lambda value: value or "短剧")
         )
+        from tests.offline_guard import install
+
+        install()
         set_reviewer(lambda _messages: '{"issues":[]}')
 
     def tearDown(self):
+        from tests.offline_guard import uninstall
+
         set_reviewer(None)
+        uninstall()
         self._catalog.close()
         conn = db._CONN
         db.DATA, db.DB_PATH, db._CONN = self._old

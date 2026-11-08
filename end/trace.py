@@ -264,7 +264,20 @@ def write_internal(folder, name, text):
 
 
 def clear_downstream(folder, stage):
-    """Drop every saved writing stage that comes after `stage`."""
+    """Retire every saved writing stage that comes after `stage`.
+
+    Bytes are copied under history/ first. The active files are then removed
+    so the next write cannot reuse them as the current draft.
+    """
+    from end.history_keep import archive_paths
+
+    relative = []
+    for later in _AFTER.get(str(stage or ""), ()):
+        for name in _FILES.get(later, ()):
+            relative.append("_内部_/" + name)
+            if name == "feed.md":
+                relative.append("feed.md")
+    archive_paths(folder, "clear-%s" % (stage or "downstream"), relative)
     for later in _AFTER.get(str(stage or ""), ()):
         _clear_stage(folder, later)
 

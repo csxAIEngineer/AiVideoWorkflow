@@ -17,11 +17,17 @@ from AI.agent.layout import AgentLayout
 from AI.skills.registry import LOCK_FILES, pack_cohorts
 from AI.agent.model import LLMModel
 def setUpModule():
+    from tests.offline_guard import install
+
+    install()
     set_reviewer(lambda _messages: '{"issues":[]}')
 
 
 def tearDownModule():
+    from tests.offline_guard import uninstall
+
     set_reviewer(None)
+    uninstall()
 
 
 from AI.script import call_drill as pipeline_drill

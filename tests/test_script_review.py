@@ -26,8 +26,17 @@ from end.script_review import (
 )
 from end.server import _run_project, _start_explicit_render
 from end.stage_runner import execute
+from tests.offline_guard import install, uninstall
 from tests.test_director_pipeline import make_project
 from tests.test_render_loop import FakeCR, FakeICreat
+
+
+def setUpModule():
+    install()
+
+
+def tearDownModule():
+    uninstall()
 
 
 def _issue(category, severity, owner, evidence, location="第1场"):
@@ -324,17 +333,19 @@ class DeliveryReviewTest(unittest.TestCase):
         self.assertEqual(Images.submits, [])
 
     def test_prompt_changed_after_review_is_rejected(self):
+        from end.script_review import authorize_video_submit
+
         self._confirm()
         self.response = '{"issues":[]}'
         review_delivery(self.folder, self.spec, brief="", force=True)
-        original = planned_video_text(self.spec, self.spec["shots"][0], 0)
-        assert_generation_prompt(self.folder, original)
-        changed = dict(self.spec)
-        changed["shots"] = [dict(self.spec["shots"][0], prompt="subject_definitions:\n乙\ndetailed_description:\n乙留下。\n")]
-        moved = planned_video_text(changed, changed["shots"][0], 0)
+        allowed = authorize_video_submit(self.folder, "S01", False, brief="")
+        self.assertIn("甲转身离开车站", allowed)
+        spec_path = self.folder / "spec.json"
+        changed = json.loads(spec_path.read_text(encoding="utf-8"))
+        changed["shots"][0]["prompt"] = "subject_definitions:\n乙\ndetailed_description:\n乙留下。\n"
+        spec_path.write_text(json.dumps(changed, ensure_ascii=False), encoding="utf-8")
         with self.assertRaises(GenerationBlocked):
-            assert_generation_prompt(self.folder, moved)
-        self.assertNotEqual(content_hash(original), content_hash(moved))
+            authorize_video_submit(self.folder, "S01", False, brief="")
 
     def test_render_entry_and_script_rerun_stop_without_a_pass(self):
         self._db = tempfile.TemporaryDirectory()
@@ -417,6 +428,207 @@ class DeliveryReviewTest(unittest.TestCase):
             if conn is not None and conn is not old[2]:
                 conn.close()
             self._db.cleanup()
+
+
+class GateContractTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name)
+        self.calls = []
+        set_reviewer(lambda messages: self._review(messages))
+        self.response = '{"issues":[]}'
+
+    def tearDown(self):
+        set_reviewer(None)
+        self.tmp.cleanup()
+
+    def _review(self, messages):
+        self.calls.append(messages)
+        return self.response
+
+    def _script(self, text):
+        internal = self.folder / "_内部_"
+        internal.mkdir(parents=True, exist_ok=True)
+        (internal / "剧本.md").write_text(text + "\n", encoding="utf-8")
+        spec = {"script": text, "aspect_ratio": "9:16", "assets": [{"id": "A1", "title": "甲", "prompt": "车站里的甲"}], "shots": [{"id": "S01", "duration": 4, "prompt": "她离开", "images": ["A1"]}]}
+        (self.folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+        return spec
+
+    def test_bad_review_shapes_cannot_pass(self):
+        spec = self._script("甲在车站等车。")
+        samples = (
+            '{"issues":[{"location":"场","evidence":"","category":"causal","severity":"block","reason":"断","owner":"script","revision":"补"}]}',
+            '{"issues":[{"location":"场","evidence":"甲","category":"nope","severity":"block","reason":"断","owner":"script","revision":"补"}]}',
+            '{"issues":[{"location":"场","evidence":"甲","category":"causal","severity":"huge","reason":"断","owner":"script","revision":"补"}]}',
+            '{"issues":[{"location":"场","evidence":"甲","category":"causal","severity":"block","reason":"断","owner":"camera","revision":"补"}]}',
+            '{"status":"passed","issues":[{"location":"场","evidence":"甲","category":"causal","severity":"block","reason":"断","owner":"feed","revision":"补"}]}',
+            '{"issues":[],"script":"改写成另一部"}',
+        )
+        for raw in samples:
+            self.response = raw
+            row = review_script(self.folder, spec, brief="", force=True)
+            self.assertNotEqual(row["status"], "passed", raw)
+            self.assertNotIn("改写成另一部", json.dumps(row, ensure_ascii=False))
+        self.assertFalse(downstream_allowed(self.folder, spec, "")[0])
+
+    def test_prior_episode_without_facts_stays_uncertain(self):
+        spec = self._script("上一集他已经赢了。这一集甲在车站等车。")
+        self.response = '{"issues":[]}'
+        row = review_script(self.folder, spec, brief="只有这一集的事", force=True)
+        self.assertEqual(row["status"], "suspect")
+        self.assertTrue(any(item.get("uncertain") for item in row["issues"]))
+        self.assertFalse(confirm_script(self.folder, brief="只有这一集的事")[0])
+        chain = self.folder / "_内部_" / "剧本链"
+        chain.mkdir()
+        (chain / "00-前集.md").write_text("前集事实：他上次输了。\n", encoding="utf-8")
+        self.response = '{"issues":[]}'
+        later = review_script(self.folder, spec, brief="只有这一集的事", force=True)
+        self.assertEqual(later["status"], "passed")
+        self.assertFalse(any(item.get("uncertain") for item in later["issues"]))
+
+    def test_old_suspect_acceptance_does_not_carry(self):
+        spec = self._script("甲看着雨。")
+        self.response = json.dumps({"issues": [_issue("continuity", "suspect", "script", "甲看着雨")]}, ensure_ascii=False)
+        review_script(self.folder, spec, brief="雨", force=True)
+        self.assertTrue(confirm_script(self.folder, accept_suspects=True, brief="雨")[0])
+        spec["script"] = "甲决定留下。"
+        (self.folder / "_内部_" / "剧本.md").write_text("甲决定留下。\n", encoding="utf-8")
+        (self.folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+        self.assertFalse(downstream_allowed(self.folder, spec, "雨")[0])
+
+    def test_story_issue_cannot_be_routed_to_feed(self):
+        spec = self._script("甲在车站等车。她说：我要走。")
+        spec["feed"] = "subject_definitions:\n甲\ndetailed_description:\n甲离开。\n"
+        spec["shots"][0]["prompt"] = spec["feed"]
+        (self.folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+        review_script(self.folder, spec, brief="")
+        confirm_script(self.folder, brief="")
+        self.response = json.dumps({"issues": [_issue("causal", "block", "feed", "我要走")]}, ensure_ascii=False)
+        row = review_delivery(self.folder, spec, brief="", force=True)
+        self.assertEqual(row["owner"], "script")
+        self.assertEqual(row["issues"][0]["owner"], "script")
+        decision = delivery_decision(row)
+        self.assertFalse(decision["ok"])
+        self.assertEqual(decision["owner"], "script")
+
+    def test_tail_binding_uses_the_persisted_shot_and_rejects_a_mid_check_edit(self):
+        from end.script_review import authorize_video_submit, lease_still_current, planned_video_text
+
+        spec = self._script("甲在车站等车。")
+        spec["shots"] = [
+            {"id": "S01", "duration": 4, "prompt": "第一镜离开", "images": ["A1"]},
+            {"id": "S02", "duration": 4, "prompt": "第二镜继续走", "images": ["A1"]},
+        ]
+        (self.folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+        review_script(self.folder, spec, brief="")
+        confirm_script(self.folder, brief="")
+        self.response = '{"issues":[]}'
+        rendered = {
+            "image": "",
+            "image_from": "",
+            "video_lock": "",
+            "video_next": "",
+            "video_tail": "TAIL_MARK",
+            "video_from": "",
+        }
+        with patch("end.ai_client.template_render", return_value=rendered):
+            review_delivery(self.folder, spec, brief="", force=True)
+            bare = authorize_video_submit(self.folder, "S02", False, brief="")
+            tailed = authorize_video_submit(self.folder, "S02", True, brief="")
+            self.assertNotIn("TAIL_MARK", bare)
+            self.assertIn("TAIL_MARK", tailed)
+            self.assertEqual(tailed, planned_video_text(spec, spec["shots"][1], 1, has_tail=True))
+            self.assertTrue(lease_still_current(self.folder))
+            disk = json.loads((self.folder / "spec.json").read_text(encoding="utf-8"))
+            disk["script"] = "另一稿"
+            (self.folder / "spec.json").write_text(json.dumps(disk, ensure_ascii=False), encoding="utf-8")
+            (self.folder / "_内部_" / "剧本.md").write_text("另一稿\n", encoding="utf-8")
+            self.assertFalse(lease_still_current(self.folder))
+            disk["script"] = spec["script"]
+            (self.folder / "spec.json").write_text(json.dumps(disk, ensure_ascii=False), encoding="utf-8")
+            (self.folder / "_内部_" / "剧本.md").write_text(spec["script"] + "\n", encoding="utf-8")
+            original = planned_video_text
+
+            def tamper(*args, **kwargs):
+                if not getattr(tamper, "done", False):
+                    tamper.done = True
+                    disk = json.loads((self.folder / "spec.json").read_text(encoding="utf-8"))
+                    disk["shots"][1]["prompt"] = "第二镜改口"
+                    (self.folder / "spec.json").write_text(json.dumps(disk, ensure_ascii=False), encoding="utf-8")
+                return original(*args, **kwargs)
+
+            with patch("end.script_review.planned_video_text", side_effect=tamper):
+                with self.assertRaises(GenerationBlocked):
+                    authorize_video_submit(self.folder, "S02", True, brief="")
+
+    def test_confirmed_rerun_archives_old_media_and_does_not_reuse_it(self):
+        from end.render_loop import load_run_state, save_run_state
+        from end.rerun import _rerun_writing
+
+        blocked = json.dumps({"issues": [_issue("causal", "block", "feed", "甲在车站等车")]}, ensure_ascii=False)
+        self.response = blocked
+        spec = self._script("甲在车站等车。")
+        row = review_script(self.folder, spec, brief="雨", force=True)
+        self.assertEqual(row["status"], "blocked")
+        self.assertEqual(row["issues"][0]["owner"], "script")
+        old_feed = self.folder / "_内部_" / "feed.md"
+        old_feed.write_text("旧投喂正文\n", encoding="utf-8")
+        old_clip = self.folder / "outputs" / "clips" / "S01.mp4"
+        old_clip.parent.mkdir(parents=True)
+        old_clip.write_bytes(b"old-film-bytes")
+        save_run_state(self.folder, {"steps": {"S01": {"kind": "video", "status": "done", "output_file": "clips/S01.mp4"}}})
+        self.assertTrue(old_feed.is_file())
+        self.response = '{"issues":[]}'
+        spec["script"] = "甲在车站等车。她决定留下。"
+        (self.folder / "_内部_" / "剧本.md").write_text(spec["script"] + "\n", encoding="utf-8")
+        (self.folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+        passed = review_script(self.folder, spec, brief="雨", force=True)
+        self.assertEqual(passed["status"], "passed")
+        self.assertTrue(confirm_script(self.folder, brief="雨")[0])
+
+        class Site(object):
+            def read_project(self, _project_id):
+                return {"id": "p", "brief": "雨", "video_file": "", "script": spec["script"]}
+
+            def load_spec(self, _project_id):
+                return json.loads((self.folder / "spec.json").read_text(encoding="utf-8"))
+
+            def write_project(self, _project):
+                return None
+
+            def _enqueue_stage(self, *_args):
+                self.enqueued = True
+
+        site = Site()
+        site.folder = self.folder
+        _rerun_writing(site, site.read_project("p"), spec, self.folder, "script", [("S01", "video")], ({"accepted": ["script"], "current": "asset", "action": "write"}, "asset"))
+        self.assertTrue(site.enqueued)
+        self.assertFalse(old_feed.is_file())
+        self.assertFalse(old_clip.is_file())
+        copies = list((self.folder / "history").glob("*/_内部_/feed.md"))
+        films = list((self.folder / "history").glob("*/outputs/clips/S01.mp4"))
+        self.assertTrue(copies)
+        self.assertTrue(films)
+        self.assertEqual(copies[0].read_text(encoding="utf-8"), "旧投喂正文\n")
+        self.assertEqual(films[0].read_bytes(), b"old-film-bytes")
+        self.assertNotEqual(load_run_state(self.folder)["steps"]["S01"]["status"], "done")
+
+    def test_offline_guard_blocks_provider_text(self):
+        from end.ai_client import ask_text
+
+        with self.assertRaises(AssertionError) as caught:
+            ask_text([{"role": "user", "content": "不要发出去"}])
+        self.assertIn("offline guard", str(caught.exception))
+
+    def test_chat_gate_sends_the_new_labels(self):
+        source = Path("front/app.js").read_text(encoding="utf-8")
+        choice = source.split("function choiceList", 1)[1].split("function messageBubble", 1)[0]
+        self.assertIn("sendText(label)", choice)
+        send = source.split("async function sendText", 1)[1].split("const materialFile", 1)[0]
+        self.assertIn('rpc("projects.send_message"', send)
+        resume = source.split("function onResumeClick", 1)[1].split("function syncChoiceDisabled", 1)[0]
+        self.assertIn('sendText("继续")', resume)
+        self.assertNotIn("接受可疑项并继续", resume)
 
 
 if __name__ == "__main__":

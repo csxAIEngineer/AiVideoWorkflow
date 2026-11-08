@@ -58,6 +58,8 @@ _OWNERS = {
 _FIELDS = ("location", "evidence", "category", "severity", "reason", "owner", "revision")
 _STORY = {"causal", "motivation", "continuity"}
 _STATUSES = {"passed", "blocked", "suspect", "failed"}
+_SAVE_KEYS = {"script", "feed", "storyboard", "image_prompts", "text", "rewrite", "replacement", "previs"}
+_PRIOR = re.compile(r"上一集|前一集|前集|上集")
 
 
 class GenerationBlocked(RuntimeError):
@@ -219,6 +221,8 @@ def parse_issues(raw):
             return None
     if not isinstance(data, dict):
         return None
+    if any(key in data for key in _SAVE_KEYS):
+        return None
     rows = data.get("issues")
     if not isinstance(rows, list):
         return None
@@ -255,12 +259,38 @@ def _status_of(issues):
     return "passed"
 
 
+def _force_story_owner(issues):
+    """Causal, motive, and continuity problems belong to the script, whatever owner the model named."""
+    for item in issues or []:
+        if item.get("category") in _STORY:
+            item["owner"] = "script"
+    return issues
+
+
+def _prior_gap(script, context):
+    """A prior-episode claim without a stored prior fact is uncertain, not a pass."""
+    match = _PRIOR.search(script or "")
+    if not match:
+        return None
+    body = str(context or "")
+    if "前集事实：" in body or "上一集事实：" in body:
+        return None
+    return {
+        "location": "跨集",
+        "evidence": match.group(0),
+        "category": "continuity",
+        "severity": "suspect",
+        "reason": "上下文不足，不能确定跨集连续性，也不补写前集",
+        "owner": "script",
+        "revision": "补上已有的前集材料后再确认，或删掉没有来源的跨集断言",
+        "uncertain": True,
+    }
+
+
 def _primary_owner(issues, default):
     for severity in ("block", "suspect"):
         for item in issues:
             if item["severity"] == severity:
-                if item["category"] in _STORY and item["owner"] == "script":
-                    return "script"
                 return item["owner"]
     return default
 
@@ -349,11 +379,18 @@ def review_script(folder, spec=None, brief="", force=False, complete=None):
         {"role": "user", "content": _user("script", script, context)},
     ]
     row, _called = _run("script", messages, state.get("script"), cache_key, force, complete or complete_review)
-    for item in row.get("issues") or []:
+    issues = list(row.get("issues") or [])
+    gap = _prior_gap(script, context)
+    if gap and not any(item.get("uncertain") for item in issues):
+        issues.append(gap)
+    _force_story_owner(issues)
+    for item in issues:
         item["owner"] = "script"
-    if row.get("issues"):
-        row["status"] = _status_of(row["issues"])
-        row["reason"] = format_issues(row["issues"])
+    row["issues"] = issues
+    if issues or row.get("status") == "failed":
+        if row.get("status") != "failed":
+            row["status"] = _status_of(issues)
+        row["reason"] = format_issues(issues) or row.get("reason") or ""
     row["script_hash"] = script_hash
     row["context_hash"] = context_hash
     state = load_reviews(folder)
@@ -387,6 +424,9 @@ def confirm_script(folder, accept_suspects=False, spec=None, brief=""):
         state["confirmed_context_hash"] = context_hash
         row = dict(row)
         row["accepted_suspects"] = True
+        row["accepted_script_hash"] = script_hash
+        row["accepted_context_hash"] = context_hash
+        row["accepted_by"] = "human"
         state["script"] = row
         save_reviews(folder, state)
         return True, ""
@@ -414,8 +454,13 @@ def downstream_allowed(folder, spec=None, brief=""):
         return False, "剧本审查与当前正文不一致"
     if row.get("status") == "passed":
         return True, ""
-    if row.get("status") == "suspect" and row.get("accepted_suspects"):
-        return True, ""
+    if row.get("status") == "suspect" and row.get("accepted_by") == "human":
+        if (
+            row.get("accepted_script_hash") == script_hash
+            and row.get("accepted_context_hash") == context_hash
+        ):
+            return True, ""
+        return False, "对可疑项的接受已经过期"
     return False, row.get("reason") or "剧本语义审查未通过"
 
 
@@ -442,28 +487,97 @@ def planned_image_texts(asset, template=None):
     return texts
 
 
-def planned_video_text(spec, shot, index, template=None, soundtrack="off", user_image_ids=()):
-    """The clip prompt generation will submit for this shot index."""
+def planned_video_text(spec, shot, index, template=None, soundtrack="off", user_image_ids=(), has_tail=None):
+    """Clip prompt for one tail state. ``has_tail`` defaults to later shots only."""
     from end.render_loop import choose_video_mode, delivery_prompt
 
-    mode = choose_video_mode(shot, user_image_ids=user_image_ids, continues=index > 0)
+    if has_tail is None:
+        has_tail = index > 0
+    has_tail = bool(has_tail)
+    mode = choose_video_mode(shot, user_image_ids=user_image_ids, continues=has_tail)
     _assets, shots = _assets_shots(spec)
     spoken = _shot_spoken(spec, shots, index)
     return delivery_prompt(
         shot,
         spoken,
         index,
-        index > 0,
+        has_tail,
         mode,
         soundtrack=soundtrack,
         template=template,
     )
 
 
+def _binding(shot_id, mode, has_tail, images, tail_from, reference=False):
+    return {
+        "shot_id": str(shot_id or ""),
+        "mode": str(mode or ""),
+        "has_tail": bool(has_tail),
+        "images": [str(item) for item in (images or [])],
+        "tail_from": str(tail_from or ""),
+        "reference": bool(reference),
+    }
+
+
+def _payload(text, binding):
+    blob = json.dumps({"binding": binding, "text": text}, ensure_ascii=False, sort_keys=True)
+    return {"text": text, "binding": binding, "hash": content_hash(blob)}
+
+
+def video_payloads(spec, shot, index, template=None, soundtrack="off", user_image_ids=()):
+    """Both tail states for a later shot. Shot 1 has no previous frame."""
+    from end.render_loop import choose_video_mode
+
+    _assets, shots = _assets_shots(spec)
+    flags = (False, True) if index else (False,)
+    rows = []
+    images = list((shot or {}).get("images") or [])
+    tail_from = shots[index - 1]["id"] if index else ""
+    for has_tail in flags:
+        mode = choose_video_mode(shot, user_image_ids=user_image_ids, continues=has_tail)
+        text = planned_video_text(
+            spec,
+            shot,
+            index,
+            template=template,
+            soundtrack=soundtrack,
+            user_image_ids=user_image_ids,
+            has_tail=has_tail,
+        )
+        rows.append(_payload(text, _binding(
+            shot.get("id"),
+            mode,
+            has_tail,
+            images,
+            tail_from if has_tail else "",
+        )))
+    return rows
+
+
 def _assets_shots(spec):
     from end.workflow_from_spec import collect_steps
 
     return collect_steps(spec)
+
+
+def disk_source_hash(folder, brief=""):
+    """Hash the manuscript that is on disk right now, not a cached object."""
+    spec = _spec(folder, None)
+    script, _clash = current_script(folder, spec)
+    blob = json.dumps(
+        {
+            "assets": spec.get("assets") or [],
+            "context": story_context(folder, brief),
+            "feed": spec.get("feed") or "",
+            "image_prompts": spec.get("image_prompts") or "",
+            "script": script,
+            "shots": spec.get("shots") or [],
+            "storyboard": spec.get("storyboard") or "",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return content_hash(blob)
 
 
 def generation_bundle(spec, template=None, soundtrack="off", user_ids_for=None):
@@ -473,21 +587,32 @@ def generation_bundle(spec, template=None, soundtrack="off", user_ids_for=None):
     user_ids_for = user_ids_for or (lambda _shot, _index: ())
     items = []
     for asset in assets:
-        for text in planned_image_texts(asset, template):
-            items.append({"kind": "image", "id": asset["id"], "text": text})
+        plain = planned_image_texts(asset, template)
+        for text in plain:
+            reference = text != plain[0]
+            items.append({
+                "kind": "image",
+                "id": asset["id"],
+                "text": text,
+                "hash": _payload(text, _binding(asset["id"], "image", False, [], "", reference))["hash"],
+                "binding": _binding(asset["id"], "image", False, [], "", reference),
+            })
     for index, shot in enumerate(shots):
-        items.append({
-            "kind": "video",
-            "id": shot["id"],
-            "text": planned_video_text(
-                spec,
-                shot,
-                index,
-                template=template,
-                soundtrack=soundtrack,
-                user_image_ids=user_ids_for(shot, index),
-            ),
-        })
+        for payload in video_payloads(
+            spec,
+            shot,
+            index,
+            template=template,
+            soundtrack=soundtrack,
+            user_image_ids=user_ids_for(shot, index),
+        ):
+            items.append({
+                "kind": "video",
+                "id": shot["id"],
+                "text": payload["text"],
+                "hash": payload["hash"],
+                "binding": payload["binding"],
+            })
     manuscript = "\n\n".join((
         str(spec.get("image_prompts") or ""),
         str(spec.get("storyboard") or ""),
@@ -520,24 +645,30 @@ def review_delivery(folder, spec=None, brief="", template=None, soundtrack="off"
         return row
     context = story_context(folder, brief)
     script_hash = content_hash(script)
-    bundle_hash = content_hash(script + "\n" + context + "\n" + manuscript)
+    source_before = disk_source_hash(folder, brief)
+    bundle_hash = content_hash(script + "\n" + context + "\n" + manuscript + "\n" + source_before)
     cache_key = bundle_hash
     messages = [
         {"role": "system", "content": _system("delivery")},
         {"role": "user", "content": _user("delivery", script, context, manuscript)},
     ]
     row, _called = _run("delivery", messages, state.get("delivery"), cache_key, force, complete or complete_review)
-    issues = list(row.get("issues") or [])
-    if issues:
+    issues = _force_story_owner(list(row.get("issues") or []))
+    if issues and row.get("status") != "failed":
         row["status"] = _status_of(issues)
         row["reason"] = format_issues(issues)
+    if disk_source_hash(folder, brief) != source_before:
+        row["status"] = "failed"
+        row["reason"] = "审查期间磁盘上的稿件变了，不能通过"
+        issues = []
     row["issues"] = issues
     row["owner"] = _primary_owner(issues, "feed") if row.get("status") in ("blocked", "suspect") else ""
     row["script_hash"] = script_hash
     row["context_hash"] = content_hash(context)
     row["confirmed_script_hash"] = script_hash
+    row["source_hash"] = source_before
     row["bundle_hash"] = bundle_hash
-    row["prompt_hashes"] = [content_hash(item["text"]) for item in items]
+    row["prompt_hashes"] = [item.get("hash") or content_hash(item.get("text") or "") for item in items]
     state = load_reviews(folder)
     state["delivery"] = row
     save_reviews(folder, state)
@@ -551,7 +682,13 @@ def delivery_decision(row):
     status = row.get("status") or "pending"
     if status == "passed":
         return {"ok": True, "status": status, "reason": "", "owner": "", "options": []}
-    if status == "suspect" and row.get("accepted_suspects") and row.get("prompt_hashes"):
+    if (
+        status == "suspect"
+        and row.get("accepted_by") == "human"
+        and row.get("accepted_bundle_hash") == row.get("bundle_hash")
+        and row.get("accepted_source_hash") == row.get("source_hash")
+        and row.get("prompt_hashes")
+    ):
         return {"ok": True, "status": status, "reason": "", "owner": "", "options": []}
     owner = row.get("owner") or "script"
     reason = row.get("reason") or "出片语义审查未通过"
@@ -571,9 +708,163 @@ def accept_delivery_suspects(folder):
     if any(item.get("severity") == "block" for item in row.get("issues") or []):
         return False, "有阻断项，不能接受后出片"
     row["accepted_suspects"] = True
+    row["accepted_by"] = "human"
+    row["accepted_bundle_hash"] = row.get("bundle_hash") or ""
+    row["accepted_source_hash"] = row.get("source_hash") or ""
     state["delivery"] = row
     save_reviews(folder, state)
     return True, ""
+
+
+def _match_live(folder, payload, brief):
+    state = load_reviews(folder)
+    row = state.get("delivery") or {}
+    decision = delivery_decision(row)
+    if not decision["ok"]:
+        raise GenerationBlocked(decision["reason"] or "出片语义审查未通过", decision)
+    source = disk_source_hash(folder, brief)
+    if row.get("source_hash") != source:
+        raise GenerationBlocked(
+            "磁盘上的剧本或下游稿已经变了，旧的出片审查不能沿用",
+            {"ok": False, "status": "failed", "reason": "磁盘上的剧本或下游稿已经变了", "owner": "script", "options": ["再审一次", "根据建议修改"]},
+        )
+    if payload["hash"] not in set(row.get("prompt_hashes") or []):
+        raise GenerationBlocked(
+            "即将提交的提示词、尾帧或参考绑定不在这次审查里",
+            {"ok": False, "status": "failed", "reason": "即将提交的内容未被审查", "owner": "feed", "options": ["再审一次", "根据建议修改"]},
+        )
+
+
+def authorize_video_submit(folder, shot_id, has_tail, user_image_ids=(), template=None, soundtrack="off", brief="", project_id=""):
+    """Read the shot from disk twice. Submit only the text that was reviewed for this tail state."""
+    from end.render_loop import project_lock
+
+    lock = project_lock(project_id or str(folder))
+
+    def build():
+        spec = _spec(folder, None)
+        _assets, shots = _assets_shots(spec)
+        index = next((i for i, shot in enumerate(shots) if shot.get("id") == shot_id), None)
+        if index is None:
+            raise GenerationBlocked("磁盘上没有镜头 %s" % shot_id, {"ok": False, "owner": "feed", "reason": "没有这个镜头"})
+        shot = shots[index]
+        text = planned_video_text(
+            spec,
+            shot,
+            index,
+            template=template,
+            soundtrack=soundtrack,
+            user_image_ids=user_image_ids,
+            has_tail=bool(has_tail),
+        )
+        from end.render_loop import choose_video_mode
+
+        mode = choose_video_mode(shot, user_image_ids=user_image_ids, continues=bool(has_tail))
+        tail_from = shots[index - 1]["id"] if has_tail and index else ""
+        payload = _payload(text, _binding(shot_id, mode, has_tail, shot.get("images") or [], tail_from))
+        payload["source_hash"] = disk_source_hash(folder, brief)
+        return payload
+
+    with lock:
+        first = build()
+        _match_live(folder, first, brief)
+        second = build()
+        if second["hash"] != first["hash"] or second["source_hash"] != first["source_hash"]:
+            raise GenerationBlocked(
+                "review→submit 窗口内磁盘上的稿件变了",
+                {"ok": False, "status": "failed", "owner": "feed", "reason": "提交前持久内容变了"},
+            )
+        state = load_reviews(folder)
+        state["submit_lease"] = {
+            "kind": "video",
+            "shot_id": shot_id,
+            "has_tail": bool(has_tail),
+            "user_image_ids": [str(item) for item in (user_image_ids or [])],
+            "template": template or "",
+            "soundtrack": soundtrack or "off",
+            "brief": brief or "",
+            "source_hash": first["source_hash"],
+            "payload_hash": first["hash"],
+        }
+        save_reviews(folder, state)
+        return first["text"]
+
+
+def authorize_image_submit(folder, asset_id, reference, template=None, brief="", project_id=""):
+    """Read the asset prompt from disk twice before an image submit."""
+    from end.render_loop import image_prompt, project_lock
+
+    lock = project_lock(project_id or str(folder))
+
+    def build():
+        spec = _spec(folder, None)
+        assets, _shots = _assets_shots(spec)
+        asset = next((item for item in assets if item.get("id") == asset_id), None)
+        if asset is None:
+            raise GenerationBlocked("磁盘上没有资产 %s" % asset_id, {"ok": False, "owner": "asset", "reason": "没有这个资产"})
+        text = image_prompt(asset, reference=bool(reference), template=template)
+        payload = _payload(text, _binding(asset_id, "image", False, [], "", bool(reference)))
+        payload["source_hash"] = disk_source_hash(folder, brief)
+        return payload
+
+    with lock:
+        first = build()
+        _match_live(folder, first, brief)
+        second = build()
+        if second["hash"] != first["hash"] or second["source_hash"] != first["source_hash"]:
+            raise GenerationBlocked(
+                "review→submit 窗口内磁盘上的稿件变了",
+                {"ok": False, "status": "failed", "owner": "asset", "reason": "提交前持久内容变了"},
+            )
+        return first["text"]
+
+
+def lease_still_current(folder):
+    """Re-read disk after a download. False means the bytes must not become the current result."""
+    lease = (load_reviews(folder) or {}).get("submit_lease") or {}
+    if not lease:
+        return True
+    if disk_source_hash(folder, lease.get("brief") or "") != lease.get("source_hash"):
+        return False
+    if lease.get("kind") != "video":
+        return True
+    spec = _spec(folder, None)
+    _assets, shots = _assets_shots(spec)
+    shot_id = lease.get("shot_id")
+    index = next((i for i, shot in enumerate(shots) if shot.get("id") == shot_id), None)
+    if index is None:
+        return False
+    text = planned_video_text(
+        spec,
+        shots[index],
+        index,
+        template=lease.get("template") or None,
+        soundtrack=lease.get("soundtrack") or "off",
+        user_image_ids=lease.get("user_image_ids") or (),
+        has_tail=bool(lease.get("has_tail")),
+    )
+    from end.render_loop import choose_video_mode
+
+    mode = choose_video_mode(
+        shots[index],
+        user_image_ids=lease.get("user_image_ids") or (),
+        continues=bool(lease.get("has_tail")),
+    )
+    tail_from = shots[index - 1]["id"] if lease.get("has_tail") and index else ""
+    payload = _payload(text, _binding(shot_id, mode, lease.get("has_tail"), shots[index].get("images") or [], tail_from))
+    return payload["hash"] == lease.get("payload_hash")
+
+
+def quarantine_stale_download(folder, path):
+    """Move a download aside when the disk changed before it could be accepted."""
+    from end.history_keep import archive_file
+
+    archive_file(folder, path, "stale-download")
+    try:
+        if path is not None and Path(path).is_file():
+            Path(path).unlink()
+    except OSError:
+        pass
 
 
 def assert_generation_prompt(folder, text):

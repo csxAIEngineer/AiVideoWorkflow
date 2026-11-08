@@ -15,11 +15,17 @@ from tests.test_director_pipeline import _base_locks, make_project
 
 
 def setUpModule():
+    from tests.offline_guard import install
+
+    install()
     set_reviewer(lambda _messages: '{"issues":[]}')
 
 
 def tearDownModule():
+    from tests.offline_guard import uninstall
+
     set_reviewer(None)
+    uninstall()
 
 
 def _gate(stage, passed, repairs=0, retry_write=False, options=None, check="", auto_retries=0, machine_repairs=0, question_id=""):

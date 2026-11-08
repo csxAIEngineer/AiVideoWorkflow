@@ -14,11 +14,17 @@ from end.trace import begin_trace, finish_trace, restore_trace
 
 
 def setUpModule():
+    from tests.offline_guard import install
+
+    install()
     set_reviewer(lambda _messages: '{"issues":[]}')
 
 
 def tearDownModule():
+    from tests.offline_guard import uninstall
+
     set_reviewer(None)
+    uninstall()
 
 
 class ScriptStepSourceTest(unittest.TestCase):

@@ -43,6 +43,18 @@ from end.render_loop import (
 from end.workflow_from_spec import collect_steps, task_plan
 
 
+def setUpModule():
+    from tests.offline_guard import install
+
+    install()
+
+
+def tearDownModule():
+    from tests.offline_guard import uninstall
+
+    uninstall()
+
+
 def _prime_review(work, spec, brief="", template=None, soundtrack="off"):
     """Let render cases pass the semantic gate with a fake that reports no issues.
 

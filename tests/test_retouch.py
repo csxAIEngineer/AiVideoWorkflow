@@ -83,10 +83,16 @@ class RetouchTest(unittest.TestCase):
         db._CONN = None
         db.DATA.mkdir()
         self.ids = []
+        from tests.offline_guard import install
+
+        install()
         set_reviewer(lambda _messages: '{"issues":[]}')
 
     def tearDown(self):
+        from tests.offline_guard import uninstall
+
         set_reviewer(None)
+        uninstall()
         for project_id in self.ids:
             _PIPELINE_HANDOFF.pop(project_id, None)
         conn = db._CONN

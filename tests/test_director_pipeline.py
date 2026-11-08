@@ -12,11 +12,17 @@ from end.script_review import set_reviewer
 from end.delivery import list_deliverables, publish
 from end.gates import check_feed, check_prompt, feed_uses_h3
 def setUpModule():
+    from tests.offline_guard import install
+
+    install()
     set_reviewer(lambda _messages: '{"issues":[]}')
 
 
 def tearDownModule():
+    from tests.offline_guard import uninstall
+
     set_reviewer(None)
+    uninstall()
 
 
 from end.locks import (

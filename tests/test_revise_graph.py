@@ -3,6 +3,16 @@
 import json
 import unittest
 
+from tests.offline_guard import install, uninstall
+
+
+def setUpModule():
+    install()
+
+
+def tearDownModule():
+    uninstall()
+
 from AI.qwen_api.revise_graph import block_system, build_block_graph, describe_block_graph, run_block
 
 

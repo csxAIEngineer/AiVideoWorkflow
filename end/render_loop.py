@@ -241,9 +241,13 @@ def _output_file(work_dir, relative):
     return Path(work_dir) / "outputs" / path
 
 
-def _unlink_render_output(path):
+def _unlink_render_output(path, folder=None, reason="retire-output"):
     if path is None:
         return
+    if folder is not None:
+        from end.history_keep import archive_file
+
+        archive_file(folder, path, reason)
     for candidate in (path, Path(str(path) + ".part")):
         try:
             if candidate.is_file():
@@ -264,10 +268,10 @@ def invalidate_steps(work_dir, project_id, steps):
             step = dict(stored.get(step_id) or blank_step(kind))
             previous = _output_file(folder, step.get("output_file"))
             canonical, _relative = output_paths(folder, step_id, kind)
-            _unlink_render_output(previous)
-            _unlink_render_output(canonical)
+            _unlink_render_output(previous, folder, "invalidate-%s" % step_id)
+            _unlink_render_output(canonical, folder, "invalidate-%s" % step_id)
             if kind == "subtitles":
-                _unlink_render_output(folder / "outputs" / "字幕.ass")
+                _unlink_render_output(folder / "outputs" / "字幕.ass", folder, "invalidate-subtitles")
             step["kind"] = kind
             step["status"] = "pending"
             step["remote_task_id"] = ""
@@ -1599,6 +1603,14 @@ class RenderContext(object):
                 except (OSError, RuntimeError) as error:
                     self.on_poll_error(step_id, kind, label, error)
                     continue
+                from end.script_review import lease_still_current, quarantine_stale_download
+
+                if not lease_still_current(self.work_dir):
+                    quarantine_stale_download(self.work_dir, path)
+                    raise GenerationBlocked(
+                        "下载完成前磁盘上的稿件变了，这份文件已归档，不会当成当前结果",
+                        {"ok": False, "status": "failed", "owner": "feed", "reason": "下载完成前持久内容变了"},
+                    )
                 self.mark_done(step_id, kind, relative, public_url, generated=True)
                 self.done_steps += 1
                 self.emit(
@@ -2339,9 +2351,9 @@ def run_local_pipeline(
         register_thread(project_id)
     from end.script_review import (
         GenerationBlocked,
-        assert_generation_prompt,
+        authorize_image_submit,
+        authorize_video_submit,
         delivery_decision,
-        planned_video_text,
         review_delivery,
         user_image_ids,
     )
@@ -2393,8 +2405,14 @@ def run_local_pipeline(
             if ctx.aspect in FRAME_SIZES:
                 width, height = FRAME_SIZES[ctx.aspect]
                 size = "%d*%d" % (width, height)
-            text = image_prompt(current, reference=bool(urls), template=ctx.template)
-            assert_generation_prompt(ctx.work_dir, text)
+            text = authorize_image_submit(
+                ctx.work_dir,
+                current["id"],
+                bool(urls),
+                template=ctx.template,
+                brief=ctx.brief,
+                project_id=ctx.project_id,
+            )
             return icreat.submit_image(
                 text,
                 image=image,
@@ -2494,15 +2512,16 @@ def run_local_pipeline(
                 return url, info.get("path")
 
             _aspect, media = assemble_shot_media(current, mode, url_for, tail_url)
-            text = planned_video_text(
-                fresh or spec,
-                current,
-                prompt_index,
+            text = authorize_video_submit(
+                ctx.work_dir,
+                shot_id,
+                bool(tail_url),
+                user_image_ids=user_ids,
                 template=ctx.template,
                 soundtrack=ctx.soundtrack,
-                user_image_ids=user_ids,
+                brief=ctx.brief,
+                project_id=ctx.project_id,
             )
-            assert_generation_prompt(ctx.work_dir, text)
             _remember_video_mode(ctx, shot_id, mode)
             # Only text-to-video accepts aspect_ratio. Image and reference follow the input image.
             if mode == "text" and not ctx.aspect:

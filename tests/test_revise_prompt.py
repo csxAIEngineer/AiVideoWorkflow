@@ -3,6 +3,16 @@
 import json
 import tempfile
 import unittest
+
+from tests.offline_guard import install, uninstall
+
+
+def setUpModule():
+    install()
+
+
+def tearDownModule():
+    uninstall()
 from pathlib import Path
 from unittest.mock import patch
 

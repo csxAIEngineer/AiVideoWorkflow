@@ -3,6 +3,16 @@
 import json
 import unittest
 
+from tests.offline_guard import install, uninstall
+
+
+def setUpModule():
+    install()
+
+
+def tearDownModule():
+    uninstall()
+
 from AI.qwen_api.repair_graph import build_repair_graph, describe_repair_graph, repair_job_nodes, run_repair
 from AI.skills.registry import suite_task_for
 from end.repair_units import apply_repairs, repair_brief, units_for
