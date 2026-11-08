@@ -21,6 +21,8 @@ class RepairState(TypedDict, total=False):
     candidate: str
     added: list
     review_notes: dict
+    review_raw: str
+    locate_raw: str
     status: str
     reason: str
     calls: list
@@ -77,6 +79,7 @@ def build_script_repair_graph(complete):
         data = _object(raw)
         calls = list(state.get("calls") or [])
         calls.append("locate")
+        locate_raw = raw if isinstance(raw, str) else ""
         ids = {str(item.get("id") or "") for item in state.get("issues") or []}
         locations = []
         if isinstance(data, dict):
@@ -92,9 +95,10 @@ def build_script_repair_graph(complete):
                 "status": "blocked",
                 "reason": "没有有效定位，已停止修订",
                 "locations": [],
+                "locate_raw": locate_raw[:4000],
                 "calls": calls,
             }
-        return {"locations": locations, "calls": calls}
+        return {"locations": locations, "locate_raw": locate_raw[:4000], "calls": calls}
 
     def plan(state):
         if state.get("status") in ("blocked", "error"):
@@ -154,7 +158,7 @@ def build_script_repair_graph(complete):
         if state.get("status") in ("blocked", "error"):
             return {}
         raw = complete("revise", [
-            {"role": "system", "content": "按方案改一版候选剧本。可以改定位到的关联段落，不要只改半句。没有依据的情节不要加。不确定的限制不要拿来改故事。偏好不要驱动情节。不要写机检、审稿、阻断这类说明。回复 JSON：{\"script\":\"\",\"added\":[{\"issue_id\":\"\",\"text\":\"\",\"basis\":\"\"}]}"},
+            {"role": "system", "content": "按方案改一版候选剧本。动作可以跨句或合句改写，不要靠标点判断边界。每一处动作细化都要申报：before 是原稿里的原句片段，after 是候选里的对应片段，declaration 必须整段摘自该问题的 revision。没有这条绑定就不要改情节。不要写机检、审稿、阻断这类说明。回复 JSON：{\"script\":\"\",\"added\":[{\"issue_id\":\"\",\"before\":\"\",\"after\":\"\",\"declaration\":\"\",\"basis\":\"\"}]}"},
             {"role": "user", "content": json.dumps({
                 "requirements": state.get("requirements") or "",
                 "script": state.get("script") or "",
@@ -172,27 +176,35 @@ def build_script_repair_graph(complete):
                     "issue_id": str(item.get("issue_id") or ""),
                     "text": str(item.get("text") or ""),
                     "basis": str(item.get("basis") or ""),
+                    "before": str(item.get("before") or ""),
+                    "after": str(item.get("after") or ""),
+                    "declaration": str(item.get("declaration") or ""),
                 })
         return {"candidate": str(data.get("script") or ""), "added": added, "calls": calls}
 
     def review(state):
         if state.get("status") in ("blocked", "error"):
             return {}
+        plan = state.get("revision_plan") or {}
         raw = complete("review", [
-            {"role": "system", "content": "独立审稿。不要重写，不要交替换稿。核对主旨没有偏、每个原问题是否有修改后证据、整稿有没有新的因果动机连续性问题、有没有无依据的新机制。回复 JSON：{\"passed\":false,\"theme_ok\":false,\"resolutions\":[{\"id\":\"\",\"resolved\":false,\"evidence\":\"\"}],\"unsupported\":[],\"new_contradictions\":[]}"},
+            {"role": "system", "content": "独立审稿。不要重写，不要交替换稿。逐项对照 added 的 after 是否兑现该条 declaration、方案 direction 和 sourced 约束。uncertain 是未确定约束，不能当成依据，也不能拿来改目标。方向里的否定也要核对。after 违背否定、借修复改变目标或加入新机制时，写入 new_contradictions 或 unsupported。结构上对得上不等于语义已经许可。回复 JSON：{\"passed\":false,\"theme_ok\":false,\"resolutions\":[{\"id\":\"\",\"resolved\":false,\"evidence\":\"\"}],\"unsupported\":[],\"new_contradictions\":[]}"},
             {"role": "user", "content": json.dumps({
                 "requirements": state.get("requirements") or "",
                 "original": state.get("script") or "",
                 "candidate": state.get("candidate") or "",
                 "issues": state.get("issues") or [],
                 "added": state.get("added") or [],
+                "revision_plan": plan,
+                "sourced": plan.get("sourced") or [],
+                "uncertain": plan.get("uncertain") or [],
             }, ensure_ascii=False)},
         ])
         data = _object(raw) or {}
         calls = list(state.get("calls") or [])
         calls.append("review")
+        review_raw = raw if isinstance(raw, str) else ""
         if any(key in data for key in ("script", "rewrite", "replacement")):
-            return {"status": "blocked", "reason": "审稿不能交替换稿", "review_notes": {}, "calls": calls}
+            return {"status": "blocked", "reason": "审稿不能交替换稿", "review_notes": {}, "review_raw": review_raw[:4000], "calls": calls}
         resolutions = data.get("resolutions") if isinstance(data.get("resolutions"), list) else []
         unsupported = [str(item) for item in (data.get("unsupported") or []) if str(item).strip()]
         contradictions = data.get("new_contradictions") if isinstance(data.get("new_contradictions"), list) else []
@@ -203,7 +215,7 @@ def build_script_repair_graph(complete):
             "unsupported": unsupported,
             "new_contradictions": contradictions,
         }
-        return {"review_notes": review, "calls": calls, "status": "reviewed"}
+        return {"review_notes": review, "review_raw": review_raw[:4000], "calls": calls, "status": "reviewed"}
 
     graph = StateGraph(RepairState)
     graph.add_node("locate", locate)

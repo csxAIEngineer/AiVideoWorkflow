@@ -80,9 +80,96 @@ def _new_sentences(original, candidate):
     return found
 
 
+def _compact(text):
+    return re.sub(r"\s+", "", _META.sub("", str(text or "")))
+
+
+def _strip_label_edit(text):
+    """Drop editorial suffixes such as 逻辑修正. Not a story-word whitelist."""
+    return re.sub(r"(?<=逻辑)修正", "", _compact(text))
+
+
 def _basis_ok(basis, requirements, script):
     text = str(basis or "").strip()
     return bool(text) and (text in str(requirements or "") or text in str(script or ""))
+
+
+def _sentences_of(text):
+    return [item.strip() for item in _SENTENCE.findall(str(text or "")) if item.strip()]
+
+
+def _edge(left, right, tail=False):
+    limit = min(len(left), len(right))
+    size = 0
+    while size < limit:
+        a = left[-(size + 1)] if tail else left[size]
+        b = right[-(size + 1)] if tail else right[size]
+        if a != b:
+            break
+        size += 1
+    return size
+
+
+def _substitution(sentence, original):
+    """A middle replacement of an existing sentence, not a new trailing clause."""
+    best = None
+    for origin in _sentences_of(original):
+        prefix = _edge(sentence, origin, tail=False)
+        suffix = _edge(sentence, origin, tail=True)
+        if prefix >= 2 and suffix >= 4 and prefix + suffix < len(sentence):
+            score = prefix + suffix
+            if best is None or score > best[0]:
+                best = (score, origin)
+    return best[1] if best else ""
+
+
+def _direction_for(issue, plan):
+    if issue.get("severity") not in ("block", "suspect"):
+        return ""
+    for change in (plan or {}).get("changes") or []:
+        if not isinstance(change, dict):
+            continue
+        if str(change.get("issue_id") or "") != issue.get("id"):
+            continue
+        direction = str(change.get("direction") or "").strip()
+        if direction and direction != "uncertain":
+            return direction
+    return ""
+
+
+def _declared_refinement(sentence, original, issues, plan):
+    origin = _substitution(sentence, original)
+    if not origin:
+        return False
+    for issue in issues or []:
+        evidence = str(issue.get("evidence") or "")
+        if len(evidence) < 8 or evidence not in origin and evidence[:8] not in origin:
+            continue
+        if _direction_for(issue, plan) or (issue.get("severity") in ("block", "suspect") and str(issue.get("revision") or "").strip()):
+            if _direction_for(issue, plan) or str(issue.get("revision") or "").strip():
+                if _direction_for(issue, plan):
+                    return True
+                if str(issue.get("revision") or "").strip() and issue.get("severity") in ("block", "suspect"):
+                    return True
+    return False
+
+
+def _stale_sound_lines(original, candidate, issues):
+    """An evidence sentence changed, but its adjacent sound cue was copied unchanged."""
+    rewritten = False
+    for issue in issues or []:
+        evidence = str(issue.get("evidence") or "")
+        if len(evidence) >= 8 and evidence in str(original or "") and evidence not in str(candidate or ""):
+            rewritten = True
+            break
+    if not rewritten:
+        return []
+    stale = []
+    for line in str(original or "").splitlines():
+        text = line.strip()
+        if text.startswith("音效") and text in str(candidate or ""):
+            stale.append(text)
+    return stale
 
 
 def budget_identity(script, requirements, issues):
@@ -120,9 +207,18 @@ def candidate_question(row):
     """Chat copy for a saved candidate. Keeping the original does not reset the count."""
     row = row or {}
     status = row.get("status") or "blocked"
-    reason = str(row.get("reason") or "")
-    if row.get("needs_human"):
+    reason = str(row.get("reason") or "").strip()
+    validation = row.get("validation") if isinstance(row.get("validation"), dict) else {}
+    source = str(validation.get("source") or "")
+    stage = str(validation.get("stage") or "")
+    if source == "missing_requirements" or reason.startswith("缺少创作要求"):
         return "缺少创作要求，不能判断主旨，需要人工确认。正式剧本没有改。", ["保持原稿"]
+    if row.get("needs_human") or source in _HUMAN:
+        detail = reason or "这处改动无法确定"
+        if not detail.endswith("。"):
+            detail += "。"
+        reply = "需要人工确认。阶段 %s，来源 %s。%s正式剧本没有改。" % (stage or "judge", source or "needs_human", detail)
+        return reply, ["保持原稿"]
     if status == "passed":
         reply = "修订候选已通过独立审稿。正式剧本还没改，确认后才会换成这一版。\n" + str(row.get("candidate") or "")
         return reply, ["采用这版剧本", "保持原稿"]
@@ -133,28 +229,138 @@ def candidate_question(row):
     return reply, ["再修一次", "保持原稿"]
 
 
-def judge_candidate(requirements, original, candidate, issues, added, review):
+_VAGUE_DIRECTION = {"改一下", "修改", "优化", "调整", "改一改", "处理一下"}
+_HUMAN = (
+    "vague_direction",
+    "missing_declaration",
+    "unbound_declaration",
+    "unbound_direction",
+    "unanchored",
+    "unbound_issue",
+    "unclassified",
+)
+
+
+def _verdict(status, reason, source, evidence):
+    return status, reason, {"stage": "passed" if status == "passed" else "judge", "source": source, "evidence": evidence}
+
+
+def _direction_cites(direction, declaration):
+    """The plan must quote the declaration. A shared two-character slice is not a citation."""
+    direction = str(direction or "").strip().strip("。！")
+    if direction in _VAGUE_DIRECTION or len(direction) < 8:
+        return "vague_direction", direction
+    if declaration not in direction:
+        return "unbound_direction", direction
+    return "", direction
+
+
+def _bind_delta(delta, original, candidate, issues, plan):
+    issue_id = str(delta.get("issue_id") or "")
+    issue = next((item for item in issues or [] if item.get("id") == issue_id), None)
+    if issue is None or issue.get("severity") not in ("block", "suspect"):
+        return "unbound_issue", issue_id, ""
+    declaration = str(delta.get("declaration") or "").strip()
+    if not declaration:
+        return "missing_declaration", "声明是空的，不能把它当成修订建议里的原文", ""
+    if len(declaration) < 4 or declaration not in str(issue.get("revision") or ""):
+        return "unbound_declaration", declaration, ""
+    source, evidence = _direction_cites(_direction_for(issue, plan), declaration)
+    if source:
+        return source, evidence, ""
+    before = str(delta.get("before") or "")
+    after = str(delta.get("after") or "")
+    if not before or before not in str(original or "") or not after or after not in str(candidate or ""):
+        return "unanchored", before or after, ""
+    return "", declaration, after
+
+
+def _cover_shared(text, source, covered):
+    source = str(source or "")
+    index = 0
+    while index < len(text):
+        length = 0
+        while index + length < len(text) and text[index:index + length + 1] in source:
+            length += 1
+        if length >= 2:
+            for cursor in range(index, index + length):
+                covered[cursor] = True
+            index += length
+        else:
+            index += 1
+
+
+def _cover_literal(text, span, covered):
+    span = str(span or "")
+    if not span:
+        return
+    start = 0
+    while True:
+        at = text.find(span, start)
+        if at < 0:
+            return
+        for cursor in range(at, at + len(span)):
+            covered[cursor] = True
+        start = at + len(span)
+
+
+def _uncovered_text(candidate, original, requirements, spans):
+    covered = [False] * len(candidate)
+    _cover_shared(candidate, original, covered)
+    _cover_shared(candidate, requirements, covered)
+    for span in spans:
+        _cover_literal(candidate, span, covered)
+    for match in _META.finditer(candidate):
+        for cursor in range(match.start(), match.end()):
+            covered[cursor] = True
+    for match in re.finditer(r"逻辑修正", candidate):
+        for cursor in range(match.start() + 2, match.end()):
+            covered[cursor] = True
+    return "".join(
+        char for index, char in enumerate(candidate)
+        if not covered[index] and re.match(r"[\u4e00-\u9fffA-Za-z0-9]", char)
+    )
+
+
+def judge_candidate(requirements, original, candidate, issues, added, review, plan=None):
     """Deterministic gate after the independent review call. It does not rewrite."""
     review = review or {}
+    plan = plan or {}
     if _META.search(str(candidate or "")):
-        return "blocked", "候选正文带了审稿或机检说明"
+        return _verdict("blocked", "候选正文带了审稿或机检说明", "meta", _META.search(str(candidate or "")).group(0))
     if not str(candidate or "").strip():
-        return "blocked", "候选是空的"
+        return _verdict("blocked", "候选是空的", "empty", "")
     preference_ids = {item["id"] for item in issues if item.get("severity") == "preference"}
-    declared = []
+    accepted = []
     for beat in added or []:
         if not isinstance(beat, dict):
             continue
-        if beat.get("issue_id") in preference_ids:
-            return "blocked", "偏好不能改情节"
+        if beat.get("issue_id") in preference_ids and (beat.get("before") or beat.get("after") or beat.get("text")):
+            return _verdict("blocked", "偏好不能改情节", "preference", str(beat.get("text") or beat.get("after") or ""))
+        if beat.get("before") or beat.get("after") or beat.get("declaration"):
+            source, evidence, after = _bind_delta(beat, original, candidate, issues, plan)
+            if source:
+                return _verdict(
+                    "blocked",
+                    "无法确定这处改动是动作细化还是情节变更，需要人工确认：%s" % evidence,
+                    source,
+                    evidence,
+                )
+            accepted.append(after)
+            continue
         text = str(beat.get("text") or "").strip()
-        if text and not _basis_ok(beat.get("basis"), requirements, original):
-            return "blocked", "新增情节没有原文依据：%s" % text
-        if text:
-            declared.append(text)
-    for sentence in _new_sentences(original, candidate):
-        if not any(sentence in item or item in sentence for item in declared):
-            return "blocked", "有未申报的新增情节"
+        if text and _basis_ok(beat.get("basis"), requirements, original):
+            accepted.append(text)
+        elif text:
+            return _verdict("blocked", "新增情节没有原文依据：%s" % text, "added_basis", text)
+    uncovered = _uncovered_text(candidate, original, requirements, accepted)
+    if uncovered:
+        return _verdict(
+            "blocked",
+            "无法确定这处改动是动作细化还是情节变更，需要人工确认：%s" % uncovered[:80],
+            "unclassified",
+            uncovered[:80],
+        )
     needed = [item for item in issues if item.get("severity") in ("block", "suspect")]
     resolutions = {}
     for item in review.get("resolutions") or []:
@@ -167,14 +373,16 @@ def judge_candidate(requirements, original, candidate, issues, added, review):
         if not found.get("resolved") or not evidence or evidence not in str(candidate or ""):
             missing.append(item["id"])
     if missing:
-        return "blocked", "这些问题没有修改后证据：%s" % "、".join(missing)
+        return _verdict("blocked", "这些问题没有修改后证据：%s" % "、".join(missing), "missing_evidence", "、".join(missing))
     if review.get("unsupported"):
-        return "blocked", "审稿指出无依据的新机制"
+        return _verdict("blocked", "审稿指出无依据的新机制", "review_unsupported", "、".join(review.get("unsupported") or []))
     if review.get("new_contradictions"):
-        return "blocked", "审稿指出新的因果、动机或连续性问题"
+        shown = review.get("new_contradictions") or []
+        return _verdict("blocked", "审稿指出新的因果、动机或连续性问题", "review_contradiction", json.dumps(shown, ensure_ascii=False))
     if not review.get("theme_ok") or not review.get("passed"):
-        return "blocked", "独立审稿没有通过"
-    return "passed", ""
+        return _verdict("blocked", "独立审稿没有通过", "review_not_passed", "")
+    evidence = accepted[0] if accepted else ""
+    return _verdict("passed", "", "refinement" if accepted else "review", evidence)
 
 
 def run_script_repair(folder, requirements, complete, model=""):
@@ -195,6 +403,7 @@ def run_script_repair(folder, requirements, complete, model=""):
             "needs_human": True,
             "theme_checked": False,
             "reason": "缺少创作要求，不能判断主旨，需要人工确认",
+            "validation": {"stage": "requirements", "source": "missing_requirements", "evidence": ""},
             "candidate": "",
             "source_hash": identity["source_hash"],
             "requirements_hash": identity["requirements_hash"],
@@ -233,18 +442,22 @@ def run_script_repair(folder, requirements, complete, model=""):
     candidate = str(state.get("candidate") or "")
     status = state.get("status") or ""
     reason = str(state.get("reason") or "")
+    validation = {"stage": "graph", "source": status or "error", "evidence": reason}
     if status == "error":
         judged, why = "error", reason or "修订没有完成"
     elif status == "blocked" and not state.get("review_notes"):
         judged, why = "blocked", reason or "修订停住了"
+        calls = list(state.get("calls") or [])
+        validation = {"stage": calls[-1] if calls else "graph", "source": "graph", "evidence": why}
     else:
-        judged, why = judge_candidate(
+        judged, why, validation = judge_candidate(
             requirements,
             before,
             candidate,
             issues,
             state.get("added") or [],
             state.get("review_notes") or {},
+            plan=state.get("revision_plan") or {},
         )
     attempts = attempts_used(folder, requirements) + 1
     row = _save_candidate(folder, {
@@ -257,6 +470,12 @@ def run_script_repair(folder, requirements, complete, model=""):
         "issues_hash": content_hash(json.dumps(issues, ensure_ascii=False, sort_keys=True)),
         "issues": issues,
         "plan": state.get("revision_plan") or {},
+        "locations": state.get("locations") or [],
+        "review": state.get("review_notes") or {},
+        "review_raw": str(state.get("review_raw") or "")[:4000],
+        "locate_raw": str(state.get("locate_raw") or "")[:4000],
+        "validation": validation,
+        "needs_human": validation.get("source") in _HUMAN,
         "calls": list(state.get("calls") or []),
         "model": str(state.get("model") or model or ""),
         "attempts": attempts,
