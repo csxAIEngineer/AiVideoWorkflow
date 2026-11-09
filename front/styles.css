@@ -1413,6 +1413,49 @@ a.download {
   overflow: hidden;
 }
 
+.machine-reasons {
+  margin-top: 6px;
+}
+
+.machine-reasons-title,
+.machine-reasons-empty {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.machine-reasons-list {
+  margin: 4px 0 0;
+  padding-left: 1.1em;
+}
+
+.machine-reasons-list li {
+  margin: 2px 0;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.machine-reasons-list li:first-child {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.machine-reasons-more {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.machine-reasons-full {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
 .chat-progress .job-log {
   max-height: 64px;
   overflow: auto;

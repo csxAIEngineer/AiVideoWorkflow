@@ -494,6 +494,80 @@ function imageGallery(project) {
   return block;
 }
 
+function machineCheckNotice(project) {
+  if (!project || project.status !== "gate") return null;
+  const progress = project.progress || {};
+  const pipeline = progress.pipeline || {};
+  const scope = String(project.semantic_scope || pipeline.semantic_scope || "");
+  if (scope === "script" || scope === "delivery") return null;
+  const hold = String(project.generation_hold || pipeline.generation_hold || "");
+  const phase = String(progress.phase || "");
+  const check = String(pipeline.check || "");
+  const current = String(pipeline.current || "");
+  const technical = hold === "technical" || check === "machine" || phase === "gate_machine";
+  const stageGate = pipeline.passed === false && ["recon", "script", "asset", "storyboard", "feed"].indexOf(current) >= 0;
+  if (!technical && !stageGate) return null;
+  const reply = String((progress.question || project.question || {}).reply || "");
+  const headline = String(progress.message || reply.split("\n")[0] || "").trim();
+  if (!technical) {
+    const looks = headline.indexOf("机检") >= 0 || reply.indexOf("机检没过") >= 0 || reply.indexOf("根据建议修改会按") >= 0;
+    if (!looks) return null;
+  }
+  const report = String(pipeline.report || "").trim();
+  const tail = reply.split("\n").slice(1).join("\n").trim();
+  const body = report || tail;
+  const items = body.split(/\n+/).map((line) => line.trim()).filter((line) => line && line !== headline);
+  return { items: items };
+}
+
+function appendMachineReasons(panel, project) {
+  const notice = machineCheckNotice(project);
+  if (!notice) return;
+  const box = document.createElement("div");
+  box.className = "machine-reasons";
+  if (!notice.items.length) {
+    const empty = document.createElement("p");
+    empty.className = "machine-reasons-empty";
+    empty.textContent = "未返回具体检查原因";
+    box.append(empty);
+    panel.append(box);
+    return;
+  }
+  const title = document.createElement("p");
+  title.className = "machine-reasons-title";
+  title.textContent = "根据建议修改会按这些改";
+  const list = document.createElement("ul");
+  list.className = "machine-reasons-list";
+  notice.items.slice(0, 4).forEach((line) => {
+    const row = document.createElement("li");
+    row.textContent = line;
+    list.append(row);
+  });
+  box.append(title, list);
+  const hidden = notice.items.slice(4);
+  const primary = notice.items[0] || "";
+  if (hidden.length || primary.length > 180) {
+    const more = document.createElement("details");
+    more.className = "machine-reasons-more";
+    const summary = document.createElement("summary");
+    summary.textContent = hidden.length ? ("其余 " + hidden.length + " 项") : "展开全部原因";
+    more.append(summary);
+    if (primary.length > 180) {
+      const full = document.createElement("p");
+      full.className = "machine-reasons-full";
+      full.textContent = primary;
+      more.append(full);
+    }
+    hidden.forEach((line) => {
+      const row = document.createElement("p");
+      row.textContent = line;
+      more.append(row);
+    });
+    box.append(more);
+  }
+  panel.append(box);
+}
+
 function progressPanel(project) {
   const panel = document.createElement("section");
   panel.className = "job";
@@ -547,6 +621,7 @@ function progressPanel(project) {
   message.className = "job-message" + (running ? " auto-run" : "");
   message.textContent = running ? running.text : (progress.message || project.stage || (project.status === "error" ? "未完成" : "处理中"));
   panel.append(message);
+  if (!running) appendMachineReasons(panel, project);
   const calls = Array.isArray(progress.calls) ? progress.calls : [];
   if (calls.length) {
     const list = document.createElement("ul");
