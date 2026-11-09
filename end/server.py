@@ -992,6 +992,13 @@ def _rereview_semantic(project, pipeline):
         if decision["ok"]:
             return _start_explicit_render(project)
         return _hold_delivery(project, decision)
+    from end.script_review import content_hash, script_is_settled, story_context
+    from end.script_repair import official_script
+
+    folder = project_dir(project["id"])
+    official = official_script(folder)
+    if official and script_is_settled(folder, content_hash(official), content_hash(story_context(folder, project.get("brief") or ""))):
+        return _repeat_gate(project, "正文和原要求没变，不再审这一稿。")
     return _present_script_gate(project, force=True)
 
 
@@ -1346,11 +1353,21 @@ def _rule_repair(project, folder, locks, pipeline):
 
 
 def _follow_auto_gate(project, folder, locks, outcome):
-    """Chain the next write for automatic stages. None leaves the human gate in place."""
+    """Chain the next write for automatic stages. None leaves the human gate in place.
+
+    A human acceptance queues one stage. That stage may still use its existing
+    repair budget, then stops on its own gate. It does not start the next stage.
+    """
     action = auto_gate_action(outcome)
+    pipeline = dict(((outcome.get("progress") or {}).get("pipeline")) or {})
+    if pipeline.get("human_release") and action in ("stop", "advance"):
+        pipeline.pop("human_release", None)
+        progress = dict(outcome.get("progress") or {})
+        progress["pipeline"] = pipeline
+        outcome["progress"] = progress
+        return None
     if action == "stop":
         return None
-    pipeline = dict(((outcome.get("progress") or {}).get("pipeline")) or {})
     current = str(pipeline.get("current") or "")
     if action == "retry_write":
         pipeline["auto_retries"] = int(pipeline.get("auto_retries") or 0) + 1
@@ -1839,8 +1856,10 @@ def run_project(project_id, debug_llm=False):
 
 
 def _run_project(project_id, debug_llm=False):
-    project = read_project(project_id)
-    if project and (project.get("progress") or {}).get("lock_machine"):
+    with project_lock(project_id):
+        project = read_project(project_id)
+        gated = bool(project and (project.get("progress") or {}).get("lock_machine"))
+    if gated:
         run_project_gated(project_id, debug_llm=debug_llm)
         return
     register_thread(project_id)
@@ -2643,6 +2662,22 @@ def resume_agent_tasks():
                 if submit_agent_task(Task("script_repair", project["id"], {"model": project.get("model") or ""})):
                     started += 1
                 continue
+            if pipeline.get("human_release"):
+                with project_lock(project["id"]):
+                    fresh = read_project(project["id"]) or project
+                    fresh_pipeline = (fresh.get("progress") or {}).get("pipeline") or {}
+                    if fresh.get("status") != "writing" or fresh_pipeline.get("action") != "write":
+                        continue
+                    from end.script_accept import confirmed_continue
+                    from end.script_repair import official_script
+                    from end.script_review import content_hash
+
+                    folder = project_dir(fresh["id"])
+                    if not confirmed_continue(folder, content_hash(official_script(folder))):
+                        continue
+                    if submit_agent_task(Task("write", fresh["id"], {"debug_llm": project_debug_llm(fresh)})):
+                        started += 1
+                continue
             if submit_agent_task(
                 Task("write", project["id"], {"debug_llm": project_debug_llm(project)})
             ):
@@ -3076,6 +3111,73 @@ def rpc_script_opinion_retry(params):
     return _revision_call(lambda: retry_opinion(project, params.get("base_token")))
 
 
+def _continue_accepted_script(project):
+    """Queue the next prompt stage. Does not render and does not mark the review passed."""
+    from end.script_revision import RevisionError
+    from end.stage_runner import accept_pipeline
+
+    project = read_project(project["id"]) or project
+    folder, locks = _lock_inputs(project)
+    progress = project.get("progress") or {}
+    pipeline = dict(progress.get("pipeline") or {})
+    semantic = pipeline.get("semantic_status")
+    pipeline["human_release"] = True
+    pipeline["passed"] = True
+    pipeline["current"] = "script"
+    pipeline["action"] = "wait"
+    pipeline["retry_write"] = False
+    if semantic:
+        pipeline["semantic_status"] = semantic
+    pipeline, _action = accept_pipeline(pipeline, locks, folder=folder, brief=project.get("brief") or "")
+    if pipeline.get("action") == "wait" and pipeline.get("current") == "script":
+        raise RevisionError(409, "这一稿还不能进入下一段", "continue_not_queued", True, True, True, False)
+    stage = "finish" if pipeline.get("action") == "finish" else str(pipeline.get("current") or "")
+    label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
+    remember(
+        project,
+        "writing",
+        label,
+        progress={
+            "percent": int(progress.get("percent") or 48),
+            "phase": "writing",
+            "message": label,
+            "lock_machine": True,
+            "pipeline": pipeline,
+            "question": None,
+        },
+    )
+    queued = submit_agent_task(Task("write", project["id"], {"debug_llm": bool(progress.get("debug_llm"))}))
+    if not queued:
+        return {"continue_stage": stage, "continue_paid": False, "queued": False, "already": True}
+    return {"continue_stage": stage, "continue_paid": False, "queued": True, "already": False}
+
+
+def rpc_script_accept(params):
+    params = params or {}
+    project_id = str(params.get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False, "official_saved": False})
+    project = read_project(project_id)
+    if project is None:
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False, "official_saved": False})
+    from end.script_accept import accept_as_is
+
+    return _revision_call(lambda: accept_as_is(project, params, _continue_accepted_script))
+
+
+def rpc_script_accept_retry(params):
+    params = params or {}
+    project_id = str(params.get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False, "official_saved": False})
+    project = read_project(project_id)
+    if project is None:
+        raise RpcError(404, "没有这个项目", {"reason": "not_found", "retryable": False, "saved": False, "retry_same_key": False, "official_saved": False})
+    from end.script_accept import accept_retry
+
+    return _revision_call(lambda: accept_retry(project, params.get("base_token"), _continue_accepted_script))
+
+
 def run_script_revision_review(project_id):
     """Full script review for a human manuscript. Does not repair or generate."""
     project = read_project(project_id)
@@ -3269,6 +3371,10 @@ def rpc_call(method, params):
         return rpc_script_opinion(params)
     if method == "projects.script_revision.opinion_retry":
         return rpc_script_opinion_retry(params)
+    if method == "projects.script_revision.accept_as_is":
+        return rpc_script_accept(params)
+    if method == "projects.script_revision.accept_retry":
+        return rpc_script_accept_retry(params)
     if method == "projects.retouch":
         return rpc_retouch(params)
     if method == "projects.rerun":

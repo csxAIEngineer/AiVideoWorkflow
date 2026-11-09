@@ -90,6 +90,18 @@ def content_hash(text):
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+def issue_fingerprint(issue):
+    """Identity of one review issue. Wording outside these four fields does not match."""
+    issue = issue or {}
+    body = "\n".join([
+        str(issue.get("category") or "").strip(),
+        str(issue.get("severity") or "").strip(),
+        str(issue.get("evidence") or "").strip(),
+        str(issue.get("reason") or "").strip(),
+    ])
+    return content_hash(body)
+
+
 def reviews_path(folder):
     return Path(folder) / "reviews.json"
 
@@ -356,12 +368,70 @@ def _run(kind, messages, previous, cache_key, force, complete):
     return row, True
 
 
+def script_is_settled(folder, script_hash, context_hash):
+    """True when a human already accepted this exact script and requirements context."""
+    state = load_reviews(folder)
+    accept = state.get("human_accept") if isinstance(state.get("human_accept"), dict) else None
+    return bool(
+        accept
+        and accept.get("acknowledged") is True
+        and accept.get("script_hash") == script_hash
+        and accept.get("context_hash") == context_hash
+    )
+
+
+def settled_script_note(folder, script_hash, context_hash):
+    """Tell a downstream reviewer the script is settled. Not a waiver list."""
+    if not script_is_settled(folder, script_hash, context_hash):
+        return ""
+    state = load_reviews(folder)
+    accept = state.get("human_accept") or {}
+    lines = [
+        "这份剧本已经人工接受，正文摘要和原要求摘要都没变。",
+        "不要把这一次审查做成对剧本的第二次裁判，也不要再要求先改剧本。",
+        "请对照这份已定稿，检查资产、分镜和最终提示词有没有偏离：缺了已定稿里的关键情节、对白或动作，或写了和已定稿冲突的新内容。",
+        "新的偏离仍要列出。不要因为措辞相近就把它当成已经接受的旧结论而放过，也不要因为类别相同就整类放过。",
+    ]
+    noted = [item for item in (accept.get("issues") or []) if isinstance(item, dict)]
+    if noted:
+        lines.append("人工接受时记下的审稿结论只作背景，不是豁免名单：")
+        for item in noted:
+            lines.append("- %s / %s / %s / %s" % (
+                item.get("category") or "",
+                item.get("severity") or "",
+                item.get("evidence") or "",
+                item.get("reason") or "",
+            ))
+    return "\n".join(lines)
+
+
 def review_script(folder, spec=None, brief="", force=False, complete=None):
-    """Review the final script. Does not write the script."""
+    """Review the final script. Does not write the script.
+
+    A human acceptance of this exact script and requirements context does not
+    call the model again, even when force is set. Changing the script or the
+    requirements leaves this path and reviews normally.
+    """
     folder = Path(folder)
     before = _read(folder / "_内部_" / "剧本.md")
     script, clash = current_script(folder, spec)
     state = load_reviews(folder)
+    if not clash and script:
+        base_hash = content_hash(story_context(folder, brief))
+        if script_is_settled(folder, content_hash(script), base_hash):
+            row = state.get("script") if isinstance(state.get("script"), dict) else {}
+            if row.get("script_hash") == content_hash(script) and row.get("context_hash") == base_hash:
+                kept = dict(row)
+            else:
+                kept = {
+                    "status": "unreviewed",
+                    "reason": "正文和原要求没变，不再审这一稿",
+                    "issues": [],
+                    "script_hash": content_hash(script),
+                    "context_hash": base_hash,
+                }
+            kept["skipped_repeat"] = True
+            return kept
     if clash or not script:
         reason = clash or "剧本是空的，不能通过语义审查"
         row = _record("failed", reason, [])
@@ -456,6 +526,14 @@ def downstream_allowed(folder, spec=None, brief=""):
     state = load_reviews(folder)
     script_hash = content_hash(script)
     context_hash = content_hash(story_context(folder, brief))
+    accept = state.get("human_accept") if isinstance(state.get("human_accept"), dict) else None
+    if (
+        accept
+        and accept.get("acknowledged") is True
+        and accept.get("script_hash") == script_hash
+        and accept.get("context_hash") == context_hash
+    ):
+        return True, ""
     if state.get("confirmed_script_hash") != script_hash or state.get("confirmed_context_hash") != context_hash:
         return False, "剧本尚未人工确认，或确认后正文/上下文已变"
     row = state.get("script") or {}
@@ -654,6 +732,9 @@ def review_delivery(folder, spec=None, brief="", template=None, soundtrack="off"
         return row
     context = story_context(folder, brief)
     script_hash = content_hash(script)
+    note = settled_script_note(folder, script_hash, content_hash(context))
+    if note:
+        context = context + "\n\n" + note
     source_before = disk_source_hash(folder, brief)
     bundle_hash = content_hash(script + "\n" + context + "\n" + manuscript + "\n" + source_before)
     cache_key = bundle_hash
@@ -994,6 +1075,29 @@ def apply_script_review_gate(folder, spec, locks, brief, outcome, force=False, c
     del locks
     row = review_script(folder, spec, brief=brief, force=force, complete=complete)
     outcome = dict(outcome or {})
+    if row.get("skipped_repeat"):
+        progress = dict((outcome.get("progress") or {}))
+        pipeline = dict(progress.get("pipeline") or {})
+        question = dict(progress.get("question") or {})
+        message = dict(outcome.get("message") or {})
+        pipeline["human_release"] = True
+        pipeline["passed"] = True
+        pipeline["current"] = "script"
+        pipeline["action"] = "wait"
+        pipeline["semantic_status"] = row.get("status") or "unreviewed"
+        pipeline["semantic_scope"] = "script"
+        reply = "这份稿已经人工接受，正文和原要求没变，不再审一遍。下游仍对照这份已定稿检查，不会出图。"
+        options = ["继续"]
+        question.update({"id": "script", "kind": "single", "reply": reply, "options": options, "cards": []})
+        message.update({"role": "assistant", "content": reply, "options": options, "choice_kind": "single", "cards": []})
+        progress["pipeline"] = pipeline
+        progress["question"] = question
+        progress["phase"] = "gate_script"
+        outcome["progress"] = progress
+        outcome["message"] = message
+        outcome["terminal"] = "gate"
+        outcome["status"] = "gate"
+        return outcome
     progress = dict(outcome.get("progress") or {})
     pipeline = dict(progress.get("pipeline") or {})
     question = dict(progress.get("question") or {})

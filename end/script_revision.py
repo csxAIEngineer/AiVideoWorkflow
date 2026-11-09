@@ -151,6 +151,7 @@ def revision_get(project):
         "review_retryable": review_retryable,
         "base_token": revision_token(project["id"], official, row),
         **_opinion_fields(project, official, row),
+        **_accept_fields(project, official, row),
     }
 
 
@@ -158,6 +159,12 @@ def _opinion_fields(project, official, row):
     from end.script_opinion import opinion_view
 
     return opinion_view(project, official, row)
+
+
+def _accept_fields(project, official, row):
+    from end.script_accept import accept_view
+
+    return accept_view(project, official, row)
 
 
 def _bound_review_record(entries, project_id, official, row):
