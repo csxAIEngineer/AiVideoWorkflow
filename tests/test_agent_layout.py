@@ -120,7 +120,7 @@ class LayoutTest(unittest.TestCase):
         self.assertLess(calls, len(LOCK_FILES) + 1)
         self.assertEqual(model.calls[0]["max_tokens"], 4000)
         self.assertEqual(model.calls[0]["kind"], "drill")
-        self.assertEqual(model.calls[0]["model"], "qwen3.8-flash")
+        self.assertEqual(model.calls[0]["model"], "deepseek-v4-flash-0731")
         self.assertEqual(model.calls[0]["messages"][0]["role"], "system")
         self.assertIn("雨夜车站", model.calls[0]["messages"][-1]["content"])
         self.assertNotIn("# 总控 short-drama-director/SKILL.md", model.calls[0]["messages"][0]["content"])
@@ -147,7 +147,7 @@ class LayoutTest(unittest.TestCase):
         model = ScriptedModel([ASK] * (len(pack_cohorts(LOCK_FILES)) + 1))
         AgentLayout(model=model).drill([{"role": "user", "content": "雨"}], model="glm-5.2")
         self.assertEqual(model.calls[0]["max_tokens"], 4000)
-        self.assertEqual(model.calls[0]["model"], "qwen3.8-flash")
+        self.assertEqual(model.calls[0]["model"], "deepseek-v4-flash-0731")
         self.assertEqual(model.calls[0]["kind"], "drill")
 
     def test_drill_keeps_a_plain_specialist_note_for_the_merge(self):
@@ -168,7 +168,7 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(model.calls[0]["max_tokens"], 16000)
         self.assertEqual(model.calls[0]["timeout"], 1200)
         self.assertEqual(model.calls[0]["kind"], "write")
-        self.assertEqual(model.calls[0]["model"], "qwen3.8-flash")
+        self.assertEqual(model.calls[0]["model"], "deepseek-v4-flash-0731")
         self.assertEqual(model.calls[0]["messages"][-1]["content"], "雨夜车站")
 
     def test_write_repairs_then_keeps_both_replies(self):
@@ -596,7 +596,7 @@ class LayoutTest(unittest.TestCase):
             kind="drill",
         )
         kwargs = client.calls[0]
-        self.assertEqual(kwargs["model"], "qwen3.8-flash")
+        self.assertEqual(kwargs["model"], "deepseek-v4-flash-0731")
         self.assertNotIn("reasoning", kwargs)
         self.assertEqual(kwargs["extra_body"], {"enable_thinking": False})
         self.assertEqual(kwargs["max_output_tokens"], 20)
@@ -615,12 +615,12 @@ class LayoutTest(unittest.TestCase):
             kind="write",
         )
         kwargs = client.calls[0]
-        self.assertEqual(kwargs["model"], "qwen3.8-flash")
+        self.assertEqual(kwargs["model"], "deepseek-v4-flash-0731")
         self.assertNotIn("reasoning", kwargs)
         self.assertEqual(kwargs["extra_body"], {"enable_thinking": False})
         self.assertNotIn("tools", kwargs)
         self.assertEqual(result.content, "ok")
-        self.assertEqual(result.model, "qwen3.8-flash")
+        self.assertEqual(result.model, "deepseek-v4-flash-0731")
         self.assertEqual(result.incomplete_reason, "")
 
     def test_max_output_stop_reaches_the_chat_result(self):
