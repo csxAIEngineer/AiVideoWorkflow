@@ -755,20 +755,20 @@ class DirectorDbTest(unittest.TestCase):
 
         with patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"), patch("end.server.submit_agent_task"):
             answer_gate(read_project("p-board-revise"), "根据建议修改")
-            run_project("p-board-revise")
-        self.assertGreaterEqual(len(calls), 1)
-        self.assertLessEqual(len(calls), 3)
-        self.assertTrue(all("任务：建议修补" in call for call in calls))
-        self.assertIn("任务：建议修补", calls[0])
-        self.assertIn("缺六问", calls[0])
-        self.assertIn("第 1 格：她站在门内。", calls[0])
-        self.assertNotIn("这次是返修", calls[0])
-        self.assertNotIn("只写分镜", calls[0])
+        from end.stage_runner import execute
+
+        outcome = execute(
+            read_project("p-board-revise"),
+            folder,
+            locks,
+            writer,
+            lambda *_a, **_k: "pack",
+        )
+        self.assertEqual(calls, [])
+        self.assertTrue(outcome["progress"]["pipeline"]["passed"], outcome["progress"]["pipeline"].get("report"))
         stored = (internal / "previs.md").read_text(encoding="utf-8")
         self.assertIn("通过的段不要动", stored)
         self.assertEqual((internal / "分镜.md").read_text(encoding="utf-8"), "第 1 格：她站在门内。\n")
-        saved = read_project("p-board-revise")
-        self.assertEqual(saved["progress"]["pipeline"]["current"], "storyboard")
 
     def test_failed_storyboard_can_keep_the_draft_and_write_the_feed(self):
         locks = prepare_locks(_base_locks(), "时长：12秒")
@@ -1139,7 +1139,7 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertIn("任务：提示词封装", calls[0])
         self.assertNotIn("任务：建议修补", calls[0])
         self.assertIn("分镜正文", calls[0])
-        self.assertIn("预演正文", calls[0])
+        self.assertNotIn("预演正文", calls[0])
         self.assertIn("subject_definitions", (empty_internal / "feed.md").read_text(encoding="utf-8"))
 
     def test_blank_previs_fails_the_storyboard_gate_and_rewrites_from_the_board(self):
@@ -1168,41 +1168,43 @@ class MachineAndMountTest(unittest.TestCase):
             lambda *_a, **_k: "pack",
         )
         self.assertFalse(empty["progress"]["pipeline"]["passed"])
-        self.assertEqual(empty["progress"]["pipeline"]["report"], "预演故事板是空的")
-        self.assertTrue(empty["progress"]["pipeline"]["retry_write"])
-        self.assertIn("再写一版", empty["message"]["content"])
+        self.assertIn("缺镜号", empty["progress"]["pipeline"]["report"])
+        self.assertEqual(empty["progress"]["pipeline"]["repairs"], 0)
+        self.assertFalse(empty["progress"]["pipeline"].get("retry_write"))
+        self.assertIn("补全", empty["message"]["options"])
         self.assertNotIn("先用这一稿继续", empty["message"]["options"])
+        self.assertFalse((internal / "previs.md").is_file())
 
         calls = []
+        board = "\n".join((
+            "## S01",
+            "动作：她进门",
+            "景别机位：中景，门口平视",
+            "时长：6",
+            "资产：A1",
+        ))
 
         def rewrite(brief, *_args, **_kwargs):
             calls.append(brief)
-            return {
-                "storyboard": "分镜正文 L01 她进门。",
-                "previs": "\n".join((
-                    "## 段 1",
-                    "**本段要验什么**：站位",
-                    "**风险提示**：左右别换",
-                    "### 故事板提示词（1 格）",
-                    "第 1 格：她站在门内，身体朝门，视线看向门外，手抬着，镜头在侧面，光从门内照来。",
-                    "看图先看这三点：人、门、光",
-                    "预演故事板：段1~段1 ✅",
-                )),
-            }
+            return {"storyboard": board, "previs": "## 段 1\n第 1 格：不要把这段写成预演稿"}
 
-        execute(
+        (folder / "spec.json").write_text(
+            '{"assets":[{"id":"A1","title":"门"}],"shots":[{"id":"S01","duration":4,"prompt":"按这张资产图演这一镜","images":["A1"]}]}',
+            encoding="utf-8",
+        )
+        filled = execute(
             {
                 "template": "short-drama-director",
                 "model": "qwen3.8-flash",
                 "brief": "药盒",
                 "progress": {
                     "pipeline": {
-                        "action": "rewrite",
+                        "action": "write",
                         "current": "storyboard",
                         "accepted": ["script", "asset"],
-                        "passed": False,
-                        "report": "预演故事板是空的",
-                        "repair": "预演故事板是空的",
+                        "passed": True,
+                        "report": "",
+                        "repair": "",
                         "only": "",
                     }
                 },
@@ -1214,9 +1216,13 @@ class MachineAndMountTest(unittest.TestCase):
         )
         self.assertTrue(calls)
         self.assertIn("任务：分镜", calls[0])
+        self.assertNotIn("预演：1", calls[0])
         self.assertNotIn("任务：建议修补", calls[0])
-        self.assertIn("分镜正文", calls[0])
-        self.assertIn("## 段 1", (internal / "previs.md").read_text(encoding="utf-8"))
+        self.assertTrue(filled["progress"]["pipeline"]["passed"], filled["progress"]["pipeline"].get("report"))
+        self.assertEqual(filled["spec"]["shots"][0]["id"], "S01")
+        self.assertEqual(filled["spec"]["shots"][0]["duration"], 6)
+        self.assertEqual(filled["spec"]["shots"][0]["images"], ["A1"])
+        self.assertFalse((internal / "previs.md").is_file())
 
     def test_asset_repair_keeps_blocks_the_model_left_out(self):
         folder = Path(tempfile.mkdtemp())
@@ -1350,9 +1356,9 @@ class MachineAndMountTest(unittest.TestCase):
         checked = previs_check_text(summary, "段 1\n" + rich, "M2")
         self.assertIn("第 1 格", checked)
         self.assertNotIn("验证客厅", checked)
-        self.assertIn("第 1 格：", _INSTRUCTION["storyboard"])
-        self.assertIn("（1 格）", _INSTRUCTION["storyboard"])
-        self.assertIn("六问", _INSTRUCTION["storyboard"])
+        self.assertIn("景别机位", _INSTRUCTION["storyboard"])
+        self.assertIn("不要写段、格、六问", _INSTRUCTION["storyboard"])
+        self.assertNotIn("第 1 格：", _INSTRUCTION["storyboard"])
 
         from end.stage_runner import coerce_previs, render_previs_markdown
 
@@ -1399,9 +1405,9 @@ class MachineAndMountTest(unittest.TestCase):
         stopped = execute(project, folder, locks, writer, lambda *args, **kwargs: "pack")
         self.assertFalse(stopped["progress"]["pipeline"]["passed"])
         self.assertEqual(len(calls), 1)
-        stored = (folder / "_内部_" / "previs.md").read_text(encoding="utf-8")
-        self.assertIn("第 1 格", stored)
-        self.assertNotIn("验证客厅", stored)
+        self.assertEqual(stopped["progress"]["pipeline"]["repairs"], 0)
+        self.assertIn("缺镜号", stopped["progress"]["pipeline"]["report"])
+        self.assertFalse((folder / "_内部_" / "previs.md").is_file())
 
     def test_c31_alone_does_not_keep_a_failing_exit_once_its_lines_are_hidden(self):
         from end.repair_units import units_for

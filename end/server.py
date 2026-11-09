@@ -328,6 +328,31 @@ def load_tasks(project):
     write_project(project)
 
 
+def _storyboard_question(project):
+    """Expose 补写分镜 or 补全 on the existing question. Does not write or call a model."""
+    question = (project.get("progress") or {}).get("question") or None
+    if not isinstance(question, dict):
+        return question
+    progress = project.get("progress") or {}
+    pipeline = progress.get("pipeline") or {}
+    if project.get("status") != "gate" or pipeline.get("passed"):
+        return question
+    if pipeline.get("current") != "storyboard":
+        return question
+    from end.storyboard_contract import COMPLETE, FILL, needs_human
+
+    report = str(pipeline.get("report") or "")
+    if not needs_human(report):
+        return question
+    shown = dict(question)
+    folder = project_dir(project["id"])
+    if report.strip() == "分镜是空的" or not storyboard_has_draft(folder):
+        shown["options"] = [FILL]
+    else:
+        shown["options"] = [COMPLETE]
+    return shown
+
+
 def _shown_messages(project):
     """A failed machine check offers one revision from the report, even if an older reply still says 继续."""
     messages = [dict(item) if isinstance(item, dict) else item for item in (project.get("messages") or [])]
@@ -340,7 +365,16 @@ def _shown_messages(project):
     options = list(messages[-1].get("options") or [])
     if options == ["继续"]:
         options = [ASSET_REVISE]
-    if (
+    from end.storyboard_contract import COMPLETE, FILL, needs_human
+
+    report = str(pipeline.get("report") or "")
+    if pipeline.get("current") == "storyboard" and needs_human(report):
+        folder = project_dir(project["id"])
+        if report.strip() == "分镜是空的" or not storyboard_has_draft(folder):
+            options = [FILL]
+        else:
+            options = [COMPLETE]
+    elif (
         pipeline.get("current") == "storyboard"
         and options == [ASSET_REVISE]
         and storyboard_has_draft(project_dir(project["id"]))
@@ -433,7 +467,7 @@ def public_view(project):
         "materials": public_materials(project["id"]),
         "semantic": _public_semantic(project, spec),
         "progress": attach_crew(project),
-        "question": (project.get("progress") or {}).get("question") or None,
+        "question": _storyboard_question(project),
         "semantic_scope": str(((project.get("progress") or {}).get("pipeline") or {}).get("semantic_scope") or ""),
         "semantic_status": str(((project.get("progress") or {}).get("pipeline") or {}).get("semantic_status") or ""),
         "delivery_semantic_review": "retired",
@@ -1190,6 +1224,24 @@ def answer_gate(project, text):
     if body == "精修" and current == "script" and passed:
         pipeline["action"] = "wait"
         return _ask_script_revise(project, pipeline)
+    from end.storyboard_contract import needs_human
+
+    if (
+        current == "storyboard"
+        and not passed
+        and body in ("补写分镜", "补全", ASSET_REVISE)
+        and needs_human(str(pipeline.get("report") or ""))
+    ):
+        pipeline["action"] = "write"
+        pipeline["passed"] = True
+        pipeline["retry_write"] = False
+        pipeline["repair"] = ""
+        pipeline["report"] = ""
+        pipeline["repairs"] = 0
+        pipeline["auto_retries"] = 0
+        pipeline["machine_repairs"] = 0
+        _enqueue_stage(project, pipeline, body if body in ("补写分镜", "补全") else "补写分镜")
+        return public_view(read_project(project["id"]) or project)
     if body == ASSET_REVISE and (passed or not current):
         question = progress.get("question") or {}
         if question:
@@ -2377,6 +2429,11 @@ def resume_render(project):
         paused_from = (fresh.get("progress") or {}).get("paused_from") or ""
         handoff = _PIPELINE_HANDOFF.get(project_id)
         alive = thread_alive(project_id)
+        from end.storyboard_contract import rendering_conflict
+
+        conflict = rendering_conflict(folder)
+        if conflict:
+            raise RuntimeError(conflict)
         resume_paused(folder, project_id)
         if alive and handoff in ("writer", "render"):
             return _resume_in_place(fresh, paused_from if handoff == "writer" else "rendering")
@@ -2805,6 +2862,25 @@ def resume_rendering_projects():
     started = 0
     for project in list_projects():
         folder = project_dir(project["id"])
+        from end.storyboard_contract import rendering_conflict
+
+        conflict = rendering_conflict(folder)
+        if conflict:
+            if project.get("error") != conflict:
+                project["error"] = conflict
+                remember(
+                    project,
+                    "paused",
+                    conflict,
+                    progress={
+                        "phase": "paused",
+                        "message": conflict,
+                        "project_status": "paused",
+                        "paused_from": "rendering",
+                        "percent": (project.get("progress") or {}).get("percent") or 0,
+                    },
+                )
+            continue
         if project.get("status") == "rendering" and not should_resume_project(project, folder):
             video = folder / "outputs" / "joined.mp4"
             state = load_run_state(folder)

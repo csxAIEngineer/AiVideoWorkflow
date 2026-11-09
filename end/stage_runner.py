@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from end.board_shots import apply_feed_binding, apply_storyboard_shots, bind_feed_document, shots_are_placeholder
-from end.delivery import internal_dir, list_deliverables, previs_name, publish
+from end.delivery import internal_dir, list_deliverables, publish
 from end.gates import (
     check_asset_blocks,
     check_feed,
@@ -19,6 +19,21 @@ from end.gates import (
 )
 from end.intake import enrich_brief, load_intake, writer_upload_block
 from end.locks import lock_brief
+from end.storyboard_contract import (
+    STORYBOARD_INSTRUCTION,
+    COMPLETE,
+    FILL,
+    lock_projected_shots,
+    marker_present,
+    needs_human,
+    note_hold,
+    project_into_spec,
+    project_shots,
+    read_hold,
+    write_marker,
+    known_ids,
+    has_shot_headings,
+)
 
 _ASSET_HEAD = re.compile(r"^(#{2,6})\s*\*{0,2}\s*图\s*(\d+)\b", re.M)
 
@@ -723,17 +738,8 @@ _INSTRUCTION = {
     "script": "只写剧本，放在 script。过程稿放在 internal。不要改锁。",
     "asset": "只写资产提示词，放在 image_prompts。每条以「#### 图N · 名称」开头，自包含，禁止同上、见母版、同图N。上传图按读图挂到已有资产的 references：产品、包装、药品挂道具图，人物挂对应角色图，不要另造同名资产。",
     "storyboard": "\n".join((
-        "只写分镜，放在 storyboard。有打斗时招式只来自已挂载的打戏原文。",
-        "预演故事板放在 previs，必须是 markdown 字符串，禁止 JSON 数组/对象。",
-        "不要写成「段N验证……」摘要。照这个形状写满，标签原文保留，括号里必须是数字：",
-        "## 段 1",
-        "**本段要验什么**：这一段要保住的站位",
-        "**风险提示**：人物左右不要对调",
-        "### 故事板提示词（1 格）",
-        "第 1 格：她站在门内，身体朝门，视线看向门外，手抬在身前，镜头在侧面，光从门内照来。",
-        "看图先看这三点：人、门、光",
-        "后面每一段都同样写全。每一格都要答完六问：谁在哪、朝哪、看哪、做什么、镜头在哪、光从哪来。",
-        "文末一行：预演故事板：段1~段N ✅",
+        "有打斗时招式只来自已挂载的打戏原文。",
+        STORYBOARD_INSTRUCTION,
     )),
     "feed": "\n".join((
         "只写投喂稿，放在 feed。feed 必须是字符串。",
@@ -828,8 +834,6 @@ def mount_header(stage, locks, carried, only):
     ]
     if prefix:
         lines.append("只加载：%s" % prefix)
-    if stage == "storyboard" and only != "combat":
-        lines.append("预演：1")
     return "\n".join(lines)
 
 
@@ -895,9 +899,6 @@ def carried_text(folder, stage):
         board = _read(internal / "分镜.md")
         if board:
             chunks.append(board)
-        previs = _read(internal / "previs.md")
-        if previs:
-            chunks.append(previs)
     return "\n\n".join(chunks)
 
 
@@ -923,11 +924,14 @@ def store_stage(folder, stage, result):
         _write_internal(folder, "assets.md", result.get("image_prompts") or "")
     elif stage == "storyboard":
         _write_internal(folder, "分镜.md", result.get("storyboard") or "")
-        previs = coerce_previs(result.get("previs") or "")
-        if previs.strip():
-            result = dict(result)
-            result["previs"] = previs
-            _write_internal(folder, "previs.md", previs)
+        if result.get("_storyboard_contract"):
+            write_marker(folder)
+        else:
+            previs = coerce_previs(result.get("previs") or "")
+            if previs.strip():
+                result = dict(result)
+                result["previs"] = previs
+                _write_internal(folder, "previs.md", previs)
     elif stage == "feed":
         from end.repair_rules.feed_unit_headers import recover_feed_units
 
@@ -942,6 +946,8 @@ def store_stage(folder, stage, result):
 SCRIPT_REVISE_OPTIONS = ("更贴我写的故事", "产品信息写清楚", "打斗再收着点", "其他")
 ASSET_REVISE = "根据建议修改"
 STORYBOARD_KEEP = "先用这一稿继续"
+STORYBOARD_FILL = FILL
+STORYBOARD_COMPLETE = COMPLETE
 
 
 def storyboard_has_draft(folder):
@@ -981,11 +987,16 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
             "投喂稿没写出来。根据建议修改会按分镜和资产再写一版。",
             [ASSET_REVISE],
         )
-    if stage == "storyboard" and str(report or "").strip() == "预演故事板是空的":
-        return (
-            "预演故事板没写出来。根据建议修改会按分镜再写一版。",
-            [ASSET_REVISE],
-        )
+    if stage == "storyboard" and needs_human(report):
+        if str(report or "").strip() == "分镜是空的" or not has_draft:
+            reply = "分镜没写出来。预演稿不能当作分镜。"
+            options = [STORYBOARD_FILL]
+        else:
+            reply = "分镜还缺字段，没有自动改写。"
+            options = [STORYBOARD_COMPLETE]
+        if tail:
+            reply = reply + "\n" + tail
+        return reply, options
     if stage in ("asset", "storyboard", "feed"):
         if stage == "feed":
             reply = "投喂机检没过。根据建议修改会按下面这些项改。"
@@ -1075,6 +1086,8 @@ def auto_gate_action(outcome):
         return "stop"
     if current not in ("recon", "asset", "storyboard", "feed"):
         return "stop"
+    if current == "storyboard" and not passed and needs_human(pipeline.get("report")):
+        return "stop"
     if needs_retry:
         if retries >= REPAIR_LIMIT - 1:
             return "stop"
@@ -1104,19 +1117,27 @@ def _spec_patch(stage, result, previous):
         if result.get("assets"):
             merged["assets"] = result.get("assets")
     elif stage == "storyboard":
-        if result.get("storyboard"):
-            merged["storyboard"] = result.get("storyboard")
-        if result.get("previs"):
-            merged["previs"] = coerce_previs(result.get("previs") or "")
-        merged = apply_storyboard_shots(merged)
+        if result.get("_storyboard_contract"):
+            merged = project_into_spec(merged, result)
+        else:
+            if result.get("storyboard"):
+                merged["storyboard"] = result.get("storyboard")
+            if result.get("previs"):
+                merged["previs"] = coerce_previs(result.get("previs") or "")
+            merged = apply_storyboard_shots(merged)
     elif stage == "feed":
         if result.get("feed"):
             merged["feed"] = result.get("feed")
-        incoming = result.get("shots")
-        if isinstance(incoming, list) and incoming and not shots_are_placeholder(incoming):
-            merged["shots"] = incoming
-        merged = apply_storyboard_shots(merged)
-        merged = apply_feed_binding(merged)
+        if merged.get("storyboard_contract"):
+            before = dict(merged)
+            merged = apply_feed_binding(merged)
+            merged = lock_projected_shots(before, merged)
+        else:
+            incoming = result.get("shots")
+            if isinstance(incoming, list) and incoming and not shots_are_placeholder(incoming):
+                merged["shots"] = incoming
+            merged = apply_storyboard_shots(merged)
+            merged = apply_feed_binding(merged)
     merged.pop("locks", None)
     return merged
 
@@ -1177,55 +1198,20 @@ def check_stage(folder, stage, locks, title=""):
         invented = invented_upload_claim(text, load_intake(folder))
         if invented:
             return False, invented
-        previs = _read(internal / "previs.md")
-        if previs_is_blank(previs):
-            return False, "预演故事板是空的"
-        if previs.strip():
-            body = previs_check_text(text, previs, mode)
-            # Persist rendered markdown so repair units see real段 bodies, not JSON shards.
-            if body.strip() and body.strip() != previs.strip():
-                _write_internal(folder, "previs.md", body)
-            target = folder / previs_name(title or _load_spec(folder).get("title") or "未命名")
-            target.write_text(body if body.endswith("\n") else body + "\n", encoding="utf-8")
-            code, report = check_p45(target, material_mode=mode)
-            # #region agent log
-            try:
-                with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as handle:
-                    handle.write(
-                        json.dumps(
-                            {
-                                "sessionId": "d078f2",
-                                "runId": "previs-fix",
-                                "hypothesisId": "S3,S4",
-                                "location": "stage_runner.py:check_stage:storyboard",
-                                "message": "storyboard gate after previs render",
-                                "data": {
-                                    "code": code,
-                                    "persisted": body.strip() != previs.strip(),
-                                    "fail_count": sum(
-                                        1 for line in (report or "").splitlines() if "FAIL:" in line
-                                    ),
-                                    "p451": sum(
-                                        1 for line in (report or "").splitlines() if "P451" in line
-                                    ),
-                                    "p452": sum(
-                                        1 for line in (report or "").splitlines() if "P452" in line
-                                    ),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-            except OSError:
-                pass
-            # #endregion
-            if code != 0:
-                if target.is_file():
-                    _write_internal(folder, target.name, target.read_text(encoding="utf-8"))
-                    target.unlink()
-                return False, report
+        spec = _load_spec(folder)
+        required = (
+            marker_present(folder)
+            or spec.get("storyboard_contract") == "shot-prose-v1"
+            or has_shot_headings(text)
+        )
+        if not required:
+            return True, ""
+        _shots, field_report = project_shots(text, known_ids(spec.get("assets")))
+        if field_report:
+            return False, field_report
+        hold = read_hold(folder) or str(spec.get("storyboard_hold") or "").strip()
+        if hold:
+            return False, hold
         return True, ""
     if stage == "feed":
         from end.repair_rules.feed_unit_headers import recover_feed_units
@@ -2766,23 +2752,13 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
     repair_choices = raw_choices if isinstance(raw_choices, dict) else {}
     if note or repair:
         current_draft = _read(Path(folder) / "_内部_" / _DRAFT_FILE.get(stage, "")).strip()
-        if stage == "storyboard":
-            previs_draft = _read(Path(folder) / "_内部_" / "previs.md").strip()
-            if previs_draft:
-                current_draft = (current_draft + "\n\n预演故事板：\n" + previs_draft).strip()
     task_line = _TASK_LINE.get(stage, "")
     upload_block = writer_upload_block(load_intake(folder))
     debug = bool((project.get("progress") or {}).get("debug_llm"))
     debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
     feed_file = _read(Path(folder) / "_内部_" / "feed.md")
     empty_feed_report = stage == "feed" and not feed_file.strip() and "投喂稿是空的" in repair and "FAIL" not in repair
-    blank_previs_report = (
-        stage == "storyboard"
-        and previs_is_blank(_read(Path(folder) / "_内部_" / "previs.md"))
-        and "预演故事板是空的" in repair
-        and "FAIL" not in repair
-    )
-    if empty_feed_report or blank_previs_report:
+    if empty_feed_report:
         repair = ""
         repair_choices = {}
     if (repair or repair_choices) and stage in ("asset", "storyboard", "feed"):
@@ -2868,15 +2844,13 @@ def _finish(folder, locks, pipeline):
             failed["current"] = "feed"
             return gate_result("feed", False, "没看见图，却写了%s" % claim, failed)
     title = spec.get("title") or "未命名"
-    previs_file = folder / previs_name(title)
-    previs_text = _read(previs_file) if previs_file.is_file() else ""
     names = publish(
         folder,
         locks,
         title,
         spec.get("image_prompts") or _read(folder / "_内部_" / "assets.md"),
         _read(feed_path),
-        previs_text,
+        "",
     )
     return {
         "terminal": "ready",
@@ -2908,8 +2882,6 @@ def _has_saved_draft(folder, stage):
     draft = _DRAFT_FILE.get(stage) or ""
     if draft:
         names.append(draft)
-    if stage == "storyboard":
-        names.append("previs.md")
     for name in names:
         if _read(internal / name).strip():
             return True
@@ -3260,16 +3232,26 @@ def execute(project, folder, locks, write_model, load_pack):
                 )
         if current == "storyboard":
             previous_board = _read(Path(folder) / "_内部_" / "分镜.md")
-            previous_previs = _read(Path(folder) / "_内部_" / "previs.md")
-            mode = (locks or {}).get("material_mode") or "M1"
-            storyboard = keep_richer_board(previous_board, (result or {}).get("storyboard") or "")
-            # Coerce before keep_richer — str(list) would otherwise beat real markdown on length.
-            incoming_previs = coerce_previs((result or {}).get("previs") or "", mode)
-            previous_previs = coerce_previs(previous_previs, mode)
-            previs = keep_richer_board(previous_previs, incoming_previs)
-            result = dict(result or {})
-            result["storyboard"] = storyboard
-            result["previs"] = previs
+            legacy_previs = "缺六问" in str(pipeline.get("repair") or "")
+            if legacy_previs:
+                previous_previs = _read(Path(folder) / "_内部_" / "previs.md")
+                mode = (locks or {}).get("material_mode") or "M1"
+                storyboard = keep_richer_board(previous_board, (result or {}).get("storyboard") or "")
+                incoming_previs = coerce_previs((result or {}).get("previs") or "", mode)
+                previous_previs = coerce_previs(previous_previs, mode)
+                previs = keep_richer_board(previous_previs, incoming_previs)
+                result = dict(result or {})
+                result["storyboard"] = storyboard
+                result["previs"] = previs
+            else:
+                incoming = str((result or {}).get("storyboard") or "").strip()
+                result = dict(result or {})
+                if incoming:
+                    result["storyboard"] = incoming
+                    result["_storyboard_contract"] = True
+                else:
+                    result["storyboard"] = previous_board
+                result.pop("previs", None)
         if current == "feed":
             raw_feed = feed_from_result(result)
             patched_feed = patch_h3_voiceover(raw_feed)
@@ -3281,6 +3263,8 @@ def execute(project, folder, locks, write_model, load_pack):
         store_stage(folder, current, result)
         finish_trace(folder, stage_output(current, result))
         spec = _spec_patch(current, result, spec)
+        if current == "storyboard" and result.get("_storyboard_contract"):
+            note_hold(folder, spec.get("storyboard_hold") or "")
         passed, report = check_stage(folder, current, locks, spec.get("title") or "")
         checked = True
         if healed_feed:
@@ -3302,8 +3286,12 @@ def execute(project, folder, locks, write_model, load_pack):
             pipeline["retry_write"] = True
         if current == "feed" and not passed and str(report or "").strip() == "投喂稿是空的":
             pipeline["retry_write"] = True
-        if current == "storyboard" and not passed and str(report or "").strip() == "预演故事板是空的":
-            pipeline["retry_write"] = True
+        if current == "storyboard" and not passed and needs_human(report):
+            pipeline["repairs"] = 0
+            pipeline["retry_write"] = False
+            pipeline["machine_repairs"] = 0
+            if str(report or "").strip() == "分镜是空的" and shots_are_placeholder(spec.get("shots")):
+                spec["shots"] = []
         if passed or current in ("asset", "storyboard", "feed") or attempts >= REPAIR_LIMIT:
             break
     if passed:

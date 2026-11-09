@@ -123,6 +123,15 @@ def json_shape(template=None, brief=""):
     step = script_step_id(brief)
     if step:
         return script_json_shape(step)
+    if suite_task_for(brief) == "storyboard":
+        from end.storyboard_contract import STORYBOARD_INSTRUCTION
+
+        return "\n".join((
+            "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
+            STORYBOARD_INSTRUCTION,
+            "没有对白则不要写对白行。没有旁白则不要写旁白行。",
+            "这一阶段用不到的字段用空字符串或空数组。不要在 JSON 里放 locks。",
+        ))
     aspect = locked_aspect(brief)
     if aspect:
         head = "本片画幅以简报为准：%s。角色、场景、道具、九宫格、故事板整板写 16:9。" % aspect
@@ -434,10 +443,11 @@ _MERGE_SHAPE = {
     )),
     "storyboard": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-        _MARKDOWN_FIELDS,
-        _ARRAY_FIELDS,
-        "分镜放在 storyboard（字符串）。预演故事板放在 previs（字符串，禁止 JSON 数组）。",
-        "镜头结构若要交，放在 shots 数组，不要塞进 storyboard 或 previs。",
+        "不要写 previs。完整分镜只放在 storyboard 字符串。",
+        "每一镜以「## S01」单独成行，下面写动作、景别机位、时长、资产 id。",
+        "时长是正文里的整数秒。资产只写已经锁定的 id。",
+        "shots 不是第二份稿。若提交，id、duration、images 必须和同一镜号正文一致。",
+        "不要写段、格、六问、九宫格或预演完成标记。",
         "这一阶段用不到的字段不要写。",
     )),
     "feed": "\n".join((

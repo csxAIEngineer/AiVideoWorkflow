@@ -378,13 +378,23 @@ def _restore_output(folder, stage, output):
         spec["image_prompts"] = output.get("image_prompts") or ""
         spec["assets"] = output.get("assets") if isinstance(output.get("assets"), list) else []
     elif stage == "storyboard":
-        _put_text(folder, "分镜.md", output.get("storyboard") or "")
-        _put_text(folder, "previs.md", output.get("previs") or "")
-        spec["storyboard"] = output.get("storyboard") or ""
-        spec["previs"] = output.get("previs") or ""
-        from end.board_shots import apply_storyboard_shots
+        if str(output.get("storyboard") or "").strip():
+            _put_text(folder, "分镜.md", output.get("storyboard") or "")
+            spec["storyboard"] = output.get("storyboard") or ""
+        if str(output.get("previs") or "").strip():
+            _put_text(folder, "previs.md", output.get("previs") or "")
+            spec["previs"] = output.get("previs") or ""
+        if spec.get("storyboard_contract") == "shot-prose-v1":
+            from end.storyboard_contract import project_into_spec
 
-        spec = apply_storyboard_shots(spec)
+            spec = project_into_spec(
+                spec,
+                {"storyboard": spec.get("storyboard") or "", "_storyboard_contract": True},
+            )
+        else:
+            from end.board_shots import apply_storyboard_shots
+
+            spec = apply_storyboard_shots(spec)
     elif stage == "feed":
         _put_text(folder, "feed.md", output.get("feed") or "")
         spec["feed"] = output.get("feed") or ""
