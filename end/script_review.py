@@ -1,13 +1,14 @@
-"""Two semantic gates. They report problems and do not rewrite the story.
+"""Script semantic review, plus technical checks before a submit.
 
 The script gate runs after the final script is on disk and before a person
-confirms it. The delivery gate runs on the prompts that generation will
-actually submit, including locks added by ``delivery_prompt`` and
-``image_prompt``. A pass is valid only for the hashes it recorded. Old
-projects with no record are not treated as passed.
+confirms it. That review still calls ``complete_review``. Tests replace it
+with ``set_reviewer``.
 
-The model call is ``complete_review``. Tests replace it with
-``set_reviewer``. Nothing here deletes drafts or media.
+The old delivery semantic review does not run. ``review_delivery`` only
+checks files, confirmation, and prompt presence, then records
+``generation_technical``. It does not call a model and does not overwrite a
+stored ``delivery`` row. A missing or historical delivery row is not a pass.
+Nothing here deletes drafts or media.
 """
 
 import hashlib
@@ -709,62 +710,97 @@ def generation_bundle(spec, template=None, soundtrack="off", user_ids_for=None):
     return items, manuscript
 
 
-def review_delivery(folder, spec=None, brief="", template=None, soundtrack="off", user_ids_for=None, force=False, complete=None):
-    """Review the prompts that would be submitted. Does not write the script."""
-    folder = Path(folder)
-    script_before = _read(folder / "_内部_" / "剧本.md")
+def technical_generation_block(folder, spec=None, brief="", template=None, soundtrack="off", user_ids_for=None):
+    """File, prompt, and script-confirmation checks. Does not call a model."""
     allowed, reason = downstream_allowed(folder, spec, brief)
-    state = load_reviews(folder)
     if not allowed:
-        row = _record("failed", reason, [])
-        row["owner"] = "script"
-        state["delivery"] = row
-        save_reviews(folder, state)
-        return row
+        return {"ok": False, "status": "failed", "reason": reason, "owner": "script", "technical": True}
+    spec = _spec(folder, spec)
+    _script, clash = current_script(folder, spec)
+    if clash:
+        return {"ok": False, "status": "failed", "reason": clash, "owner": "script", "technical": True}
+    shots = [item for item in (spec.get("shots") or []) if isinstance(item, dict)]
+    if shots and not any(str(item.get("prompt") or "").strip() for item in shots):
+        return {
+            "ok": False,
+            "status": "failed",
+            "reason": "提示词是空的",
+            "owner": "feed",
+            "technical": True,
+        }
+    items, _manuscript = generation_bundle(spec, template, soundtrack, user_ids_for)
+    if not items:
+        return {
+            "ok": False,
+            "status": "failed",
+            "reason": "没有可提交的资产或镜头提示词",
+            "owner": "feed",
+            "technical": True,
+        }
+    if any(not str(item.get("text") or "").strip() for item in items):
+        return {
+            "ok": False,
+            "status": "failed",
+            "reason": "提示词是空的",
+            "owner": "feed",
+            "technical": True,
+        }
+    return None
+
+
+def _snapshot_prompt_hashes(items):
+    hashes = []
+    for item in items or []:
+        text = str(item.get("text") or "")
+        payload_hash = item.get("hash") or content_hash(text)
+        if payload_hash not in hashes:
+            hashes.append(payload_hash)
+        if text.strip():
+            digest = content_hash(text)
+            if digest not in hashes:
+                hashes.append(digest)
+    return hashes
+
+
+def record_generation_technical(folder, spec=None, brief="", template=None, soundtrack="off", user_ids_for=None):
+    """Snapshot the prompts for this explicit render. Does not touch delivery history."""
+    folder = Path(folder)
     spec = _spec(folder, spec)
     script, _clash = current_script(folder, spec)
     items, manuscript = generation_bundle(spec, template, soundtrack, user_ids_for)
-    if not items:
-        row = _record("failed", "没有可提交的资产或镜头提示词，不能通过出片审查", [])
-        row["owner"] = "feed"
-        state["delivery"] = row
-        save_reviews(folder, state)
-        return row
-    context = story_context(folder, brief)
-    script_hash = content_hash(script)
-    note = settled_script_note(folder, script_hash, content_hash(context))
-    if note:
-        context = context + "\n\n" + note
-    source_before = disk_source_hash(folder, brief)
-    bundle_hash = content_hash(script + "\n" + context + "\n" + manuscript + "\n" + source_before)
-    cache_key = bundle_hash
-    messages = [
-        {"role": "system", "content": _system("delivery")},
-        {"role": "user", "content": _user("delivery", script, context, manuscript)},
-    ]
-    row, _called = _run("delivery", messages, state.get("delivery"), cache_key, force, complete or complete_review)
-    issues = _force_story_owner(list(row.get("issues") or []))
-    if issues and row.get("status") != "failed":
-        row["status"] = _status_of(issues)
-        row["reason"] = format_issues(issues)
-    if disk_source_hash(folder, brief) != source_before:
-        row["status"] = "failed"
-        row["reason"] = "审查期间磁盘上的稿件变了，不能通过"
-        issues = []
-    row["issues"] = issues
-    row["owner"] = _primary_owner(issues, "feed") if row.get("status") in ("blocked", "suspect") else ""
-    row["script_hash"] = script_hash
-    row["context_hash"] = content_hash(context)
-    row["confirmed_script_hash"] = script_hash
-    row["source_hash"] = source_before
-    row["bundle_hash"] = bundle_hash
-    row["prompt_hashes"] = [item.get("hash") or content_hash(item.get("text") or "") for item in items]
+    source_hash = disk_source_hash(folder, brief)
     state = load_reviews(folder)
-    state["delivery"] = row
+    previous = state.get("delivery")
+    state["generation_technical"] = {
+        "source_hash": source_hash,
+        "prompt_hashes": _snapshot_prompt_hashes(items),
+        "bundle_hash": content_hash(str(script or "") + "\n" + manuscript + "\n" + source_hash),
+    }
+    if previous is not None:
+        state["delivery"] = previous
     save_reviews(folder, state)
+    return state["generation_technical"]
+
+
+def review_delivery(folder, spec=None, brief="", template=None, soundtrack="off", user_ids_for=None, force=False, complete=None):
+    """Retired semantic delivery review. Technical snapshot only. Does not call a model."""
+    del force, complete
+    folder = Path(folder)
+    script_before = _read(folder / "_内部_" / "剧本.md")
+    block = technical_generation_block(folder, spec, brief, template, soundtrack, user_ids_for)
     if _read(folder / "_内部_" / "剧本.md") != script_before:
-        raise RuntimeError("出片审查改写了剧本文件")
-    return row
+        raise RuntimeError("出片检查改写了剧本文件")
+    if block:
+        return {
+            "status": "failed",
+            "reason": block["reason"],
+            "owner": block["owner"],
+            "issues": [],
+            "semantic_review": "retired",
+            "technical": True,
+        }
+    record_generation_technical(folder, spec, brief, template, soundtrack, user_ids_for)
+    return {"status": "technical_ok", "reason": "", "owner": "", "issues": [], "semantic_review": "retired"}
 
 
 def delivery_decision(row):
@@ -808,20 +844,22 @@ def accept_delivery_suspects(folder):
 
 def _match_live(folder, payload, brief):
     state = load_reviews(folder)
-    row = state.get("delivery") or {}
-    decision = delivery_decision(row)
-    if not decision["ok"]:
-        raise GenerationBlocked(decision["reason"] or "出片语义审查未通过", decision)
+    row = state.get("generation_technical") or {}
+    if not row.get("prompt_hashes"):
+        raise GenerationBlocked(
+            "还没有这次出片的技术快照",
+            {"ok": False, "status": "failed", "reason": "还没有这次出片的技术快照", "owner": "feed", "technical": True},
+        )
     source = disk_source_hash(folder, brief)
     if row.get("source_hash") != source:
         raise GenerationBlocked(
-            "磁盘上的剧本或下游稿已经变了，旧的出片审查不能沿用",
-            {"ok": False, "status": "failed", "reason": "磁盘上的剧本或下游稿已经变了", "owner": "script", "options": ["再审一次", "根据建议修改"]},
+            "磁盘上的剧本或下游稿已经变了",
+            {"ok": False, "status": "failed", "reason": "磁盘上的剧本或下游稿已经变了", "owner": "script", "technical": True},
         )
     if payload["hash"] not in set(row.get("prompt_hashes") or []):
         raise GenerationBlocked(
-            "即将提交的提示词、尾帧或参考绑定不在这次审查里",
-            {"ok": False, "status": "failed", "reason": "即将提交的内容未被审查", "owner": "feed", "options": ["再审一次", "根据建议修改"]},
+            "即将提交的提示词和这次出片开始时不一致",
+            {"ok": False, "status": "failed", "reason": "即将提交的提示词和这次出片开始时不一致", "owner": "feed", "technical": True},
         )
 
 
@@ -847,6 +885,7 @@ def authorize_video_submit(folder, shot_id, has_tail, user_image_ids=(), templat
             user_image_ids=user_image_ids,
             has_tail=bool(has_tail),
         )
+        assert_generation_prompt(folder, text)
         from end.render_loop import choose_video_mode
 
         mode = choose_video_mode(shot, user_image_ids=user_image_ids, continues=bool(has_tail))
@@ -891,6 +930,7 @@ def authorize_image_submit(folder, asset_id, reference, template=None, brief="",
         if asset is None:
             raise GenerationBlocked("磁盘上没有资产 %s" % asset_id, {"ok": False, "owner": "asset", "reason": "没有这个资产"})
         text = image_prompt(asset, reference=bool(reference), template=template)
+        assert_generation_prompt(folder, text)
         payload = _payload(text, _binding(asset_id, "image", False, [], "", bool(reference)))
         payload["source_hash"] = disk_source_hash(folder, brief)
         return payload
@@ -1013,22 +1053,20 @@ def quarantine_stale_download(folder, path):
 
 
 def assert_generation_prompt(folder, text):
-    """Refuse a submit whose text was not in the passing review."""
+    """Refuse a submit that is empty or was not in this render's technical snapshot."""
+    if not str(text or "").strip():
+        raise GenerationBlocked(
+            "提示词是空的",
+            {"ok": False, "status": "failed", "reason": "提示词是空的", "owner": "feed", "technical": True},
+        )
     state = load_reviews(folder)
-    row = state.get("delivery") or {}
-    decision = delivery_decision(row)
-    if not decision["ok"]:
-        raise GenerationBlocked(decision["reason"] or "出片语义审查未通过", decision)
+    row = state.get("generation_technical") or {}
     digest = content_hash(text)
     if digest not in set(row.get("prompt_hashes") or []):
-        decision = {
-            "ok": False,
-            "status": "failed",
-            "reason": "即将提交的提示词与已通过审查的内容不一致",
-            "owner": "feed",
-            "options": ["再审一次", "根据建议修改"],
-        }
-        raise GenerationBlocked(decision["reason"], decision)
+        raise GenerationBlocked(
+            "即将提交的提示词和这次出片开始时不一致",
+            {"ok": False, "status": "failed", "reason": "即将提交的提示词和这次出片开始时不一致", "owner": "feed", "technical": True},
+        )
 
 
 def user_image_ids(work_dir, shot):
@@ -1062,11 +1100,15 @@ def public_semantic(folder, spec=None, brief=""):
         "confirm_reason": "" if allowed else allow_reason,
         "confirmed_script_hash": confirmed,
         "script_hash": script_hash,
-        "delivery_status": delivery.get("status") or "pending",
-        "delivery_reason": delivery.get("reason") or "还没有出片语义审查",
+        "delivery_status": delivery.get("status") if delivery else "",
+        "delivery_reason": delivery.get("reason") or "",
         "delivery_matches_script": delivery.get("confirmed_script_hash") == script_hash and bool(script_hash),
+        "delivery_history": bool(delivery),
+        "delivery_history_status": delivery.get("status") or "",
+        "delivery_semantic_review": "retired",
+        "delivery_blocks_render": False,
         "issues": (row.get("issues") if script_fresh else []) or [],
-        "delivery_issues": delivery.get("issues") or [],
+        "delivery_issues": list(delivery.get("issues") or []),
     }
 
 

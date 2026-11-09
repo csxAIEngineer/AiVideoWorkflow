@@ -434,6 +434,13 @@ def public_view(project):
         "semantic": _public_semantic(project, spec),
         "progress": attach_crew(project),
         "question": (project.get("progress") or {}).get("question") or None,
+        "semantic_scope": str(((project.get("progress") or {}).get("pipeline") or {}).get("semantic_scope") or ""),
+        "semantic_status": str(((project.get("progress") or {}).get("pipeline") or {}).get("semantic_status") or ""),
+        "delivery_semantic_review": "retired",
+        "delivery_blocks_render": False,
+        "generation_hold": _generation_hold(project),
+        "render_recovery": "projects.render" if _explicit_render_recovery(project) else "",
+        "option_effects": _option_effects(project),
         "deliverables": list_deliverables(folder),
     }
 
@@ -923,8 +930,8 @@ def _present_script_gate(project, force=False):
     return read_project(project["id"]) or project
 
 
-def _hold_delivery(project, decision):
-    """Stop before submit. Keep every file already on disk."""
+def _hold_technical(project, decision):
+    """Stop an explicit render on a file or prompt check. No semantic model and no new render."""
     from end.script_review import public_semantic
 
     project = read_project(project["id"]) or project
@@ -933,65 +940,155 @@ def _hold_delivery(project, decision):
     if owner not in ("script", "asset", "storyboard", "feed"):
         owner = "feed"
     pipeline = dict((project.get("progress") or {}).get("pipeline") or {})
+    pipeline.pop("semantic_scope", None)
     pipeline["current"] = owner
     pipeline["action"] = "wait"
     pipeline["passed"] = False
     pipeline["retry_write"] = False
-    pipeline["semantic_scope"] = "delivery"
-    pipeline["semantic_status"] = decision.get("status") or "failed"
+    pipeline["check"] = "machine"
+    pipeline["generation_hold"] = "technical"
+    pipeline["semantic_status"] = "failed"
     pipeline["semantic_owner"] = owner
     pipeline["report"] = decision.get("reason") or ""
     pipeline["repair"] = pipeline["report"]
-    reply = "出片前的语义审查未通过。审查没有改剧本，也没有删除已有图和成片。\n" + (decision.get("reason") or "")
-    options = list(decision.get("options") or ["根据建议修改"])
+    reply = "出图前的技术校验没过。没有调用出片语义审查，也没有继续出图。\n" + (decision.get("reason") or "")
+    options = ["根据建议修改"]
     question = {"id": owner, "kind": "single", "reply": reply, "options": options, "cards": []}
     messages = list(project.get("messages") or [])
     messages.append(question_message(question))
     project["messages"] = messages
     project["finished_at"] = None
     project["error"] = None
+    progress = dict(project.get("progress") or {})
+    progress.pop("semantic_scope", None)
     remember(
         project,
         "gate",
-        "出片审查",
+        "技术校验",
         progress={
-            "percent": int((project.get("progress") or {}).get("percent") or 80),
-            "phase": "gate_%s" % owner,
+            "percent": int(progress.get("percent") or 80),
+            "phase": "gate_machine",
             "message": reply.split("\n", 1)[0],
             "lock_machine": True,
             "pipeline": pipeline,
             "question": question,
             "semantic": public_semantic(folder, load_spec(project["id"]), project.get("brief") or ""),
-            "semantic_scope": "delivery",
         },
     )
     return public_view(read_project(project["id"]) or project)
 
 
+def _pipeline_of(project, pipeline=None):
+    if pipeline is not None:
+        return pipeline
+    return (project.get("progress") or {}).get("pipeline") or {}
+
+
+def _retired_delivery_gate(project, pipeline=None):
+    pipeline = _pipeline_of(project, pipeline)
+    scope = str(pipeline.get("semantic_scope") or (project.get("progress") or {}).get("semantic_scope") or "")
+    if scope != "delivery":
+        return False
+    if str(pipeline.get("check") or "") == "machine":
+        return False
+    if (project.get("progress") or {}).get("phase") == "gate_machine":
+        return False
+    if str(pipeline.get("generation_hold") or "") == "technical":
+        return False
+    return project.get("status") == "gate"
+
+
+def _technical_generation_hold(project, pipeline=None):
+    pipeline = _pipeline_of(project, pipeline)
+    if project.get("status") != "gate":
+        return False
+    return str(pipeline.get("generation_hold") or "") == "technical"
+
+
+def _generation_hold(project):
+    if _technical_generation_hold(project):
+        return "technical"
+    return ""
+
+
+def _explicit_render_recovery(project):
+    return _retired_delivery_gate(project) or _technical_generation_hold(project)
+
+
+def _message_options(project):
+    labels = []
+    for message in project.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        for option in message.get("options") or []:
+            text = " ".join(str(option or "").split())
+            if text and text not in labels:
+                labels.append(text)
+    question = (project.get("progress") or {}).get("question") or {}
+    if isinstance(question, dict):
+        for option in question.get("options") or []:
+            text = " ".join(str(option or "").split())
+            if text and text not in labels:
+                labels.append(text)
+    return labels
+
+
+def _option_effects(project):
+    reject = {
+        "effect": "reject",
+        "reason": "delivery_review_retired",
+        "render": False,
+        "recovery": "projects.render",
+    }
+    if _retired_delivery_gate(project):
+        effects = {}
+        for label in _message_options(project) + ["再审一次", "接受可疑项并出片", "根据建议修改", "继续", "接受", "确认"]:
+            effects.setdefault(label, dict(reject))
+        effects["*"] = dict(reject)
+        return effects
+    pipeline = _pipeline_of(project)
+    scope = str(pipeline.get("semantic_scope") or (project.get("progress") or {}).get("semantic_scope") or "")
+    if _technical_generation_hold(project):
+        return {
+            "再审一次": {
+                "effect": "reject",
+                "reason": "technical_hold",
+                "render": False,
+                "recovery": "projects.render",
+            },
+            "接受可疑项并出片": dict(reject),
+            "根据建议修改": {"effect": "technical_rewrite", "render": False},
+        }
+    if project.get("status") == "gate" and (
+        str(pipeline.get("check") or "") == "machine"
+        or (project.get("progress") or {}).get("phase") == "gate_machine"
+    ):
+        effects = {"根据建议修改": {"effect": "technical_rewrite", "render": False}}
+        if scope == "delivery":
+            effects["再审一次"] = dict(reject)
+            effects["接受可疑项并出片"] = dict(reject)
+        return effects
+    return {}
+
+
+def _reject_retired_delivery(project, label):
+    raise RpcError(
+        409,
+        "出图前的语义审查已经取消。「%s」不会再审，也不会出图。要生成请明确调用 projects.render。" % label,
+        {
+            "reason": "delivery_review_retired",
+            "semantic_scope": "delivery",
+            "render": False,
+            "recovery": "projects.render",
+            "option": label,
+        },
+    )
+
+
 def _rereview_semantic(project, pipeline):
     scope = str((pipeline or {}).get("semantic_scope") or (project.get("progress") or {}).get("semantic_scope") or "script")
     if scope == "delivery":
-        from end.script_review import delivery_decision, review_delivery, user_image_ids
-
-        folder = project_dir(project["id"])
-        spec = load_spec(project["id"]) or {}
-
-        def ids_for(shot, _index):
-            return user_image_ids(folder, shot)
-
-        row = review_delivery(
-            folder,
-            spec,
-            brief=project.get("brief") or "",
-            template=project.get("template"),
-            soundtrack=project_soundtrack(project),
-            user_ids_for=ids_for,
-            force=True,
-        )
-        decision = delivery_decision(row)
-        if decision["ok"]:
-            return _start_explicit_render(project)
-        return _hold_delivery(project, decision)
+        return _reject_retired_delivery(project, "再审一次")
     from end.script_review import content_hash, script_is_settled, story_context
     from end.script_repair import official_script
 
@@ -1009,6 +1106,8 @@ def answer_gate(project, text):
     body = " ".join(str(text or "").split())
     passed = bool(pipeline.get("passed"))
     question = progress.get("question") or {}
+    if _retired_delivery_gate(project, pipeline):
+        return _reject_retired_delivery(project, body)
     if question.get("id") == "script_revise" and body not in ("继续", "接受", "确认"):
         note = "" if body == "其他" else body
         if not note:
@@ -1027,6 +1126,14 @@ def answer_gate(project, text):
 
         return _present_script_candidate(project, load_candidate(folder))
     if body == "再审一次":
+        if _retired_delivery_gate(project, pipeline):
+            return _reject_retired_delivery(project, "再审一次")
+        if _technical_generation_hold(project, pipeline):
+            raise RpcError(
+                409,
+                "这是技术校验停点。「再审一次」不会调用语义审查，也不会出图。",
+                {"reason": "technical_hold", "render": False, "technical": True, "recovery": "projects.render", "option": "再审一次"},
+            )
         return _rereview_semantic(project, pipeline)
     explicit_script_accept = False
     if body == "接受可疑项并继续" and current == "script":
@@ -1075,12 +1182,9 @@ def answer_gate(project, text):
     if question.get("id") == "script_candidate":
         return _answer_script_candidate(project, body, brief)
     if body == "接受可疑项并出片":
-        from end.script_review import accept_delivery_suspects
-
-        ok, reason = accept_delivery_suspects(folder)
-        if not ok:
-            return _repeat_gate(project, reason)
-        return _start_explicit_render(project)
+        return _reject_retired_delivery(project, "接受可疑项并出片")
+    if body == ASSET_REVISE and _retired_delivery_gate(project, pipeline):
+        return _reject_retired_delivery(project, ASSET_REVISE)
     if question.get("id") == "asset_repair_choice":
         return _take_asset_choice(project, pipeline, body, question)
     if body == "精修" and current == "script" and passed:
@@ -1793,12 +1897,12 @@ def _start_explicit_render(project, keep_done=None, video_submit_mode="generate"
     aspect = locks.get("aspect") or locked_aspect(project.get("brief") or "") or locked_aspect(str(spec.get("aspect_ratio") or ""))
     if not aspect:
         return _ask_aspect(project)
-    from end.script_review import delivery_decision, review_delivery, user_image_ids
+    from end.script_review import record_generation_technical, technical_generation_block, user_image_ids
 
     def ids_for(shot, _index):
         return user_image_ids(project_dir(project_id), shot)
 
-    row = review_delivery(
+    block = technical_generation_block(
         project_dir(project_id),
         spec,
         brief=project.get("brief") or "",
@@ -1806,9 +1910,21 @@ def _start_explicit_render(project, keep_done=None, video_submit_mode="generate"
         soundtrack=project_soundtrack(project),
         user_ids_for=ids_for,
     )
-    decision = delivery_decision(row)
-    if not decision["ok"]:
-        return _hold_delivery(project, decision)
+    if block:
+        data = {"reason": "technical_block", "owner": block["owner"], "render": False, "technical": True}
+        if block.get("reason") == "提示词是空的":
+            _hold_technical(read_project(project_id) or project, block)
+            data["generation_hold"] = "technical"
+            data["recovery"] = "projects.render"
+        raise RpcError(409, block["reason"], data)
+    record_generation_technical(
+        project_dir(project_id),
+        spec,
+        brief=project.get("brief") or "",
+        template=project.get("template"),
+        soundtrack=project_soundtrack(project),
+        user_ids_for=ids_for,
+    )
     _store_aspect(project, aspect)
     project = read_project(project_id) or project
     tasks = task_plan(spec, soundtrack=project_soundtrack(project))
@@ -2155,7 +2271,7 @@ def _execute_render(project_id, project=None, video_submit_mode="generate"):
             video_submit_mode=mode,
         )
     except GenerationBlocked as blocked:
-        _hold_delivery(read_project(project_id) or project, blocked.decision or {"reason": str(blocked), "owner": "feed"})
+        _hold_technical(read_project(project_id) or project, blocked.decision or {"reason": str(blocked), "owner": "feed", "technical": True})
         return
     if result.get("stopped_after") == "images":
         finish_image_debug(project, result)
@@ -2952,7 +3068,7 @@ def rpc_render(params):
     project = _request_project(params)
     if not prompts_ready(project) and not (
         project.get("status") == "drilling" and _phase(project) == "aspect_wait"
-    ):
+    ) and not _explicit_render_recovery(project):
         raise RpcError(409, "提示词还没就绪")
     return _start_explicit_render(project)
 

@@ -15,16 +15,17 @@ from end.script_review import (
     assert_generation_prompt,
     confirm_script,
     content_hash,
-    delivery_decision,
     downstream_allowed,
     generation_bundle,
+    load_reviews,
     planned_video_text,
+    save_reviews,
     review_delivery,
     review_script,
     set_reviewer,
     story_context,
 )
-from end.server import _run_project, _start_explicit_render
+from end.server import RpcError, _run_project, _start_explicit_render
 from end.stage_runner import execute
 from tests.offline_guard import install, uninstall
 from tests.test_director_pipeline import make_project
@@ -268,10 +269,11 @@ class DeliveryReviewTest(unittest.TestCase):
         _items, manuscript = generation_bundle(self.spec)
         self.assertIn(H3_NO_ONSCREEN_CAPTION, manuscript)
         self.assertIn("甲转身离开车站", manuscript)
+        before_calls = len(self.calls)
         row = review_delivery(self.folder, self.spec, brief="")
-        self.assertEqual(row["status"], "passed")
-        sent = self.calls[-1][1]["content"]
-        self.assertIn(H3_NO_ONSCREEN_CAPTION, sent)
+        self.assertEqual(row["semantic_review"], "retired")
+        self.assertEqual(len(self.calls), before_calls)
+        self.assertNotIn("delivery", __import__("end.script_review", fromlist=["load_reviews"]).load_reviews(self.folder))
 
         videos = FakeCR()
         try:
@@ -291,18 +293,17 @@ class DeliveryReviewTest(unittest.TestCase):
     def test_downstream_omissions_block_and_keep_the_script(self):
         self._confirm()
         before = (self.folder / "_内部_" / "剧本.md").read_text(encoding="utf-8")
-        cases = (
-            ("setup", "feed", "甲要走"),
-            ("dialogue", "storyboard", "我要走"),
-            ("order", "asset", "甲在车站等车"),
-        )
-        for category, owner, evidence in cases:
-            self.response = json.dumps({"issues": [_issue(category, "block", owner, evidence)]}, ensure_ascii=False)
-            row = review_delivery(self.folder, self.spec, brief="", force=True)
-            decision = delivery_decision(row)
-            self.assertFalse(decision["ok"])
-            self.assertEqual(decision["owner"], owner)
-            self.assertEqual((self.folder / "_内部_" / "剧本.md").read_text(encoding="utf-8"), before)
+        historical = {"status": "blocked", "reason": "旧出片审查", "issues": [_issue("setup", "block", "feed", "甲要走")], "owner": "feed"}
+        state = load_reviews(self.folder)
+        state["delivery"] = dict(historical)
+        save_reviews(self.folder, state)
+        calls = len(self.calls)
+        row = review_delivery(self.folder, self.spec, brief="", force=True)
+        self.assertEqual(row["semantic_review"], "retired")
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(load_reviews(self.folder)["delivery"]["status"], "blocked")
+        self.assertEqual(load_reviews(self.folder)["delivery"]["issues"][0]["evidence"], "甲要走")
+        self.assertEqual((self.folder / "_内部_" / "剧本.md").read_text(encoding="utf-8"), before)
 
     def test_expression_only_preference_does_not_block_generation(self):
         self._confirm()
@@ -310,8 +311,10 @@ class DeliveryReviewTest(unittest.TestCase):
             {"issues": [_issue("preference", "preference", "feed", "甲转身离开车站")]},
             ensure_ascii=False,
         )
+        calls = len(self.calls)
         row = review_delivery(self.folder, self.spec, brief="", force=True)
-        self.assertTrue(delivery_decision(row)["ok"])
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(row["semantic_review"], "retired")
 
     def test_old_project_and_direct_render_do_not_submit(self):
         bare = self.folder / "bare"
@@ -337,7 +340,9 @@ class DeliveryReviewTest(unittest.TestCase):
 
         self._confirm()
         self.response = '{"issues":[]}'
+        calls = len(self.calls)
         review_delivery(self.folder, self.spec, brief="", force=True)
+        self.assertEqual(len(self.calls), calls)
         allowed = authorize_video_submit(self.folder, "S01", False, brief="")
         self.assertIn("甲转身离开车站", allowed)
         spec_path = self.folder / "spec.json"
@@ -371,8 +376,10 @@ class DeliveryReviewTest(unittest.TestCase):
             }
             (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
             (folder / "locks.json").write_text(json.dumps({"aspect": "9:16", "model": "h3"}), encoding="utf-8")
-            view = _start_explicit_render({"id": "p-render", "brief": "雨夜", "template": "short-drama-director", "progress": {"lock_machine": True}})
-            self.assertEqual(view["status"], "gate")
+            with self.assertRaises(RpcError) as caught:
+                _start_explicit_render({"id": "p-render", "brief": "雨夜", "template": "short-drama-director", "progress": {"lock_machine": True}})
+            self.assertEqual(caught.exception.data["reason"], "technical_block")
+            self.assertFalse(caught.exception.data["render"])
             self.assertFalse(downstream_allowed(folder, spec, "雨夜")[0])
             media = folder / "outputs" / "clips" / "S01.mp4"
             media.parent.mkdir(parents=True)
@@ -501,15 +508,15 @@ class GateContractTest(unittest.TestCase):
         spec["feed"] = "subject_definitions:\n甲\ndetailed_description:\n甲离开。\n"
         spec["shots"][0]["prompt"] = spec["feed"]
         (self.folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
-        review_script(self.folder, spec, brief="")
-        confirm_script(self.folder, brief="")
         self.response = json.dumps({"issues": [_issue("causal", "block", "feed", "我要走")]}, ensure_ascii=False)
+        review_script(self.folder, spec, brief="")
+        script_row = load_reviews(self.folder)["script"]
+        self.assertEqual(script_row["issues"][0]["owner"], "script")
+        confirm_script(self.folder, brief="")
+        calls = len(self.calls)
         row = review_delivery(self.folder, spec, brief="", force=True)
-        self.assertEqual(row["owner"], "script")
-        self.assertEqual(row["issues"][0]["owner"], "script")
-        decision = delivery_decision(row)
-        self.assertFalse(decision["ok"])
-        self.assertEqual(decision["owner"], "script")
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(row["semantic_review"], "retired")
 
     def test_tail_binding_uses_the_persisted_shot_and_rejects_a_mid_check_edit(self):
         from end.script_review import authorize_video_submit, lease_still_current, planned_video_text

@@ -385,28 +385,16 @@ class ScriptAcceptTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         save_reviews(folder, state)
 
-        reworded = dict(_ISSUE)
-        reworded["evidence"] = "瓶是凭空来的"
-        reworded["reason"] = "因果说不通"
-        missing = dict(_ISSUE)
-        missing["evidence"] = "提示词里没有小茶瓶"
-        missing["reason"] = "已定稿里的道具在提示词中缺失"
-        missing["owner"] = "asset"
-        seen = []
-
-        def delivery_reviewer(messages):
-            seen.append("\n".join(item.get("content") or "" for item in messages))
-            return json.dumps({"issues": [reworded, missing]}, ensure_ascii=False)
-
-        set_reviewer(delivery_reviewer)
+        calls.clear()
+        historical = {"status": "blocked", "reason": "旧出片审查", "issues": [_ISSUE], "owner": "script"}
+        state = load_reviews(folder)
+        state["delivery"] = historical
+        save_reviews(folder, state)
         with patch("end.script_review.generation_bundle", return_value=([{"text": "提示词", "hash": "h"}], "bundle")):
             row = review_delivery(folder, {"script": _SCRIPT}, brief="取出小茶瓶。", force=True)
-        self.assertIn("不要因为措辞相近", seen[0])
-        self.assertIn("指尖凝聚出一瓶", seen[0])
-        self.assertEqual(row["status"], "blocked")
-        self.assertEqual(len(row["issues"]), 2)
-        self.assertNotIn("waived_issues", row)
-        self.assertEqual(load_reviews(folder)["script"]["issues"][0]["evidence"], "指尖凝聚出一瓶")
+        self.assertEqual(calls, [])
+        self.assertEqual(row["semantic_review"], "retired")
+        self.assertEqual(load_reviews(folder)["delivery"], historical)
         self.assertEqual(load_reviews(folder)["script"]["status"], "blocked")
 
     def test_opinion_source_names_the_candidate_and_does_not_call_a_model(self):

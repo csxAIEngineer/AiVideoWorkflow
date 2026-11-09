@@ -2481,26 +2481,33 @@ def run_local_pipeline(
         GenerationBlocked,
         authorize_image_submit,
         authorize_video_submit,
-        delivery_decision,
-        review_delivery,
+        record_generation_technical,
+        technical_generation_block,
         user_image_ids,
     )
 
     def ids_for(shot, _index):
         return user_image_ids(ctx.work_dir, shot)
 
-    reviewed = review_delivery(
+    del reviewer
+    block = technical_generation_block(
         ctx.work_dir,
         spec,
         brief=ctx.brief,
         template=ctx.template,
         soundtrack=ctx.soundtrack,
         user_ids_for=ids_for,
-        complete=reviewer,
     )
-    decision = delivery_decision(reviewed)
-    if not decision["ok"]:
-        raise GenerationBlocked(decision["reason"] or "出片语义审查未通过", decision)
+    if block:
+        raise GenerationBlocked(block["reason"], block)
+    record_generation_technical(
+        ctx.work_dir,
+        spec,
+        brief=ctx.brief,
+        template=ctx.template,
+        soundtrack=ctx.soundtrack,
+        user_ids_for=ids_for,
+    )
     ctx.work_dir.mkdir(parents=True, exist_ok=True)
     (ctx.work_dir / "outputs" / "images").mkdir(parents=True, exist_ok=True)
     (ctx.work_dir / "outputs" / "clips").mkdir(parents=True, exist_ok=True)
