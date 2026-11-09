@@ -39,6 +39,7 @@ let clock = null;
 let serverDebugDefault = false;
 let otherOpen = false;
 let sending = false;
+let produceError = "";
 let surface = "canvas";
 let surfaceLock = "";
 let surfaced = "";
@@ -405,6 +406,7 @@ async function postControl(action) {
   sending = true;
   syncComposer();
   try {
+    if (action === "render") produceError = "";
     current = await rpc("projects." + action, { id: current.id });
     const listed = projects.find((item) => item.id === current.id);
     if (listed) Object.assign(listed, current);
@@ -412,7 +414,20 @@ async function postControl(action) {
     renderThread();
     watch();
   } catch (error) {
-    alert(error.message || "没有完成");
+    const message = error.message || "没有完成";
+    if (action === "render") {
+      produceError = message;
+      if (current) {
+        try {
+          const project = await rpc("projects.get", { id: current.id });
+          if (current && project && project.id === current.id) current = project;
+        } catch (_error) {
+          /* The 409 text stays visible even if the refresh misses. */
+        }
+      }
+      paintTranscript.key = "";
+      if (current) renderThread();
+    } else alert(message);
   } finally {
     sending = false;
     syncComposer();
@@ -551,13 +566,19 @@ function progressPanel(project) {
     });
     panel.append(list);
   }
-  if (promptsReady(project) || (project.progress || {}).phase === "aspect_wait") {
+  if (explicitRenderEntry(project)) {
     const produce = document.createElement("button");
     produce.type = "button";
     produce.className = "produce";
     produce.textContent = "出图出片";
     produce.addEventListener("click", () => postControl("render"));
     panel.append(produce);
+    if (produceError) {
+      const failure = document.createElement("p");
+      failure.className = "stage produce-error";
+      failure.textContent = produceError;
+      panel.append(failure);
+    }
   }
   if (project.board_url) {
     const board = document.createElement("a");
@@ -916,9 +937,42 @@ function latestOptions(project) {
   return message ? message.options : [];
 }
 
+function optionEffect(project, label) {
+  const effects = project && project.option_effects;
+  if (!effects || typeof effects !== "object") return null;
+  const exact = effects[label];
+  if (exact && typeof exact === "object") return exact;
+  const wildcard = label === "*" ? null : effects["*"];
+  return wildcard && typeof wildcard === "object" ? wildcard : null;
+}
+
+function optionRejected(project, label) {
+  const effect = optionEffect(project, label);
+  return !!(effect && effect.effect === "reject");
+}
+
+function freeReplyClosed(project) {
+  const wildcard = optionEffect(project, "*");
+  return !!(wildcard && wildcard.effect === "reject");
+}
+
+function retiredDeliveryNote(project) {
+  return freeReplyClosed(project);
+}
+
+function explicitRenderEntry(project) {
+  return promptsReady(project)
+    || ((project.progress || {}).phase === "aspect_wait")
+    || project.render_recovery === "projects.render";
+}
+
 function onResumeClick() {
-  if (current && current.status === "gate") sendText("继续");
-  else postControl("resume");
+  if (current && current.status === "gate") {
+    if (current.render_recovery === "projects.render" || optionRejected(current, "继续")) return;
+    sendText("继续");
+    return;
+  }
+  postControl("resume");
 }
 
 function syncChoiceDisabled() {
@@ -1054,6 +1108,7 @@ function choiceList(messageOrOptions) {
   const list = document.createElement("div");
   list.className = "choices";
   options.forEach((label, index) => {
+    if (optionRejected(current, label)) return;
     const button = document.createElement("button");
     button.type = "button";
     const other = label === "其他";
@@ -1069,6 +1124,7 @@ function choiceList(messageOrOptions) {
     button.addEventListener("click", () => {
       if (sending) return;
       if (other) {
+        if (freeReplyClosed(current)) return;
         otherOpen = true;
         syncComposer();
         briefEl.focus();
@@ -1105,8 +1161,10 @@ function syncComposer() {
   if (modelEl) modelEl.disabled = sending || thinking || busy;
   if (templateEl) templateEl.disabled = sending || !!current;
   const options = current ? latestOptions(current) : [];
+  const replyClosed = !!(current && freeReplyClosed(current));
+  if (replyClosed) otherOpen = false;
   const choosing = !!(current && current.can_reply && options.length);
-  const showOther = (choosing && otherOpen) || !!(current && current.can_reply && !options.length);
+  const showOther = !replyClosed && ((choosing && otherOpen) || !!(current && current.can_reply && !options.length));
   const showBrief = !thinking && !busy && !choosing && !showOther && (!current || current.status === "done" || current.status === "error");
   const showInput = showOther || showBrief;
   briefEl.classList.toggle("hidden", !showInput);
@@ -1486,6 +1544,12 @@ function paintTranscript(options, full) {
   const revisionBox = scriptRevisionBox(current);
   if (revisionBox) wrap.append(revisionBox);
   const choice = latestChoiceMessage(current);
+  if (retiredDeliveryNote(current)) {
+    const retired = document.createElement("p");
+    retired.className = "stage delivery-retired-note";
+    retired.textContent = "出片前语义审查已停用，历史问题不再阻断生成；生成仍需技术校验及你的确认";
+    wrap.append(retired);
+  }
   if (current.can_reply && choice) {
     wrap.append(choiceList(choice));
   }
@@ -1669,6 +1733,7 @@ async function openProject(id) {
     return;
   }
   if (switching) {
+    produceError = "";
     surfaceLock = "";
     surfaced = "";
     canvasSig = "";
@@ -2058,6 +2123,7 @@ async function startBrief(text) {
 async function sendText(text) {
   const body = String(text || "").trim();
   if (!body || sending || !current || !current.can_reply) return;
+  if (optionRejected(current, body)) return;
   if (chatHome(current)) {
     surface = "chat";
     surfaceLock = "";
@@ -2832,7 +2898,7 @@ function syncControlButtons(project) {
   document.querySelectorAll(".js-reset").forEach((button) => {
     button.disabled = !canReset;
   });
-  const showProduce = promptsReady(project) || ((project.progress || {}).phase === "aspect_wait");
+  const showProduce = explicitRenderEntry(project);
   document.querySelectorAll(".js-produce").forEach((button) => {
     button.classList.toggle("hidden", !showProduce);
     button.disabled = !showProduce || sending;
