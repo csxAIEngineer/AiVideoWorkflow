@@ -1424,6 +1424,7 @@ function renderThread(options) {
     empty.classList.remove("hidden");
     thread.classList.add("hidden");
     thread.innerHTML = "";
+    clearChatPin();
     paintTranscript.key = "";
     paintTranscript.projectId = "";
     seamKept = new Set();
@@ -1493,9 +1494,61 @@ function transcriptKey(project) {
   ].join("\u0001");
 }
 
+function clearChatPin() {
+  const pin = document.querySelector("#chat-pin");
+  if (!pin) return;
+  const progressHost = pin.querySelector(".chat-progress");
+  const actionHost = pin.querySelector(".chat-actions");
+  if (progressHost) progressHost.replaceChildren();
+  if (actionHost) actionHost.replaceChildren();
+  pin.classList.add("hidden");
+}
+
+function fillChatPin(progress, actions) {
+  const pin = document.querySelector("#chat-pin");
+  if (!pin) return;
+  const progressHost = pin.querySelector(".chat-progress");
+  const actionHost = pin.querySelector(".chat-actions");
+  if (progressHost) {
+    progressHost.replaceChildren();
+    if (progress) progressHost.append(progress);
+  }
+  if (actionHost) {
+    actionHost.replaceChildren();
+    (actions || []).forEach((node) => {
+      if (node) actionHost.append(node);
+    });
+  }
+  const filled = (progressHost && progressHost.childElementCount) || (actionHost && actionHost.childElementCount);
+  pin.classList.toggle("hidden", !filled);
+}
+
+function threadAnchor() {
+  const top = thread.getBoundingClientRect().top;
+  const nodes = thread.querySelectorAll("[data-msg]");
+  for (let index = 0; index < nodes.length; index += 1) {
+    const rect = nodes[index].getBoundingClientRect();
+    if (rect.bottom > top + 4) {
+      return { id: nodes[index].getAttribute("data-msg"), offset: rect.top - top };
+    }
+  }
+  return null;
+}
+
+function settleThread(opts, follow, anchor) {
+  if (opts.scroll === "top" || opts.scroll === "bottom" || follow) {
+    thread.scrollTop = 0;
+    return;
+  }
+  if (!anchor || !anchor.id) return;
+  const node = thread.querySelector('[data-msg="' + anchor.id + '"]');
+  if (!node) return;
+  const delta = node.getBoundingClientRect().top - thread.getBoundingClientRect().top - anchor.offset;
+  thread.scrollTop += delta;
+}
+
 function paintTranscript(options, full) {
   const opts = options || {};
-  const prevScroll = thread.scrollTop;
   const checkedBefore = [...thread.querySelectorAll(".seam-option input")].map((box) => ({
     value: box.value,
     checked: box.checked,
@@ -1504,15 +1557,17 @@ function paintTranscript(options, full) {
   const sameProject = !!(current && paintTranscript.projectId === current.id);
   if (key && key === paintTranscript.key && sameProject && thread.childElementCount) {
     syncChoiceDisabled();
-    if (opts.scroll === "top") thread.scrollTop = 0;
-    else if (opts.scroll === "bottom") thread.scrollTop = thread.scrollHeight;
+    if (opts.scroll === "top" || opts.scroll === "bottom") thread.scrollTop = 0;
     syncComposer();
     return;
   }
+  const followLatest = thread.scrollTop <= 8;
+  const anchor = followLatest ? null : threadAnchor();
   seamKept = new Set(
     sameProject ? checkedBefore.filter((box) => box.checked).map((box) => box.value) : []
   );
   thread.innerHTML = "";
+  clearChatPin();
   paintTranscript.key = key;
   paintTranscript.projectId = current ? current.id : "";
   const wrap = document.createElement("div");
@@ -1524,11 +1579,14 @@ function paintTranscript(options, full) {
     if (traces) wrap.append(traces);
   }
   const running = autoRun(current);
-  visibleMessages(current).forEach((message) => {
+  const messages = visibleMessages(current);
+  function transcriptBubble(message, index) {
     const bubble = messageBubble(message.role, message.content || "");
+    bubble.setAttribute("data-msg", String(index));
     if (running && message.role !== "user" && continueCue(message.content)) bubble.classList.add("aside");
-    wrap.append(bubble);
-  });
+    return bubble;
+  }
+  if (messages.length) wrap.append(transcriptBubble(messages[messages.length - 1], messages.length - 1));
   if (current.status === "gate" && (current.progress || {}).phase === "gate_script" && current.script) {
     const gatePassed = ((current.progress || {}).pipeline || {}).passed !== false;
     const last = visibleMessages(current).slice(-1)[0] || {};
@@ -1541,26 +1599,28 @@ function paintTranscript(options, full) {
     const scriptNode = section("这一稿", current.script);
     if (scriptNode) wrap.append(scriptNode);
   }
+  const pinActions = [];
   const revisionBox = scriptRevisionBox(current);
-  if (revisionBox) wrap.append(revisionBox);
+  if (revisionBox) pinActions.push(revisionBox);
   const choice = latestChoiceMessage(current);
   if (retiredDeliveryNote(current)) {
     const retired = document.createElement("p");
     retired.className = "stage delivery-retired-note";
     retired.textContent = "出片前语义审查已停用，历史问题不再阻断生成；生成仍需技术校验及你的确认";
-    wrap.append(retired);
+    pinActions.push(retired);
   }
-  if (current.can_reply && choice) {
-    wrap.append(choiceList(choice));
-  }
-  if (running) {
-    const note = document.createElement("p");
-    note.className = "stage auto-run";
-    note.textContent = running.text;
-    wrap.append(note);
-  }
-  if (current.status === "gate" || (current.progress || {}).phase === "lock_wait" || running) {
-    wrap.append(progressPanel(current));
+  if (current.can_reply && choice) pinActions.push(choiceList(choice));
+  const showProgress = current.status === "gate" || (current.progress || {}).phase === "lock_wait" || running;
+  if (!full) fillChatPin(showProgress ? progressPanel(current) : null, pinActions);
+  else {
+    pinActions.forEach((node) => wrap.append(node));
+    if (running) {
+      const note = document.createElement("p");
+      note.className = "stage auto-run";
+      note.textContent = running.text;
+      wrap.append(note);
+    }
+    if (showProgress) wrap.append(progressPanel(current));
   }
   if (current.status === "drilling" && !current.can_reply) {
     const thinking = document.createElement("p");
@@ -1574,20 +1634,20 @@ function paintTranscript(options, full) {
     note.textContent = "Debug 模式：提示词已经写好。不生图。";
     wrap.append(note);
   }
+  for (let index = messages.length - 2; index >= 0; index -= 1) {
+    wrap.append(transcriptBubble(messages[index], index));
+  }
   if (!full) {
     thread.append(wrap);
     syncComposer();
     const runKey = running ? running.key + ":" + running.attempt : "";
-    const jumped = !!(runKey && runKey !== paintTranscript.runKey);
     paintTranscript.runKey = runKey;
-    if (opts.scroll === "top") thread.scrollTop = 0;
-    else if (opts.scroll === "bottom" || jumped) thread.scrollTop = thread.scrollHeight;
-    else thread.scrollTop = prevScroll;
+    settleThread(opts, followLatest, anchor);
     return;
   }
   const assistant = document.createElement("div");
   assistant.className = "assistant";
-  if (!inDrill(current) && (current.progress || {}).phase !== "lock_wait" && current.status !== "gate") {
+  if (!inDrill(current) && (current.progress || {}).phase !== "lock_wait" && current.status !== "gate" && !running) {
     assistant.append(progressPanel(current));
   }
   tickElapsed();
@@ -1661,9 +1721,7 @@ function paintTranscript(options, full) {
   const count = visibleMessages(current).length;
   if (count !== renderThread.lastCount) otherOpen = false;
   syncComposer();
-  if (opts.scroll === "top") thread.scrollTop = 0;
-  else if (opts.scroll === "bottom" || count !== renderThread.lastCount) thread.scrollTop = thread.scrollHeight;
-  else thread.scrollTop = prevScroll;
+  settleThread(opts, followLatest, anchor);
   renderThread.lastCount = count;
 }
 
