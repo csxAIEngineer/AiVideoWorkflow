@@ -2442,6 +2442,31 @@ html[data-theme="dark"] .wf-node.shot.is-selected {
 }
 
 .script-revision-entry-block,
+.script-revision-accept-cost,
+.script-revision-accept-risk,
+.script-revision-accept-message {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.script-revision-accept-sources {
+  border: 0;
+  margin: 0 0 10px;
+  padding: 0;
+}
+
+.script-revision-accept-sources label {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 6px 0;
+}
+
+.script-revision-accept-sources small {
+  color: var(--muted);
+}
+
 .script-revision-stack {
   display: flex;
   flex-direction: column;

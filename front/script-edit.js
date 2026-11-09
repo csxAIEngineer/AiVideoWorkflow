@@ -10,9 +10,13 @@
   const RETRY_METHOD = "projects.script_revision.retry_review";
   const OPINION_METHOD = "projects.script_revision.opinion";
   const OPINION_RETRY_METHOD = "projects.script_revision.opinion_retry";
+  const ACCEPT_METHOD = "projects.script_revision.accept_as_is";
+  const ACCEPT_RETRY_METHOD = "projects.script_revision.accept_retry";
   const REFRESH_METHOD = "projects.get";
+  const ACCEPT_COST = "继续下一段提示词写作，会调用模型并可能修复；不自动出图或视频，完成后仍需确认。";
 
   let session = null;
+  let acceptDialog = null;
   let keydownHandler = null;
   const pendingQueue = new Map();
   const revisionViews = new Map();
@@ -51,6 +55,8 @@
       pending ? "1" : "0",
       notice && notice.review_state || "",
       notice && notice.message || "",
+      view && view.continue_state || "",
+      view && view.continue_retryable === true ? "1" : "0",
     ].join(":");
   }
 
@@ -68,6 +74,7 @@
 
   function progressText(notice) {
     if (!notice) return "";
+    if (notice.kind === "accept") return "";
     if (notice.kind === "opinion") {
       if (notice.stale === true) return "";
       if (notice.opinion_state === "failed") return notice.error || "意见改稿没有完成";
@@ -224,6 +231,7 @@
     if (!project || !project.id) return false;
     const revision = view || revisionFor(project.id);
     if (revision && (revision.opinion_retryable === true || revision.opinion_model_retryable === true || (revision.opinion_state === "ready" && revision.opinion_stale !== true))) return true;
+    if (revision && (revision.continue_retryable === true || acceptChoiceOpen(revision))) return true;
     if (revision && revision.review_retryable === true) return true;
     const pending = readPending(project.id);
     if (pending && !serverSettled(revision, pending)) return true;
@@ -565,6 +573,7 @@
   }
 
   function onKeydown(event) {
+    if (acceptDialog && acceptDialog.layer && acceptDialog.layer.isConnected) return;
     if (!session || session.closed || !session.dialog) return;
     if (event.key === "Escape") {
       event.preventDefault();
@@ -1363,6 +1372,7 @@
       const current = outsideNotices.get(view.id);
       if (derived && (!current || current.kind === "opinion")) publishOutside(view.id, derived);
     }
+    publishAcceptFromGet(view);
     if (view.review_retryable !== true && (view.review_state === "none" || view.review_state === "queued" || view.review_state === "done")) {
       clearPending(id);
     }
@@ -1452,6 +1462,340 @@
     await retryReview(options, projectId);
   }
 
+  function storedSources(view) {
+    const list = view && Array.isArray(view.accept_sources) ? view.accept_sources : [];
+    return list.filter((item) => item && (item.source === "official" || item.source === "draft" || item.source === "opinion"));
+  }
+
+  function sourceLabel(source) {
+    if (source === "official") return "正式原稿";
+    if (source === "draft") return "最新未采用候选";
+    if (source === "opinion") return "意见候选";
+    return "这一稿";
+  }
+
+  function acceptChoiceOpen(view) {
+    if (!view) return false;
+    const state = view.continue_state || "none";
+    if (state === "pending" || state === "queued" || state === "done" || state === "failed") return false;
+    return storedSources(view).some((item) => item.can_accept === true);
+  }
+
+  function editorDirty() {
+    return !!(session && !session.closed && session.layer && session.layer.isConnected && session.textarea && session.textarea.value !== session.loaded);
+  }
+
+  function riskSentence(source) {
+    if (!source || source.issues == null || source.issue_state === "unreviewed" || source.issue_state === "unknown") {
+      const parts = ["这一份没有对上的剧本审查，不能当成没有问题。"];
+      const risk = source && source.risk;
+      if (risk && (risk.reason || risk.status || risk.validation)) {
+        parts.push("候选记录写着：" + (risk.reason || risk.status || "有记录") + "。");
+        if (risk.validation && risk.validation.evidence) parts.push(String(risk.validation.evidence) + "。");
+        parts.push("这是候选记录，不是选中稿自身的审查。");
+      }
+      const related = source && source.related_review;
+      if (related) {
+        const who = related.applies_to === "official" ? "正式稿" : "另一份稿";
+        parts.push("另有审查对着" + who + "：" + (related.reason || related.status || "结论还在") + "。这不是选中稿自身的审查。");
+      }
+      parts.push("未审或对不上已有审查，接受风险，不是通过。");
+      return parts.join("");
+    }
+    const lines = (source.issues || []).map((item) => item && item.reason ? String(item.reason) : "").filter(Boolean);
+    return "审稿仍有问题：" + (lines.length ? lines.join("；") : "审稿结论仍在。") + "接受风险，不是通过。";
+  }
+
+  function unavailableCopy(source) {
+    const reason = source && source.unavailable_reason;
+    if (reason === "review_passed") return "这份正式稿的审稿已经通过。请用原来的继续。";
+    if (reason === "stale") return "这轮意见已经过期，不能按这一稿确认。";
+    if (reason === "not_ready") return "意见候选还没写好。";
+    if (reason === "empty") return "没有这一稿。";
+    if (source && source.available === false && source.source === "draft") return "没有未采用的候选。";
+    if (reason === "closed") return "现在不能按这一稿继续。";
+    return "";
+  }
+
+  function acceptNoticeFromView(view) {
+    if (!view || !view.continue_state || view.continue_state === "none") return null;
+    if (view.continue_state === "pending") return { kind: "accept", continue_state: "pending", message: "已接受这一稿。下一段可能已经排上，尚未确认。" };
+    if (view.continue_state === "queued") return { kind: "accept", continue_state: "queued", message: "下一段已在队列里" };
+    if (view.continue_state === "done") return { kind: "accept", continue_state: "done", message: "已经离开剧本停点" };
+    if (view.continue_state === "failed") return { kind: "accept", continue_state: "failed", message: "下一段没有写完。不会自动重排，也不会出图。" };
+    return null;
+  }
+
+  function clearAcceptOutside(projectId) {
+    const current = outsideNotices.get(projectId);
+    if (!current || current.kind !== "accept") return;
+    outsideNotices.delete(projectId);
+    const node = document.querySelector('.script-revision-outside[data-project-id="' + projectId + '"]');
+    if (node && node.parentNode) node.parentNode.removeChild(node);
+  }
+
+  function publishAcceptFromGet(view) {
+    if (!view || !view.id) return;
+    const derived = acceptNoticeFromView(view);
+    if (!derived) {
+      clearAcceptOutside(view.id);
+      return;
+    }
+    publishOutside(view.id, derived);
+  }
+
+  function setAcceptMessage(text) {
+    if (acceptDialog && acceptDialog.message) acceptDialog.message.textContent = text || "";
+  }
+
+  function selectedAcceptSource() {
+    if (!acceptDialog || !acceptDialog.dialog) return null;
+    const chosen = acceptDialog.dialog.querySelector("input[name=script-accept-source]:checked");
+    if (!chosen) return null;
+    const view = revisionFor(acceptDialog.projectId);
+    const sources = storedSources(view);
+    for (let i = 0; i < sources.length; i += 1) {
+      if (sources[i].source === chosen.value) return sources[i];
+    }
+    return null;
+  }
+
+  function paintAcceptRisk() {
+    if (!acceptDialog || !acceptDialog.risk) return;
+    const source = selectedAcceptSource();
+    acceptDialog.risk.textContent = source ? ("你要确认的是" + sourceLabel(source.source) + "。" + riskSentence(source)) : "先选择要确认的一稿。";
+  }
+
+  function closeAccept() {
+    if (!acceptDialog) return;
+    if (acceptDialog.keydown) {
+      document.removeEventListener("keydown", acceptDialog.keydown, true);
+    }
+    if (acceptDialog.layer && acceptDialog.layer.parentNode) acceptDialog.layer.parentNode.removeChild(acceptDialog.layer);
+    acceptDialog = null;
+  }
+
+  function sameProject(options, projectId) {
+    if (!options || !options.getProjectId) return true;
+    return options.getProjectId() === projectId;
+  }
+
+  async function refreshAccept(options, projectId) {
+    const view = await prepareRevision(options, projectId);
+    if (!sameProject(options, projectId)) return null;
+    try {
+      const project = await options.rpc(REFRESH_METHOD, { id: projectId });
+      if (project && project.id === projectId && sameProject(options, projectId) && options.applyProject) options.applyProject(project);
+    } catch (_error) {
+      return view;
+    }
+    return revisionFor(projectId) || view;
+  }
+
+  function acceptPayload(projectId, view, source) {
+    const body = {
+      id: projectId,
+      base_token: view.base_token,
+      idempotency_key: newIdempotencyKey(),
+      source: source.source,
+      text_hash: source.text_hash,
+      acknowledge_risk: true,
+    };
+    if (source.source === "opinion") {
+      body.opinion_id = source.opinion_id;
+      body.opinion_revision = source.opinion_revision;
+    }
+    return body;
+  }
+
+  async function submitAccept(options) {
+    if (!acceptDialog || acceptDialog.inflight) return;
+    const projectId = acceptDialog.projectId;
+    const source = selectedAcceptSource();
+    const view = revisionFor(projectId);
+    if (!source || source.can_accept !== true) {
+      setAcceptMessage("这一稿现在不能接受。没有提交。");
+      return;
+    }
+    if (!view || !view.base_token || !source.text_hash) {
+      setAcceptMessage("还没有读到这一稿的版本。没有提交。");
+      return;
+    }
+    if (source.source === "opinion" && (!source.opinion_id || source.opinion_revision == null || source.opinion_revision === "")) {
+      setAcceptMessage("这版意见候选缺少身份，没有提交。");
+      return;
+    }
+    if (editorDirty()) {
+      setAcceptMessage("编辑区有还没保存的修改。这一版还不能确认。可以回到编辑，或先单独保存。这里不会把保存和接受并成一步，也不会丢掉这些字。");
+      return;
+    }
+    const body = acceptPayload(projectId, view, source);
+    acceptDialog.inflight = true;
+    if (acceptDialog.confirm) acceptDialog.confirm.disabled = true;
+    setAcceptMessage("正在按这一稿继续。");
+    let result = null;
+    try {
+      result = await options.rpc(ACCEPT_METHOD, body);
+    } catch (error) {
+      if (!acceptDialog || acceptDialog.projectId !== projectId || !sameProject(options, projectId)) return;
+      acceptDialog.inflight = false;
+      if (acceptDialog.confirm) acceptDialog.confirm.disabled = false;
+      const data = error && error.data || {};
+      const lead = (error && error.message) || "没有继续";
+      setAcceptMessage(lead);
+      if (data.reason === "continue_not_queued" || data.reason === "continue_ack_unconfirmed") {
+        if (acceptDialog.confirm) acceptDialog.confirm.disabled = true;
+        await refreshAccept(options, projectId);
+        if (!acceptDialog || acceptDialog.projectId !== projectId) return;
+        setAcceptMessage(lead);
+      } else {
+        try { await prepareRevision(options, projectId); } catch (_error) { return; }
+      }
+      return;
+    }
+    if (!acceptDialog || acceptDialog.projectId !== projectId || !sameProject(options, projectId)) return;
+    const message = result && typeof result.message === "string" ? result.message : "";
+    const queued = result && result.ok === true && result.accept_state === "accepted" && result.continue_state === "queued";
+    const done = result && result.ok === true && result.accept_state === "accepted" && result.continue_state === "done";
+    if (!queued && !done) {
+      acceptDialog.inflight = false;
+      if (acceptDialog.confirm) acceptDialog.confirm.disabled = false;
+      setAcceptMessage(message || "没有继续。没有再提交。");
+      return;
+    }
+    publishOutside(projectId, { kind: "accept", continue_state: result.continue_state, message: message });
+    closeAccept();
+    await refreshAccept(options, projectId);
+  }
+
+  async function retryAccept(options, projectId) {
+    if (acceptDialog && acceptDialog.inflight) return;
+    const id = projectId || (options && options.getProjectId && options.getProjectId());
+    let view = revisionFor(id);
+    if (!view || !view.base_token) view = await prepareRevision(options, id);
+    if (!view || view.continue_retryable !== true || !view.base_token) return;
+    if (acceptDialog) acceptDialog.inflight = true;
+    let result = null;
+    try {
+      result = await options.rpc(ACCEPT_RETRY_METHOD, { id: id, base_token: view.base_token });
+    } catch (error) {
+      if (!sameProject(options, id)) return;
+      const lead = (error && error.message) || "没有补排";
+      publishOutside(id, { kind: "accept", continue_state: "pending", message: lead });
+      if (acceptDialog && acceptDialog.projectId === id) {
+        acceptDialog.inflight = false;
+        setAcceptMessage(lead);
+      }
+      try { await prepareRevision(options, id); } catch (_error) { return; }
+      return;
+    }
+    if (!sameProject(options, id)) return;
+    const message = result && typeof result.message === "string" ? result.message : "";
+    const state = result && result.continue_state;
+    if (result && result.ok === true && (state === "queued" || state === "done")) {
+      publishOutside(id, { kind: "accept", continue_state: state, message: message });
+      closeAccept();
+      await refreshAccept(options, id);
+      return;
+    }
+    if (acceptDialog && acceptDialog.projectId === id) {
+      acceptDialog.inflight = false;
+      setAcceptMessage(message || "没有补排。");
+    }
+  }
+
+  function renderAcceptSources(view) {
+    const box = document.createElement("fieldset");
+    box.className = "script-revision-accept-sources";
+    const legend = document.createElement("legend");
+    legend.textContent = "确认哪一稿";
+    box.append(legend);
+    const sources = storedSources(view);
+    let picked = false;
+    sources.forEach((source) => {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "script-accept-source";
+      input.value = source.source;
+      input.id = "script-revision-accept-" + source.source;
+      const enabled = source.can_accept === true;
+      input.disabled = !enabled;
+      if (enabled && !picked) {
+        input.checked = true;
+        picked = true;
+      }
+      input.addEventListener("change", paintAcceptRisk);
+      const name = document.createElement("span");
+      name.textContent = sourceLabel(source.source);
+      label.append(input, name);
+      const extra = unavailableCopy(source);
+      if (!enabled && extra) {
+        const note = document.createElement("small");
+        note.textContent = extra;
+        label.append(note);
+      }
+      box.append(label);
+    });
+    return box;
+  }
+
+  async function openAccept(options, trigger) {
+    const projectId = (options.project && options.project.id) || (options.getProjectId && options.getProjectId());
+    if (!projectId || !options || !options.rpc) return;
+    const view = await prepareRevision(options, projectId);
+    if (!view || !sameProject(options, projectId) || !acceptChoiceOpen(view)) return;
+    closeAccept();
+    const layer = document.createElement("div");
+    layer.className = "script-revision-layer script-revision-accept-layer";
+    const dialog = document.createElement("div");
+    dialog.className = "script-revision-dialog script-revision-accept-dialog";
+    dialog.tabIndex = -1;
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-labelledby", "script-revision-accept-title");
+    const title = document.createElement("h2");
+    title.id = "script-revision-accept-title";
+    title.textContent = "就按这一稿";
+    const cost = document.createElement("p");
+    cost.className = "script-revision-accept-cost";
+    cost.textContent = ACCEPT_COST;
+    const risk = document.createElement("p");
+    risk.className = "script-revision-accept-risk";
+    const message = document.createElement("p");
+    message.className = "script-revision-accept-message";
+    message.setAttribute("role", "status");
+    const actions = document.createElement("div");
+    actions.className = "script-revision-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "script-revision-accept-cancel";
+    cancel.textContent = "取消";
+    cancel.addEventListener("click", closeAccept);
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "script-revision-accept-confirm";
+    confirm.textContent = "仍接受这一稿";
+    confirm.addEventListener("click", () => submitAccept(options));
+    actions.append(cancel, confirm);
+    dialog.append(title, cost, renderAcceptSources(view), risk, message, actions);
+    layer.append(dialog);
+    layer.addEventListener("click", (event) => {
+      if (event.target === layer) closeAccept();
+    });
+    const keydown = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeAccept();
+    };
+    acceptDialog = { projectId: projectId, options: options, trigger: trigger || null, layer: layer, dialog: dialog, risk: risk, message: message, confirm: confirm, inflight: false, keydown: keydown };
+    paintAcceptRisk();
+    document.body.appendChild(layer);
+    document.addEventListener("keydown", keydown, true);
+    confirm.focus();
+  }
+
   function createEntry(options) {
     const projectId = options.project && options.project.id;
     const revision = revisionFor(projectId);
@@ -1506,6 +1850,26 @@
       spent.className = "script-revision-opinion-budget";
       spent.textContent = "这组底稿和意见的模型次数已用完。意见还留着，仍可以手工改全文。";
       box.append(spent);
+    }
+    if (revision && revision.continue_retryable === true) {
+      const acceptNote = document.createElement("p");
+      acceptNote.className = "script-revision-accept-note";
+      acceptNote.textContent = "已接受这一稿。下一段可能已经排上，尚未确认。打开和刷新不会再提交。";
+      const retryContinue = document.createElement("button");
+      retryContinue.type = "button";
+      retryContinue.className = "choice script-revision-accept-retry";
+      retryContinue.id = "script-revision-accept-retry";
+      retryContinue.textContent = "已接受，重试继续下一段";
+      retryContinue.addEventListener("click", () => retryAccept(options, projectId));
+      box.append(acceptNote, retryContinue);
+    } else if (acceptChoiceOpen(revision)) {
+      const accept = document.createElement("button");
+      accept.type = "button";
+      accept.className = "choice script-revision-accept-open";
+      accept.id = "script-revision-accept-open";
+      accept.textContent = "就按这一稿";
+      accept.addEventListener("click", () => openAccept(options, accept));
+      box.append(accept);
     }
     return box;
   }

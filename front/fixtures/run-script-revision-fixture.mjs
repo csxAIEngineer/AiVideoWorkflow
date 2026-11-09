@@ -721,6 +721,67 @@ async function runBrowser(origin) {
   check("opinion none clears the old running status", noneShown.indexOf("正在按意见改稿") < 0 && noneShown.indexOf("意见候选已生成") < 0 && noneShown === "", noneShown);
   await evalValue("__fixture.state.opinionView = null");
 
+  await evalValue(`__fixture.state.acceptView = {
+    accept_sources: [
+      { source: "official", available: true, text_hash: "hash-official", issue_state: "reviewed", review_status: "blocked", issues: [{ reason: "声画对不上" }], risk: null, related_review: null, can_accept: true, unavailable_reason: "" },
+      { source: "draft", available: true, draft_source: "rejected_text", text_hash: "hash-draft", issue_state: "unreviewed", review_status: "", issues: null, risk: { from: "repair_candidate", status: "blocked", reason: "需要人工确认", validation: { evidence: "旧声明" } }, related_review: { applies_to: "official", status: "blocked", reason: "对着正式稿" }, can_accept: true, unavailable_reason: "" },
+      { source: "opinion", available: true, opinion_id: "op-accept", opinion_revision: 2, text_hash: "hash-opinion", issue_state: "unknown", review_status: "", issues: null, risk: null, related_review: { applies_to: "official", status: "blocked", reason: "对着正式稿" }, can_accept: true, unavailable_reason: "" }
+    ],
+    continue_state: "none",
+    continue_retryable: false,
+    accept_state: "none"
+  };`);
+  await evalValue("ScriptRevisionEdit.prepareRevision({ rpc: rpc, project: { id: 'p-accept' }, getProjectId: function () { return 'p-accept'; } }, 'p-accept')");
+  await evalValue("__showOpinion('p-accept')");
+  const acceptBefore = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is' || item.method === 'projects.script_revision.accept_retry').length");
+  await evalValue("document.querySelector('#script-revision-accept-open').click()");
+  await waitText(".script-revision-accept-cost", "会调用模型并可能修复");
+  const cost = await evalValue("document.querySelector('.script-revision-accept-cost').textContent");
+  check("accept explains the writing cost without calling", cost === "继续下一段提示词写作，会调用模型并可能修复；不自动出图或视频，完成后仍需确认。" && cost.indexOf("一次") < 0 && cost.indexOf("免费") < 0 && await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is').length") === acceptBefore, cost);
+  await evalValue("document.querySelector('#script-revision-accept-draft').click()");
+  const draftRisk = await evalValue("document.querySelector('.script-revision-accept-risk').textContent");
+  const afterSwitch = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is').length");
+  check("unreviewed issues are not shown as no problem", draftRisk.indexOf("不能当成没有问题") >= 0 && draftRisk.indexOf("不是选中稿自身的审查") >= 0 && draftRisk.indexOf("无问题") < 0 && afterSwitch === acceptBefore, draftRisk);
+  await evalValue("document.querySelector('.script-revision-accept-cancel').click()");
+  check("cancel accept does not submit", await evalValue("!document.querySelector('.script-revision-accept-dialog') && __fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is').length === " + acceptBefore) === true);
+  await evalValue("__fixture.setMode('rejected')");
+  await evalValue("document.querySelector('#script-revision-open').click()");
+  await waitText(".script-revision-status", "未通过审稿");
+  const savesBeforeDirty = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.save').length");
+  await evalValue("document.querySelector('#script-revision-text').value = '还没保存的本地句子'");
+  await evalValue("document.querySelector('#script-revision-accept-open').click()");
+  await waitText(".script-revision-accept-confirm", "仍接受这一稿");
+  await evalValue("document.querySelector('.script-revision-accept-confirm').click()");
+  const dirtyKept = await evalValue("document.querySelector('#script-revision-text').value");
+  const dirtyAccepts = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is').length");
+  const savesAfterDirty = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.save').length");
+  check("dirty local text blocks accept and stays", dirtyKept === "还没保存的本地句子" && dirtyAccepts === acceptBefore && savesAfterDirty === savesBeforeDirty, dirtyKept);
+  await evalValue("document.querySelector('.script-revision-accept-cancel').click()");
+  await evalValue("document.querySelector('#script-revision-text').value = __fixture.OFFICIAL");
+  await evalValue("document.querySelector('input[value=draft]').click()");
+  await evalValue("document.querySelector('#script-revision-accept-open').click()");
+  await waitText(".script-revision-accept-confirm", "仍接受这一稿");
+  await evalValue("document.querySelector('#script-revision-accept-draft').click()");
+  await evalValue("document.querySelector('.script-revision-accept-confirm').click()");
+  await waitText(".script-revision-outside-message", "下一段已在队列里");
+  const acceptCall = await evalValue("var rows = __fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is'); JSON.stringify(rows[rows.length - 1].params)");
+  const acceptBody = JSON.parse(acceptCall);
+  check("clean candidate buffer accepts draft without text", acceptBody.source === "draft" && acceptBody.acknowledge_risk === true && acceptBody.text_hash === "hash-draft" && !acceptBody.text && !acceptBody.accept_unreviewed_edit && acceptBody.base_token === "sr1.opaque-rejected", acceptCall);
+  await evalValue("__fixture.state.acceptView.continue_state = 'none'");
+  await evalValue("ScriptRevisionEdit.prepareRevision({ rpc: rpc, project: { id: 'p-accept' }, getProjectId: function () { return 'p-accept'; } }, 'p-accept')");
+  await evalValue("__showOpinion('p-accept')");
+  await evalValue("document.querySelector('#script-revision-accept-open').click()");
+  const beforeOpinionAccept = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is').length");
+  await evalValue("document.querySelector('#script-revision-accept-opinion').click()");
+  await evalValue("document.querySelector('.script-revision-accept-confirm').click()");
+  for (let i = 0; i < 40; i += 1) {
+    const count = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is').length");
+    if (count > beforeOpinionAccept) break;
+    await delay(50);
+  }
+  const opinionAccept = JSON.parse(await evalValue("var rows = __fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is'); JSON.stringify(rows[rows.length - 1].params)"));
+  check("opinion accept sends both identity fields and no text", opinionAccept.source === "opinion" && opinionAccept.opinion_id === "op-accept" && opinionAccept.opinion_revision === 2 && opinionAccept.acknowledge_risk === true && !opinionAccept.text, JSON.stringify(opinionAccept));
+
   browser.ws.close();
   browser.chrome.kill();
   await delay(400);

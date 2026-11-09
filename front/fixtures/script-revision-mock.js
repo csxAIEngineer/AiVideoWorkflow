@@ -122,9 +122,25 @@
       opinion_model_remaining: 2,
       opinion_model_retryable: false,
       can_confirm_opinion: false,
+      accept_sources: [
+        { source: "official", available: true, text_hash: "hash-official", issue_state: "reviewed", review_status: "blocked", issues: [{ reason: "声画对不上" }], risk: null, related_review: null, can_accept: false, unavailable_reason: "closed" },
+        { source: "draft", available: false, draft_source: "none", text_hash: "", issue_state: "unknown", review_status: "", issues: null, risk: null, related_review: null, can_accept: false, unavailable_reason: "closed" },
+        { source: "opinion", available: false, opinion_id: "", opinion_revision: 0, text_hash: "", issue_state: "unknown", review_status: "", issues: null, risk: null, related_review: null, can_accept: false, unavailable_reason: "not_ready" },
+      ],
+      accept_state: "none",
+      continue_state: "none",
+      continue_retryable: false,
+      accepted_source: "",
+      accepted_script_hash: "",
+      accepted_issues: null,
+      human_accepted: false,
+      review_passed: false,
     };
     if (state.opinionView) {
       Object.keys(state.opinionView).forEach(function (key) { row[key] = state.opinionView[key]; });
+    }
+    if (state.acceptView) {
+      Object.keys(state.acceptView).forEach(function (key) { row[key] = state.acceptView[key]; });
     }
     if (state.mode === "repair") {
       row.can_edit = false;
@@ -349,6 +365,48 @@
     return { ok: true, official_saved: false, opinion_state: "running", unchanged: true, base_token: body.base_token, message: "正在按意见改稿" };
   }
 
+  function acceptAsIs(params) {
+    const body = params || {};
+    if (body.acknowledge_risk !== true) throw rpcError(400, "要按这一稿继续，需要明确确认审查没通过的风险", "risk_not_acknowledged", false);
+    if (body.text || body.accept_unreviewed_edit) throw rpcError(400, "这个来源不接收正文，也不会静默保存编辑区", "text_forbidden", false);
+    if (!body.text_hash || !body.idempotency_key || !body.base_token) throw rpcError(400, "缺少所选稿摘要", "invalid_request", false);
+    if (body.source === "opinion" && (!body.opinion_id || body.opinion_revision == null || body.opinion_revision === "")) {
+      throw rpcError(400, "按意见候选需要同时给出 opinion_id 和 opinion_revision", "invalid_request", false);
+    }
+    if (state.acceptFail) {
+      const fail = state.acceptFail;
+      state.acceptFail = null;
+      throw fail;
+    }
+    state.continueState = "queued";
+    state.acceptView = Object.assign({}, state.acceptView, { continue_state: "queued", continue_retryable: false, accept_state: "accepted" });
+    return {
+      ok: true,
+      saved: true,
+      official_saved: body.source !== "official",
+      review_queued: false,
+      accept_state: "accepted",
+      continue_state: "queued",
+      continue_stage: "asset",
+      continue_paid: false,
+      source: body.source,
+      base_token: "sr1.after-accept",
+      message: "已按这一稿继续。原来的审稿结论还在，没有改成通过，也没有出图。",
+      unresolved_issues: [],
+      unreviewed_edit: false,
+    };
+  }
+
+  function acceptRetry(params) {
+    const body = params || {};
+    if (body.text || body.idempotency_key || body.source || body.text_hash || body.acknowledge_risk != null) {
+      throw rpcError(400, "补排只接受项目和版本", "invalid_request", false);
+    }
+    if (!body.base_token) throw rpcError(400, "缺少版本", "invalid_request", false);
+    state.continueState = "queued";
+    return { ok: true, saved: true, official_saved: false, continue_state: "queued", base_token: body.base_token, message: "下一段已在队列里" };
+  }
+
   async function handle(method, params) {
     state.calls.push({ method: method, params: params || {} });
     if (method === "config.get") return { models: [], templates: [], debug_llm: false };
@@ -360,6 +418,8 @@
     if (method === "projects.script_revision.retry_review") return retryReview(params);
     if (method === "projects.script_revision.opinion") return submitOpinion(params);
     if (method === "projects.script_revision.opinion_retry") return retryOpinionCall(params);
+    if (method === "projects.script_revision.accept_as_is") return acceptAsIs(params);
+    if (method === "projects.script_revision.accept_retry") return acceptRetry(params);
     const blocked = {
       "projects.render": true,
       "projects.rerun": true,
