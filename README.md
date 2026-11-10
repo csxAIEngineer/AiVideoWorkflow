@@ -25,7 +25,7 @@ End 会在本机拉起 AI（`http://127.0.0.1:8791/rpc`）。已经单独启动 
 
 画幅跟立项时锁下的 16:9、9:16 或 21:9 走。资产和镜头按故事需要增减。单次视频生成是 4 到 15 秒。写完的项目目录里有 `project.md`、`feed.md`、`board.html` 和 `spec.json`。出片进度写在 `run_state.json`。已经落盘的图和视频会跳过。页面上可以暂停、继续，或重置当前失败的那一步。网络中断时，已有远端任务号就继续查状态；还没有任务号就用同一个幂等键再提交。
 
-命令行导演室（同一套入口：先按当前模版做意图补充，确认后用该模版写提示词。文本模型是 `qwen3.8-flash`）：
+命令行导演室（同一套入口：先按当前模版做意图补充，确认后用该模版写提示词。文本模型是 `deepseek-v4-flash-0731`）：
 
 ```bash
 python3 front/studio/chat.py
@@ -35,7 +35,7 @@ python3 front/studio/chat.py
 
 `AI/qwen_api/` 按当前千问环境选密钥。测试用 `QWEN_API_KEY`，Token Plan 生产用 `TOKE_PLAN_QWEN_API_KEY`。密钥只从项目根目录的 `.env` 读取。测试环境是 `https://maas.qianwenaiapi.com/compatible-mode/v1`，生产环境是 `https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1`。千问环境写在 `config/qwen.json`。没有这份文件时才用 `QWEN_BASE_URL`。没配当前环境的密钥时，读图写成「尚未读图」，其它调用报未配置对应的变量。
 
-文本和意图用 `qwen3.8-flash`，走兼容模式 `/compatible-mode/v1` 的 Responses API。意图图只调用函数 `submit_intent`。请求带 `enable_thinking: false`，并且不传 `reasoning.effort`。带上 `low` 时仍会返回推理 token。解析仍用 `AI/script.py` 的 `parse_drill_text`。
+文本和意图用 `deepseek-v4-flash-0731`，固定走 Token Plan `https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1` 的 Responses API，密钥变量是 `TOKE_PLAN_QWEN_API_KEY`。这台主机不跟 `config/qwen.json` 的生图主机走。意图图只调用函数 `submit_intent`。请求带 `enable_thinking: false`，并且不传 `reasoning.effort`。带上 `low` 时仍会返回推理 token。解析仍用 `AI/script.py` 的 `parse_drill_text`。
 
 读图用 `qwen3.8-flash`，请求带 `enable_thinking: false`。生产 Token Plan 不提供 `qwen3.8-omni-flash`。生图用 `wan2.7-image`：没有参考图是文生图，有参考图是同一模型的图生图。Token Plan 没有 `qwen-image-3.0`。万相不接受 `prompt_extend`，无参考图时关闭 `thinking_mode`，`watermark` 关闭。出镜用 `MiniMax/MiniMax-H3`，一个模型覆盖文生、首帧、首尾帧和参考素材，`resolution` 为 `768P`，`watermark` 关闭。`16:9`、`9:16`、`21:9` 原样传入，其它比例用 `adaptive`。提交参数有 `preview` 和 `generate` 两套，结构相同，默认值也相同。出片走 `generate`。`video.submit` 不传 `mode` 时同样按 `generate` 提交。云端出镜走当前千问主机，仍是 `768P`。页面选「出镜：本地 MiniMax-H3」时，同一套提交和查询改打 OmniRef Ref2VA，见下一节。旁白用 `qwen-audio-3.0-tts-flash`，音色默认 `longanhuan_v3.6`，可用 `QWEN_TTS_VOICE` 覆盖。没有对等的器乐模型，`audio.compose` 直接失败，不再请求别的供应商。
 

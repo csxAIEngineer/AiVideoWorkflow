@@ -9,7 +9,6 @@ A feel-driven retouch lives in end.retouch and reruns on its own.
 import threading
 
 from end.rerun import _worker_busy
-from end.trace import write_internal
 from end.workflow_from_spec import collect_steps
 
 _NODES = ("script", "storyboard", "asset", "shot")
@@ -213,8 +212,6 @@ def _save_revision(site, project_id, job, text, previs):
     else:
         raise ValueError("不能从这里改")
     site.save_project_content(project_id, body)
-    if node == "storyboard" and str(previs or "").strip():
-        write_internal(site.project_dir(project_id), "previs.md", previs)
     _clear_job(site, project_id, handoff=False)
 
 

@@ -1,4 +1,4 @@
-"""Local render: Qwen stills, Wan clips, ffmpeg join, optional Qwen narration, then burn 字幕.ass."""
+"""Local render: Qwen stills, Wan clips, ffmpeg join, optional Qwen narration, then write 字幕.ass."""
 
 import base64
 import json
@@ -1933,7 +1933,7 @@ class RenderContext(object):
             self.write_locked()
 
     def run_subtitles(self, joined, shots, spec=None):
-        """Last step: write 字幕.ass from the script lines and burn it with ffmpeg."""
+        """Last step: write 字幕.ass beside the film. The picture is not burned."""
         step_id = "subtitles"
         ass_path = self.work_dir / "outputs" / "字幕.ass"
         while True:
@@ -1945,7 +1945,7 @@ class RenderContext(object):
                 self.emit("成片已生成，可以下载", "done", step_id, "done", percent=100)
                 return joined
             if self._attempts(step) >= MAX_ATTEMPTS and step.get("status") == "failed":
-                self.pause_for_failure(step_id, "subtitles", step.get("error") or "烧录字幕失败")
+                self.pause_for_failure(step_id, "subtitles", step.get("error") or "写出字幕失败")
                 continue
             shots = shots_for_subtitles(self.work_dir, shots, spec)
             for shot in shots:
@@ -1960,15 +1960,15 @@ class RenderContext(object):
             mixed = None
             if soundtrack_enabled(self.soundtrack):
                 mixed, _relative = output_paths(self.work_dir, "audio", "audio")
+            if mixed is not None and mixed.is_file() and mixed.resolve() != Path(joined).resolve():
+                Path(joined).write_bytes(mixed.read_bytes())
             if not cues:
-                if mixed is not None and mixed.is_file() and mixed.resolve() != Path(joined).resolve():
-                    Path(joined).write_bytes(mixed.read_bytes())
                 self.mark_done(step_id, "subtitles", "", "")
                 self.done_steps += 1
                 self._mark_film_done()
                 self.emit("这一集没有对白，成片不烧字幕", "done", step_id, "done", percent=100)
                 return joined
-            self.emit("正在把字幕烧进成片", "subtitles", step_id, "running")
+            self.emit("正在写出字幕文件", "subtitles", step_id, "running")
             try:
                 with self.lock:
                     state = self.load_locked()
@@ -1982,7 +1982,6 @@ class RenderContext(object):
                     self.write_locked()
                 width, height = frame_size(self.aspect)
                 write_subtitle_ass(cues, ass_path, width, height)
-                burn_joined_subtitles(joined, ass_path, self.burner, source=mixed)
             except (OSError, RuntimeError) as error:
                 reason = str(error)
                 with self.lock:
@@ -1995,7 +1994,7 @@ class RenderContext(object):
                     attempts = self._attempts(step)
                 if is_transient(error) and attempts < MAX_ATTEMPTS:
                     self.emit(
-                        "重新连接：烧录字幕，第 %s/%s 次" % (attempts, MAX_ATTEMPTS),
+                        "重新连接：写出字幕，第 %s/%s 次" % (attempts, MAX_ATTEMPTS),
                         "reconnect",
                         step_id,
                         "retrying",
@@ -2007,7 +2006,7 @@ class RenderContext(object):
             self.mark_done(step_id, "subtitles", "字幕.ass", "")
             self.done_steps += 1
             self._mark_film_done()
-            self.emit("成片已生成，可以下载", "done", step_id, "done", percent=100)
+            self.emit("字幕已另存，成片不烧字幕", "done", step_id, "done", percent=100)
             return joined
 
 
@@ -2430,7 +2429,7 @@ def run_local_pipeline(
     video_submit_mode="generate",
     reviewer=None,
 ):
-    """Generate stills, then clips, join them, optionally mix a soundtrack, then burn 字幕.ass.
+    """Generate stills, then clips, join them, optionally mix a soundtrack, then write 字幕.ass.
 
     images_only stops after the stills. Video, join, soundtrack, and subtitles are left for a later run.
     """
@@ -2519,7 +2518,7 @@ def run_local_pipeline(
         steps = "千问生图 / MiniMax H3 出镜 / 本机拼接"
         if soundtrack_enabled(mode):
             steps += " / 千问旁白"
-        steps += " / ffmpeg 烧字幕"
+        steps += " / 字幕另存"
         ctx.emit(
             "开始出片：" + steps,
             "images",

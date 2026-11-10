@@ -223,9 +223,9 @@ class AutoAdvanceTest(unittest.TestCase):
                     return False, "FAIL: A1 图1 同上"
                 return True, ""
             if stage == "storyboard":
-                text = (internal / "previs.md").read_text(encoding="utf-8") if (internal / "previs.md").is_file() else ""
-                if "改过" not in text and "身体正对前方" not in text:
-                    return False, "FAIL: 段1 缺六问"
+                text = (internal / "分镜.md").read_text(encoding="utf-8") if (internal / "分镜.md").is_file() else ""
+                if not text.strip():
+                    return False, "分镜是空的"
                 return True, ""
             if stage == "feed":
                 text = (internal / "feed.md").read_text(encoding="utf-8") if (internal / "feed.md").is_file() else ""
@@ -252,7 +252,8 @@ class AutoAdvanceTest(unittest.TestCase):
         self.assertIn("任务：资产锁定", joined)
         self.assertIn("阶段：asset", joined)
         self.assertIn("任务：分镜", joined)
-        self.assertIn("预演：1", joined)
+        self.assertNotIn("预演：1", joined)
+        self.assertIn("景别机位", joined)
         self.assertIn("任务：提示词封装", joined)
         self.assertIn("阶段：feed", joined)
         self.assertIn("改过的资产", (project_dir("p-chain") / "_内部_" / "assets.md").read_text(encoding="utf-8"))

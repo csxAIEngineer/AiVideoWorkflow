@@ -120,7 +120,7 @@ class ReviseProjectTest(unittest.TestCase):
         self.assertEqual(project["script"], "旧剧本")
         self.assertEqual((internal / "assets.md").read_text(encoding="utf-8"), "资产留下\n")
         self.assertIn("新分镜", (internal / "分镜.md").read_text(encoding="utf-8"))
-        self.assertIn("新预演", (internal / "previs.md").read_text(encoding="utf-8"))
+        self.assertFalse((internal / "previs.md").is_file())
         self.assertNotIn("revising", project["progress"])
 
     def test_asset_revision_replaces_one_block(self):

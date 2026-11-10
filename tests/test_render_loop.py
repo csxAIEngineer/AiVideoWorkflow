@@ -15,6 +15,7 @@ from AI.qwen_api.video import VideoTask
 from end.render_loop import (
     _ffmpeg_bin,
     _missing_subtitle_glyphs,
+    _normalize_join_command,
     assemble_shot_media,
     blank_step,
     build_subtitle_ass,
@@ -610,9 +611,9 @@ class RenderLoopTest(unittest.TestCase):
     def test_task_plan_ends_with_ffmpeg_subtitles(self):
         tasks = task_plan(SPEC)
         self.assertEqual([task["id"] for task in tasks[-2:]], ["join", "subtitles"])
-        self.assertEqual(tasks[-1]["detail"], "ffmpeg 烧录 字幕.ass")
+        self.assertEqual(tasks[-1]["detail"], "写出 字幕.ass")
 
-    def test_pipeline_burns_ass_after_join(self):
+    def test_pipeline_writes_ass_without_burning_the_film(self):
         spec = {
             "title": "雨夜",
             "assets": [{"id": "A1", "title": "主角", "prompt": "一个女人站在车站"}],
@@ -626,29 +627,60 @@ class RenderLoopTest(unittest.TestCase):
                 }
             ],
         }
-        burned = []
+        from unittest.mock import patch
 
-        def burner(raw, ass_path, target):
-            burned.append((Path(raw).read_bytes(), Path(ass_path).read_text(encoding="utf-8")))
-            Path(target).write_bytes(b"burned-mp4")
+        from end.soundtrack import mix_command
 
-        result = run_local_pipeline(
-            spec,
-            self.work,
-            icreat=FakeICreat(),
-            cr=FakeCR(),
-            sleeper=_noop_sleep,
-            burner=burner,
-        )
+        def fail_burn(*_args, **_kwargs):
+            raise AssertionError("成片不应再烧字幕")
+
+        with patch("end.render_loop.ffmpeg_burn_subtitles", fail_burn), patch(
+            "end.render_loop.burn_joined_subtitles", fail_burn
+        ):
+            result = run_local_pipeline(
+                spec,
+                self.work,
+                icreat=FakeICreat(),
+                cr=FakeCR(),
+                sleeper=_noop_sleep,
+            )
         self.assertEqual(result["video_file"], "joined.mp4")
-        self.assertEqual((self.work / "outputs" / "joined.mp4").read_bytes(), b"burned-mp4")
-        self.assertTrue((self.work / "outputs" / "concat.mp4").is_file())
-        self.assertIn("再站一会儿就好", burned[0][1])
+        self.assertEqual((self.work / "outputs" / "joined.mp4").read_bytes(), b"mp4")
+        self.assertFalse((self.work / "outputs" / "joined.burn.mp4").exists())
+        ass = (self.work / "outputs" / "字幕.ass").read_text(encoding="utf-8")
+        self.assertIn("再站一会儿就好", ass)
+        log = (self.work / "outputs" / "render.log").read_text(encoding="utf-8")
+        self.assertIn("字幕已另存，成片不烧字幕", log)
+        self.assertNotIn("正在把字幕烧进成片", log)
         state = load_run_state(self.work)
         self.assertEqual(state["phase"], "done")
         self.assertEqual(state["steps"]["subtitles"]["status"], "done")
         self.assertEqual(state["steps"]["subtitles"]["output_file"], "字幕.ass")
-        self.assertTrue((self.work / "outputs" / "字幕.ass").is_file())
+        join = _normalize_join_command(
+            "ffmpeg",
+            ["a.mp4", "b.mp4"],
+            [{"has_audio": True, "duration": 2}, {"has_audio": True, "duration": 2}],
+            "joined.mp4",
+            "9:16",
+        )
+        mix = mix_command(
+            "ffmpeg",
+            "concat.mp4",
+            "music.mp3",
+            [{"file": "n.mp3", "start": 0, "end": 2}],
+            "voice",
+            "mixed.mp4",
+            2,
+        )
+        for command in (join, mix):
+            text = " ".join(command)
+            self.assertNotIn("ass=", text)
+            self.assertNotIn("subtitles=", text)
+        self.assertIn("concat=", " ".join(join))
+        self.assertIn("-map [a]", " ".join(join))
+        self.assertIn("amix=", " ".join(mix))
+        self.assertIn("-map 0:v", " ".join(mix))
+        self.assertIn("-map [a]", " ".join(mix))
 
     def test_pipeline_keeps_minimax_free_of_burned_text(self):
         spec = {
@@ -1090,10 +1122,6 @@ class RenderLoopTest(unittest.TestCase):
                 mixed_from.append((cues[0]["end"], film_end))
             Path(target).write_bytes(b"mixed-film")
 
-        def burner(raw, _ass, target):
-            self.assertEqual(Path(raw).name, "mixed.mp4")
-            Path(target).write_bytes(b"burned")
-
         cr = FakeCR()
         run_local_pipeline(
             spec,
@@ -1101,7 +1129,6 @@ class RenderLoopTest(unittest.TestCase):
             icreat=FakeICreat(),
             cr=cr,
             sleeper=_noop_sleep,
-            burner=burner,
             soundtrack="music_narration",
             brief="雨夜的车",
             minimax=Mini(),
@@ -1116,7 +1143,8 @@ class RenderLoopTest(unittest.TestCase):
         self.assertAlmostEqual(mixed_from[0][0], 2.5)
         self.assertAlmostEqual(mixed_from[0][1], 2.5)
         self.assertEqual((self.work / "outputs" / "concat.mp4").read_bytes(), b"mp4")
-        self.assertEqual((self.work / "outputs" / "joined.mp4").read_bytes(), b"burned")
+        self.assertEqual((self.work / "outputs" / "joined.mp4").read_bytes(), b"mixed-film")
+        self.assertIn("夜色已经很深了", (self.work / "outputs" / "字幕.ass").read_text(encoding="utf-8"))
         cues = json.loads((self.work / "outputs" / "voice" / "cues.json").read_text(encoding="utf-8"))
         self.assertAlmostEqual(cues["timeline"][0]["end"], 2.5)
 
@@ -1137,7 +1165,6 @@ class RenderLoopTest(unittest.TestCase):
             icreat=FakeICreat(),
             cr=FakeCR(),
             sleeper=_noop_sleep,
-            burner=burner,
             soundtrack="music_narration",
             brief="雨夜的车",
             minimax=Mini(),

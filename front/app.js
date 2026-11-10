@@ -644,7 +644,7 @@ function progressPanel(project) {
   if (explicitRenderEntry(project)) {
     const produce = document.createElement("button");
     produce.type = "button";
-    produce.className = "produce";
+    produce.className = "produce" + (produceNeedsAttention(project) ? " produce-attention" : "");
     produce.textContent = "出图出片";
     produce.addEventListener("click", () => postControl("render"));
     panel.append(produce);
@@ -1039,6 +1039,15 @@ function explicitRenderEntry(project) {
   return promptsReady(project)
     || ((project.progress || {}).phase === "aspect_wait")
     || project.render_recovery === "projects.render";
+}
+
+function produceNeedsAttention(project) {
+  if (!project) return false;
+  const progress = project.progress || {};
+  const pipeline = progress.pipeline || {};
+  const hold = String(project.generation_hold || pipeline.generation_hold || "");
+  if (hold === "technical") return false;
+  return promptsReady(project) || progress.phase === "aspect_wait";
 }
 
 function onResumeClick() {
@@ -3032,9 +3041,11 @@ function syncControlButtons(project) {
     button.disabled = !canReset;
   });
   const showProduce = explicitRenderEntry(project);
+  const attention = showProduce && produceNeedsAttention(project);
   document.querySelectorAll(".js-produce").forEach((button) => {
     button.classList.toggle("hidden", !showProduce);
     button.disabled = !showProduce || sending;
+    button.classList.toggle("produce-attention", attention);
   });
 }
 

@@ -14,9 +14,8 @@ from typing import Annotated, Any, List, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from AI.qwen_api.client import QwenClient
-
-TEXT_MODEL = "qwen3.8-flash"
+TEXT_MODEL = "deepseek-v4-flash-0731"
+TEXT_HOST = "https://token-plan.maas.qianwenaiapi.com"
 INTENT_EFFORT = "low"
 WRITE_EFFORT = "low"
 _EFFORTS = ("low", "high", "max")
@@ -82,13 +81,27 @@ class TextState(TypedDict, total=False):
     partials: Annotated[List[dict], operator.add]
 
 
+def text_base_host(base_url=None):
+    """Token Plan text host. Image and video keep resolve_qwen_host."""
+    from AI.qwen_api.client import normalize_host
+
+    chosen = str(base_url if base_url is not None else os.environ.get("AIVIDEO_TEXT_BASE_URL") or TEXT_HOST).strip()
+    return normalize_host(chosen or TEXT_HOST)
+
+
 def responses_client(api_key=None, base_url=None, client=None):
+    """Text client only. Uses the Token Plan key and host, not the image host."""
     if client is not None:
         return client
     from openai import OpenAI
 
-    qwen = QwenClient(api_key=api_key, base_url=base_url)
-    return OpenAI(api_key=qwen.api_key, base_url=qwen.compatible_base, max_retries=0)
+    from AI.qwen_api.client import QwenError, load_dotenv
+
+    load_dotenv()
+    key = str(api_key if api_key is not None else os.environ.get("TOKE_PLAN_QWEN_API_KEY") or "").strip()
+    if not key:
+        raise QwenError("未配置 TOKE_PLAN_QWEN_API_KEY")
+    return OpenAI(api_key=key, base_url=text_base_host(base_url) + "/compatible-mode/v1", max_retries=0)
 
 
 def _item_field(item, name):
@@ -544,13 +557,16 @@ def compile_text_graph(client):
 
 def invoke_text(kind, messages, model=None, max_output_tokens=None, timeout=None, client=None, effort=None):
     """Run one text turn and keep the stop reason next to the body."""
-    del model
+    from AI.script import normalize_model
+
+    override = str(os.environ.get("AIVIDEO_TEXT_MODEL") or "").strip()
+    name = override or normalize_model(model)
     app = compile_text_graph(responses_client(client=client))
     state = app.invoke(
         {
             "kind": kind,
             "messages": list(messages or []),
-            "model": TEXT_MODEL,
+            "model": name,
             "max_output_tokens": int(max_output_tokens or 0),
             "timeout": int(timeout or 0),
             "effort": effort or "",

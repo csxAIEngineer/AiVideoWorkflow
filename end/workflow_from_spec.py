@@ -287,7 +287,7 @@ def ordered_assets(assets):
 
 
 def task_plan(spec, soundtrack="off"):
-    """Local render rows: Qwen stills, Wan clips, ffmpeg join, optional narration, then burn 字幕.ass."""
+    """Local render rows: Qwen stills, Wan clips, ffmpeg join, optional narration, then write 字幕.ass."""
     assets, shots = collect_steps(spec)
     if not assets or not shots:
         return []
@@ -342,10 +342,10 @@ def task_plan(spec, soundtrack="off"):
         {
             "id": "subtitles",
             "kind": "subtitles",
-            "title": "烧录字幕",
+            "title": "字幕文件",
             "duration": total,
             "state": "pending",
-            "detail": "ffmpeg 烧录 字幕.ass",
+            "detail": "写出 字幕.ass",
         }
     )
     return tasks
@@ -758,7 +758,7 @@ def build_workflow(spec):
                 "网站不会把整图一次提交。\n"
                 "workflow0：每张资产图单独上传，跑完后稍等再跑下一张。\n"
                 "workflow1：每镜视频单独上传，用已下载的图作参考。\n"
-                "最后在本机拼接，再用 ffmpeg 把 字幕.ass 烧进成片。"
+                "最后在本机拼接，字幕另存为 字幕.ass，不烧进成片。"
             ],
         },
     )
