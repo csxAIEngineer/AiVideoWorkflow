@@ -68,7 +68,8 @@ class HandoffTest(unittest.TestCase):
         assets, shots = collect_steps(_spec())
         self.assertEqual(image_prompt(assets[0]), BLOCK.strip())
         self.assertEqual(shots[0]["prompt"], UNIT.strip())
-        self.assertEqual(shots[0]["duration"], 8)
+        # API length follows the storyboard row, clamped to 4–15, not a longer duration line.
+        self.assertEqual(shots[0]["duration"], 5)
         sent = delivery_prompt(shots[0], [], 0, False, "first_frame")
         self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK)
         self.assertNotIn("全程无字幕", sent)

@@ -2433,6 +2433,12 @@ def run_local_pipeline(
 
     images_only stops after the stills. Video, join, soundtrack, and subtitles are left for a later run.
     """
+    if not images_only:
+        from end.prompt_gate import feed_storyboard_gap
+
+        gap = feed_storyboard_gap(spec.get("feed") or "", spec.get("storyboard") or "")
+        if gap:
+            raise RuntimeError(gap)
     assets, shots = collect_steps(spec)
     aspect = aspect or resolve_aspect(spec, brief)
     if not images_only and not aspect:

@@ -72,6 +72,80 @@ def feed_unit_mismatch(feed):
     return ""
 
 
+# One H3 call is 4–15s. A shorter storyboard row stays its own unit and is raised.
+UNIT_MIN_SECONDS = 4
+UNIT_MAX_SECONDS = 15
+_LATER_SHOT = re.compile(r"\[Shot\s*(\d+)\b", re.I)
+ONE_SHOT_FEED_RULE = "\n".join((
+    "分镜有几镜就写几个投喂单元，按镜号顺序一一对应：第 1 镜是【投喂单元 1/N】。不要把多个分镜合进同一单元，也不要把一镜拆成多个单元。",
+    "每个单元只写这一镜的 [Shot 1]，不要写 [Shot 2] 或更后的切镜。",
+    "duration 写这一镜的秒数，并夹在 4–15 秒。短于 4 秒的镜仍单独成单元，duration 写成 4，不要为了凑时长并进别的镜。长于 15 秒的镜仍单独成单元，duration 写成 15。",
+))
+
+
+def unit_duration(seconds):
+    """Storyboard seconds clamped to one generator call."""
+    try:
+        value = int(seconds)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return max(UNIT_MIN_SECONDS, min(UNIT_MAX_SECONDS, value))
+
+
+def _declared_duration(unit):
+    match = re.search(r"(?m)^duration\s*:\s*(\d+)\s*$", str(unit or ""))
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def feed_storyboard_gap(feed, storyboard):
+    """Fail when feed units are not one-to-one with the storyboard shots.
+
+    Empty when there is no shot-prose board or no feed yet. A 3-second shot
+    must be its own unit declared as 4 seconds, not merged into a neighbour.
+    """
+    from end.storyboard_contract import shot_durations
+
+    if not str(feed or "").strip():
+        return ""
+    rows = shot_durations(storyboard)
+    if not rows:
+        return ""
+    units = delivery_units(feed)
+    if len(units) != len(rows):
+        return (
+            "[-] FAIL: 分镜有 %s 镜，投喂只有 %s 个单元。"
+            "一个分镜对应一个投喂单元，不要把多镜合进同一单元。"
+            % (len(rows), len(units))
+        )
+    problems = []
+    for (shot_id, raw), unit in zip(rows, units):
+        expected = unit_duration(raw)
+        actual = _declared_duration(unit)
+        if actual != expected:
+            shown = "没有 duration" if actual is None else "%s 秒" % actual
+            problems.append(
+                "%s 分镜 %s 秒，单元 duration 应为 %s 秒，写成了 %s"
+                % (shot_id, raw, expected, shown)
+            )
+        later = [int(number) for number in _LATER_SHOT.findall(unit) if int(number) >= 2]
+        if later:
+            problems.append(
+                "%s 的单元里写了 [Shot %s]。一个分镜只写 [Shot 1]"
+                % (shot_id, later[0])
+            )
+    if not problems:
+        return ""
+    return (
+        "[-] FAIL: 投喂没有按分镜一镜一单元对齐。"
+        "短于 4 秒的镜单独抬到 4 秒，不要并进别的镜；长于 15 秒的镜单独收到 15 秒。"
+        + "".join(problems)
+    )
+
+
 def align_feed_unit_headers(feed):
     """Rewrite each unit head so N/M matches the blocks that are actually present."""
     raw = str(feed or "")

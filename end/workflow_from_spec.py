@@ -202,8 +202,9 @@ def collect_steps(spec):
     before_ids = [shot["id"] for shot in shots]
     shots = _first_shots_by_id(shots)
     if units:
-        # H3: one API call per feed unit. Never pad missing units with storyboard
-        # Chinese rows — that is what made MiniMax ignore the Ref2VA contract.
+        # One API call per feed unit. Do not pad a short feed with storyboard prose.
+        # Length follows the paired storyboard row, clamped to 4–15, so a 3s shot
+        # is raised instead of merged into the previous unit.
         templates = shots
         rebuilt = []
         from end.board_shots import images_for_feed_unit
@@ -219,6 +220,10 @@ def collect_steps(spec):
                 if name in known or _is_upload_id(name)
             ]
             feed_duration = _duration_from_feed(unit)
+            board_duration = None
+            if index < len(templates) and (template or {}).get("duration") not in (None, ""):
+                board_duration = _clamp_duration((template or {}).get("duration"))
+            chosen_duration = board_duration if board_duration is not None else feed_duration
             # region agent log
             try:
                 import json as _json
@@ -249,9 +254,9 @@ def collect_steps(spec):
                         (template or {}).get("id"),
                         "S%02d" % (index + 1),
                     ),
-                    "duration": feed_duration
-                    if feed_duration is not None
-                    else int((template or {}).get("duration") or MIN_SECONDS),
+                    "duration": chosen_duration
+                    if chosen_duration is not None
+                    else MIN_SECONDS,
                     "prompt": unit,
                     "dialogue": str((template or {}).get("dialogue") or ""),
                     "narration": str((template or {}).get("narration") or ""),

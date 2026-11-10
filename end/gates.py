@@ -88,7 +88,7 @@ def _drop_hidden_c31(code, report):
     return 0, kept
 
 
-def check_feed(path, model, mode, track):
+def check_feed(path, model, mode, track, storyboard=""):
     text = ""
     try:
         text = Path(path).read_text(encoding="utf-8")
@@ -96,10 +96,13 @@ def check_feed(path, model, mode, track):
         text = ""
     if (model or "h3") == "h3":
         text = _prepare_h3_feed(path, text)
+    from end.prompt_gate import feed_storyboard_gap, feed_unit_mismatch
+
+    gap = feed_storyboard_gap(text, storyboard)
+    if gap:
+        return 1, gap
     routed = feed_uses_h3(text, model)
     if routed:
-        from end.prompt_gate import feed_unit_mismatch
-
         mismatch = feed_unit_mismatch(text)
         if mismatch:
             return 1, mismatch

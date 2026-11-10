@@ -417,6 +417,7 @@ _TASK_MARKERS = (
     ("任务：独立质检", "qc"),
     ("任务：离线看板", "board"),
 )
+from end.prompt_gate import ONE_SHOT_FEED_RULE
 from end.storyboard_contract import ASSET_FIELD_RULES
 
 _MERGE_SHAPE = {
@@ -459,7 +460,7 @@ _MERGE_SHAPE = {
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
         _MARKDOWN_FIELDS,
         "投喂稿放在 feed（字符串）。不要写 segments 对象，不要写接口 JSON。",
-        "每个投喂单元单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。",
+        ONE_SHOT_FEED_RULE,
         "这一阶段用不到的字段不要写。",
     )),
     "qc": "\n".join((

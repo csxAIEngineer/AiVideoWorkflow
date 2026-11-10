@@ -17,6 +17,7 @@ from end.gates import (
     invented_upload_claim,
     unverified_claim,
 )
+from end.prompt_gate import ONE_SHOT_FEED_RULE, feed_storyboard_gap
 from end.intake import enrich_brief, load_intake, writer_upload_block
 from end.locks import lock_brief
 from end.storyboard_contract import (
@@ -751,7 +752,7 @@ _INSTRUCTION = {
         "不要使用七段式栏名（【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】）。",
         "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
         "六段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
-        "每个投喂单元单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。",
+        ONE_SHOT_FEED_RULE,
         "每个 Subject 必须对应 assets.md 里已经有的图。没有关键帧资产就不要写 Picture。",
         "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
     )),
@@ -760,7 +761,7 @@ _INSTRUCTION = {
 _FEED_SEEDANCE = "\n".join((
     "只写投喂稿，放在 feed。feed 必须是字符串。",
     "用 ## 【投喂单元 N/M】标题，下面写七段：【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】。",
-    "每个投喂单元单独计时，单段不超过该模型上限。",
+    ONE_SHOT_FEED_RULE,
     "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
 ))
 
@@ -1233,7 +1234,15 @@ def check_stage(folder, stage, locks, title=""):
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
-        code, report = check_feed(path, locks.get("model") or "h3", mode, locks.get("track") or "1")
+        spec = _load_spec(folder)
+        board = str(spec.get("storyboard") or "") or _read(internal / "分镜.md")
+        code, report = check_feed(
+            path,
+            locks.get("model") or "h3",
+            mode,
+            locks.get("track") or "1",
+            board,
+        )
         if code != 0:
             return False, report
         return True, ""
@@ -2840,6 +2849,13 @@ def _finish(folder, locks, pipeline):
     spec = _load_spec(folder)
     feed_path = folder / "_内部_" / "feed.md"
     if feed_path.is_file():
+        board = str(spec.get("storyboard") or "") or _read(folder / "_内部_" / "分镜.md")
+        gap = feed_storyboard_gap(_read(feed_path), board)
+        if gap:
+            failed = dict(pipeline or {})
+            failed["check"] = "machine"
+            failed["current"] = "feed"
+            return gate_result("feed", False, gap, failed)
         code, report = check_prompt(feed_path, locks.get("model") or "h3", locks.get("track") or "1")
         if code != 0:
             failed = dict(pipeline or {})

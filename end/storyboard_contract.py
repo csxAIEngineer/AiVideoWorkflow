@@ -57,6 +57,20 @@ def has_shot_headings(text):
     return any(_HEADING.match(line.strip()) for line in str(text or "").splitlines())
 
 
+def shot_durations(text):
+    """``[(shot id, seconds), ...]`` from a shot-prose board.
+
+    Empty when a heading has no integer duration. Asset ids are not involved.
+    """
+    rows = []
+    for block in _blocks(text):
+        duration = _duration((block.get("fields") or {}).get("时长") or "")
+        if duration is None:
+            return []
+        rows.append((block["id"], duration))
+    return rows
+
+
 def _canonical_id(raw):
     match = re.search(r"(\d+)", str(raw or ""))
     if not match:

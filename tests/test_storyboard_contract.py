@@ -209,6 +209,7 @@ class QueueTest(unittest.TestCase):
                 return {
                     "feed": "\n".join((
                         "## 【投喂单元 1/1】",
+                        "duration: 6",
                         "subject_definitions:",
                         "<Subject 1> is a woman at a door.",
                         "summary:",
