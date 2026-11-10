@@ -104,8 +104,10 @@ def _declared_duration(unit):
 def feed_storyboard_gap(feed, storyboard):
     """Fail when feed units are not one-to-one with the storyboard shots.
 
-    Empty when there is no shot-prose board or no feed yet. A 3-second shot
-    must be its own unit declared as 4 seconds, not merged into a neighbour.
+    Empty when there is no shot-prose board or no feed yet. A missing
+    ``duration:`` line is not a failure: the paired storyboard row, clamped
+    to 4–15 seconds, is the length. A written second count that disagrees
+    with that row still fails. A 3-second shot stays its own unit.
     """
     from end.storyboard_contract import shot_durations
 
@@ -125,11 +127,10 @@ def feed_storyboard_gap(feed, storyboard):
     for (shot_id, raw), unit in zip(rows, units):
         expected = unit_duration(raw)
         actual = _declared_duration(unit)
-        if actual != expected:
-            shown = "没有 duration" if actual is None else "%s 秒" % actual
+        if actual is not None and actual != expected:
             problems.append(
-                "%s 分镜 %s 秒，单元 duration 应为 %s 秒，写成了 %s"
-                % (shot_id, raw, expected, shown)
+                "%s 分镜 %s 秒，单元 duration 应为 %s 秒，写成了 %s 秒"
+                % (shot_id, raw, expected, actual)
             )
         later = [int(number) for number in _LATER_SHOT.findall(unit) if int(number) >= 2]
         if later:
@@ -141,9 +142,44 @@ def feed_storyboard_gap(feed, storyboard):
         return ""
     return (
         "[-] FAIL: 投喂没有按分镜一镜一单元对齐。"
-        "短于 4 秒的镜单独抬到 4 秒，不要并进别的镜；长于 15 秒的镜单独收到 15 秒。"
-        + "".join(problems)
+        "短于 4 秒的镜单独抬到 4 秒，不要并进别的镜；长于 15 秒的镜单独收到 15 秒。\n"
+        + "\n".join(problems)
     )
+
+
+def stamp_storyboard_durations(feed, storyboard):
+    """Insert missing ``duration:`` lines from the storyboard. A failing feed is left as written."""
+    raw = str(feed or "")
+    if feed_storyboard_gap(raw, storyboard):
+        return raw
+    from end.storyboard_contract import shot_durations
+
+    rows = shot_durations(storyboard)
+    units = delivery_units(raw)
+    if not rows or len(units) != len(rows):
+        return raw
+    pieces = []
+    last = 0
+    cursor = 0
+    changed = False
+    for (_shot_id, seconds), unit in zip(rows, units):
+        start = raw.find(unit, cursor)
+        if start < 0:
+            return raw
+        pieces.append(raw[last:start])
+        if _declared_duration(unit) is None:
+            lines = unit.splitlines() or [""]
+            lines.insert(1, "duration: %s" % unit_duration(seconds))
+            pieces.append("\n".join(lines))
+            changed = True
+        else:
+            pieces.append(unit)
+        cursor = start + len(unit)
+        last = cursor
+    if not changed:
+        return raw
+    pieces.append(raw[last:])
+    return "".join(pieces)
 
 
 def align_feed_unit_headers(feed):

@@ -71,6 +71,9 @@ class FeedShotContractTest(unittest.TestCase):
         for text in (h3, seedance, merge_prompt("feed", brief), ONE_SHOT_FEED_RULE):
             self.assertIn("不要把多个分镜合进同一单元", text)
             self.assertNotIn("从 [Shot 2] 起", text)
+        source = (ROOT / "end/workflow_from_spec.py").read_text(encoding="utf-8")
+        self.assertNotIn("debug-d078f2.log", source)
+        self.assertNotIn("# region agent log", source)
         skill = (ROOT / "AI/skills/manju-laoli-skill/sd-feed-engine/SKILL.md").read_text(encoding="utf-8")
         gates = (ROOT / "AI/skills/manju-laoli-skill/sd-feed-engine/references/feed-mode-and-gates.md").read_text(encoding="utf-8")
         adapter = (ROOT / "AI/skills/manju-laoli-skill/short-drama-director/references/h3-adapter.md").read_text(encoding="utf-8")
@@ -161,6 +164,69 @@ class FeedShotContractTest(unittest.TestCase):
             ],
         })
         self.assertEqual([shot["duration"] for shot in shots], [8, 4])
+        omitted = "\n\n".join(
+            "\n".join(line for line in _unit(index, 2, seconds, shot_id).splitlines() if not line.startswith("duration:"))
+            for index, (shot_id, seconds) in enumerate((("S01", 8), ("S02", 4)), 1)
+        )
+        self.assertEqual(feed_storyboard_gap(omitted, board), "")
+        _assets, bare = collect_steps({
+            "feed": omitted,
+            "shots": [
+                {"id": "S01", "duration": 8, "prompt": "甲", "images": []},
+                {"id": "S02", "duration": 3, "prompt": "乙", "images": []},
+            ],
+        })
+        self.assertEqual([shot["duration"] for shot in bare], [8, 4])
+
+    def test_wrong_durations_stay_on_separate_lines(self):
+        board = _board(("S01", 8), ("S02", 3))
+        bad = "\n\n".join((_unit(1, 2, 1, "S01"), _unit(2, 2, 9, "S02")))
+        gap = feed_storyboard_gap(bad, board)
+        self.assertIn("S01", gap)
+        self.assertIn("S02", gap)
+        self.assertIn("\nS02", gap)
+        self.assertNotIn("秒S02", gap)
+        self.assertNotIn("没有 duration", gap)
+
+    def test_eight_original_units_without_duration_pass(self):
+        board = (FIXTURE / "90525ed0f61e-storyboard.md").read_text(encoding="utf-8")
+        feed = (FIXTURE / "90525ed0f61e-feed.md").read_text(encoding="utf-8")
+        self.assertNotIn("\nduration:", feed)
+        self.assertNotIn("[Shot 2]", feed)
+        rows = shot_durations(board)
+        self.assertEqual([seconds for _shot, seconds in rows], [9, 5, 8, 4, 5, 8, 6, 6])
+        self.assertEqual(sum(seconds for _shot, seconds in rows), 51)
+        self.assertEqual(feed_storyboard_gap(feed, board), "")
+        folder = Path(tempfile.mkdtemp())
+        path = folder / "feed.md"
+        path.write_text(feed, encoding="utf-8")
+        code, report = check_feed(path, "h3", "M1", "1", board)
+        self.assertEqual(code, 0, report)
+        stamped = path.read_text(encoding="utf-8")
+        for seconds in (9, 5, 8, 4, 6):
+            self.assertIn("duration: %s" % seconds, stamped)
+        self.assertEqual(stamped.count("duration:"), 8)
+        self.assertNotIn("\nduration:", feed)
+        _assets, shots = collect_steps({
+            "storyboard": board,
+            "feed": feed,
+            "assets": [],
+            "shots": [
+                {"id": shot_id, "duration": raw, "prompt": "分镜 %s" % shot_id, "images": []}
+                for shot_id, raw in rows
+            ],
+        })
+        self.assertEqual(len(shots), 8)
+        self.assertEqual([shot["duration"] for shot in shots], [9, 5, 8, 4, 5, 8, 6, 6])
+        self.assertEqual(sum(shot["duration"] for shot in shots), 51)
+
+    def test_eight_shots_merged_into_four_units_still_fail(self):
+        board = (FIXTURE / "90525ed0f61e-storyboard.md").read_text(encoding="utf-8")
+        rows = shot_durations(board)
+        units = [_unit(index, 4, 10, "S%02d" % index) for index in range(1, 5)]
+        gap = feed_storyboard_gap("\n\n".join(units), board)
+        self.assertIn("分镜有 %s 镜" % len(rows), gap)
+        self.assertIn("4 个单元", gap)
 
     def test_a_long_shot_stays_one_unit_at_15_seconds(self):
         board = _board(("S01", 16))

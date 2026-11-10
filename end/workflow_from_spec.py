@@ -224,30 +224,6 @@ def collect_steps(spec):
             if index < len(templates) and (template or {}).get("duration") not in (None, ""):
                 board_duration = _clamp_duration((template or {}).get("duration"))
             chosen_duration = board_duration if board_duration is not None else feed_duration
-            # region agent log
-            try:
-                import json as _json
-                import time as _time
-                with open("/Users/shaneson/AiVideo/.cursor/debug-d078f2.log", "a", encoding="utf-8") as _handle:
-                    _handle.write(_json.dumps({
-                        "sessionId": "d078f2",
-                        "runId": "post-fix",
-                        "hypothesisId": "A,B,C,D",
-                        "location": "workflow_from_spec.py:collect_steps",
-                        "message": "shot duration choice",
-                        "data": {
-                            "index": index + 1,
-                            "feed_duration": feed_duration,
-                            "template_duration": (template or {}).get("duration"),
-                            "has_duration_line": bool(re.search(r"(?m)^duration\s*:", str(unit or ""))),
-                            "duration_lines": re.findall(r"(?m)^duration\s*:.*$", str(unit or ""))[:3],
-                            "unit_head": (str(unit or "").splitlines() or [""])[0][:80],
-                        },
-                        "timestamp": int(_time.time() * 1000),
-                    }, ensure_ascii=False) + "\n")
-            except OSError:
-                pass
-            # endregion
             rebuilt.append(
                 {
                     "id": _safe_id(

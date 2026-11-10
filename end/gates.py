@@ -96,11 +96,18 @@ def check_feed(path, model, mode, track, storyboard=""):
         text = ""
     if (model or "h3") == "h3":
         text = _prepare_h3_feed(path, text)
-    from end.prompt_gate import feed_storyboard_gap, feed_unit_mismatch
+    from end.prompt_gate import feed_storyboard_gap, feed_unit_mismatch, stamp_storyboard_durations
 
     gap = feed_storyboard_gap(text, storyboard)
     if gap:
         return 1, gap
+    stamped = stamp_storyboard_durations(text, storyboard)
+    if stamped != text:
+        body = stamped if stamped.endswith("\n") else stamped + "\n"
+        try:
+            Path(path).write_text(body, encoding="utf-8")
+        except OSError:
+            pass
     routed = feed_uses_h3(text, model)
     if routed:
         mismatch = feed_unit_mismatch(text)

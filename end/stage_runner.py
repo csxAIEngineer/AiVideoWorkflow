@@ -17,7 +17,7 @@ from end.gates import (
     invented_upload_claim,
     unverified_claim,
 )
-from end.prompt_gate import ONE_SHOT_FEED_RULE, feed_storyboard_gap
+from end.prompt_gate import ONE_SHOT_FEED_RULE, feed_storyboard_gap, stamp_storyboard_durations
 from end.intake import enrich_brief, load_intake, writer_upload_block
 from end.locks import lock_brief
 from end.storyboard_contract import (
@@ -2850,12 +2850,16 @@ def _finish(folder, locks, pipeline):
     feed_path = folder / "_内部_" / "feed.md"
     if feed_path.is_file():
         board = str(spec.get("storyboard") or "") or _read(folder / "_内部_" / "分镜.md")
-        gap = feed_storyboard_gap(_read(feed_path), board)
+        stored = _read(feed_path)
+        gap = feed_storyboard_gap(stored, board)
         if gap:
             failed = dict(pipeline or {})
             failed["check"] = "machine"
             failed["current"] = "feed"
             return gate_result("feed", False, gap, failed)
+        stamped = stamp_storyboard_durations(stored, board)
+        if stamped != stored:
+            feed_path.write_text(stamped if stamped.endswith("\n") else stamped + "\n", encoding="utf-8")
         code, report = check_prompt(feed_path, locks.get("model") or "h3", locks.get("track") or "1")
         if code != 0:
             failed = dict(pipeline or {})
