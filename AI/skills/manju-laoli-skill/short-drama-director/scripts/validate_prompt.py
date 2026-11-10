@@ -593,6 +593,8 @@ H3_SECTIONS = ["subject_definitions", "summary", "retention_analysis",
 H3_FIELDS = ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"]
 H3_MARK_VIS = {"fully_preserved", "partially_preserved", "attribute_transfer", "weak_reference"}
 H3_MARK_AUD = {"fully_copy", "partially_copy", "reference", "weak_reference"}
+# 标记词和后面的分隔符必须分开。top-down / top-left 里的连字符是词内符号，不是分隔符。
+H6_MARK_RE = re.compile(r"[:：]\s*([a-z_]{3,})(?![-–—])\s+[-–—]")
 H3_LABEL_RE = re.compile(r"<(Subject|Picture|Video|Audio)\s+(\d+)>")
 H3_SHOT_RE = re.compile(r"\[Shot\s+(\d+)\]")
 H3_CUT_RE = re.compile(r"\[Shot\s+(\d+)\][^\n]{0,14}?(?:At|在)\s*(\d{1,2}):(\d{2})\.(\d{3})")
@@ -805,7 +807,7 @@ def validate_h3(text, mode="new"):
     # H6 保留度标记
     ra = sec.get("retention_analysis", "")
     if is_ref and ra:
-        for mm in re.finditer(r"[:：]\s*([a-z_]{3,})\s*[-–—]", ra):
+        for mm in H6_MARK_RE.finditer(ra):
             if mm.group(1) not in (H3_MARK_VIS | H3_MARK_AUD):
                 issues.append(f"H6 retention_analysis 非法保留度标记「{mm.group(1)}」——合法值：画面 "
                               "fully_preserved/partially_preserved/attribute_transfer/weak_reference；音频 "
@@ -4375,9 +4377,20 @@ def _self_test():
     if not any("H5" in w and "未引用" in w for w in warns):
         print("FAIL self-test: 定义未引用应报 H5 WARN", warns); ok = 0
     # H6 非法保留度标记
-    iss, _, _ = validate_h3(h3_ok.replace("fully_preserved - 长发低髆", "preserved - 长发低髆"))
+    iss, _, _ = validate_h3(h3_ok.replace("fully_preserved - 长发低髆", "preserved - 长发低髆", 1))
     if not any("H6" in i for i in iss):
         print("FAIL self-test: 非法保留度标记应报 H6"); ok = 0
+    iss, _, _ = validate_h3(h3_ok.replace(
+        "<Subject 1>（出现于 [Shot 1]、[Shot 2]）：fully_preserved - 长发低髆与炭灰长袍保留。",
+        "<Subject 1>（出现于 [Shot 1]、[Shot 2]）：fully_preserved - 长发低髆与炭灰长袍保留。\n"
+        "Lighting direction consistent: top-down natural light creating strong contrast.",
+        1,
+    ))
+    if any("H6" in i for i in iss):
+        print("FAIL self-test: top-down 散文不应报 H6", iss); ok = 0
+    iss, _, _ = validate_h3(h3_ok.replace("fully_preserved - 长发低髆", "top - 长发低髆", 1))
+    if not any("「top」" in i for i in iss):
+        print("FAIL self-test: 显式 top 应报 H6", iss); ok = 0
     # H7 (Sx) 顺序错
     iss, _, _ = validate_h3(h3_ok.replace("低而沙哑音色（S1）说", "低而沙哑音色（S2）说"))
     if not any("H7" in i for i in iss):

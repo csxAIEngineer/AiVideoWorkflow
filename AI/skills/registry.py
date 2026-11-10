@@ -417,6 +417,8 @@ _TASK_MARKERS = (
     ("任务：独立质检", "qc"),
     ("任务：离线看板", "board"),
 )
+from end.storyboard_contract import ASSET_FIELD_RULES
+
 _MERGE_SHAPE = {
     "lock": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
@@ -444,8 +446,10 @@ _MERGE_SHAPE = {
     "storyboard": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
         "不要写 previs。完整分镜只放在 storyboard 字符串。",
-        "每一镜以「## S01」单独成行，下面写动作、景别机位、时长、资产 id。",
-        "时长是正文里的整数秒。资产只写已经锁定的 id。",
+        "每一镜以「## S01」单独成行，下面写动作、景别机位、时长、资产。",
+        "时长是正文里的整数秒。",
+        ASSET_FIELD_RULES,
+        "对照表在简报里。名称不要写进资产字段。",
         "shots 不是第二份稿。若提交，id、duration、images 必须和同一镜号正文一致。",
         "不要写段、格、六问、九宫格或预演完成标记。",
         "这一阶段用不到的字段不要写。",

@@ -15,6 +15,14 @@ MARKER = "分镜.contract"
 HOLD = "分镜.hold"
 PLACEHOLDER_PROMPT = "按这张资产图演这一镜"
 
+ASSET_FIELD_EXAMPLE = "资产：图1，图1_3，图2_3"
+ASSET_FIELD_RULES = "\n".join((
+    "资产字段只写对照表里的完整 id，原样照抄，多个用中文逗号「，」分开。",
+    "格式示例（只示范格式，对照表里没有的 id 不要用）：%s" % ASSET_FIELD_EXAMPLE,
+    "资产字段不要写括号、名称或说明。名称可以写在动作或站位。",
+    "不要把图1_3写成图1，不要按类别重编号，不要靠名称猜 id，不要发明对照表以外的 id。",
+    "这一镜的人物或场景对不上对照表时，资产字段留空，不要改用别的资产。",
+))
 STORYBOARD_INSTRUCTION = "\n".join((
     "只写一份完整分镜，放在 storyboard 字符串。不要写 previs，不要写预演故事板。",
     "不要写段、格、六问、九宫格或预演完成标记。",
@@ -23,10 +31,10 @@ STORYBOARD_INSTRUCTION = "\n".join((
     "动作：这一镜里发生的动作",
     "景别机位：景别和机位",
     "时长：6",
-    "资产：已经锁定的资产 id",
+    ASSET_FIELD_EXAMPLE,
     "站位、朝向、光线、对白、旁白只有这一镜确实要写才各占一行。",
     "时长必须是这一镜写出的整数秒，不要省略，也不要写区间。",
-    "资产只写已经锁定的资产 id，多个用顿号分开。不要用角色或场景的名字代替 id。",
+    ASSET_FIELD_RULES,
     "不要另写一份镜头稿。若仍然提交 shots，每一项的 id、duration、images 必须和同一镜号正文一致。",
 ))
 
@@ -200,6 +208,24 @@ def shots_conflict(projected, supplied):
                 "、".join(str(item) for item in images),
             )
     return ""
+
+
+def locked_asset_catalog(assets):
+    """Final asset ids already stored on the spec. Names stay labels, not a second catalog."""
+    lines = ["已锁定资产 id 对照（资产字段只写等号左边的 id）："]
+    seen = set()
+    for asset in assets or []:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = str(asset.get("id") or "").strip()
+        if not asset_id or asset_id in seen:
+            continue
+        seen.add(asset_id)
+        name = str(asset.get("title") or asset.get("subject") or "").strip() or "名称未写"
+        lines.append("%s = %s" % (asset_id, name))
+    if len(lines) == 1:
+        return "已锁定资产 id 对照：空。资产字段留空，不要编造 id。"
+    return "\n".join(lines)
 
 
 def known_ids(assets):

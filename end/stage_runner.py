@@ -24,6 +24,7 @@ from end.storyboard_contract import (
     COMPLETE,
     FILL,
     lock_projected_shots,
+    locked_asset_catalog,
     marker_present,
     needs_human,
     note_hold,
@@ -2761,6 +2762,9 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
     if empty_feed_report:
         repair = ""
         repair_choices = {}
+    asset_catalog = ""
+    if stage == "storyboard":
+        asset_catalog = locked_asset_catalog(_load_spec(folder).get("assets"))
     if (repair or repair_choices) and stage in ("asset", "storyboard", "feed"):
         return _repair_with_graph(
             folder,
@@ -2783,6 +2787,7 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
                 lock_brief(locks),
                 _repair_task(stage),
                 _repair_line(stage, repair),
+                asset_catalog,
                 "要改的底稿：\n" + current_draft if current_draft else "",
                 _REPAIR_FIELD.get(stage, ""),
                 "精修要求：\n" + note if note else "",
@@ -2801,6 +2806,7 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
                 lock_brief(locks),
                 _user_story_block(stage, story, current_draft),
                 stage_instruction(stage, locks),
+                asset_catalog,
                 upload_block,
                 "当前这一稿：\n" + current_draft if current_draft else "",
                 "精修要求：\n" + note if note else "",
