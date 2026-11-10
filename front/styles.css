@@ -1598,6 +1598,24 @@ a.download {
 }
 
 .stage-bar button,
+.dock-actions button,
+.produce {
+  position: relative;
+}
+
+.produce-attention::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e23b32;
+  pointer-events: none;
+}
+
+.stage-bar button,
 .dock-actions button {
   border: 1px solid #d9d9e2;
   background: #fff;
