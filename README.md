@@ -19,7 +19,7 @@ cp .env.example .env
 python3 -m end.server
 ```
 
-End 会在本机拉起 AI（`http://127.0.0.1:8791/rpc`）。已经单独启动 AI 时，设置 `AIVIDEO_AI_URL`。不要让 End 再拉起一份时，设置 `AIVIDEO_AI_AUTOSTART=0`。
+End 会在本机拉起 Agents（`python3 -m Agents.server`，`http://127.0.0.1:8791/rpc`）。已经单独启动时，设置 `AIVIDEO_AI_URL`。不要让 End 再拉起一份时，设置 `AIVIDEO_AI_AUTOSTART=0`。
 
 打开 http://127.0.0.1:8787 。
 
@@ -72,7 +72,8 @@ client.download_image(task.url, "hero.png")
 
 - `front/`：聊天页面，以及命令行编剧室 `front/studio/chat.py`。页面只请求 End 的 `/rpc`。编剧室只请求 AI 的 `/rpc`
 - `end/`：项目接口、任务队列、图片地址和本机出片编排。需要模型、技能或供应商时只发 JSON-RPC
-- `AI/`：Agent 布局、技能、读图，以及千问客户端。`python3 -m AI.server` 单独听 `8791`
+- `Agents/`：End 和编剧室调用的 JSON-RPC。`python3 -m Agents.server` 听 `8791`。资产写稿走 P2 生成-审查-机检。其余方法转到同进程里的 `AI/`
+- `AI/`：技能、读图、千问客户端，以及原来的 JSON-RPC。Agents 在进程内调用它，End 不再直接拉起 `python3 -m AI.server`
 
 `workflows/` 是可拖进 Comfy Desktop 的示例工作流。`pipeline/` 只留岷江未晚示例 JSON。
 

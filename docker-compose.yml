@@ -4,7 +4,7 @@ services:
     image: aivideo:latest
     container_name: aivideo-ai
     restart: unless-stopped
-    command: ["python", "-m", "AI.server"]
+    command: ["python", "-m", "Agents.server"]
     env_file:
       - .env
     environment:

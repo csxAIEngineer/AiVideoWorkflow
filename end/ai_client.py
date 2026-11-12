@@ -98,7 +98,8 @@ def _spawn(url):
     env["AI_HOST"] = "127.0.0.1"
     env["AI_PORT"] = str(parsed.port or 8791)
     env["AIVIDEO_AI_AUTOSTART"] = "0"
-    _PROC = subprocess.Popen([sys.executable, "-m", "AI.server"], cwd=str(ROOT), env=env)
+    # Public /rpc process. AI stays an in-process backend behind Agents.
+    _PROC = subprocess.Popen([sys.executable, "-m", "Agents.server"], cwd=str(ROOT), env=env)
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         if _PROC.poll() is not None:
