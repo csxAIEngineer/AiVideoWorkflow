@@ -40,9 +40,16 @@ def _bomb(name):
     return explode
 
 
+def _as_node(fake):
+    def complete_node(role, messages, model=None, trace_prompts=""):
+        return fake(role, messages, model=model)
+
+    return complete_node
+
+
 @contextmanager
 def _one_node(fake):
-    """Patch the suite entry points. ``fake`` is the single-shot complete_text."""
+    """Patch the suite entry points. ``fake`` answers one Agents node."""
     targets = {
         "AI.qwen_api.suite_graph.run_suite": "run_suite",
         "AI.agent.layout.run_suite": "layout.run_suite",
@@ -52,10 +59,11 @@ def _one_node(fake):
         "AI.api.write": "AI.write",
         "Agents.api.write": "Agents.write",
         "AI.qwen_api.graph.generate_text": "generate_text",
+        "Agents.text.complete_text": "complete_text",
         "AI.agent.layout.suite_task_for": "layout.suite_task_for",
         "AI.skills.registry.suite_task_for": "suite_task_for",
     }
-    patches = [patch("Agents.text.complete_text", side_effect=fake)]
+    patches = [patch("end.ai_client.complete_node", side_effect=_as_node(fake))]
     for target, name in targets.items():
         patches.append(patch(target, side_effect=_bomb(name)))
     started = []
@@ -80,18 +88,47 @@ def _factory():
 
 class WorkerNodeCompleteTest(unittest.TestCase):
     def test_production_complete_does_not_call_the_write_suite(self):
+        from end.ai_client import complete_node
+
         source = inspect.getsource(production_worker_complete)
-        self.assertIn("complete_text", source)
+        client = inspect.getsource(complete_node)
+        self.assertIn("complete_node", source)
+        self.assertIn("text.complete", client)
+        self.assertNotIn("complete_text", source)
+        self.assertNotIn("generate_text", source)
         self.assertNotIn("_write_model(", source)
         self.assertNotIn("run_suite", source)
         self.assertNotIn("suite_task_for", source)
         self.assertNotIn("run_repair", source)
+        self.assertNotIn("run_suite", client)
+        self.assertNotIn("generate_text", client)
         self.assertIn("complete_text", inspect.getsource(_bound_complete))
         self.assertIn("complete_text", inspect.getsource(bound_complete))
         # The marker that used to relaunch a suite is still the repair marker.
         # The worker must not consult it.
         self.assertEqual(suite_task_for("任务：建议修补\n阶段：feed\n"), "repair")
         self.assertEqual(suite_task_for("任务：提示词封装\n阶段：P4\n"), "feed")
+        seen = {}
+
+        def fake_job(method, params, on_status=None, submit_timeout=30):
+            seen["method"] = method
+            seen["params"] = params
+            return {"text": "一节点"}
+
+        with patch("end.ai_client.await_job", side_effect=fake_job):
+            from end.ai_client import complete_node as ask
+
+            text = ask(
+                "director",
+                [{"role": "user", "content": "汇总"}],
+                model="deepseek-v4-flash-0731",
+                trace_prompts="/tmp/prompts.jsonl",
+            )
+        self.assertEqual(text, "一节点")
+        self.assertEqual(seen["method"], "text.complete")
+        self.assertEqual(seen["params"]["role"], "director")
+        self.assertEqual(seen["params"]["messages"][-1]["content"], "汇总")
+        self.assertNotEqual(seen["method"], "write")
 
     def test_director_feed_is_the_worker_draft(self):
         seen = []

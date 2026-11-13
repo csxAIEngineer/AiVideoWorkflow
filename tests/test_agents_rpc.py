@@ -42,6 +42,7 @@ REPAIR_BRIEF = "任务：建议修补\n阶段：asset\n失败项：\n[]\n"
 METHOD_NAMES = (
     "ping",
     "text.ask",
+    "text.complete",
     "catalog",
     "models.normalize",
     "models.label",
@@ -320,6 +321,40 @@ class RpcContractTest(unittest.TestCase):
         self.assertEqual(error["code"], -32000)
         self.assertEqual(error["data"]["status"], 401)
         self.assertIn("未配置 TOKE_PLAN_QWEN_API_KEY", error["message"])
+
+    def test_text_complete_is_one_node_and_not_a_suite(self):
+        def fake(role, messages, **_kwargs):
+            self.assertEqual(role, "director")
+            self.assertEqual(messages[-1]["content"], "汇总这一节点")
+            return "一节点"
+
+        def explode(*_args, **_kwargs):
+            raise AssertionError("text.complete 不能进入套件")
+
+        with patch("Agents.text.complete_text", side_effect=fake), patch(
+            "AI.qwen_api.suite_graph.run_suite", side_effect=explode
+        ), patch("AI.agent.layout.run_suite", side_effect=explode), patch(
+            "AI.api.write", side_effect=explode
+        ):
+            snap = self.rpc(
+                "text.complete",
+                {
+                    "role": "director",
+                    "messages": [{"role": "user", "content": "汇总这一节点"}],
+                    "model": "deepseek-v4-flash-0731",
+                },
+            )
+        self._job_keys(snap)
+        self.assertEqual(len(snap["nodes"]), 1)
+        self.assertEqual(snap["nodes"][0]["id"], "director")
+        finished = self._wait(snap["job_id"])
+        self.assertEqual(finished["status"], "succeeded")
+        self.assertEqual(finished["result"], {"text": "一节点"})
+
+    def test_text_complete_rejects_empty_messages(self):
+        error = self.rpc_error("text.complete", {"messages": [], "role": "critic"})
+        self.assertEqual(error["code"], -32000)
+        self.assertIn("messages 不能为空", error["message"])
 
     def test_drill_submits_a_job_and_llm_status_returns_the_body(self):
         def fake_suite(*_args, **_kwargs):

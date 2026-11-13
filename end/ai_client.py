@@ -296,6 +296,23 @@ def write(brief, skill_pack, debug_dir=None, model=None, template=None, trace_pr
     )
 
 
+def complete_node(role, messages, model=None, trace_prompts=""):
+    """One specialist, director, or critic turn. Not ``write`` and not a suite."""
+    result = await_job(
+        "text.complete",
+        {
+            "role": str(role or "generator"),
+            "messages": list(messages or []),
+            "model": model or "",
+            "trace_prompts": str(trace_prompts or ""),
+        },
+    )
+    if isinstance(result, dict) and "text" in result:
+        value = result.get("text")
+        return "" if value is None else str(value)
+    return str(result or "")
+
+
 def ask_text(messages, model=None, timeout=45, max_output_tokens=400):
     """One short sync completion. Used by asset patch classification."""
     result = call(

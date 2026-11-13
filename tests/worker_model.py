@@ -1,9 +1,11 @@
 """Fixture answers for worker nodes after End stopped calling the write suite.
 
-Production ``_worker_complete`` sends each specialist and the director through
-``complete_text``. These tests still pass a brief-shaped ``write_model``.
-The bridge turns that one node's system and user messages back into the brief
-the fixture already understands. It does not call AI ``write``.
+Production ``_worker_complete`` sends each specialist, director, and critic
+through Agents ``text.complete``. These tests still pass a brief-shaped
+``write_model``. The bridge turns that one node's system and user messages
+back into the brief the fixture already understands. The critic answer still
+comes from ``complete_text`` so a fixture can patch that one call. It does
+not call AI ``write``.
 """
 
 import json

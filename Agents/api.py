@@ -4,7 +4,8 @@ The method names, parameters, and result shapes match ``AI.api.METHODS``.
 Methods that are not a stage loop call that module in this process. ``write``
 for an asset brief (``任务：资产锁定``, and not a repair) runs the P2
 generator → critic → ``check_asset_blocks.py`` loop. Other writes, including
-asset repairs, stay on the existing text graphs.
+asset repairs, stay on the existing text graphs. ``text.complete`` is one
+specialist, director, or critic node. It does not run ``write`` or a suite.
 
 Jobs are stored in ``AI.qwen_api.jobs``. ``llm.status`` reads that same store,
 so End can submit and poll exactly as it does today.
@@ -26,6 +27,11 @@ def ping(params):
 
 def text_ask(params):
     return _BACKEND["text.ask"](params)
+
+
+def text_complete(params):
+    """One node through the Agent text client. LangGraph keeps the check."""
+    return _BACKEND["text.complete"](params)
 
 
 def catalog(params):
@@ -214,6 +220,7 @@ def _asset_payload(result):
 METHODS = {
     "ping": ping,
     "text.ask": text_ask,
+    "text.complete": text_complete,
     "catalog": catalog,
     "models.normalize": models_normalize,
     "models.label": models_label,

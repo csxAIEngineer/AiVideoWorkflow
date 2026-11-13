@@ -3014,20 +3014,25 @@ def _feed_worker_checker(folder, locks, storyboard, shots):
 
 
 def _worker_complete(project, folder, write_model, prompts):
-    """One generator node is one text call. The critic path only judges.
+    """One node is one Agents ``text.complete``. The critic only judges.
 
-    ``write_model`` still runs a whole stage. A specialist or director message
-    keeps the stage task line, including a repair line, so handing that text to
-    the stage writer starts the stage over. Those roles call ``complete_text``.
+    Handing a node to the stage writer starts the packing graph over.
+    specialist, director, and critic each ask Agents for one completion, so
+    this process does not call the model. LangGraph still runs the check
+    and the next collaborator.
     """
     del folder, write_model
 
     def complete(role, messages):
-        from Agents.text import complete_text
+        from end.ai_client import complete_node
 
-        if role == "critic" or not prompts:
-            return complete_text(role, messages, model=project.get("model"))
-        return complete_text(role, messages, model=project.get("model"), trace_path=prompts)
+        traced = prompts if role != "critic" and prompts else ""
+        return complete_node(
+            role,
+            messages,
+            model=project.get("model"),
+            trace_prompts=traced,
+        )
 
     return complete
 

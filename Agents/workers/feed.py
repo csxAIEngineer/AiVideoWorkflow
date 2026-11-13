@@ -8,6 +8,7 @@ attaches the official closed-lips phrase to that unit's voiceover.
 """
 
 import importlib
+import re
 from typing import TypedDict
 
 from Agents.checks import check_feed_draft
@@ -30,7 +31,7 @@ from Agents.worker import (
 )
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
-from end.product_names import DRAFT_NAME, HEADING_RULE, UNIT_NAME, mentions_unit
+from end.product_names import DRAFT_NAME, HEADING_RULE, UNIT_HEAD_LINE, UNIT_NAME, mentions_unit
 
 STAGE = "feed"
 TASK = "feed"
@@ -41,6 +42,7 @@ GENERATOR_SYSTEM = "\n".join((
     "H3 怎么写，以技能原文为准。不要跑在还没封装的剧本或分镜上。",
     "%s。" % HEADING_RULE,
     "可以把分镜合并进同一个%s，但各单元 duration 相加不得短于分镜总时长。" % UNIT_NAME,
+    "简报里已经写好每个%s的 duration，和对白旁白的原句。duration 用那些和，对白逐字保留。" % UNIT_NAME,
     "对白和旁白必须原样留下。禁止为了压进 15 秒删情节或对白。",
     "一个单元若按分镜时长会超过 15 秒，拆成下一个单元，禁止把声明时长钳成 15。",
     "画外音的闭口证据必须紧跟这一单元里的画外音，不要接到出声对白后面，也不要接到文末。",
@@ -113,37 +115,182 @@ def _patch_voiceover(text):
     return runner.patch_h3_voiceover(text)
 
 
-def _duration_note(state):
+_DURATION_LINE_VALUE = re.compile(
+    r"(?m)^(duration_seconds|duration)\s*[:=：]\s*[^\n]*"
+)
+_D_TAG = re.compile(r"(?is)(<d\b[^>]*>)(.*?)(</d>)")
+_LANG_TAG = re.compile(r"^(\[[^\]\n]+\])\s*")
+_SPEAKER_PREFIX = re.compile(r"^([^：:\n]{1,40})[：:]\s*")
+_PERFORMANCE_CUE = re.compile(r"^[（(][^）)\n]*[）)]\s*")
+
+
+def _storyboard_text(state):
+    state = state or {}
+    board = state.get("storyboard")
+    if str(board or "").strip():
+        return str(board)
+    return str(state.get("source") or "")
+
+
+def shot_duration_list(state):
+    """Shot lengths the feed gate uses: canvas shots, otherwise the storyboard."""
     runner = importlib.import_module("end.stage_runner")
     durations = []
-    for shot in state.get("shots") or []:
+    for shot in (state or {}).get("shots") or []:
         if isinstance(shot, dict) and shot.get("duration") not in (None, ""):
             try:
                 durations.append(float(shot.get("duration")))
             except (TypeError, ValueError):
                 continue
     if not durations:
-        durations = runner.storyboard_duration_list(state.get("storyboard") or "")
-    if not durations:
+        durations = runner.storyboard_duration_list(_storyboard_text(state))
+    return durations
+
+
+def packing_groups(state, limit=15):
+    """The same 15s packing the machine check uses. The model does not regroup."""
+    runner = importlib.import_module("end.stage_runner")
+    return runner.group_shot_durations(shot_duration_list(state), limit)
+
+
+def packing_plan_note(state):
+    """Unit sums and exact spoken lines, known before the model runs."""
+    runner = importlib.import_module("end.stage_runner")
+    groups = packing_groups(state)
+    spoken = runner.storyboard_spoken_lines(_storyboard_text(state))
+    if not groups and not spoken:
         return ""
-    groups = runner.group_shot_durations(durations)
-    rendered = "；".join(
-        "%s=%s" % (
-            "+".join(runner.format_seconds(item) for item in group),
-            runner.format_seconds(sum(group)),
+    lines = []
+    if groups:
+        total = sum(sum(group) for group in groups)
+        lines.append(
+            "分镜时长合计 %ss。可以合并镜头。总时长不得短于这个数，对白不得删。"
+            "超过 15 秒就拆成下一单元，禁止钳成 15。"
+            % runner.format_seconds(total)
         )
-        for group in groups
-    )
-    return (
-        "分镜时长合计 %ss。可以合并镜头。总时长不得短于这个数，对白不得删。"
-        "超过 15 秒就拆成下一单元，禁止钳成 15。按这些单元写 duration：%s。"
-        % (runner.format_seconds(sum(durations)), rendered)
-    )
+        lines.append("这些单元的 duration 已经算好，按这个写，不要自己另分组，也不要把时长写短：")
+        cursor = 1
+        count = len(groups)
+        for index, group in enumerate(groups, 1):
+            start = cursor
+            end = cursor + len(group) - 1
+            cursor = end + 1
+            shots = "镜头 %s" % start if start == end else "镜头 %s-%s" % (start, end)
+            formula = "+".join(runner.format_seconds(item) for item in group)
+            shown = runner.format_seconds(sum(group))
+            lines.append("【%s %s/%s】%s：%s=%s" % (UNIT_NAME, index, count, shots, formula, shown))
+    if spoken:
+        lines.append(
+            "对白和旁白必须逐字出现，包括角色前缀和表演提示。"
+            "写在 <d> 里时，标签内也必须是这一整句，不能只留去掉前缀后的一句："
+        )
+        for line in spoken:
+            lines.append("- %s" % line)
+    return "\n".join(lines)
+
+
+def correct_unit_durations(text, groups):
+    """Overwrite each unit duration when the draft has exactly these units.
+
+    A different unit count is left alone. The machine check reports that.
+    This does not invent another grouping.
+    """
+    planned = [sum(group) for group in groups or []]
+    raw = str(text or "")
+    if not planned:
+        return raw
+    heads = list(UNIT_HEAD_LINE.finditer(raw))
+    if len(heads) != len(planned):
+        return raw
+    runner = importlib.import_module("end.stage_runner")
+    parts = [raw[: heads[0].start()]]
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        parts.append(_write_unit_duration(raw[match.start() : end], planned[index], runner))
+    return "".join(parts)
+
+
+def _write_unit_duration(block, seconds, runner):
+    shown = runner.format_seconds(seconds)
+    match = _DURATION_LINE_VALUE.search(block)
+    if match:
+        line = "%s: %s" % (match.group(1), shown)
+        return block[: match.start()] + line + block[match.end() :]
+    head = UNIT_HEAD_LINE.search(block)
+    if not head:
+        return block
+    return block[: head.end()] + "\nduration: %s" % shown + block[head.end() :]
+
+
+def _spoken_core(line):
+    """Utterance after the speaker prefix and leading performance cues."""
+    text = str(line or "").strip()
+    match = _SPEAKER_PREFIX.match(text)
+    if match:
+        text = text[match.end() :]
+    while True:
+        cue = _PERFORMANCE_CUE.match(text)
+        if not cue:
+            break
+        text = text[cue.end() :]
+    return text.strip()
+
+
+def restore_spoken_lines(text, lines):
+    """Put the storyboard string back into a ``<d>`` tag that kept only the core.
+
+    A line that is already present stays as written. A line that does not
+    appear even as that core is not invented.
+    """
+    raw = str(text or "")
+    for spoken in lines or []:
+        spoken = str(spoken or "").strip()
+        if not spoken or spoken in raw:
+            continue
+        core = _spoken_core(spoken)
+        if not core or core == spoken:
+            continue
+        raw = _restore_core_in_d_tags(raw, spoken, core)
+    return raw
+
+
+def _restore_core_in_d_tags(raw, spoken, core):
+    def repl(match):
+        inner = match.group(2)
+        rewritten = _rewrite_d_inner(inner, spoken, core)
+        if rewritten is None:
+            return match.group(0)
+        return match.group(1) + rewritten + match.group(3)
+
+    return _D_TAG.sub(repl, raw)
+
+
+def _rewrite_d_inner(inner, spoken, core):
+    leading = inner[: len(inner) - len(inner.lstrip())]
+    trailing = inner[len(inner.rstrip()) :]
+    body = inner.strip()
+    language = ""
+    match = _LANG_TAG.match(body)
+    if match:
+        language = match.group(1)
+        body = body[match.end() :].strip()
+    if body != core:
+        return None
+    rebuilt = "%s %s" % (language, spoken) if language else spoken
+    return leading + rebuilt + trailing
+
+
+def apply_packing_plan(text, state):
+    """Fill planned durations when the headings match, then restore stripped lines."""
+    runner = importlib.import_module("end.stage_runner")
+    corrected = correct_unit_durations(text, packing_groups(state))
+    spoken = runner.storyboard_spoken_lines(_storyboard_text(state))
+    return restore_spoken_lines(corrected, spoken)
 
 
 def generator_messages(state):
     system = {"role": "system", "content": GENERATOR_SYSTEM}
-    note = _duration_note(state)
+    note = packing_plan_note(state)
     if int(state.get("attempt") or 0) < 1 and str(state.get("opening") or "").strip():
         user = state.get("opening")
         if note:
@@ -199,7 +346,7 @@ def compile_feed_graph(complete, checker=None):
             }
         raw = produced.get("raw") or ""
         previous = str(state.get("draft") or "")
-        draft = _patch_voiceover(extract_feed(raw, previous))
+        draft = apply_packing_plan(_patch_voiceover(extract_feed(raw, previous)), state)
         note = ""
         if previous.strip() and draft.strip() == previous.strip() and attempt > 1:
             note = "revision_kept_previous"

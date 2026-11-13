@@ -28,6 +28,46 @@ def resolved_model(model=None):
     return TEXT_MODEL
 
 
+_NODE_NAME = {
+    "specialist": "专员",
+    "director": "汇总",
+    "critic": "审查",
+    "generator": "生成",
+}
+
+
+def complete_node_job(params):
+    """One specialist, director, or critic completion. Not ``write`` and not a suite."""
+    from AI.qwen_api.jobs import submit
+
+    params = params or {}
+    messages = params.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("messages 不能为空")
+    role = str(params.get("role") or "generator").strip() or "generator"
+    model = params.get("model") or None
+    raw_timeout = params.get("timeout")
+    timeout = None if raw_timeout in (None, "") else float(raw_timeout)
+    node_id = role
+
+    def work(job_id):
+        from AI.qwen_api.jobs import DONE, RUNNING, set_node
+
+        set_node(job_id, node_id, RUNNING)
+        kwargs = {"model": model}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        text = complete_text(role, messages, **kwargs)
+        set_node(job_id, node_id, DONE)
+        return {"text": "" if text is None else str(text)}
+
+    return submit(
+        [{"id": node_id, "name": _NODE_NAME.get(role, role)}],
+        work,
+        trace=params.get("trace_prompts") or "",
+    )
+
+
 def complete_text(role, messages, *, model=None, client=None, timeout=None, trace_path=""):
     """One generate or critique turn. ``role`` selects the output budget."""
     tokens, default_timeout = _BUDGET.get(role, _BUDGET["generator"])
