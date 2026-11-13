@@ -514,7 +514,11 @@ class EndDispatchTest(unittest.TestCase):
         self.assertTrue(calls)
         self.assertFalse(any("SKILL-PACK-SENTINEL" in call for call in calls))
         self.assertTrue(any("本节点原文" in call and call.count("本节点原文") == 1 for call in calls))
-        self.assertTrue(any("总控" in call and "各节点正文" in call for call in calls))
+        director_calls = [call for call in calls if "你是汇总节点" in call and "各节点正文" in call]
+        self.assertTrue(director_calls)
+        for call in director_calls:
+            self.assertNotIn("# 总控", call)
+            self.assertNotIn("short-drama-director/SKILL.md", call)
         self.assertTrue(outcome["progress"]["pipeline"]["passed"], outcome["progress"]["pipeline"].get("report"))
         self.assertGreaterEqual(len(calls), 2)
         self.assertTrue(any("缺时长" in call for call in calls))

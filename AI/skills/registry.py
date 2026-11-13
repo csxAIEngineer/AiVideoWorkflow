@@ -550,11 +550,12 @@ def _director_body_lines():
 
 
 def director_for_merge():
-    """Verbatim director chapters the merge node applies.
+    """Verbatim director chapters. The merge node does not receive this text.
 
-    The stage originals already sit on the specialist nodes. The merge keeps
-    the lock rules, the budget law, and the industrial laws. Index tables that
-    only say which file to open are left out.
+    Specialists already hold the stage originals. The merge node only gets the
+    short instruction in ``merge_prompt``. This excerpt stays available for
+    measurement: lock rules, the budget law, and the industrial laws, without
+    the index tables that only say which file to open.
     """
     global _MERGE_DIRECTOR
     if _MERGE_DIRECTOR:
@@ -634,7 +635,8 @@ def suite_prompt_chars(task, brief):
     skill = sum(len(suite_original(relative)) for relative in files)
     brief_chars = len(str(brief or ""))
     full_director = len(director_text())
-    merge_director = len(director_for_merge())
+    # The merge node no longer carries the director skill.
+    merge_director = 0
     unpacked = skill + brief_chars * (len(files) + 1) + full_director
     packed = skill + brief_chars * (len(cohorts) + 1) + merge_director
     return {
@@ -680,18 +682,16 @@ def cohort_prompt(relatives, repair=False):
 
 
 def skill_node_prompt(relative, repair=False):
-    """Exactly one original. The director stays on the merge node."""
+    """Exactly one original. The merge node does not receive this original."""
     return cohort_prompt([relative], repair=repair)
 
 
 def merge_prompt(task, brief=""):
-    """Director chapters plus the task's output shape. No specialist originals."""
+    """Short merge instruction plus the task's JSON shape. No skill originals."""
     shape = _MERGE_SHAPE.get(task) or _MERGE_SHAPE["script"]
     if task == "feed" and parse_route(brief, "P4").get("model") == "h3":
         shape = shape + "\n" + _H3_FEED_CONTRACT
     return "\n\n".join((
-        "# 总控 %s" % _DIRECTOR_FILE,
-        director_for_merge(),
         "你是汇总节点。各节点已经读过本阶段原文。只根据各节点正文和简报交出这一任务的结果。不要再展开其他原文。",
         shape,
     ))

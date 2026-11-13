@@ -236,8 +236,12 @@ class SuiteGraphTest(unittest.TestCase):
         self.assertIn("分级处置", excerpt)
         self.assertIn("只适用于 P0", excerpt)
         prompt = merge_prompt("storyboard")
-        self.assertIn("# 总控 short-drama-director/SKILL.md", prompt)
+        self.assertNotIn("# 总控 short-drama-director/SKILL.md", prompt)
+        self.assertNotIn(excerpt[:80], prompt)
+        self.assertNotIn("预算铁律", prompt)
         self.assertIn("你是汇总节点", prompt)
+        self.assertIn("不要写 previs", prompt)
+        self.assertLess(len(prompt), 4000)
         self.assertLess(len(prompt), len(full))
 
     def test_packing_cuts_prompt_copies_without_dropping_originals(self):

@@ -475,8 +475,9 @@ class SkillPackPromptTest(unittest.TestCase):
         self.assertGreater(len(specialists), 1)
         self.assertTrue(all(item.count("本节点原文") == 1 for item in specialists))
         self.assertTrue(all("SKILL-SENTINEL-只在技能里" not in item for item in specialists))
-        director = [item for item in seen if "short-drama-director/SKILL.md" in item and "本节点原文" not in item]
+        director = [item for item in seen if "你是汇总节点" in item and "本节点原文" not in item]
         self.assertEqual(len(director), 1)
+        self.assertNotIn("short-drama-director/SKILL.md", director[0])
         self.assertNotIn("本节点原文", director[0])
         self.assertNotIn("SKILL-SENTINEL-只在技能里", director[0])
         self.assertNotIn(SENTINEL, result["draft"])

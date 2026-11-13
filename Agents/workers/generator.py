@@ -3,8 +3,8 @@
 First draft: one specialist per skill original, then the director merge.
 Repair: only the nodes named by the critic or the machine check run again.
 The other nodes keep their previous text. The director assembles. It receives
-the director skill and the specialist notes, not every specialist original
-and not a rewritten draft from the critic.
+only the short merge instruction and the specialist notes, not the director
+skill, not any other skill original, and not a rewritten draft from the critic.
 """
 
 import json
@@ -105,8 +105,9 @@ def _specialist_system(role, node_prompt):
     return "%s\n\n%s" % (str(role or "").strip(), node_prompt)
 
 
-def _director_system(role, merge):
-    return "%s\n\n%s" % (str(role or "").strip(), merge)
+def _director_system(_role, merge):
+    """Only the short merge instruction. The stage role stays on specialists."""
+    return str(merge or "")
 
 
 def _specialist_user(brief, repair_text):
