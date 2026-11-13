@@ -3030,8 +3030,32 @@ def _loaded_pack(load_pack, project, brief, stage):
     return str(pack or "")
 
 
+def _flush_script_context(folder, state):
+    """Write notes the semantic review will hash, before End reads that same context."""
+    state = state or {}
+    internal = str(state.get("internal") or "").strip()
+    if internal:
+        _write_internal(folder, "剧本过程.md", internal)
+    partials = state.get("partials") or []
+    if partials:
+        _save_script_partials(_chain_dir(folder), partials)
+
+
+def _script_semantic_reviewer(folder, brief):
+    """Second script critic. Same rubric as End, no second copy of the prompts."""
+
+    def reviewer(draft, state):
+        from end.script_review import review_script_text, script_review_context
+
+        _flush_script_context(folder, state)
+        text = str(draft or "")
+        return review_script_text(text, script_review_context(folder, brief, text))
+
+    return reviewer
+
+
 def _produce_with_worker(stage, project, folder, locks, write_model, opening, prompts=None, skill_pack=""):
-    """One Agents loop. Machine-check retries stay inside that loop."""
+    """One Agents loop. Script retries stay inside that loop, including semantic review."""
     from Agents.workers.feed import run_feed_loop
     from Agents.workers.script import run_script_loop
     from Agents.workers.storyboard import run_storyboard_loop
@@ -3049,6 +3073,7 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
             model=project.get("model"),
             complete=complete,
             checker=_script_worker_checker(folder, locks),
+            reviewer=_script_semantic_reviewer(folder, str(project.get("brief") or "")),
         )
         script = str(outcome.get("script") or outcome.get("draft") or "")
         if not script.strip() and outcome.get("generator_note") == "model_error":
@@ -3066,7 +3091,7 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
         from end.trace import finish_trace
 
         finish_trace(folder, {"script": script, "title": title, "internal": internal, "partials": partials})
-        return {
+        payload = {
             "title": title,
             "script": script,
             "internal": internal,
@@ -3075,6 +3100,11 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
             "_worker_passed": bool(outcome.get("passed")),
             "_worker_attempts": int(outcome.get("attempts") or 0),
         }
+        semantic = outcome.get("semantic_report") or {}
+        machine = outcome.get("machine_report") or {}
+        if semantic.get("status") and machine.get("ok"):
+            payload["_semantic_report"] = semantic
+        return payload
     if stage == "storyboard":
         outcome = run_storyboard_loop(
             _read(Path(folder) / "_内部_" / "剧本.md"),
@@ -3644,6 +3674,7 @@ def execute(project, folder, locks, write_model, load_pack):
     passed = False
     report = ""
     checked = False
+    worker_semantic = None
     spec = _load_spec(folder)
     attempts = 0
     if action == "rewrite" and current in ("asset", "storyboard", "feed"):
@@ -3753,6 +3784,8 @@ def execute(project, folder, locks, write_model, load_pack):
         worker_loop = bool(isinstance(result, dict) and result.pop("_worker_loop", False))
         worker_passed = bool(isinstance(result, dict) and result.pop("_worker_passed", False))
         worker_attempts = int(result.pop("_worker_attempts", 0)) if isinstance(result, dict) else 0
+        if isinstance(result, dict) and "_semantic_report" in result:
+            worker_semantic = result.pop("_semantic_report")
         if worker_loop:
             pipeline["worker_loop"] = True
             if not worker_passed:
@@ -3844,6 +3877,7 @@ def execute(project, folder, locks, write_model, load_pack):
             locks,
             project.get("brief") or "",
             outcome,
+            prepared=worker_semantic,
         )
     outcome["spec"] = spec
     outcome["used_stage"] = current

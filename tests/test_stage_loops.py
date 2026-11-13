@@ -60,6 +60,10 @@ ACCEPT = '{"verdict":"accept","issues":[]}'
 SENTINEL = "CRITIC-REWRITE-SENTINEL-不要采用"
 
 
+def _semantic_pass(_draft, _state):
+    return {"status": "passed", "issues": [], "reason": ""}
+
+
 def _roles(script_text):
     def complete(role, messages):
         if role == "specialist":
@@ -101,12 +105,12 @@ class ScriptLoopTest(unittest.TestCase):
                 "issues": [{"target": "开头", "severity": "blocking", "detail": "可以再具体"}],
             }, ensure_ascii=False)
 
-        result = run_script_loop(SCRIPT, complete=complete)
+        result = run_script_loop(SCRIPT, complete=complete, reviewer=_semantic_pass)
         self.assertEqual(roles[-2:], ["director", "critic"])
         self.assertGreater(roles.count("specialist"), 1)
         self.assertEqual(roles.count("director"), 1)
         self.assertEqual(result["status"], "pass")
-        self.assertEqual(result["stop_reason"], "machine_check_pass")
+        self.assertEqual(result["stop_reason"], "script_gate_pass")
         self.assertEqual(result["attempts"], 1)
         self.assertEqual(result["script"], result["draft"])
         self.assertIn("一盒药", result["script"])
@@ -150,7 +154,7 @@ class ScriptLoopTest(unittest.TestCase):
                 "issues": [{"target": "开头", "severity": "blocking", "detail": "不要写已核验"}],
             }, ensure_ascii=False)
 
-        result = run_script_loop(SCRIPT, max_attempts=3, complete=complete)
+        result = run_script_loop(SCRIPT, max_attempts=3, complete=complete, reviewer=_semantic_pass)
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["attempts"], 2)
         self.assertNotIn(SENTINEL, result["draft"])

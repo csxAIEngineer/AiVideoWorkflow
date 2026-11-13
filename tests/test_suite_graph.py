@@ -95,7 +95,24 @@ class SuiteGraphTest(unittest.TestCase):
     def test_script_graph_returns_one_script_and_every_partial(self):
         files = suite_files("script", "任务：剧本")
         cohorts = pack_cohorts(files)
-        self.assertEqual(len(files), 7)
+        self.assertEqual(files, [
+            "sd-script-engine/references/source-registration.md",
+            "sd-script-engine/references/six-stage-pipeline.md",
+            "sd-script-engine/references/dialogue-naturalization.md",
+            "short-drama-director/references/dialogue-doctor-7d.md",
+            "sd-script-engine/references/roundtable-review.md",
+        ])
+        self.assertNotIn("sd-script-engine/references/story-bible-and-ip.md", files)
+        self.assertNotIn("sd-script-engine/references/episode-planning.md", files)
+        from AI.skills.registry import _slice_module
+
+        routed = _slice_module().resolve_files("P1")
+        self.assertNotIn("sd-script-engine/references/story-bible-and-ip.md", routed)
+        self.assertNotIn("sd-script-engine/references/episode-planning.md", routed)
+        self.assertIn("sd-script-engine/references/six-stage-pipeline.md", routed)
+        pack = Path(__file__).resolve().parents[1] / "AI" / "skills" / "manju-laoli-skill"
+        self.assertTrue((pack / "sd-script-engine/references/story-bible-and-ip.md").is_file())
+        self.assertTrue((pack / "sd-script-engine/references/episode-planning.md").is_file())
         self.assertLessEqual(len(cohorts), len(files))
 
         class ScriptModel(_Model):
@@ -126,6 +143,12 @@ class SuiteGraphTest(unittest.TestCase):
         for relative in files:
             self.assertIn(relative, result["seen"])
             self.assertEqual(result["seen"].count("# 本节点原文 %s" % relative), 0)
+        self.assertNotIn("story-bible-and-ip.md", result["seen"])
+        self.assertNotIn("episode-planning.md", result["seen"])
+        graph = compile_suite_graph(files, "script", model, "write")
+        names = set(graph.nodes)
+        self.assertIn("merge", names)
+        self.assertEqual(sum(1 for name in names if str(name).startswith("skill-")), len(cohorts))
 
     def test_the_first_task_marker_wins_and_the_header_selects_files(self):
         self.assertEqual(suite_task_for("任务：剧本\n用户原文\n任务：分镜"), "script")

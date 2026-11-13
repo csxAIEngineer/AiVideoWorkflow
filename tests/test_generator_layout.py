@@ -22,6 +22,10 @@ PROP_MARK = "工作流 Step 4 道具模板"
 SENTINEL = "CRITIC-REWRITE-SENTINEL-不要采用"
 
 
+def _semantic_pass(_draft, _state):
+    return {"status": "passed", "issues": [], "reason": ""}
+
+
 def _routing(stage):
     return "阶段：%s\n赛道：1\n来源：1\n动作档：none\n模型：h3\n素材形态：M1\n" % stage
 
@@ -156,7 +160,13 @@ class WorkerDispatchTest(unittest.TestCase):
                 }
             return {"ok": True, "errors": [], "warnings": [], "fatal": "", "needs_human": False}
 
-        result = run_script_loop("她把药盒放在桌上。", max_attempts=2, complete=complete, checker=checker)
+        result = run_script_loop(
+            "她把药盒放在桌上。",
+            max_attempts=2,
+            complete=complete,
+            checker=checker,
+            reviewer=_semantic_pass,
+        )
         self.assertEqual(result["status"], "pass", result)
         first = roles.index("critic")
         self.assertEqual(roles[:first].count("specialist"), len(files))
@@ -166,6 +176,13 @@ class WorkerDispatchTest(unittest.TestCase):
         self.assertEqual(specialist_systems[-1].count(named), 1)
         joined = "\n".join(specialist_systems)
         self.assertLess(joined.count(files[0]), 3)
+        self.assertNotIn("# 本节点原文 sd-script-engine/references/story-bible-and-ip.md", joined)
+        self.assertNotIn("# 本节点原文 sd-script-engine/references/episode-planning.md", joined)
+        self.assertIn("source-registration.md", joined)
+        self.assertIn("six-stage-pipeline.md", joined)
+        self.assertIn("dialogue-naturalization.md", joined)
+        self.assertIn("dialogue-doctor-7d.md", joined)
+        self.assertIn("roundtable-review.md", joined)
         self.assertNotIn(SENTINEL, result["draft"])
 
     def test_each_worker_generate_ends_at_the_director(self):
@@ -197,9 +214,14 @@ class WorkerDispatchTest(unittest.TestCase):
             "blocks": 1,
             "report": "",
         })
-        script_result = run_script_loop("她把药盒放在桌上。", complete=complete, checker=lambda text, state: {
-            "ok": True, "errors": [], "warnings": [], "fatal": "", "needs_human": False,
-        })
+        script_result = run_script_loop(
+            "她把药盒放在桌上。",
+            complete=complete,
+            checker=lambda text, state: {
+                "ok": True, "errors": [], "warnings": [], "fatal": "", "needs_human": False,
+            },
+            reviewer=_semantic_pass,
+        )
         board_result = run_storyboard_loop("她把药盒放在桌上。", known_ids=["A1"], complete=complete, checker=accept_board)
         feed_result = run_feed_loop("分镜", complete=complete, checker=accept_feed)
         self.assertEqual(asset_result["status"], "pass", asset_result.get("machine_report"))

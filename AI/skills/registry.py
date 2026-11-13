@@ -396,10 +396,10 @@ LOCK_FILES = (
     "sd-decision-engine/references/emotion-anchor-table.md",
     "sd-decision-engine/references/forbidden-zone-whitelist.md",
 )
+# Story bible and episode planning stay in the skill pack. The script
+# generator does not dispatch them.
 SCRIPT_FILES = (
     "sd-script-engine/references/source-registration.md",
-    "sd-script-engine/references/story-bible-and-ip.md",
-    "sd-script-engine/references/episode-planning.md",
     "sd-script-engine/references/six-stage-pipeline.md",
     "sd-script-engine/references/dialogue-naturalization.md",
     "short-drama-director/references/dialogue-doctor-7d.md",

@@ -1,11 +1,16 @@
-"""Script worker: generate → critique → the existing script machine checks.
+"""Script worker: generate → machine-check critic → semantic-review critic.
 
-The hard gate is an empty draft, an unverified image claim, or an invented
-upload id. Taste, polish, and the roundtable stay with the person. This loop
+The machine-check critic is the existing hard gate: an empty draft, an
+unverified image claim, or an invented upload id. FAIL retries. Warnings
+alone still pass. Semantic review runs only after that gate passes. It
+reviews and does not rewrite. A blocked or failed semantic report goes back
+to the generator. Preferences and suspects do not fail the loop. This loop
 does not add a style-review gate and does not run ``validate_prompt``.
 """
 
 from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
 
 from Agents.checks import check_script_draft
 from Agents.text import resolved_model
@@ -13,7 +18,6 @@ from Agents.worker import (
     DEFAULT_MAX_ATTEMPTS,
     base_state,
     bound_complete,
-    compile_worker,
     critic_only,
     decide,
     extract_json_object,
@@ -37,7 +41,7 @@ GENERATOR_SYSTEM = "\n".join((
     "审查员只交报告，不会替你改稿。机检只查空稿、没看见图却写已核验、以及编造的上传图编号。",
     "怎么写剧本，以技能原文为准。不要自己加文风门，也不要跑投喂稿的 validate_prompt。剧本还没有封装。",
     "整段回复是一个 JSON 对象。正式剧本放在 script，标题放在 title。圆桌意见放在 internal。",
-    "机检失败时只改点名的句子。没有点名的段落原样保留。",
+    "机检失败或语义审查失败时，只改点名的问题。没有点名的段落原样保留。",
     "审查报告里如果夹了改写稿，那份稿作废。",
 ))
 
@@ -71,6 +75,8 @@ class ScriptState(TypedDict, total=False):
     model: str
     critic_report: dict
     machine_report: dict
+    semantic_report: dict
+    review_context: str
     history: list
     status: str
     stop_reason: str
@@ -117,6 +123,39 @@ def absorb_script(raw):
     return payload
 
 
+def _semantic_retry(state):
+    """True when the machine check passed and semantic review must be repaired."""
+    machine = state.get("machine_report") or {}
+    semantic = state.get("semantic_report") or {}
+    if not machine.get("ok"):
+        return False
+    return str(semantic.get("status") or "") in ("blocked", "failed")
+
+
+def semantic_revision_brief(draft, report):
+    """Repair text for a blocked or failed semantic review. Not a new draft."""
+    report = report or {}
+    sections = [
+        "任务：剧本",
+        "任务：建议修补",
+        "阶段：script",
+        "机检已过。语义审查未通过。只改审查点名的问题，没有点名的段落原样保留。",
+        "不要整篇另起一套。语义审查只交报告，没有改稿权。报告里夹带的稿作废。",
+        "偏好不阻断。单独的可疑项也不当作这次的失败项。阻断和审查失败要处理。",
+    ]
+    body = str(draft or "").strip()
+    if body:
+        sections.append("上一稿：\n%s" % body)
+    reason = str(report.get("reason") or "").strip()
+    if not reason:
+        from end.script_review import format_issues
+
+        reason = format_issues(report.get("issues") or [])
+    if reason:
+        sections.append("语义审查报告（只读，按它改）：\n%s" % reason)
+    return "\n\n".join(sections)
+
+
 def generator_messages(state):
     system = {"role": "system", "content": GENERATOR_SYSTEM}
     if int(state.get("attempt") or 0) < 1 and str(state.get("opening") or "").strip():
@@ -124,6 +163,11 @@ def generator_messages(state):
     if int(state.get("attempt") or 0) < 1:
         story = str(state.get("source") or "").strip()
         return [system, {"role": "user", "content": "任务：剧本\n\n用户原文\n%s" % story}]
+    if _semantic_retry(state):
+        return [system, {"role": "user", "content": semantic_revision_brief(
+            state.get("draft") or "",
+            state.get("semantic_report"),
+        )}]
     user = revision_brief(
         STAGE,
         "任务：剧本",
@@ -145,8 +189,72 @@ def critic_messages(state):
     ]
 
 
-def compile_script_graph(complete, checker=None):
+_REWRITE_KEYS = ("script", "draft", "rewrite", "rewritten", "text", "replacement", "revised", "content")
+
+
+def default_script_reviewer(draft, state):
+    """Semantic review through the existing rubric. Tests can replace this."""
+    from end.script_review import review_script_text
+
+    context = str((state or {}).get("review_context") or (state or {}).get("source") or "")
+    return review_script_text(draft, context)
+
+
+def _semantic_status(report):
+    """Blocked and failed stop the loop. Suspects and preferences do not."""
+    report = report or {}
+    issues = [item for item in (report.get("issues") or []) if isinstance(item, dict)]
+    severities = {str(item.get("severity") or "") for item in issues}
+    status = str(report.get("status") or "")
+    if "block" in severities or status == "blocked":
+        return "blocked", issues
+    if status == "failed":
+        return "failed", issues
+    if "suspect" in severities or status == "suspect":
+        return "suspect", issues
+    if status == "passed":
+        return "passed", issues
+    return "failed", issues
+
+
+def _clean_semantic(report):
+    status, issues = _semantic_status(report if isinstance(report, dict) else {})
+    source = report if isinstance(report, dict) else {}
+    cleaned = {
+        "status": status,
+        "reason": str(source.get("reason") or ""),
+        "issues": issues,
+        "script_hash": str(source.get("script_hash") or ""),
+        "context_hash": str(source.get("context_hash") or ""),
+    }
+    if source.get("cache_key"):
+        cleaned["cache_key"] = source.get("cache_key")
+    if source.get("attempts"):
+        cleaned["attempts"] = source.get("attempts")
+    for key in _REWRITE_KEYS:
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def _route_after_machine(state):
+    """Retry a machine FAIL. A pass continues to semantic review. A hard stop ends."""
+    status, _reason = decide(state, state.get("machine_report") or {})
+    if status == "running":
+        return "generate"
+    if status == "pass":
+        return "semantic_review"
+    return "halt"
+
+
+def _route_after_semantic(state):
+    if state.get("status") == "running":
+        return "generate"
+    return "halt"
+
+
+def compile_script_graph(complete, checker=None, reviewer=None):
     check = checker or check_script_draft
+    review = reviewer or default_script_reviewer
 
     def generate(state):
         attempt = int(state.get("attempt") or 0) + 1
@@ -223,7 +331,71 @@ def compile_script_graph(complete, checker=None):
             "history": history,
         }
 
-    return compile_worker(ScriptState, generate, critique, machine_check)
+    def semantic_review(state):
+        """Review only. The returned update has no draft."""
+        try:
+            produced = review(str(state.get("draft") or ""), dict(state))
+        except Exception as exc:
+            produced = {
+                "status": "failed",
+                "reason": "语义审查没有完成：%s" % exc,
+                "issues": [],
+            }
+        report = _clean_semantic(produced)
+        failing = report["status"] in ("blocked", "failed")
+        attempt = int(state.get("attempt") or 0)
+        budget = int(state.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
+        if failing and attempt < budget:
+            status, reason, passed = "running", "", False
+        elif failing:
+            status = "fail"
+            reason = "semantic_blocked" if report["status"] == "blocked" else "semantic_failed"
+            passed = False
+        else:
+            status, reason, passed = "pass", "script_gate_pass", True
+        history = list(state.get("history") or [])
+        entry = {
+            "attempt": attempt,
+            "draft": str(state.get("draft") or ""),
+            "critic_report": dict(state.get("critic_report") or {}),
+            "machine_report": dict(state.get("machine_report") or {}),
+            "semantic_report": report,
+            "generator_note": str(state.get("generator_note") or ""),
+        }
+        if history and history[-1].get("attempt") == attempt:
+            history[-1] = entry
+        else:
+            history.append(entry)
+        update = {
+            "semantic_report": report,
+            "status": status,
+            "stop_reason": reason,
+            "passed": passed,
+            "history": history,
+        }
+        if "draft" in update or "script" in update:
+            raise RuntimeError("语义审查不能改稿")
+        return update
+
+    graph = StateGraph(ScriptState)
+    graph.add_node("generate", generate)
+    graph.add_node("critique", critique)
+    graph.add_node("machine_check", machine_check)
+    graph.add_node("semantic_review", semantic_review)
+    graph.add_edge(START, "generate")
+    graph.add_edge("generate", "critique")
+    graph.add_edge("critique", "machine_check")
+    graph.add_conditional_edges(
+        "machine_check",
+        _route_after_machine,
+        {"generate": "generate", "semantic_review": "semantic_review", "halt": END},
+    )
+    graph.add_conditional_edges(
+        "semantic_review",
+        _route_after_semantic,
+        {"generate": "generate", "halt": END},
+    )
+    return graph.compile()
 
 
 def report_unavailable(exc):
@@ -252,8 +424,9 @@ def run_script_loop(
     timeout=None,
     complete=None,
     checker=None,
+    reviewer=None,
 ):
-    """Run the script loop once. ``complete`` and ``checker`` are test seams."""
+    """Run the script loop once. ``complete``, ``checker``, and ``reviewer`` are test seams."""
     state = base_state(
         STAGE,
         TASK,
@@ -262,7 +435,13 @@ def run_script_loop(
         prior_draft=prior_draft,
         model=model,
         max_attempts=max_attempts,
-        extra={"locks": dict(locks or {}), "intake": list(intake or []), "skill_pack": str(skill_pack or "")},
+        extra={
+            "locks": dict(locks or {}),
+            "intake": list(intake or []),
+            "skill_pack": str(skill_pack or ""),
+            "semantic_report": {},
+            "review_context": "",
+        },
     )
     if not str(story or "").strip() and not str(opening or "").strip() and not str(prior_draft or "").strip():
         state["status"] = "fail"
@@ -280,6 +459,7 @@ def run_script_loop(
     app = compile_script_graph(
         complete or bound_complete(model, client, timeout),
         checker=checker,
+        reviewer=reviewer,
     )
     final = run_compiled(app, state, missing_reason="missing_script", require_text=False)
     return _result(final)
@@ -294,5 +474,6 @@ def _result(state):
     payload["title"] = state.get("title") or ""
     payload["internal"] = state.get("internal") or ""
     payload["partials"] = list(state.get("partials") or [])
+    payload["semantic_report"] = dict(state.get("semantic_report") or {})
     payload["model"] = state.get("model") or resolved_model(None)
     return payload

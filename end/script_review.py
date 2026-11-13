@@ -1,8 +1,10 @@
 """Script semantic review, plus technical checks before a submit.
 
-The script gate runs after the final script is on disk and before a person
-confirms it. That review still calls ``complete_review``. Tests replace it
-with ``set_reviewer``.
+The script worker calls ``review_script_text`` inside its loop, using these
+prompts. After that worker exits, End shows the stored report and does not
+call ``complete_review`` again on the same draft. ``review_script`` remains
+for a direct review and for the polish path that does not use the worker.
+Tests replace the completion with ``set_reviewer``.
 
 The old delivery semantic review does not run. ``review_delivery`` only
 checks files, confirmation, and prompt presence, then records
@@ -406,6 +408,68 @@ def settled_script_note(folder, script_hash, context_hash):
     return "\n".join(lines)
 
 
+def script_review_context(folder, brief="", script=""):
+    """Context hashed with a script review. Same text for the worker and for End."""
+    context = story_context(folder, brief)
+    if str(script or "").strip():
+        from end.script_opinion import intent_for_script
+
+        intent = intent_for_script(folder, content_hash(script))
+        if intent:
+            context = context + (
+                "\n\n用户本轮有意变更：%s\n这条意见优先于原要求里的主题和机制。"
+                "不要把有意改掉的主题或机制压回旧要求，也不要因为意见原文不在旧稿里就判无依据。"
+                % intent.get("opinion")
+            )
+    return context
+
+
+def review_script_text(script, context="", complete=None, previous=None, force=False):
+    """Review one script string. Does not read or write files and does not rewrite it.
+
+    ``complete`` defaults to ``complete_review``. Callers keep the rubric here
+    instead of copying the prompts.
+    """
+    script = str(script or "").strip()
+    context = str(context or "")
+    if not script:
+        row = _record("failed", "剧本是空的，不能通过语义审查", [])
+        row["script_hash"] = ""
+        row["context_hash"] = ""
+        return row
+    script_hash = content_hash(script)
+    context_hash = content_hash(context)
+    cache_key = script_hash + ":" + context_hash
+    messages = [
+        {"role": "system", "content": _system("script")},
+        {"role": "user", "content": _user("script", script, context)},
+    ]
+    row, _called = _run(
+        "script",
+        messages,
+        previous,
+        cache_key,
+        force,
+        complete or complete_review,
+    )
+    issues = list(row.get("issues") or [])
+    gap = _prior_gap(script, context)
+    if gap and not any(item.get("uncertain") for item in issues):
+        issues.append(gap)
+    _force_story_owner(issues)
+    for item in issues:
+        item["owner"] = "script"
+    row = dict(row)
+    row["issues"] = issues
+    if issues or row.get("status") == "failed":
+        if row.get("status") != "failed":
+            row["status"] = _status_of(issues)
+        row["reason"] = format_issues(issues) or row.get("reason") or ""
+    row["script_hash"] = script_hash
+    row["context_hash"] = context_hash
+    return row
+
+
 def review_script(folder, spec=None, brief="", force=False, complete=None):
     """Review the final script. Does not write the script.
 
@@ -441,38 +505,14 @@ def review_script(folder, spec=None, brief="", force=False, complete=None):
         state["script"] = row
         save_reviews(folder, state)
         return row
-    context = story_context(folder, brief)
-    script_hash = content_hash(script)
-    from end.script_opinion import intent_for_script
-
-    intent = intent_for_script(folder, script_hash)
-    if intent:
-        context = context + (
-            "\n\n用户本轮有意变更：%s\n这条意见优先于原要求里的主题和机制。"
-            "不要把有意改掉的主题或机制压回旧要求，也不要因为意见原文不在旧稿里就判无依据。"
-            % intent.get("opinion")
-        )
-    context_hash = content_hash(context)
-    cache_key = script_hash + ":" + context_hash
-    messages = [
-        {"role": "system", "content": _system("script")},
-        {"role": "user", "content": _user("script", script, context)},
-    ]
-    row, _called = _run("script", messages, state.get("script"), cache_key, force, complete or complete_review)
-    issues = list(row.get("issues") or [])
-    gap = _prior_gap(script, context)
-    if gap and not any(item.get("uncertain") for item in issues):
-        issues.append(gap)
-    _force_story_owner(issues)
-    for item in issues:
-        item["owner"] = "script"
-    row["issues"] = issues
-    if issues or row.get("status") == "failed":
-        if row.get("status") != "failed":
-            row["status"] = _status_of(issues)
-        row["reason"] = format_issues(issues) or row.get("reason") or ""
-    row["script_hash"] = script_hash
-    row["context_hash"] = context_hash
+    context = script_review_context(folder, brief, script)
+    row = review_script_text(
+        script,
+        context,
+        complete=complete or complete_review,
+        previous=state.get("script"),
+        force=force,
+    )
     state = load_reviews(folder)
     state["script"] = row
     save_reviews(folder, state)
@@ -1112,10 +1152,65 @@ def public_semantic(folder, spec=None, brief=""):
     }
 
 
-def apply_script_review_gate(folder, spec, locks, brief, outcome, force=False, complete=None):
-    """Attach the script review to a format-passed script gate. Does not edit the script."""
+def store_prepared_script_review(folder, spec, brief, prepared):
+    """Save a review the script worker already finished. Does not call a model.
+
+    Returns None when the report is not for this script and context.
+    """
+    if not isinstance(prepared, dict) or not prepared.get("status"):
+        return None
+    script, clash = current_script(folder, spec)
+    if clash or not script:
+        return None
+    context = script_review_context(folder, brief, script)
+    script_hash = content_hash(script)
+    context_hash = content_hash(context)
+    if str(prepared.get("script_hash") or "") not in ("", script_hash):
+        return None
+    if str(prepared.get("context_hash") or "") not in ("", context_hash):
+        return None
+    row = {
+        "status": prepared.get("status"),
+        "reason": prepared.get("reason") or "",
+        "issues": list(prepared.get("issues") or []),
+        "script_hash": script_hash,
+        "context_hash": context_hash,
+    }
+    if prepared.get("cache_key"):
+        row["cache_key"] = prepared.get("cache_key")
+    if prepared.get("attempts"):
+        row["attempts"] = prepared.get("attempts")
+    before = _read(Path(folder) / "_内部_" / "剧本.md")
+    state = load_reviews(folder)
+    state["script"] = row
+    save_reviews(folder, state)
+    if _read(Path(folder) / "_内部_" / "剧本.md") != before:
+        raise RuntimeError("语义审查改写了剧本文件")
+    return row
+
+
+def _row_for_gate(folder, spec, brief, prepared, force, complete):
+    """Use the worker report when it matches. Otherwise review as before."""
+    if prepared is not None:
+        script, clash = current_script(folder, spec)
+        if not clash and script:
+            base_hash = content_hash(story_context(folder, brief))
+            if script_is_settled(folder, content_hash(script), base_hash):
+                return review_script(folder, spec, brief=brief, force=force, complete=complete)
+        row = store_prepared_script_review(folder, spec, brief, prepared)
+        if row is not None:
+            return row
+    return review_script(folder, spec, brief=brief, force=force, complete=complete)
+
+
+def apply_script_review_gate(folder, spec, locks, brief, outcome, force=False, complete=None, prepared=None):
+    """Attach the script review to a format-passed script gate. Does not edit the script.
+
+    ``prepared`` is the report from the script worker. A matching report is
+    shown as-is and does not call ``complete_review`` again.
+    """
     del locks
-    row = review_script(folder, spec, brief=brief, force=force, complete=complete)
+    row = _row_for_gate(folder, spec, brief, prepared, force, complete)
     outcome = dict(outcome or {})
     if row.get("skipped_repeat"):
         progress = dict((outcome.get("progress") or {}))
@@ -1134,6 +1229,7 @@ def apply_script_review_gate(folder, spec, locks, brief, outcome, force=False, c
         message.update({"role": "assistant", "content": reply, "options": options, "choice_kind": "single", "cards": []})
         progress["pipeline"] = pipeline
         progress["question"] = question
+        progress["message"] = reply.split("\n", 1)[0]
         progress["phase"] = "gate_script"
         outcome["progress"] = progress
         outcome["message"] = message
@@ -1172,6 +1268,7 @@ def apply_script_review_gate(folder, spec, locks, brief, outcome, force=False, c
     message.update({"role": "assistant", "content": reply, "options": options, "choice_kind": "single", "cards": []})
     progress["pipeline"] = pipeline
     progress["question"] = question
+    progress["message"] = reply.split("\n", 1)[0]
     progress["semantic"] = public_semantic(folder, spec, brief)
     if status == "passed":
         progress["phase"] = "gate_script"
