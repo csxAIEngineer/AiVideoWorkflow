@@ -20,6 +20,18 @@ from end.stage_runner import feed_from_result, render_feed_text, store_stage
 from tests.test_auto_gates import _ready_locks
 from tests.test_director_pipeline import make_project
 
+
+def setUpModule():
+    from tests.worker_model import install_worker_bridge
+
+    install_worker_bridge()
+
+
+def tearDownModule():
+    from tests.worker_model import uninstall_worker_bridge
+
+    uninstall_worker_bridge()
+
 _MISSING = MISSING_UNITS
 _STILL = _MISSING + "\n[-] FAIL: 缺【画幅风格】"
 _SEEDANCE = "\n".join((

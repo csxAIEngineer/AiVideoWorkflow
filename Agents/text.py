@@ -7,7 +7,7 @@ send ``reasoning.effort``. This module does not open its own HTTP client.
 
 import os
 
-from AI.qwen_api.graph import TEXT_MODEL, generate_text
+from AI.qwen_api.graph import TEXT_MODEL, bind_trace_prompts, generate_text
 
 # Same budgets the asset write and the short drill use in the text graph.
 GENERATOR_TOKENS = 16000
@@ -28,13 +28,17 @@ def resolved_model(model=None):
     return TEXT_MODEL
 
 
-def complete_text(role, messages, *, model=None, client=None, timeout=None):
+def complete_text(role, messages, *, model=None, client=None, timeout=None, trace_path=""):
     """One generate or critique turn. ``role`` selects the output budget."""
     tokens, default_timeout = _BUDGET.get(role, _BUDGET["generator"])
-    return generate_text(
-        messages,
-        model=model or TEXT_MODEL,
-        max_output_tokens=tokens,
-        timeout=default_timeout if timeout is None else timeout,
-        client=client,
-    )
+    kwargs = {
+        "model": model or TEXT_MODEL,
+        "max_output_tokens": tokens,
+        "timeout": default_timeout if timeout is None else timeout,
+        "client": client,
+    }
+    path = str(trace_path or "").strip()
+    if not path:
+        return generate_text(messages, **kwargs)
+    with bind_trace_prompts(path):
+        return generate_text(messages, **kwargs)

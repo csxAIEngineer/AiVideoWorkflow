@@ -3014,30 +3014,20 @@ def _feed_worker_checker(folder, locks, storyboard, shots):
 
 
 def _worker_complete(project, folder, write_model, prompts):
-    def complete(role, messages):
-        if role == "critic":
-            from Agents.text import complete_text
+    """One generator node is one text call. The critic path only judges.
 
+    ``write_model`` still runs a whole stage. A specialist or director message
+    keeps the stage task line, including a repair line, so handing that text to
+    the stage writer starts the stage over. Those roles call ``complete_text``.
+    """
+    del folder, write_model
+
+    def complete(role, messages):
+        from Agents.text import complete_text
+
+        if role == "critic" or not prompts:
             return complete_text(role, messages, model=project.get("model"))
-        brief = "\n\n".join(
-            str(item.get("content") or "").strip()
-            for item in messages or []
-            if str(item.get("content") or "").strip()
-        )
-        debug = bool((project.get("progress") or {}).get("debug_llm"))
-        debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
-        result = _write_model(
-            write_model,
-            brief,
-            "",
-            debug_dir=debug_dir,
-            model=project.get("model"),
-            template=project.get("template"),
-            prompts=prompts,
-        )
-        if isinstance(result, dict):
-            return json.dumps(result, ensure_ascii=False)
-        return str(result or "")
+        return complete_text(role, messages, model=project.get("model"), trace_path=prompts)
 
     return complete
 

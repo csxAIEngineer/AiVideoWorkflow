@@ -23,6 +23,18 @@ from end.stage_runner import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def setUpModule():
+    from tests.worker_model import install_worker_bridge
+
+    install_worker_bridge()
+
+
+def tearDownModule():
+    from tests.worker_model import uninstall_worker_bridge
+
+    uninstall_worker_bridge()
 SHOTS = [8, 5, 5, 4, 4, 4, 5, 6, 4, 5, 5, 5]
 BOARD = "\n".join(
     "## S%02d\n动作：动作%s\n景别机位：中景\n时长：%s\n资产：A1" % (index, index, seconds)

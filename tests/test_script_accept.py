@@ -560,6 +560,9 @@ class HumanReleaseWorkerTest(unittest.TestCase):
         ]
         for item in self._patches:
             item.start()
+        from tests.worker_model import install_worker_bridge
+
+        install_worker_bridge()
         set_reviewer(lambda _messages: json.dumps({"issues": []}, ensure_ascii=False))
 
     def _project(self):
@@ -590,6 +593,9 @@ class HumanReleaseWorkerTest(unittest.TestCase):
         self._write.start()
 
     def tearDown(self):
+        from tests.worker_model import uninstall_worker_bridge
+
+        uninstall_worker_bridge()
         for extra in (getattr(self, "_write", None), getattr(self, "_model", None), getattr(self, "_check", None)):
             if extra is not None:
                 extra.stop()

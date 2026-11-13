@@ -23,6 +23,9 @@ def _urlopen(request, *args, **kwargs):
 def install():
     if _PATCHES:
         return
+    from tests.worker_model import install_worker_bridge
+
+    install_worker_bridge()
     targets = (
         patch("end.ai_client.ask_text", _boom),
         patch("urllib.request.urlopen", _urlopen),
@@ -33,5 +36,8 @@ def install():
 
 
 def uninstall():
+    from tests.worker_model import uninstall_worker_bridge
+
     while _PATCHES:
         _PATCHES.pop().stop()
+    uninstall_worker_bridge()
