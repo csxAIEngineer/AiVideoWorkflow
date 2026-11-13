@@ -1478,6 +1478,165 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertNotIn("H9 画外声缺闭口证据", again_report)
         self.assertEqual(again, 0)
 
+    def test_h3_lock_rejects_prose_units_without_calling_the_seedance_gate(self):
+        import importlib.util
+
+        from end.gates import GATE_CHECK, H3_STRUCTURE_MARK, VALIDATOR
+        from end.product_names import MISSING_UNITS
+        from end.repair_units import units_for
+
+        checks_spec = importlib.util.spec_from_file_location(
+            "feed_checks_for_h3_route",
+            ROOT / "Agents" / "checks.py",
+        )
+        checks = importlib.util.module_from_spec(checks_spec)
+        checks_spec.loader.exec_module(checks)
+
+        prose = "\n\n".join((
+            "\n".join((
+                "## 【封装单元 %s/5】" % index,
+                "duration: %s" % duration,
+                "A woman waits in the doorway and speaks. <d>[Chinese] 留下。</d>",
+            ))
+            for index, duration in ((1, 11), (2, 11), (3, 10), (4, 13), (5, 11))
+        )) + "\n"
+        self.assertNotIn("subject_definitions", prose)
+        self.assertTrue(feed_uses_h3(prose, "h3"))
+        self.assertFalse(feed_uses_h3(prose, "2.5"))
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(prose, encoding="utf-8")
+        with patch("end.gates.run_script") as run:
+            code, report = check_feed(path, "h3", "M1", "1")
+        run.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertIn(H3_STRUCTURE_MARK, report)
+        self.assertIn("subject_definitions", report)
+        self.assertNotIn(MISSING_UNITS, report)
+        self.assertNotIn("未找到封装单元", report)
+        self.assertNotIn("六道闸门", report)
+        for number in range(1, 6):
+            self.assertIn("[段%s]" % number, report)
+        units = units_for("feed", report, feed=prose)
+        self.assertEqual([unit["number"] for unit in units], [1, 2, 3, 4, 5])
+        self.assertTrue(all("不是 H3 结构" in unit["suggestion"] for unit in units))
+        checked = checks.check_feed_draft(prose, {"locks": {"model": "h3", "material_mode": "M1", "track": "1"}})
+        self.assertFalse(checked["ok"])
+        shown = "\n".join(checked["errors"])
+        self.assertIn(H3_STRUCTURE_MARK, shown)
+        self.assertNotIn("未找到封装单元", shown)
+
+        seedance_body = "\n".join((
+            "## 【封装单元 1/1】",
+            "【画幅风格】16:9 横屏",
+            "【场景资产】房间",
+            "【核心人物】甲",
+            "【站位声明】甲在门内。",
+            "【时间轴分镜】",
+            "00:00-00:04 [镜头1] 中景 · 平视 · 固定。甲站着。声音：无。台词：无。",
+        ))
+        path.write_text(seedance_body, encoding="utf-8")
+        with patch("end.gates.run_script") as run:
+            code, report = check_feed(path, "h3", "M1", "1")
+        run.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertIn(H3_STRUCTURE_MARK, report)
+        self.assertNotIn(MISSING_UNITS, report)
+        self.assertNotIn("六道闸门", report)
+        self.assertNotIn(str(GATE_CHECK), report)
+        self.assertNotIn(str(VALIDATOR), report)
+
+    def test_structured_h3_draft_still_uses_the_h3_checker(self):
+        from end.gates import GATE_CHECK, H3_STRUCTURE_MARK, VALIDATOR
+
+        body = "\n".join((
+            "## 【封装单元 1/1】",
+            "duration: 20",
+            "subject_definitions:",
+            "<Subject 1> is a woman standing indoors.",
+            "summary:",
+            "She waits by the door.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved for the woman.",
+            "detailed_description:",
+            "[Shot 1] She stands inside. A narrator (S1) says in an off-screen voiceover: <d>[Chinese] 留下。</d>",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+        ))
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(body, encoding="utf-8")
+        seen = []
+        real_run = __import__("end.gates", fromlist=["run_script"]).run_script
+
+        def spy(script, args, timeout=90):
+            seen.append(Path(script).name)
+            return real_run(script, args, timeout)
+
+        with patch("end.gates.run_script", side_effect=spy):
+            code, report = check_feed(path, "h3", "M1", "1")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(seen, ["validate_prompt.py"])
+        self.assertNotIn("gate_check.py", seen)
+        self.assertIn("H9", report)
+        self.assertIn("声明时长", report)
+        self.assertNotIn(H3_STRUCTURE_MARK, report)
+        self.assertNotIn("未找到封装单元", report)
+        self.assertNotIn("六道闸门", report)
+        self.assertNotIn(str(GATE_CHECK), report)
+        self.assertIn("model=h3", report)
+        self.assertNotIn(str(VALIDATOR), report)
+        import importlib.util
+
+        checks_spec = importlib.util.spec_from_file_location(
+            "feed_checks_for_h3_duration",
+            ROOT / "Agents" / "checks.py",
+        )
+        checks = importlib.util.module_from_spec(checks_spec)
+        checks_spec.loader.exec_module(checks)
+        spoken = checks.check_feed_draft(body, {
+            "locks": {"model": "h3", "material_mode": "M1", "track": "1"},
+            "storyboard": "时长：20\n对白：甲：这句必须原样留下。",
+        })
+        self.assertFalse(spoken["ok"])
+        self.assertIn("对白被压缩", spoken["report"])
+        self.assertIn("H9", spoken["report"])
+
+    def test_non_h3_model_still_uses_the_seedance_gate(self):
+        from end.gates import H3_STRUCTURE_MARK
+        from end.product_names import MISSING_UNITS
+
+        prose = "\n".join((
+            "## 【封装单元 1/2】",
+            "A woman waits.",
+            "",
+            "## 【封装单元 2/2】",
+            "She leaves.",
+        ))
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(prose, encoding="utf-8")
+        for model in ("2.5", "2.0"):
+            code, report = check_feed(path, model, "M1", "1")
+            self.assertNotEqual(code, 0, model)
+            self.assertIn(MISSING_UNITS, report, model)
+            self.assertNotIn(H3_STRUCTURE_MARK, report, model)
+            self.assertNotIn("H9", report, model)
+        sheet = "\n".join((
+            "## 【封装单元 1/1】",
+            "【画幅风格】16:9 横屏",
+            "【场景资产】房间",
+            "【核心人物】甲",
+            "【站位声明】甲在门内。",
+            "【时间轴分镜】",
+            "00:00-00:04 [镜头1] 中景 · 平视 · 固定。甲站着。声音：无。台词：无。",
+        ))
+        path.write_text(sheet, encoding="utf-8")
+        code, report = check_feed(path, "2.5", "M1", "1")
+        self.assertIn("六道闸门", report)
+        self.assertIn("model=2.5", report)
+        self.assertNotIn(H3_STRUCTURE_MARK, report)
+        self.assertNotIn(MISSING_UNITS, report)
+
     def test_h3_segment_object_is_written_as_six_section_text(self):
         payload = {
             "model": "MiniMax H3",
