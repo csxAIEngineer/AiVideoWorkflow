@@ -7,6 +7,7 @@ from .store import (
     LocalImageStore,
     OssImageStore,
     get_image_store,
+    valid_image_filename,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "LocalImageStore",
     "OssImageStore",
     "get_image_store",
+    "valid_image_filename",
 ]

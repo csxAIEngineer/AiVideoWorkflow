@@ -13,8 +13,8 @@ import urllib.request
 from pathlib import Path
 
 _PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-_IMAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-_FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.(?:png|jpe?g|webp)$", re.IGNORECASE)
+_IMAGE_SUFFIX = re.compile(r"\.(?:png|jpe?g|webp)\Z", re.IGNORECASE)
+_MAX_STEM = 64
 
 
 class ImageStoreError(RuntimeError):
@@ -102,7 +102,8 @@ class LocalImageStore(ImageStore):
         return self._join(_project_id(project_id), _filename(filename))
 
     def _join(self, project_id, filename):
-        return "%s/media/projects/%s/images/%s" % (self.public_base(), project_id, filename)
+        key = "media/projects/%s/images/%s" % (project_id, filename)
+        return _http_object_url(self.public_base(), key)
 
 
 class OssImageStore(ImageStore):
@@ -227,7 +228,7 @@ def _content_type(filename):
 
 def _put_cos(domain, bucket, key, payload, content_type):
     digest = base64.b64encode(hashlib.md5(payload).digest()).decode("ascii")
-    target = "%s/%s" % (domain.rstrip("/"), key)
+    target = _http_object_url(domain, key)
     request = urllib.request.Request(target, data=payload, method="PUT")
     request.add_header("Content-Type", content_type)
     request.add_header("Content-MD5", digest)
@@ -309,18 +310,51 @@ def _project_id(value):
     return text
 
 
+def _http_object_url(domain, key):
+    """Percent-encode the object key so the HTTP request line stays ASCII."""
+    quoted = urllib.parse.quote(str(key).lstrip("/"), safe="/")
+    return "%s/%s" % (str(domain).rstrip("/"), quoted)
+
+
+def _safe_stem(text):
+    """One path segment. Live asset ids include 图1 and 图1_3."""
+    if not text or len(text) > _MAX_STEM:
+        return False
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return False
+    if text != Path(text).name or text in (".", ".."):
+        return False
+    if not text[0].isalnum():
+        return False
+    return all(ch.isalnum() or ch in "-_" for ch in text[1:])
+
+
 def _image_id(value):
     text = str(value or "").strip()
-    if not _IMAGE_ID.match(text):
+    if not _safe_stem(text):
         raise ImageStoreError("图片编号无效")
     return text
 
 
 def _filename(value):
     text = str(value or "").strip()
-    if not _FILENAME.match(text) or text != Path(text).name:
+    suffix = Path(text).suffix
+    if (
+        text != Path(text).name
+        or not _IMAGE_SUFFIX.fullmatch(suffix)
+        or not _safe_stem(Path(text).stem)
+    ):
         raise ImageStoreError("图片文件名无效")
     return text
+
+
+def valid_image_filename(value):
+    """True when this still name can be published, including 图1.png."""
+    try:
+        _filename(value)
+    except ImageStoreError:
+        return False
+    return True
 
 
 def _load_dotenv():

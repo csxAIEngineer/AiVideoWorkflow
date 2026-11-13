@@ -22,6 +22,7 @@ from end.render_loop import (
     choose_video_mode,
     delivery_prompt,
     ensure_reference_min_side,
+    _reference_publish_name,
     image_prompt,
     display_caption,
     gate_for,
@@ -1173,6 +1174,11 @@ class RenderLoopTest(unittest.TestCase):
         )
         self.assertTrue(any(item.get("message") == "没有旁白，保留镜头原声" for item in quiet))
         self.assertTrue(all(item.get("soundtrack_note") == "没有旁白" for item in quiet))
+
+    def test_reference_publish_name_keeps_a_chinese_asset_id(self):
+        self.assertEqual(_reference_publish_name("图1.png"), "图1_ref.png")
+        self.assertEqual(_reference_publish_name("图1_3.png"), "图1_3_ref.png")
+        self.assertEqual(_reference_publish_name("U2.png"), "U2_ref.png")
 
     def test_tiny_reference_still_is_enlarged_before_wan_submit(self):
         if not _ffmpeg_bin():

@@ -9,13 +9,14 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 import zlib
 from pathlib import Path
 from unittest.mock import patch
 
 import end.db as db
-from end.render_loop import _ffmpeg_bin, gate_for, load_run_state
+from end.render_loop import _ffmpeg_bin, gate_for, load_run_state, save_run_state
 from end.intake import enrich_brief, load_intake, merge_intake
 from AI.vision import QwenVisionError
 from end.server import (
@@ -33,11 +34,15 @@ from http.server import ThreadingHTTPServer
 
 
 def tiny_png():
+    return png_size(1, 1)
+
+
+def png_size(width, height):
     def chunk(tag, data):
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
     raw = b"\x00\xff\x00\x00"
-    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
 
 
@@ -336,6 +341,118 @@ class ProjectApiTest(unittest.TestCase):
         self.assertNotEqual(read_project(project_id)["status"], "rendering")
         self.assertNotEqual(read_project(project_id)["status"], "building")
         gate_for(project_id).resume()
+
+    def test_chinese_asset_replacement_uploads_and_stores_the_public_url(self):
+        project_id = "c0de1c000006"
+        make_project(project_id)
+        spec = {
+            "title": "深夜",
+            "script": "旧剧本",
+            "storyboard": "旧分镜",
+            "assets": [{"id": "图1", "title": "小君", "prompt": "深夜工作间"}],
+            "shots": [{"id": "S01", "duration": 5, "prompt": "她抬头", "images": ["图1"]}],
+        }
+        (project_dir(project_id) / "spec.json").write_text(
+            json.dumps(spec, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        png = png_size(240, 240)
+        saved_env = {
+            "AIVIDEO_IMAGE_STORE": os.environ.get("AIVIDEO_IMAGE_STORE"),
+            "AIVIDEO_COS_BUCKET": os.environ.get("AIVIDEO_COS_BUCKET"),
+            "AIVIDEO_COS_DOMAIN": os.environ.get("AIVIDEO_COS_DOMAIN"),
+        }
+        os.environ["AIVIDEO_IMAGE_STORE"] = "cos"
+        os.environ["AIVIDEO_COS_BUCKET"] = "demo-1250000000"
+        os.environ["AIVIDEO_COS_DOMAIN"] = "https://demo-1250000000.cos.ap-guangzhou.myqcloud.com"
+        calls = []
+        real_open = urllib.request.urlopen
+
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            target = str(getattr(request, "full_url", "") or "")
+            if "myqcloud.com" in target:
+                calls.append(request)
+                return _Response()
+            if timeout is None:
+                return real_open(request)
+            return real_open(request, timeout=timeout)
+
+        public = (
+            "https://demo-1250000000.cos.ap-guangzhou.myqcloud.com/projects/%s/images/%s"
+            % (project_id, urllib.parse.quote("图1.png"))
+        )
+        view_patches = (
+            patch("end.server.normalize_model", side_effect=lambda model: model or ""),
+            patch("end.server.model_label", return_value=""),
+            patch("end.server.normalize_template", side_effect=lambda template: template or ""),
+            patch("end.server.template_label", return_value=""),
+        )
+        for item in view_patches:
+            item.start()
+        self.addCleanup(lambda: [item.stop() for item in view_patches])
+        try:
+            with patch("end.image_store.store.urllib.request.urlopen", fake_open):
+                body = self.rpc(
+                    "projects.set_asset_image",
+                    {
+                        "id": project_id,
+                        "asset_id": "图1",
+                        "data_base64": base64.b64encode(png).decode("ascii"),
+                    },
+                )
+                self.assertIn("result", body, body)
+                stored = project_dir(project_id) / "outputs" / "images" / "图1.png"
+                self.assertEqual(stored.read_bytes(), png)
+                step = load_run_state(project_dir(project_id))["steps"]["图1"]
+                self.assertTrue(step["local_override"])
+                self.assertEqual(step["status"], "done")
+                self.assertEqual(step["public_url"], public)
+                self.assertEqual(step["output_file"], "images/图1.png")
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0].get_method(), "PUT")
+                self.assertEqual(calls[0].full_url, public)
+                self.assertEqual(calls[0].data, png)
+                self.assertFalse(calls[0].has_header("Authorization"))
+                image = next(item for item in body["result"]["images"] if item["name"] == "图1.png")
+                status, raw = self.request("GET", urllib.parse.quote(image["url"], safe="/?=&"))
+                self.assertEqual(status, 200)
+                self.assertEqual(raw, png)
+                state = load_run_state(project_dir(project_id))
+                state["steps"]["图1"]["status"] = "running"
+                state["steps"]["图1"]["remote_task_id"] = "task-already"
+                save_run_state(project_dir(project_id), state)
+                rejected = self.rpc(
+                    "projects.set_asset_image",
+                    {
+                        "id": project_id,
+                        "asset_id": "图1",
+                        "data_base64": base64.b64encode(png).decode("ascii"),
+                    },
+                )
+                self.assertEqual(rejected["error"]["code"], 400)
+                self.assertIn("已经提交", rejected["error"]["message"])
+                self.assertEqual(len(calls), 1)
+                kept = load_run_state(project_dir(project_id))["steps"]["图1"]
+                self.assertEqual(kept["public_url"], public)
+                self.assertEqual(kept["status"], "running")
+        finally:
+            for key, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_jpeg_upload_becomes_png(self):
         ffmpeg = _ffmpeg_bin()

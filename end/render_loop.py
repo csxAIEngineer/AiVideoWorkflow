@@ -15,7 +15,7 @@ from pathlib import Path
 
 from end.soundtrack import lay_soundtrack, normalize_soundtrack, soundtrack_enabled
 from end.workflow_from_spec import collect_steps, ordered_assets
-from end.image_store import get_image_store
+from end.image_store import get_image_store, valid_image_filename
 
 ASPECT_RATIOS = ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
 
@@ -2102,9 +2102,9 @@ def _reference_publish_name(source_name):
     if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
         suffix = ".png"
     candidate = "%s_ref%s" % (source.stem or "still", suffix)
-    if re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.(?:png|jpe?g|webp)$", candidate, re.IGNORECASE):
+    if valid_image_filename(candidate):
         return candidate
-    if re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.(?:png|jpe?g|webp)$", source.name, re.IGNORECASE):
+    if valid_image_filename(source.name):
         return source.name
     return ""
 
