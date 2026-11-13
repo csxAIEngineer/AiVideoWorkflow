@@ -37,7 +37,8 @@ from Agents.machine_check import (
     load_checker,
 )
 from Agents.text import complete_text, resolved_model
-from Agents.worker import missing_skill_state, resolve_skill_pack, skill_reference, skill_system
+from Agents.worker import missing_skill_state, resolve_skill_pack, skill_reference
+from Agents.workers.generator import run_generator
 
 STAGE = "P2"
 TASK = "asset"
@@ -94,6 +95,7 @@ class P2State(TypedDict, total=False):
     asset_list: list
     skill_pack: str
     draft: str
+    partials: list
     attempt: int
     max_attempts: int
     min_blocks: int
@@ -226,10 +228,18 @@ def compile_p2_asset_graph(complete, checker=None):
     graph = StateGraph(P2State)
 
     def generate(state):
-        messages = generator_messages(state)
         attempt = int(state.get("attempt") or 0) + 1
+        brief = generator_messages(state)[-1]["content"]
+        repair = brief if attempt > 1 else ""
         try:
-            raw = complete("generator", messages)
+            produced = run_generator(
+                TASK,
+                brief,
+                role=GENERATOR_SYSTEM,
+                complete=complete,
+                partials=state.get("partials") or [],
+                repair_text=repair,
+            )
         except Exception as exc:
             return {
                 "attempt": attempt,
@@ -237,13 +247,14 @@ def compile_p2_asset_graph(complete, checker=None):
                 "generator_note": "model_error",
             }
         previous = str(state.get("draft") or "")
-        draft = apply_generator_output(raw, previous=previous)
+        draft = apply_generator_output(produced.get("raw") or "", previous=previous)
         note = ""
         if previous.strip() and draft.strip() == previous.strip():
             note = "revision_kept_previous"
         return {
             "attempt": attempt,
             "draft": draft,
+            "partials": produced.get("partials") or [],
             "error": "",
             "generator_note": note,
         }
@@ -376,7 +387,7 @@ def generator_messages(state):
     else:
         sections.append("请根据剧本写出完整资产稿。")
     return [
-        {"role": "system", "content": skill_system(GENERATOR_SYSTEM, state.get("skill_pack"))},
+        {"role": "system", "content": GENERATOR_SYSTEM},
         {"role": "user", "content": "\n\n".join(sections)},
     ]
 

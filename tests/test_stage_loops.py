@@ -62,7 +62,9 @@ SENTINEL = "CRITIC-REWRITE-SENTINEL-不要采用"
 
 def _roles(script_text):
     def complete(role, messages):
-        if role == "generator":
+        if role == "specialist":
+            return "节点正文"
+        if role in ("generator", "director"):
             return json.dumps({"script": script_text, "title": "雨夜"}, ensure_ascii=False)
         if role != "critic":
             raise AssertionError(role)
@@ -90,7 +92,9 @@ class ScriptLoopTest(unittest.TestCase):
 
         def complete(role, messages):
             roles.append(role)
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 return json.dumps({"script": PASS_SCRIPT}, ensure_ascii=False)
             return json.dumps({
                 "verdict": "revise",
@@ -98,7 +102,9 @@ class ScriptLoopTest(unittest.TestCase):
             }, ensure_ascii=False)
 
         result = run_script_loop(SCRIPT, complete=complete)
-        self.assertEqual(roles, ["generator", "critic"])
+        self.assertEqual(roles[-2:], ["director", "critic"])
+        self.assertGreater(roles.count("specialist"), 1)
+        self.assertEqual(roles.count("director"), 1)
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["stop_reason"], "machine_check_pass")
         self.assertEqual(result["attempts"], 1)
@@ -110,12 +116,18 @@ class ScriptLoopTest(unittest.TestCase):
 
         def complete(role, messages):
             roles.append(role)
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 return json.dumps({"script": "画面已核验。"}, ensure_ascii=False)
             return ACCEPT
 
         result = run_script_loop(SCRIPT, max_attempts=2, complete=complete)
-        self.assertEqual(roles, ["generator", "critic", "generator", "critic"])
+        self.assertEqual(roles.count("critic"), 2)
+        self.assertEqual(roles.count("director"), 2)
+        cut = roles.index("critic")
+        self.assertGreater(roles[:cut].count("specialist"), 1)
+        self.assertEqual(roles[cut + 1:], ["director", "critic"])
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["stop_reason"], "budget_exhausted")
         self.assertEqual(result["attempts"], 2)
@@ -125,7 +137,9 @@ class ScriptLoopTest(unittest.TestCase):
         prompts = []
 
         def complete(role, messages):
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 prompts.append(messages[-1]["content"])
                 if len(prompts) == 1:
                     return json.dumps({"script": "画面已核验。"}, ensure_ascii=False)
@@ -180,7 +194,9 @@ class ScriptLoopTest(unittest.TestCase):
             }
 
         result = run_script_loop(SCRIPT, max_attempts=3, complete=complete, checker=checker)
-        self.assertEqual(calls, ["generator", "critic"])
+        self.assertEqual(calls[-2:], ["director", "critic"])
+        self.assertEqual(calls.count("director"), 1)
+        self.assertEqual(calls.count("critic"), 1)
         self.assertEqual(result["stop_reason"], "checker_unavailable")
 
 
@@ -197,7 +213,9 @@ class StoryboardLoopTest(unittest.TestCase):
         prompts = []
 
         def complete(role, messages):
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 prompts.append(messages[-1]["content"])
                 if len(prompts) == 1:
                     return json.dumps({"storyboard": first}, ensure_ascii=False)
@@ -229,12 +247,16 @@ class StoryboardLoopTest(unittest.TestCase):
 
         def complete(role, messages):
             roles.append(role)
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 return json.dumps({"previs": "不是分镜"}, ensure_ascii=False)
             return ACCEPT
 
         result = run_storyboard_loop(SCRIPT, max_attempts=3, complete=complete)
-        self.assertEqual(roles, ["generator", "critic"])
+        self.assertEqual(roles[-2:], ["director", "critic"])
+        self.assertEqual(roles.count("director"), 1)
+        self.assertEqual(roles.count("critic"), 1)
         self.assertEqual(result["stop_reason"], "needs_human")
         self.assertEqual(result["attempts"], 1)
         self.assertIn("分镜是空的", result["machine_report"]["report"])
@@ -299,7 +321,9 @@ class FeedDurationTest(unittest.TestCase):
             }
 
         def complete(role, messages):
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 prompts.append(messages[-1]["content"])
                 if len(prompts) == 1:
                     return json.dumps({"feed": SHORT_FEED}, ensure_ascii=False)
@@ -378,7 +402,9 @@ class VoiceoverPatchTest(unittest.TestCase):
             return {"ok": official and lips_at_vo, "errors": [] if official and lips_at_vo else ["H9"], "warnings": [], "fatal": "", "needs_human": False}
 
         def complete(role, messages):
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 return json.dumps({"feed": body}, ensure_ascii=False)
             return ACCEPT
 
@@ -409,7 +435,7 @@ class EndSkillPackTest(unittest.TestCase):
             return "END-LOADED-SKILL"
 
         def writer(brief, skill_pack="", debug_dir=None, model=None, template=None, trace_prompts=None):
-            self.assertIn("END-LOADED-SKILL", brief)
+            self.assertNotIn("END-LOADED-SKILL", brief)
             self.assertNotIn("A1 禁止跨条引用", brief)
             return {"storyboard": FIXED_BOARD}
 
@@ -481,10 +507,13 @@ class EndDispatchTest(unittest.TestCase):
                 writer,
                 lambda *args, **kwargs: "SKILL-PACK-SENTINEL",
             )
-        self.assertTrue(any("SKILL-PACK-SENTINEL" in call for call in calls))
+        self.assertTrue(calls)
+        self.assertFalse(any("SKILL-PACK-SENTINEL" in call for call in calls))
+        self.assertTrue(any("本节点原文" in call and call.count("本节点原文") == 1 for call in calls))
+        self.assertTrue(any("总控" in call and "各节点正文" in call for call in calls))
         self.assertTrue(outcome["progress"]["pipeline"]["passed"], outcome["progress"]["pipeline"].get("report"))
         self.assertGreaterEqual(len(calls), 2)
-        self.assertIn("缺时长", calls[1])
+        self.assertTrue(any("缺时长" in call for call in calls))
         self.assertNotIn(SENTINEL, (internal / "分镜.md").read_text(encoding="utf-8"))
         self.assertIn("时长：6", (internal / "分镜.md").read_text(encoding="utf-8"))
         self.assertTrue(outcome["progress"]["pipeline"].get("worker_loop"))

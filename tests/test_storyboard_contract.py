@@ -136,9 +136,10 @@ class GateTest(unittest.TestCase):
             writer,
             lambda *_a, **_k: "",
         )
-        self.assertEqual(len(calls), 1)
-        self.assertNotIn("预演：1", calls[0])
-        self.assertIn("景别机位", calls[0])
+        self.assertGreater(len(calls), 1)
+        self.assertTrue(all("预演：1" not in call for call in calls))
+        self.assertTrue(any("景别机位" in call for call in calls))
+        self.assertEqual(sum("各节点正文" in call for call in calls), 1)
         self.assertFalse(outcome["progress"]["pipeline"]["passed"])
         self.assertEqual(outcome["progress"]["pipeline"]["report"], "分镜是空的")
         self.assertEqual(outcome["progress"]["pipeline"]["repairs"], 0)
@@ -202,6 +203,7 @@ class QueueTest(unittest.TestCase):
         project_id = "sb562f48a5ed"
         folder = self._project(project_id)
         calls = []
+        directors = {"n": 0}
 
         def writer(brief, skill_pack="", debug_dir=None, model=None, template=None, **_kwargs):
             calls.append(brief)
@@ -223,9 +225,12 @@ class QueueTest(unittest.TestCase):
                         "Soft pulse.",
                     ))
                 }
-            if len(calls) == 1:
-                return {"previs": FIXTURE}
-            return {"storyboard": BOARD}
+            if "各节点正文" in brief:
+                directors["n"] += 1
+                if directors["n"] == 1:
+                    return {"previs": FIXTURE}
+                return {"storyboard": BOARD}
+            return {"text": "节点正文"}
 
         with patch("end.server.call_deepseek", side_effect=writer), patch(
             "end.stage_runner.check_feed", return_value=(0, "")
@@ -241,7 +246,8 @@ class QueueTest(unittest.TestCase):
             before = (folder / "_内部_" / "previs.md").read_bytes()
             answer_gate(read_project(project_id), "补写分镜")
             self.assertTrue(agent_queue().wait_until_idle(8))
-            self.assertEqual(len(calls), 1, "\n---\n".join(call.splitlines()[0] for call in calls))
+            self.assertEqual(directors["n"], 1, "\n---\n".join(call.splitlines()[0] for call in calls))
+            self.assertGreater(len(calls), 1)
             saved = read_project(project_id)
             self.assertEqual(saved["status"], "gate")
             self.assertEqual(saved["progress"]["pipeline"]["repairs"], 0)
@@ -252,9 +258,9 @@ class QueueTest(unittest.TestCase):
             self.assertEqual(spec.get("shots"), [])
             answer_gate(read_project(project_id), "补写分镜")
             self.assertTrue(agent_queue().wait_until_idle(8))
-        self.assertEqual(len(calls), 3)
-        self.assertIn("任务：分镜", calls[1])
-        self.assertIn("任务：提示词封装", calls[2])
+        self.assertGreaterEqual(directors["n"], 2)
+        self.assertTrue(any("任务：分镜" in call for call in calls))
+        self.assertTrue(any("任务：提示词封装" in call for call in calls))
         spec = json.loads((folder / "spec.json").read_text(encoding="utf-8"))
         self.assertEqual(spec["shots"][0]["id"], "S01")
         self.assertEqual(spec["shots"][0]["duration"], 6)
@@ -307,7 +313,8 @@ class QueueTest(unittest.TestCase):
             writer,
             lambda *_a, **_k: "",
         )
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(sum("各节点正文" in call for call in calls), 1)
+        self.assertGreater(len(calls), 1)
         self.assertFalse(outcome["progress"]["pipeline"]["passed"])
         self.assertIn("时长正文 6", outcome["progress"]["pipeline"]["report"])
         self.assertEqual(outcome["progress"]["pipeline"]["repairs"], 0)

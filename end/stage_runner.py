@@ -2997,7 +2997,7 @@ def _feed_worker_checker(folder, locks, storyboard, shots):
 
 def _worker_complete(project, folder, write_model, prompts):
     def complete(role, messages):
-        if role != "generator":
+        if role == "critic":
             from Agents.text import complete_text
 
             return complete_text(role, messages, model=project.get("model"))

@@ -393,7 +393,9 @@ class RuleBeforeModelTest(unittest.TestCase):
         ), patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"):
             run_project("p-rule-then-ai")
         saved = read_project("p-rule-then-ai")
-        self.assertEqual(order, ["rules", "ai", "ai", "ai"])
+        self.assertEqual(order[0], "rules")
+        self.assertNotIn("rules", order[1:])
+        self.assertGreaterEqual(order.count("ai"), 3)
         self.assertEqual(saved["status"], "gate")
         self.assertEqual(saved["progress"]["pipeline"]["repairs"], 3)
         self.assertEqual(saved["progress"]["pipeline"]["rule_repairs"], 1)

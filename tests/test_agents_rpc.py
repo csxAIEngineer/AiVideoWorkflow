@@ -134,7 +134,9 @@ class _VideoClient(object):
 
 
 def _asset_complete(role, messages, **_kwargs):
-    if role == "generator":
+    if role == "specialist":
+        return "节点正文"
+    if role in ("generator", "director"):
         return PASS_ROLE
     return json.dumps(
         {"verdict": "accept", "issues": [], "draft": "#### 图9 · 改写\n%s\n" % SENTINEL},

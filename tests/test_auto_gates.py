@@ -137,10 +137,10 @@ class AutoAdvanceTest(unittest.TestCase):
             calls.append(brief)
             if "任务：赛道分流" in brief:
                 return {"text": "路线"}
-            if "对标情报" in brief:
-                return {"intel": "来源：一条爆款。这不是事实。"}
             if "任务：剧本" in brief:
                 return {"title": "雨夜", "script": "她在雨里等车。"}
+            if "对标情报" in brief:
+                return {"intel": "来源：一条爆款。这不是事实。"}
             raise AssertionError(brief[:120])
 
         with patch("end.stage_runner.check_stage", return_value=(True, "")), patch(

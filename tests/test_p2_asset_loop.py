@@ -76,7 +76,9 @@ SENTINEL = "CRITIC-REWRITE-SENTINEL-不要采用"
 
 
 def _accept(role, _messages):
-    if role == "generator":
+    if role == "specialist":
+        return "节点正文"
+    if role in ("generator", "director"):
         return PASS_ROLE
     if role != "critic":
         raise AssertionError(role)
@@ -202,7 +204,9 @@ class AssetLoopTest(unittest.TestCase):
             return _accept(role, messages)
 
         result = run_p2_asset_loop(SCRIPT, max_attempts=DEFAULT_MAX_ATTEMPTS, complete=complete)
-        self.assertEqual(roles, ["generator", "critic"])
+        self.assertEqual(roles[-2:], ["director", "critic"])
+        self.assertGreater(roles.count("specialist"), 1)
+        self.assertEqual(roles.count("director"), 1)
         self.assertEqual(result["status"], "pass")
         self.assertTrue(result["passed"])
         self.assertEqual(result["stop_reason"], "machine_check_pass")
@@ -219,7 +223,9 @@ class AssetLoopTest(unittest.TestCase):
 
         def complete(role, messages):
             roles.append(role)
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 return PASS_ROLE
             return json.dumps({
                 "verdict": "revise",
@@ -227,7 +233,9 @@ class AssetLoopTest(unittest.TestCase):
             }, ensure_ascii=False)
 
         result = run_p2_asset_loop(SCRIPT, max_attempts=3, complete=complete)
-        self.assertEqual(roles, ["generator", "critic"])
+        self.assertEqual(roles[-2:], ["director", "critic"])
+        self.assertEqual(roles.count("director"), 1)
+        self.assertGreater(roles.count("specialist"), 1)
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["stop_reason"], "machine_check_pass")
         self.assertEqual(result["critic_report"]["verdict"], "revise")
@@ -237,7 +245,9 @@ class AssetLoopTest(unittest.TestCase):
 
         def complete(role, messages):
             roles.append(role)
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 return FAIL_CROSS
             return json.dumps({
                 "verdict": "revise",
@@ -245,7 +255,11 @@ class AssetLoopTest(unittest.TestCase):
             }, ensure_ascii=False)
 
         result = run_p2_asset_loop(SCRIPT, max_attempts=2, complete=complete)
-        self.assertEqual(roles, ["generator", "critic", "generator", "critic"])
+        self.assertEqual(roles.count("critic"), 2)
+        self.assertEqual(roles.count("director"), 2)
+        cut = roles.index("critic")
+        self.assertGreater(roles[:cut].count("specialist"), 1)
+        self.assertEqual(roles[cut + 1:], ["director", "critic"])
         self.assertNotIn("machine_check", roles)
         self.assertEqual(result["status"], "fail")
         self.assertFalse(result["passed"])
@@ -260,7 +274,9 @@ class AssetLoopTest(unittest.TestCase):
         prompts = []
 
         def complete(role, messages):
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 prompts.append(messages[-1]["content"])
                 if len(prompts) == 1:
                     return FAIL_CROSS
@@ -288,7 +304,9 @@ class AssetLoopTest(unittest.TestCase):
 
     def test_critic_rewrite_is_not_adopted_even_when_that_text_would_pass(self):
         def complete(role, messages):
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 return FAIL_CROSS
             return PASS_ROLE.replace("通过块不要动", SENTINEL)
 
@@ -307,7 +325,9 @@ class AssetLoopTest(unittest.TestCase):
         prompts = []
 
         def complete(role, messages):
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 prompts.append(messages[-1]["content"])
                 if len(prompts) == 1:
                     return FAIL_CROSS
@@ -329,7 +349,9 @@ class AssetLoopTest(unittest.TestCase):
 
     def test_partial_generate_keeps_the_passing_block(self):
         def complete(role, messages):
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 if "机检失败" not in messages[-1]["content"]:
                     return FAIL_WITH_KEPT
                 return PASS_PROP
@@ -347,7 +369,9 @@ class AssetLoopTest(unittest.TestCase):
 
     def test_generator_json_image_prompts_become_the_draft(self):
         def complete(role, messages):
-            if role == "generator":
+            if role == "specialist":
+                return "节点正文"
+            if role in ("generator", "director"):
                 return json.dumps({"image_prompts": PASS_ROLE}, ensure_ascii=False)
             return ACCEPT
 
@@ -360,12 +384,15 @@ class AssetLoopTest(unittest.TestCase):
 
         def complete(role, messages):
             calls.append(role)
-            if role == "generator" and calls.count("generator") == 1:
+            if role == "specialist" and calls.count("specialist") == 1:
                 raise RuntimeError("boom")
             return _accept(role, messages)
 
         result = run_p2_asset_loop(SCRIPT, max_attempts=2, complete=complete)
-        self.assertEqual(calls, ["generator", "generator", "critic"])
+        self.assertEqual(calls[0], "specialist")
+        self.assertEqual(calls[-2:], ["director", "critic"])
+        self.assertEqual(calls.count("critic"), 1)
+        self.assertGreater(calls.count("specialist"), 1)
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["attempts"], 2)
         self.assertIn("boom", result["history"][0]["critic_report"]["issues"][0]["detail"])
@@ -391,7 +418,9 @@ class AssetLoopTest(unittest.TestCase):
             }
 
         result = run_p2_asset_loop(SCRIPT, max_attempts=3, complete=complete, checker=checker)
-        self.assertEqual(calls, ["generator", "critic"])
+        self.assertEqual(calls[-2:], ["director", "critic"])
+        self.assertEqual(calls.count("director"), 1)
+        self.assertEqual(calls.count("critic"), 1)
         self.assertEqual(result["status"], "fail")
         self.assertEqual(result["stop_reason"], "checker_unavailable")
         self.assertEqual(result["attempts"], 1)
@@ -419,10 +448,14 @@ class SkillPackPromptTest(unittest.TestCase):
         seen = []
 
         def complete(role, messages):
-            if role == "generator":
+            if role == "specialist":
+                seen.append(messages[0]["content"])
+                return "节点正文"
+            if role in ("generator", "director"):
                 seen.append(messages[0]["content"])
                 return json.dumps({"image_prompts": PASS_ROLE}, ensure_ascii=False)
             self.assertIn("SKILL-SENTINEL-只在技能里", messages[-1]["content"])
+            self.assertNotIn(SENTINEL, messages[-1]["content"])
             return json.dumps({
                 "verdict": "revise",
                 "image_prompts": SENTINEL,
@@ -435,8 +468,14 @@ class SkillPackPromptTest(unittest.TestCase):
             complete=complete,
         )
         self.assertEqual(result["status"], "pass")
-        self.assertIn("SKILL-SENTINEL-只在技能里", seen[0])
-        self.assertNotIn("A1 禁止跨条引用", seen[0])
+        specialists = [item for item in seen if "本节点原文" in item]
+        self.assertGreater(len(specialists), 1)
+        self.assertTrue(all(item.count("本节点原文") == 1 for item in specialists))
+        self.assertTrue(all("SKILL-SENTINEL-只在技能里" not in item for item in specialists))
+        director = [item for item in seen if "short-drama-director/SKILL.md" in item and "本节点原文" not in item]
+        self.assertEqual(len(director), 1)
+        self.assertNotIn("本节点原文", director[0])
+        self.assertNotIn("SKILL-SENTINEL-只在技能里", director[0])
         self.assertNotIn(SENTINEL, result["draft"])
 
     def test_missing_skill_pack_does_not_call_the_model(self):
@@ -460,7 +499,10 @@ class TextClientTest(unittest.TestCase):
 
         with patch("Agents.workers.asset.complete_text", fake):
             result = run_p2_asset_loop(SCRIPT, model="qwen3.8-flash")
-        self.assertEqual([item["role"] for item in seen], ["generator", "critic"])
+        roles = [item["role"] for item in seen]
+        self.assertEqual(roles[-2:], ["director", "critic"])
+        self.assertGreater(roles.count("specialist"), 1)
+        self.assertEqual(roles.count("director"), 1)
         self.assertEqual(seen[0]["model"], "qwen3.8-flash")
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["model"], "deepseek-v4-flash-0731")

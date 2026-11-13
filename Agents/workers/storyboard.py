@@ -24,9 +24,9 @@ from Agents.worker import (
     revision_brief,
     run_compiled,
     skill_reference,
-    skill_system,
     strip_fence,
 )
+from Agents.workers.generator import run_generator
 
 STAGE = "storyboard"
 TASK = "storyboard"
@@ -65,6 +65,7 @@ class StoryboardState(TypedDict, total=False):
     supplied_shots: list
     hold: str
     skill_pack: str
+    partials: list
     attempt: int
     max_attempts: int
     model: str
@@ -109,7 +110,7 @@ def extract_storyboard(raw, previous=""):
 
 
 def generator_messages(state):
-    system = {"role": "system", "content": skill_system(GENERATOR_SYSTEM, state.get("skill_pack"))}
+    system = {"role": "system", "content": GENERATOR_SYSTEM}
     if int(state.get("attempt") or 0) < 1 and str(state.get("opening") or "").strip():
         return [system, {"role": "user", "content": state.get("opening")}]
     if int(state.get("attempt") or 0) < 1:
@@ -140,14 +141,23 @@ def compile_storyboard_graph(complete, checker=None):
 
     def generate(state):
         attempt = int(state.get("attempt") or 0) + 1
+        brief = generator_messages(state)[-1]["content"]
         try:
-            raw = complete("generator", generator_messages(state))
+            produced = run_generator(
+                TASK,
+                brief,
+                role=GENERATOR_SYSTEM,
+                complete=complete,
+                partials=state.get("partials") or [],
+                repair_text=brief if attempt > 1 else "",
+            )
         except Exception as exc:
             return {
                 "attempt": attempt,
                 "error": "%s: %s" % (type(exc).__name__, exc),
                 "generator_note": "model_error",
             }
+        raw = produced.get("raw") or ""
         previous = str(state.get("draft") or "")
         draft = extract_storyboard(raw, previous)
         note = ""
@@ -155,6 +165,7 @@ def compile_storyboard_graph(complete, checker=None):
             note = "revision_kept_previous"
         update = {"attempt": attempt, "draft": draft, "error": "", "generator_note": note}
         update.update(absorb_storyboard(raw))
+        update["partials"] = produced.get("partials") or []
         return update
 
     def critique(state):

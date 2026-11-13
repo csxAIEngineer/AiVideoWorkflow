@@ -450,9 +450,10 @@ class DirectorDbTest(unittest.TestCase):
 
         with patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"):
             run_project("p-gate")
-            self.assertEqual(len(calls), 2)
             self.assertIn("任务：赛道分流", calls[0])
-            self.assertIn("任务：剧本", calls[1])
+            self.assertTrue(any("任务：剧本" in call for call in calls))
+            self.assertEqual(sum("各节点正文" in call for call in calls), 1)
+            script_n = len(calls)
             saved = read_project("p-gate")
             self.assertEqual(saved["status"], "gate")
             self.assertEqual(saved["progress"]["phase"], "gate_script")
@@ -460,10 +461,11 @@ class DirectorDbTest(unittest.TestCase):
             with patch("end.server.submit_agent_task"):
                 answer_gate(read_project("p-gate"), "继续")
             run_project("p-gate")
-            self.assertEqual(len(calls), 5)
-            self.assertIn("任务：资产锁定", calls[2])
-            self.assertIn("只写资产", calls[2])
-            self.assertIn("任务：建议修补", calls[3])
+            self.assertGreater(len(calls), script_n)
+            asset_calls = calls[script_n:]
+            self.assertIn("任务：资产锁定", asset_calls[0])
+            self.assertIn("只写资产", asset_calls[0])
+            self.assertTrue(any("任务：建议修补" in call for call in asset_calls))
             self.assertNotIn("任务：分镜", "\n".join(calls))
             saved = read_project("p-gate")
             self.assertEqual(saved["status"], "gate")
@@ -474,8 +476,9 @@ class DirectorDbTest(unittest.TestCase):
             self.assertNotIn("已按检查结果自动改了", saved["messages"][-1]["content"])
             self.assertEqual(saved["messages"][-1]["options"], ["根据建议修改"])
             self.assertNotEqual(saved["progress"]["question"]["id"], "asset_repair_choice")
+            held = len(calls)
             run_project("p-gate")
-            self.assertEqual(len(calls), 5)
+            self.assertEqual(len(calls), held)
 
     def test_failed_continue_rewrites_only_the_current_stage(self):
         locks = prepare_locks(_base_locks(), "时长：12秒")
@@ -1308,8 +1311,10 @@ class MachineAndMountTest(unittest.TestCase):
         }
         outcome = execute(project, folder, locks, feed_writer, lambda *args, **kwargs: "pack")
         self.assertFalse(outcome["progress"]["pipeline"]["passed"])
+        after_feed = len(calls)
+        self.assertEqual(sum("各节点正文" in call for call in calls), 3)
         execute({"template": "short-drama-director", "progress": outcome["progress"]}, folder, locks, feed_writer, lambda *args, **kwargs: "pack")
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), after_feed)
         self.assertIn("根据建议修改会按下面这些项改", outcome["message"]["content"])
         self.assertNotIn("已按检查结果自动改了", outcome["message"]["content"])
 
@@ -1322,11 +1327,12 @@ class MachineAndMountTest(unittest.TestCase):
             "model": "deepseek-v4-pro",
             "progress": {"pipeline": {"action": "write", "current": "storyboard", "accepted": ["script", "asset"], "only": ""}},
         }
+        before_board = len(calls)
         stopped = execute(board, folder, locks, board_writer, lambda *args, **kwargs: "pack")
         self.assertFalse(stopped["progress"]["pipeline"]["passed"])
         self.assertEqual(stopped["progress"]["phase"], "gate_storyboard")
         self.assertFalse(any(path.name.endswith("-预演故事板.md") for path in folder.iterdir()))
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(sum("各节点正文" in call for call in calls[before_board:]), 1)
 
     def test_storyboard_repair_keeps_panels_and_asks_for_real_grids(self):
         rich = "\n".join((
@@ -1404,7 +1410,8 @@ class MachineAndMountTest(unittest.TestCase):
         }
         stopped = execute(project, folder, locks, writer, lambda *args, **kwargs: "pack")
         self.assertFalse(stopped["progress"]["pipeline"]["passed"])
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(sum("各节点正文" in call for call in calls), 1)
+        self.assertGreater(len(calls), 1)
         self.assertEqual(stopped["progress"]["pipeline"]["repairs"], 0)
         self.assertIn("缺镜号", stopped["progress"]["pipeline"]["report"])
         self.assertFalse((folder / "_内部_" / "previs.md").is_file())
