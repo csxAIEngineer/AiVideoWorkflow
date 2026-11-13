@@ -19,11 +19,15 @@ from Agents.worker import (
     critic_only,
     decide,
     extract_json_object,
+    missing_skill_state,
     normalize_machine,
     parse_critic,
+    resolve_skill_pack,
     result_from_state,
     revision_brief,
     run_compiled,
+    skill_reference,
+    skill_system,
     strip_fence,
 )
 
@@ -31,16 +35,14 @@ STAGE = "feed"
 TASK = "feed"
 
 GENERATOR_SYSTEM = "\n".join((
-    "你是提示词封装的生成员。你只写已经封装的 H3 投喂稿，放在 feed 字符串。",
+    "你是提示词封装的生成员。你只写已经封装的投喂稿，放在 feed 字符串。",
     "投喂机检是这一环的硬门。审查员只交报告，不会替你改稿。",
+    "H3 怎么写，以技能原文为准。不要跑在还没封装的剧本或分镜上。",
     "可以把分镜合并进同一个投喂单元，但各单元 duration 相加不得短于分镜总时长。",
     "对白和旁白必须原样留下。禁止为了压进 15 秒删情节或对白。",
     "一个单元若按分镜时长会超过 15 秒，拆成下一个单元，禁止把声明时长钳成 15。",
-    "画外音用官方句，并且闭口证据紧跟这句，不要接到别的对白或文末：",
-    "<Subject N> (Sx) says in an off-screen voiceover: <d>[Language] …</d> while his/her lips remain completely closed.",
-    "闭口证据不要写在出声对白后面。画面里开口说的台词不要加 lips remain completely closed。",
-    "六段正文用英文。对白留在 <d>[Chinese] 原文</d>。首镜引用 <Subject N>。",
-    "不要跑在还没封装的剧本或分镜上。审查报告里夹带的稿作废。",
+    "画外音的闭口证据必须紧跟这一单元里的画外音，不要接到出声对白后面，也不要接到文末。",
+    "审查报告里夹带的稿作废。",
 ))
 
 CRITIC_SYSTEM = "\n".join((
@@ -63,6 +65,7 @@ class FeedState(TypedDict, total=False):
     locks: dict
     storyboard: str
     shots: list
+    skill_pack: str
     attempt: int
     max_attempts: int
     model: str
@@ -135,7 +138,7 @@ def _duration_note(state):
 
 
 def generator_messages(state):
-    system = {"role": "system", "content": GENERATOR_SYSTEM}
+    system = {"role": "system", "content": skill_system(GENERATOR_SYSTEM, state.get("skill_pack"))}
     note = _duration_note(state)
     if int(state.get("attempt") or 0) < 1 and str(state.get("opening") or "").strip():
         user = state.get("opening")
@@ -160,9 +163,13 @@ def generator_messages(state):
 
 
 def critic_messages(state):
+    sections = ["待审投喂稿：\n%s" % str(state.get("draft") or "").strip()]
+    reference = skill_reference(state.get("skill_pack"))
+    if reference:
+        sections.insert(0, reference)
     return [
         {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": "待审投喂稿：\n%s" % str(state.get("draft") or "").strip()},
+        {"role": "user", "content": "\n\n".join(sections)},
     ]
 
 
@@ -252,6 +259,7 @@ def run_feed_loop(
     shots=None,
     opening="",
     prior_draft="",
+    skill_pack="",
     model=None,
     max_attempts=DEFAULT_MAX_ATTEMPTS,
     client=None,
@@ -272,6 +280,7 @@ def run_feed_loop(
             "locks": dict(locks or {}),
             "storyboard": str(storyboard or ""),
             "shots": list(shots or []),
+            "skill_pack": str(skill_pack or ""),
         },
     )
     if not str(storyboard or "").strip() and not str(opening or "").strip() and not str(prior_draft or "").strip():
@@ -279,6 +288,14 @@ def run_feed_loop(
         state["stop_reason"] = "missing_storyboard"
         state["passed"] = False
         return result_from_state(state, draft_key="feed")
+    try:
+        state["skill_pack"] = resolve_skill_pack(
+            skill_pack,
+            context=opening or storyboard,
+            stage="P4",
+        )
+    except RuntimeError as exc:
+        return result_from_state(missing_skill_state(state, exc), draft_key="feed")
     app = compile_feed_graph(
         complete or bound_complete(model, client, timeout),
         checker=checker,

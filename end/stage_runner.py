@@ -3024,7 +3024,13 @@ def _worker_complete(project, folder, write_model, prompts):
     return complete
 
 
-def _produce_with_worker(stage, project, folder, locks, write_model, opening, prompts=None):
+def _loaded_pack(load_pack, project, brief, stage):
+    """Load the stage skill. A task line does not skip this."""
+    pack = load_pack(project.get("template"), brief, _STAGE_CODE.get(stage, "P4"))
+    return str(pack or "")
+
+
+def _produce_with_worker(stage, project, folder, locks, write_model, opening, prompts=None, skill_pack=""):
     """One Agents loop. Machine-check retries stay inside that loop."""
     from Agents.workers.feed import run_feed_loop
     from Agents.workers.script import run_script_loop
@@ -3039,6 +3045,7 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
             intake=load_intake(folder),
             opening=opening,
             prior_draft=_read(Path(folder) / "_内部_" / "剧本.md"),
+            skill_pack=skill_pack,
             model=project.get("model"),
             complete=complete,
             checker=_script_worker_checker(folder, locks),
@@ -3079,6 +3086,7 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
             hold=read_hold(folder) or str(spec.get("storyboard_hold") or ""),
             opening=opening,
             prior_draft=_read(Path(folder) / "_内部_" / "分镜.md"),
+            skill_pack=skill_pack,
             model=project.get("model"),
             complete=complete,
             checker=_storyboard_worker_checker(folder, locks),
@@ -3102,6 +3110,7 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
         shots=spec.get("shots") or [],
         opening=opening,
         prior_draft=_read(Path(folder) / "_内部_" / "feed.md"),
+        skill_pack=skill_pack,
         model=project.get("model"),
         complete=complete,
         checker=_feed_worker_checker(folder, locks, board, spec.get("shots") or []),
@@ -3119,7 +3128,6 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
 def _produce_script(project, folder, locks, only, write_model, load_pack, pipeline):
     from end.trace import begin_trace, finish_trace
 
-    del load_pack
     pipeline = pipeline or {}
     revise = str(pipeline.get("revise_note") or "").strip()
     if _uses_worker("script", pipeline):
@@ -3134,7 +3142,10 @@ def _produce_script(project, folder, locks, only, write_model, load_pack, pipeli
                 child.unlink()
         brief = _script_suite_brief(project, folder, locks, only, pipeline)
         prompts = begin_trace(folder, "script", bool(pipeline.get("repair")), brief, label="剧本")
-        return _produce_with_worker("script", project, folder, locks, write_model, brief, prompts)
+        pack = _loaded_pack(load_pack, project, brief, "script")
+        return _produce_with_worker(
+            "script", project, folder, locks, write_model, brief, prompts, skill_pack=pack
+        )
     repair = str(pipeline.get("repair") or "").strip()
     rewriting = str(pipeline.get("action") or "") == "rewrite"
     continuing = bool(str(pipeline.get("script_from") or "").strip())
@@ -3310,12 +3321,14 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
             )
             if part
         )
-    pack = "" if task_line else load_pack(project.get("template"), brief, _STAGE_CODE.get(stage, "P4"))
+    pack = _loaded_pack(load_pack, project, brief, stage)
     from end.trace import begin_trace
 
     prompts = begin_trace(folder, stage, repair=bool(repair), brief=brief)
     if use_worker:
-        return _produce_with_worker(stage, project, folder, locks, write_model, brief, prompts)
+        return _produce_with_worker(
+            stage, project, folder, locks, write_model, brief, prompts, skill_pack=pack
+        )
     result = _write_model(
         write_model,
         brief,

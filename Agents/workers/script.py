@@ -17,11 +17,15 @@ from Agents.worker import (
     critic_only,
     decide,
     extract_json_object,
+    missing_skill_state,
     normalize_machine,
     parse_critic,
+    resolve_skill_pack,
     result_from_state,
     revision_brief,
     run_compiled,
+    skill_reference,
+    skill_system,
     strip_fence,
 )
 
@@ -31,7 +35,7 @@ TASK = "script"
 GENERATOR_SYSTEM = "\n".join((
     "你是剧本生成员。你只写剧本。",
     "审查员只交报告，不会替你改稿。机检只查空稿、没看见图却写已核验、以及编造的上传图编号。",
-    "不要自己加文风门，也不要跑投喂稿的 validate_prompt。剧本还没有封装。",
+    "怎么写剧本，以技能原文为准。不要自己加文风门，也不要跑投喂稿的 validate_prompt。剧本还没有封装。",
     "整段回复是一个 JSON 对象。正式剧本放在 script，标题放在 title。圆桌意见放在 internal。",
     "机检失败时只改点名的句子。没有点名的段落原样保留。",
     "审查报告里如果夹了改写稿，那份稿作废。",
@@ -60,6 +64,7 @@ class ScriptState(TypedDict, total=False):
     partials: list
     locks: dict
     intake: list
+    skill_pack: str
     attempt: int
     max_attempts: int
     model: str
@@ -112,7 +117,7 @@ def absorb_script(raw):
 
 
 def generator_messages(state):
-    system = {"role": "system", "content": GENERATOR_SYSTEM}
+    system = {"role": "system", "content": skill_system(GENERATOR_SYSTEM, state.get("skill_pack"))}
     if int(state.get("attempt") or 0) < 1 and str(state.get("opening") or "").strip():
         return [system, {"role": "user", "content": state.get("opening")}]
     if int(state.get("attempt") or 0) < 1:
@@ -131,8 +136,11 @@ def generator_messages(state):
 def critic_messages(state):
     sections = [
         "阶段：剧本审查。只交 JSON 报告，不要改稿。",
-        "待审稿：\n%s" % str(state.get("draft") or "").strip(),
     ]
+    reference = skill_reference(state.get("skill_pack"))
+    if reference:
+        sections.append(reference)
+    sections.append("待审稿：\n%s" % str(state.get("draft") or "").strip())
     return [
         {"role": "system", "content": CRITIC_SYSTEM},
         {"role": "user", "content": "\n\n".join(sections)},
@@ -229,6 +237,7 @@ def run_script_loop(
     intake=None,
     opening="",
     prior_draft="",
+    skill_pack="",
     model=None,
     max_attempts=DEFAULT_MAX_ATTEMPTS,
     client=None,
@@ -245,13 +254,21 @@ def run_script_loop(
         prior_draft=prior_draft,
         model=model,
         max_attempts=max_attempts,
-        extra={"locks": dict(locks or {}), "intake": list(intake or [])},
+        extra={"locks": dict(locks or {}), "intake": list(intake or []), "skill_pack": str(skill_pack or "")},
     )
     if not str(story or "").strip() and not str(opening or "").strip() and not str(prior_draft or "").strip():
         state["status"] = "fail"
         state["stop_reason"] = "missing_script"
         state["passed"] = False
         return _result(state)
+    try:
+        state["skill_pack"] = resolve_skill_pack(
+            skill_pack,
+            context=opening or story,
+            stage="P1",
+        )
+    except RuntimeError as exc:
+        return _result(missing_skill_state(state, exc))
     app = compile_script_graph(
         complete or bound_complete(model, client, timeout),
         checker=checker,

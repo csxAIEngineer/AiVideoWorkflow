@@ -37,6 +37,7 @@ from Agents.machine_check import (
     load_checker,
 )
 from Agents.text import complete_text, resolved_model
+from Agents.worker import missing_skill_state, resolve_skill_pack, skill_reference, skill_system
 
 STAGE = "P2"
 TASK = "asset"
@@ -64,19 +65,8 @@ GENERATOR_SYSTEM = "\n".join((
     "你是 P2 资产提示词的生成员。你只写资产出图提示词。",
     "审查员只交报告，不会替你改稿。机检是 check_asset_blocks.py，不是第三个模型。",
     "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。资产稿放在 image_prompts 字符串里。",
-    "每条以单独一行「#### 图N · 名称」开头。一条提示词自包含，复制出去仍能画。",
-    "结构要能通过该脚本的 A1–A8：",
-    "A1 禁止跨条引用：同上、同规格、见母版、同图N、见第X部分、参见、按上述、同前、沿用上文、降级条款同。",
-    "A2 每块写明 16:9。资产板固定 16:9，不跟成片画幅走。",
-    "A3 九宫格要有【场景定位】【九宫格内容分配】【参考场景锁定模式】、全图共 9 格、锁定档原句、标注降级。",
-    "锁定档只贴一档，整句连续：模式A「仅允许摄影机移动」；模式B「允许按子区域切换机位」。禁止意译、近义改写、拆字、加空格。",
-    "A4 角色要有全图共 4 格、五官 10 项锁定、声纹、≤8 词，以及负向词 fifth panel 和 different face（或 second face）。",
-    "A5 角色不要正向写「主图」。",
-    "A6 道具要有「道具设定图」、正面视图、45° 侧视图、顶部俯视图、关键细节特写，并写禁止手持。",
-    "A7 正文能看出分格时，必须带上面的模板标识。",
-    "A8 块数偏少时脚本只给警告。不要为了警告去删块或凑块。",
+    "怎么写图块，以技能原文为准。不要把技能原文换成别的摘要。",
     "不要跑 validate_prompt.py，也不要写成投喂稿。资产稿还没有封装。",
-    "不要改剧本里的人和事。不要编造上传图编号。没看见图就不要写已核验，也不要写与资产图册一致。",
     "再次提交时交出完整稿。已经通过的图块原样保留，只改失败项点到的块。",
     "审查报告里如果夹了改写稿，那份稿作废。按失败项和审查意见自己重写。",
 ))
@@ -89,9 +79,8 @@ CRITIC_SYSTEM = "\n".join((
     '{"verdict":"accept 或 revise","issues":[{"target":"图N","severity":"blocking 或 note","detail":"一句话"}]}',
     "没有要改的地方时 verdict 为 accept，issues 为空数组。",
     "detail 只指出问题，不写替换后的整块正文。",
-    "你不是机检脚本。A1–A8 由 check_asset_blocks.py 在你之后判定。",
-    "你要看图块是否盖住剧本里的人、场景和关键道具，名称是否与剧本一致，以及有没有明显的跨条引用、缺 16:9、角色或道具或九宫格模板缺口。",
-    "看到就写成 issue。不要自己改。",
+    "你不是机检脚本。机检由 check_asset_blocks.py 在你之后判定。",
+    "对照技能原文审查。看到就写成 issue。不要自己改。",
 ))
 
 
@@ -189,7 +178,7 @@ def run_p2_asset_loop(
     ``status`` is ``pass`` only when the script exits 0. ``fail`` carries the
     last critic report and machine report. ``stop_reason`` is
     ``machine_check_pass``, ``budget_exhausted``, ``checker_unavailable``, or
-    ``missing_script``.
+    ``missing_script`` or ``missing_skill_pack``.
     """
     state = initial_state(
         script,
@@ -206,6 +195,15 @@ def run_p2_asset_loop(
         state["stop_reason"] = "missing_script"
         state["passed"] = False
         return result_from_state(state)
+    try:
+        state["skill_pack"] = resolve_skill_pack(
+            state.get("skill_pack"),
+            template=None,
+            context=state.get("script") or "",
+            stage="P2",
+        )
+    except RuntimeError as exc:
+        return result_from_state(missing_skill_state(state, exc))
     app = compile_p2_asset_graph(
         complete or _bound_complete(model=model, client=client, timeout=timeout),
         checker=checker,
@@ -359,9 +357,6 @@ def generator_messages(state):
     listed = format_asset_list(state.get("asset_list"))
     if listed:
         sections.append("要写的资产：\n%s" % listed)
-    pack = str(state.get("skill_pack") or "").strip()
-    if pack:
-        sections.append("资产引擎原文：\n%s" % pack)
     draft = str(state.get("draft") or "").strip()
     attempt = int(state.get("attempt") or 0)
     if draft and attempt >= 1:
@@ -381,7 +376,7 @@ def generator_messages(state):
     else:
         sections.append("请根据剧本写出完整资产稿。")
     return [
-        {"role": "system", "content": GENERATOR_SYSTEM},
+        {"role": "system", "content": skill_system(GENERATOR_SYSTEM, state.get("skill_pack"))},
         {"role": "user", "content": "\n\n".join(sections)},
     ]
 
@@ -397,6 +392,9 @@ def critic_messages(state):
     listed = format_asset_list(state.get("asset_list"))
     if listed:
         sections.append("资产清单：\n%s" % listed)
+    reference = skill_reference(state.get("skill_pack"))
+    if reference:
+        sections.append(reference)
     sections.append("待审稿：\n%s" % str(state.get("draft") or "").strip())
     return [
         {"role": "system", "content": CRITIC_SYSTEM},

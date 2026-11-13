@@ -253,6 +253,47 @@ def strip_fence(raw):
     return "\n".join(lines).strip()
 
 
+def resolve_skill_pack(skill_pack, *, template=None, context="", stage="P4"):
+    """Use the caller pack, or load the stage skill. Empty rules are not allowed."""
+    pack = str(skill_pack or "").strip()
+    if pack:
+        return pack
+    from AI.skills.registry import load_skill_pack
+
+    try:
+        loaded = load_skill_pack(template, context=str(context or ""), stage=stage)
+    except Exception as exc:
+        raise RuntimeError("缺少技能原文：%s" % exc)
+    loaded = str(loaded or "").strip()
+    if not loaded:
+        raise RuntimeError("缺少技能原文")
+    return loaded
+
+
+def skill_system(role, skill_pack):
+    """Role wrapper plus the loaded skill. The skill text is the domain rules."""
+    pack = str(skill_pack or "").strip()
+    if not pack:
+        raise RuntimeError("缺少技能原文")
+    return "%s\n\n技能原文（领域规则只以这份为准）：\n%s" % (str(role or "").strip(), pack)
+
+
+def skill_reference(skill_pack):
+    """Read-only skill text for the critic. It is not a draft."""
+    pack = str(skill_pack or "").strip()
+    if not pack:
+        return ""
+    return "技能原文（只读。不要改稿，不要把原文交成一份新稿）：\n%s" % pack
+
+
+def missing_skill_state(state, error):
+    state["status"] = "fail"
+    state["stop_reason"] = "missing_skill_pack"
+    state["passed"] = False
+    state["error"] = str(error or "缺少技能原文")
+    return state
+
+
 def bound_complete(model, client, timeout):
     def complete(role, messages):
         return complete_text(role, messages, model=model, client=client, timeout=timeout)

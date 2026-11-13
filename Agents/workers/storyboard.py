@@ -16,11 +16,15 @@ from Agents.worker import (
     critic_only,
     decide,
     extract_json_object,
+    missing_skill_state,
     normalize_machine,
     parse_critic,
+    resolve_skill_pack,
     result_from_state,
     revision_brief,
     run_compiled,
+    skill_reference,
+    skill_system,
     strip_fence,
 )
 
@@ -29,8 +33,8 @@ TASK = "storyboard"
 
 GENERATOR_SYSTEM = "\n".join((
     "你是分镜生成员。你只写一份完整分镜，放在 storyboard 字符串。",
-    "审查员只交报告，不会替你改稿。机检查空稿、镜号、动作、景别机位、时长和资产 id。",
-    "时长写整数秒。资产只写对照表里的 id。",
+    "审查员只交报告，不会替你改稿。机检查空稿、镜号和字段是否齐。",
+    "分镜怎么写，以技能原文为准。",
     "机检点名缺哪一镜的哪个字段，就只补那个字段。其他镜原样保留。",
     "不要把整份分镜换成一次「补全」。不要写预演故事板。",
     "审查报告里如果夹了改写稿，那份稿作废。",
@@ -60,6 +64,7 @@ class StoryboardState(TypedDict, total=False):
     shots: list
     supplied_shots: list
     hold: str
+    skill_pack: str
     attempt: int
     max_attempts: int
     model: str
@@ -104,7 +109,7 @@ def extract_storyboard(raw, previous=""):
 
 
 def generator_messages(state):
-    system = {"role": "system", "content": GENERATOR_SYSTEM}
+    system = {"role": "system", "content": skill_system(GENERATOR_SYSTEM, state.get("skill_pack"))}
     if int(state.get("attempt") or 0) < 1 and str(state.get("opening") or "").strip():
         return [system, {"role": "user", "content": state.get("opening")}]
     if int(state.get("attempt") or 0) < 1:
@@ -120,9 +125,13 @@ def generator_messages(state):
 
 
 def critic_messages(state):
+    sections = ["待审分镜：\n%s" % str(state.get("draft") or "").strip()]
+    reference = skill_reference(state.get("skill_pack"))
+    if reference:
+        sections.insert(0, reference)
     return [
         {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": "待审分镜：\n%s" % str(state.get("draft") or "").strip()},
+        {"role": "user", "content": "\n\n".join(sections)},
     ]
 
 
@@ -218,6 +227,7 @@ def run_storyboard_loop(
     hold="",
     opening="",
     prior_draft="",
+    skill_pack="",
     model=None,
     max_attempts=DEFAULT_MAX_ATTEMPTS,
     client=None,
@@ -241,6 +251,7 @@ def run_storyboard_loop(
             "assets": list(assets or []),
             "shots": list(shots or []),
             "hold": str(hold or ""),
+            "skill_pack": str(skill_pack or ""),
         },
     )
     if not str(script or "").strip() and not str(opening or "").strip() and not str(prior_draft or "").strip():
@@ -248,6 +259,14 @@ def run_storyboard_loop(
         state["stop_reason"] = "missing_script"
         state["passed"] = False
         return result_from_state(state, draft_key="storyboard")
+    try:
+        state["skill_pack"] = resolve_skill_pack(
+            skill_pack,
+            context=opening or script,
+            stage="P3",
+        )
+    except RuntimeError as exc:
+        return result_from_state(missing_skill_state(state, exc), draft_key="storyboard")
     app = compile_storyboard_graph(
         complete or bound_complete(model, client, timeout),
         checker=checker,

@@ -391,6 +391,53 @@ class VoiceoverPatchTest(unittest.TestCase):
         )
 
 
+class EndSkillPackTest(unittest.TestCase):
+    def test_a_task_line_does_not_drop_the_skill_pack(self):
+        folder = Path(tempfile.mkdtemp())
+        internal = folder / "_内部_"
+        internal.mkdir()
+        (internal / "剧本.md").write_text("她在雨里等车。\n", encoding="utf-8")
+        (folder / "spec.json").write_text(
+            json.dumps({"assets": [{"id": "A1", "title": "门"}]}),
+            encoding="utf-8",
+        )
+        stages = []
+
+        def loader(template, brief, stage="P4"):
+            stages.append(stage)
+            self.assertIn("任务：分镜", brief)
+            return "END-LOADED-SKILL"
+
+        def writer(brief, skill_pack="", debug_dir=None, model=None, template=None, trace_prompts=None):
+            self.assertIn("END-LOADED-SKILL", brief)
+            self.assertNotIn("A1 禁止跨条引用", brief)
+            return {"storyboard": FIXED_BOARD}
+
+        project = {
+            "template": "short-drama-director",
+            "model": "deepseek-v4-flash-0731",
+            "brief": SCRIPT,
+            "progress": {
+                "pipeline": {
+                    "action": "write",
+                    "current": "storyboard",
+                    "accepted": ["script", "asset"],
+                    "only": "",
+                }
+            },
+        }
+        with patch("Agents.text.complete_text", return_value=ACCEPT):
+            outcome = execute(
+                project,
+                folder,
+                {"material_mode": "M1", "model": "h3", "track": "1"},
+                writer,
+                loader,
+            )
+        self.assertEqual(stages, ["P3"])
+        self.assertTrue(outcome["progress"]["pipeline"]["passed"], outcome["progress"]["pipeline"].get("report"))
+
+
 class EndDispatchTest(unittest.TestCase):
     def test_execute_sends_script_storyboard_and_feed_through_the_loops(self):
         folder = Path(tempfile.mkdtemp())
@@ -427,7 +474,14 @@ class EndDispatchTest(unittest.TestCase):
             },
         }
         with patch("Agents.text.complete_text", return_value=ACCEPT):
-            outcome = execute(project, folder, {"material_mode": "M1", "model": "h3", "track": "1"}, writer, lambda *args, **kwargs: "")
+            outcome = execute(
+                project,
+                folder,
+                {"material_mode": "M1", "model": "h3", "track": "1"},
+                writer,
+                lambda *args, **kwargs: "SKILL-PACK-SENTINEL",
+            )
+        self.assertTrue(any("SKILL-PACK-SENTINEL" in call for call in calls))
         self.assertTrue(outcome["progress"]["pipeline"]["passed"], outcome["progress"]["pipeline"].get("report"))
         self.assertGreaterEqual(len(calls), 2)
         self.assertIn("缺时长", calls[1])

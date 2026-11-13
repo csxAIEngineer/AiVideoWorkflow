@@ -411,6 +411,45 @@ class AssetLoopTest(unittest.TestCase):
             run_p2_asset_loop(SCRIPT, max_attempts=0, complete=_accept)
 
 
+class SkillPackPromptTest(unittest.TestCase):
+    def test_generator_uses_the_loaded_skill_and_not_a_hardcoded_digest(self):
+        source = (ROOT / "Agents" / "workers" / "asset.py").read_text(encoding="utf-8")
+        self.assertNotIn("A1 禁止跨条引用", source)
+        self.assertNotIn("【九宫格内容分配】", source)
+        seen = []
+
+        def complete(role, messages):
+            if role == "generator":
+                seen.append(messages[0]["content"])
+                return json.dumps({"image_prompts": PASS_ROLE}, ensure_ascii=False)
+            self.assertIn("SKILL-SENTINEL-只在技能里", messages[-1]["content"])
+            return json.dumps({
+                "verdict": "revise",
+                "image_prompts": SENTINEL,
+                "issues": [],
+            }, ensure_ascii=False)
+
+        result = run_p2_asset_loop(
+            SCRIPT,
+            skill_pack="SKILL-SENTINEL-只在技能里",
+            complete=complete,
+        )
+        self.assertEqual(result["status"], "pass")
+        self.assertIn("SKILL-SENTINEL-只在技能里", seen[0])
+        self.assertNotIn("A1 禁止跨条引用", seen[0])
+        self.assertNotIn(SENTINEL, result["draft"])
+
+    def test_missing_skill_pack_does_not_call_the_model(self):
+        def complete(role, messages):
+            raise AssertionError("model should not be called")
+
+        with patch("AI.skills.registry.load_skill_pack", return_value=""):
+            result = run_p2_asset_loop(SCRIPT, skill_pack="", complete=complete)
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["stop_reason"], "missing_skill_pack")
+        self.assertEqual(result["attempts"], 0)
+
+
 class TextClientTest(unittest.TestCase):
     def test_loop_uses_the_product_text_client_by_default(self):
         seen = []
