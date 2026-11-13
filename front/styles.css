@@ -1903,9 +1903,22 @@ a.download {
   margin-top: 8px;
 }
 
+.wf-upload-modes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.wf-upload-label {
+  color: #71717a;
+  font-size: 12px;
+}
+
 .wf-upload {
   display: inline-flex;
-  margin-top: 8px;
+  margin-top: 0;
   color: var(--accent);
   font-size: 12px;
   cursor: pointer;
@@ -2294,6 +2307,7 @@ html[data-theme="dark"] .style-look,
 html[data-theme="dark"] .style-grade,
 html[data-theme="dark"] .dock-elapsed,
 html[data-theme="dark"] .dock-message,
+html[data-theme="dark"] .wf-upload-label,
 html[data-theme="dark"] .job-elapsed,
 html[data-theme="dark"] .prompt-table th {
   color: #c8c2b8;

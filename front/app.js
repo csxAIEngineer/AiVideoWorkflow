@@ -2652,10 +2652,12 @@ function makeStill(project, asset) {
   return hold;
 }
 
-function uploadControl(assetId) {
+function uploadMode(assetId, mode, labelText, title) {
   const label = document.createElement("label");
   label.className = "wf-upload";
-  label.append(document.createTextNode("替换图片"));
+  label.title = title;
+  label.addEventListener("pointerdown", (event) => event.stopPropagation());
+  label.append(document.createTextNode(labelText));
   const input = document.createElement("input");
   input.type = "file";
   input.accept = "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp";
@@ -2663,10 +2665,22 @@ function uploadControl(assetId) {
   input.addEventListener("change", () => {
     const file = input.files && input.files[0];
     input.value = "";
-    if (file) uploadAsset(assetId, file);
+    if (file) uploadAsset(assetId, file, mode);
   });
   label.append(input);
   return label;
+}
+
+function uploadControl(assetId) {
+  const group = document.createElement("div");
+  group.className = "wf-upload-modes";
+  const caption = document.createElement("span");
+  caption.className = "wf-upload-label";
+  caption.textContent = "替换图片";
+  group.append(caption);
+  group.append(uploadMode(assetId, "reference", "参考图", "读这张图，再生成资产静帧"));
+  group.append(uploadMode(assetId, "asset", "资产图", "直接换成这张图"));
+  return group;
 }
 
 function assetReferenceText(asset) {
@@ -3010,16 +3024,18 @@ async function saveField(field) {
   }
 }
 
-async function uploadAsset(assetId, file) {
+async function uploadAsset(assetId, file, mode) {
   if (!current || !file) return;
-  setSaveState("上传中");
+  const chosen = mode === "asset" ? "asset" : "reference";
+  setSaveState(chosen === "asset" ? "上传资产图" : "上传参考图");
   try {
     const project = await rpc("projects.set_asset_image", {
       id: current.id,
       asset_id: assetId,
       data_base64: await fileToBase64(file),
+      mode: chosen,
     });
-    setSaveState("已换上图片");
+    setSaveState(chosen === "asset" ? "已换成资产图" : "已记下参考图");
     adoptQuiet(project);
   } catch (error) {
     setSaveState(error.message || "没有换上图片");

@@ -16,7 +16,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import end.db as db
-from end.render_loop import _ffmpeg_bin, gate_for, load_run_state, save_run_state
+from end.render_loop import _ffmpeg_bin, gate_for, invalidate_steps, load_run_state, save_run_state
+from tests.test_render_loop import FakeICreat, _noop_sleep, run_local_pipeline
 from end.intake import enrich_brief, load_intake, merge_intake
 from AI.vision import QwenVisionError
 from end.server import (
@@ -167,11 +168,14 @@ class ProjectApiTest(unittest.TestCase):
         self.assertIn(b"/rpc.js", page)
         self.assertIn("Debug：只到意图解析".encode(), page)
         self.assertIn("Debug：只到提示词".encode(), page)
-        self.assertIn(b"/app.js?v=77", page)
+        self.assertIn(b"/app.js?v=79", page)
         self.assertIn(b"id=\"crew\"", page)
         status, script = self.request("GET", "/app.js")
         self.assertEqual(status, 200)
         self.assertIn(b"projects.create", script)
+        self.assertIn("参考图".encode(), script)
+        self.assertIn("资产图".encode(), script)
+        self.assertIn(b"mode: chosen", script)
         self.assertIn(b"debug_stop", script)
         self.assertIn(b"isIntentDebug", script)
         self.assertIn(b"isPromptDebug", script)
@@ -417,6 +421,7 @@ class ProjectApiTest(unittest.TestCase):
                 self.assertEqual(stored.read_bytes(), png)
                 step = load_run_state(project_dir(project_id))["steps"]["图1"]
                 self.assertTrue(step["local_override"])
+                self.assertTrue(step["asset_still"])
                 self.assertEqual(step["status"], "done")
                 self.assertEqual(step["public_url"], public)
                 self.assertEqual(step["output_file"], "images/图1.png")
@@ -453,6 +458,242 @@ class ProjectApiTest(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def _quiet_view(self):
+        view_patches = (
+            patch("end.server.normalize_model", side_effect=lambda model: model or ""),
+            patch("end.server.model_label", return_value=""),
+            patch("end.server.normalize_template", side_effect=lambda template: template or ""),
+            patch("end.server.template_label", return_value=""),
+        )
+        for item in view_patches:
+            item.start()
+        self.addCleanup(lambda: [item.stop() for item in view_patches])
+
+    def _use_cos(self, bucket="demo-1250000000"):
+        saved = {
+            "AIVIDEO_IMAGE_STORE": os.environ.get("AIVIDEO_IMAGE_STORE"),
+            "AIVIDEO_COS_BUCKET": os.environ.get("AIVIDEO_COS_BUCKET"),
+            "AIVIDEO_COS_DOMAIN": os.environ.get("AIVIDEO_COS_DOMAIN"),
+        }
+        domain = "https://%s.cos.ap-guangzhou.myqcloud.com" % bucket
+        os.environ["AIVIDEO_IMAGE_STORE"] = "cos"
+        os.environ["AIVIDEO_COS_BUCKET"] = bucket
+        os.environ["AIVIDEO_COS_DOMAIN"] = domain
+
+        def restore():
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.addCleanup(restore)
+        return domain
+
+    def _cos_open(self, calls):
+        real_open = urllib.request.urlopen
+
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            target = str(getattr(request, "full_url", "") or "")
+            if "myqcloud.com" in target:
+                calls.append(request)
+                return _Response()
+            if timeout is None:
+                return real_open(request)
+            return real_open(request, timeout=timeout)
+
+        return fake_open
+
+    def _figure_spec(self, project_id):
+        spec = {
+            "title": "深夜",
+            "script": "旧剧本",
+            "storyboard": "旧分镜",
+            "assets": [{"id": "图1", "title": "小君", "prompt": "深夜工作间"}],
+            "shots": [{"id": "S01", "duration": 5, "prompt": "她抬头", "images": ["图1"]}],
+        }
+        (project_dir(project_id) / "spec.json").write_text(
+            json.dumps(spec, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return spec
+
+    def test_asset_replace_of_figure_one_survives_invalidate_and_rerender(self):
+        project_id = "a55e71000007"
+        make_project(project_id)
+        self._figure_spec(project_id)
+        self._quiet_view()
+        png = png_size(240, 240)
+        domain = self._use_cos()
+        calls = []
+        public = "%s/projects/%s/images/%s" % (
+            domain,
+            project_id,
+            urllib.parse.quote("图1.png"),
+        )
+        with patch("end.image_store.store.urllib.request.urlopen", self._cos_open(calls)), patch(
+            "end.server.read_upload"
+        ) as read:
+            body = self.rpc(
+                "projects.set_asset_image",
+                {
+                    "id": project_id,
+                    "asset_id": "图1",
+                    "mode": "资产图",
+                    "data_base64": base64.b64encode(png).decode("ascii"),
+                },
+            )
+            self.assertIn("result", body, body)
+            read.assert_not_called()
+            folder = project_dir(project_id)
+            stored = folder / "outputs" / "images" / "图1.png"
+            self.assertEqual(stored.read_bytes(), png)
+            step = load_run_state(folder)["steps"]["图1"]
+            self.assertTrue(step["asset_still"])
+            self.assertTrue(step["local_override"])
+            self.assertEqual(step["public_url"], public)
+            self.assertEqual(calls[0].full_url, public)
+            self.assertEqual(calls[0].data, png)
+            invalidate_steps(folder, project_id, [("图1", "image"), ("S01", "video")])
+            kept = load_run_state(folder)
+            self.assertEqual(kept["steps"]["图1"]["public_url"], public)
+            self.assertTrue(kept["steps"]["图1"]["asset_still"])
+            self.assertTrue(kept["steps"]["图1"]["local_override"])
+            self.assertEqual(kept["steps"]["图1"]["status"], "done")
+            self.assertEqual(stored.read_bytes(), png)
+            self.assertEqual(kept["steps"]["S01"]["status"], "pending")
+            self.assertEqual(kept["steps"]["S01"]["public_url"], "")
+            icreat = FakeICreat()
+            spec = json.loads((folder / "spec.json").read_text(encoding="utf-8"))
+            run_local_pipeline(
+                spec,
+                folder,
+                project_id=project_id,
+                icreat=icreat,
+                sleeper=_noop_sleep,
+                images_only=True,
+                brief="雨夜",
+            )
+        self.assertEqual(icreat.submits, [])
+        fresh = load_run_state(folder)["steps"]["图1"]
+        self.assertEqual(fresh["public_url"], public)
+        self.assertTrue(fresh["asset_still"])
+        self.assertEqual(stored.read_bytes(), png)
+        self.assertEqual(len(calls), 1)
+        gate_for(project_id).resume()
+
+    def test_reference_replace_understands_then_generates_a_new_still(self):
+        project_id = "0ef000000008"
+        make_project(project_id)
+        self._figure_spec(project_id)
+        self._quiet_view()
+        png = png_size(240, 240)
+        domain = self._use_cos()
+        calls = []
+        reference = "%s/projects/%s/images/%s" % (
+            domain,
+            project_id,
+            urllib.parse.quote("图1_upload.png"),
+        )
+        with patch("end.image_store.store.urllib.request.urlopen", self._cos_open(calls)), patch(
+            "end.server.read_upload", return_value="主体是银色的车"
+        ) as read:
+            rejected = self.rpc(
+                "projects.set_asset_image",
+                {
+                    "id": project_id,
+                    "asset_id": "图1",
+                    "mode": "poster",
+                    "data_base64": base64.b64encode(png).decode("ascii"),
+                },
+            )
+            self.assertEqual(rejected["error"]["code"], 400)
+            self.assertIn("参考图", rejected["error"]["message"])
+            body = self.rpc(
+                "projects.set_asset_image",
+                {
+                    "id": project_id,
+                    "asset_id": "图1",
+                    "mode": "参考图",
+                    "data_base64": base64.b64encode(png).decode("ascii"),
+                },
+            )
+            self.assertIn("result", body, body)
+            read.assert_called_once()
+            folder = project_dir(project_id)
+            upload = folder / "outputs" / "images" / "图1_upload.png"
+            asset_file = folder / "outputs" / "images" / "图1.png"
+            self.assertEqual(upload.read_bytes(), png)
+            self.assertFalse(asset_file.is_file())
+            state = load_run_state(folder)
+            self.assertEqual(state["steps"]["图1_upload"]["public_url"], reference)
+            self.assertEqual(state["steps"]["图1_upload"]["reading"], "主体是银色的车")
+            self.assertTrue(state["steps"]["图1_upload"]["local_override"])
+            self.assertFalse(state["steps"]["图1_upload"].get("asset_still"))
+            asset = state["steps"]["图1"]
+            self.assertEqual(asset["status"], "pending")
+            self.assertEqual(asset["public_url"], "")
+            self.assertFalse(asset["asset_still"])
+            self.assertFalse(asset["local_override"])
+            saved = json.loads((folder / "spec.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["assets"][0]["references"], ["图1_upload"])
+            self.assertEqual(calls[0].full_url, reference)
+            self.assertTrue(urllib.parse.unquote(calls[0].full_url).endswith("图1_upload.png"))
+            invalidate_steps(folder, project_id, [("图1", "image"), ("S01", "video")])
+            self.assertEqual(upload.read_bytes(), png)
+            self.assertFalse(load_run_state(folder)["steps"]["图1"].get("asset_still"))
+            icreat = FakeICreat()
+            spec = json.loads((folder / "spec.json").read_text(encoding="utf-8"))
+            run_local_pipeline(
+                spec,
+                folder,
+                project_id=project_id,
+                icreat=icreat,
+                sleeper=_noop_sleep,
+                images_only=True,
+                brief="雨夜",
+            )
+            read.assert_called_once()
+        self.assertEqual(len(icreat.submits), 1)
+        self.assertEqual(icreat.submits[0]["image"], [reference])
+        generated = load_run_state(folder)["steps"]["图1"]
+        self.assertEqual(generated["public_url"], "https://cdn.example/img-1.png")
+        self.assertNotEqual(generated["public_url"], reference)
+        self.assertFalse(generated.get("asset_still"))
+        self.assertEqual(upload.read_bytes(), png)
+        self.assertNotEqual((folder / "outputs" / "images" / "图1.png").read_bytes(), png)
+        state = load_run_state(folder)
+        state["steps"]["图1"]["status"] = "running"
+        state["steps"]["图1"]["remote_task_id"] = "task-already"
+        save_run_state(folder, state)
+        with patch("end.server.read_upload", return_value="不该再读") as again:
+            blocked = self.rpc(
+                "projects.set_asset_image",
+                {
+                    "id": project_id,
+                    "asset_id": "图1",
+                    "mode": "reference",
+                    "data_base64": base64.b64encode(png).decode("ascii"),
+                },
+            )
+        self.assertEqual(blocked["error"]["code"], 400)
+        self.assertIn("已经提交", blocked["error"]["message"])
+        again.assert_not_called()
+        self.assertEqual(load_run_state(folder)["steps"]["图1"]["public_url"], "https://cdn.example/img-1.png")
+        gate_for(project_id).resume()
 
     def test_jpeg_upload_becomes_png(self):
         ffmpeg = _ffmpeg_bin()

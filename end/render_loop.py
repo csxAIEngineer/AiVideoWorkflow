@@ -174,6 +174,7 @@ def blank_step(kind):
         "output_file": "",
         "public_url": "",
         "local_override": False,
+        "asset_still": False,
         "error": "",
     }
 
@@ -263,8 +264,20 @@ def _unlink_render_output(path, folder=None, reason="retire-output"):
             pass
 
 
+def asset_still_locked(step, kind="image"):
+    """True when this image step is a user-supplied final still.
+
+    资产图 sets the flag. Invalidate and a later image pass must leave the
+    file and public URL alone. 参考图 does not set it.
+    """
+    return str(kind or "image") == "image" and bool((step or {}).get("asset_still"))
+
+
 def invalidate_steps(work_dir, project_id, steps):
-    """Mark the listed steps pending and delete their outputs. Every other step stays done."""
+    """Mark the listed steps pending and delete their outputs. Every other step stays done.
+
+    An asset_still image is kept: file, public URL, and local_override stay.
+    """
     folder = Path(work_dir)
     lock = project_lock(project_id or str(folder))
     with lock:
@@ -274,6 +287,8 @@ def invalidate_steps(work_dir, project_id, steps):
         for step_id, kind in steps:
             kind = str(kind or "image")
             step = stored.get(step_id) or {}
+            if asset_still_locked(step, kind):
+                continue
             previous = _output_file(folder, step.get("output_file"))
             canonical, _relative = output_paths(folder, step_id, kind)
             pending_paths.extend((previous, canonical))
@@ -300,6 +315,8 @@ def invalidate_steps(work_dir, project_id, steps):
             _unlink_render_output(path)
         for step_id, kind in steps:
             kind = str(kind or "image")
+            if asset_still_locked(stored.get(step_id), kind):
+                continue
             step = dict(stored.get(step_id) or blank_step(kind))
             step["kind"] = kind
             step["status"] = "pending"
@@ -311,6 +328,7 @@ def invalidate_steps(work_dir, project_id, steps):
             step["output_file"] = ""
             step["public_url"] = ""
             step["local_override"] = False
+            step["asset_still"] = False
             step["error"] = ""
             step.pop("video_mode", None)
             step.pop("video_platform", None)
@@ -434,6 +452,44 @@ def note_local_image(work_dir, project_id, asset_id, public_url=None):
         step["public_url"] = hosted
         step["local_override"] = True
         step["error"] = ""
+        steps[asset_id] = step
+        save_run_state(work_dir, state)
+        return step
+
+
+def lock_asset_still(work_dir, project_id, asset_id):
+    """Mark a replaced still so invalidate and image generation leave it in place."""
+    with project_lock(project_id or str(Path(work_dir))):
+        state = load_run_state(work_dir)
+        step = (state.get("steps") or {}).get(asset_id)
+        if not step:
+            return None
+        step["asset_still"] = True
+        save_run_state(work_dir, state)
+        return step
+
+
+def release_asset_for_generation(work_dir, project_id, asset_id):
+    """Clear a final-still lock so the next image pass can generate this asset."""
+    with project_lock(project_id or str(Path(work_dir))):
+        state = load_run_state(work_dir)
+        steps = state.setdefault("steps", {})
+        step = dict(steps.get(asset_id) or blank_step("image"))
+        if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
+            return step
+        step["kind"] = "image"
+        step["status"] = "pending"
+        step["remote_task_id"] = ""
+        step["poll_url"] = ""
+        step["idempotency_key"] = ""
+        step["output_file"] = ""
+        step["public_url"] = ""
+        step["local_override"] = False
+        step["asset_still"] = False
+        step["error"] = ""
+        step["epoch"] = int(step.get("epoch") or 0) + 1
+        step.pop("video_mode", None)
+        step.pop("video_platform", None)
         steps[asset_id] = step
         save_run_state(work_dir, state)
         return step
@@ -1559,6 +1615,12 @@ class RenderContext(object):
                     "未验收的下载不能记成完成",
                     {"ok": False, "status": "failed", "owner": "feed", "reason": "未验收的下载不能记成完成"},
                 )
+            if step.get("asset_still") and kind == "image":
+                generated = False
+                if step.get("public_url"):
+                    public_url = step.get("public_url")
+                if step.get("output_file"):
+                    relative = step.get("output_file")
             state["steps"][step_id] = step
             step["kind"] = kind
             step["status"] = "done"
@@ -1568,6 +1630,7 @@ class RenderContext(object):
                 step["public_url"] = public_url
             if generated:
                 step["local_override"] = False
+                step["asset_still"] = False
             self.write_locked()
             return dict(step)
 
@@ -1610,6 +1673,19 @@ class RenderContext(object):
                 self.pause_for_failure(step_id, kind, "内容安全拒绝了这一镜的文字提交，不再自动重试")
                 seen = None
                 continue
+            if asset_still_locked(step, kind):
+                kept = str(step.get("output_file") or relative)
+                fresh = self.mark_done(step_id, kind, kept, step.get("public_url") or "")
+                self.done_steps += 1
+                self.emit(
+                    "%s 已完成：%s" % (label, step_id),
+                    phase,
+                    step_id,
+                    "done",
+                    current=index,
+                    total=group_total,
+                )
+                return fresh
             if _should_skip(step, path):
                 fresh = self.mark_done(step_id, kind, relative, step.get("public_url") or "")
                 self.done_steps += 1

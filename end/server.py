@@ -57,16 +57,21 @@ from end.db import DATA, connect, delete_project, list_projects, project_dir, re
 from end.image_store import get_image_store
 from end.render_loop import (
     _ffmpeg_bin,
+    _unlink_render_output,
     gate_for,
     is_running,
     load_run_state,
+    lock_asset_still,
     mark_user_pause,
     note_local_image,
+    output_paths,
     project_lock,
     register_thread,
+    release_asset_for_generation,
     reset_current_step,
     resume_paused,
     run_local_pipeline,
+    save_run_state,
     should_resume_project,
     thread_alive,
 )
@@ -2641,27 +2646,164 @@ def _png_bytes(data):
     return _ffmpeg_png_bytes(data, kind)
 
 
-def save_asset_image(project_id, asset_id, data):
-    """Store a replacement still and record this service's public URL.
+def _replace_mode(value):
+    """参考图 understands the upload and generates a still. 资产图 is the still."""
+    text = str(value or "").strip()
+    if text in ("", "asset", "资产图"):
+        return "asset"
+    if text in ("reference", "参考图"):
+        return "reference"
+    raise ValueError("替换方式只能是参考图或资产图")
 
-    local_override stays true so a later asset does not reuse the upload as a reference.
-    """
-    asset_id = str(asset_id or "")
-    if not asset_id or asset_id != Path(asset_id).name or not all(ch.isalnum() or ch in "-_" for ch in asset_id):
+
+def _reference_still_id(asset_id):
+    """Stable object id for a reference upload. It is not the asset file 图N.png."""
+    suffix = "_upload"
+    base = str(asset_id or "")
+    candidate = base + suffix
+    if len(candidate) <= 64:
+        return candidate
+    return base[: 64 - len(suffix)] + suffix
+
+
+def _asset_id_ok(asset_id):
+    text = str(asset_id or "")
+    if not text or text != Path(text).name:
+        return False
+    return all(ch.isalnum() or ch in "-_" for ch in text)
+
+
+def _reject_busy_replace(project_id, asset_id):
+    project = read_project(project_id)
+    if project is None:
+        raise KeyError("没有这个项目")
+    spec = load_spec(project_id) or {}
+    if _spec_asset(spec, asset_id) is None:
         raise ValueError("没有这个资产")
+    state = load_run_state(project_dir(project_id))
+    step = (state.get("steps") or {}).get(asset_id) or {}
+    if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
+        raise RuntimeError("这一步已经提交，完成前不能替换图片")
+    return project, spec, step
+
+
+def _attach_asset_reference(folder, asset_id, reference_id):
+    path = Path(folder) / "spec.json"
+    spec = {}
+    if path.is_file():
+        spec = json.loads(path.read_text(encoding="utf-8"))
+    assets = spec.get("assets") if isinstance(spec, dict) else None
+    if not isinstance(assets, list):
+        raise ValueError("还没有资产")
+    found = False
+    for item in assets:
+        if not isinstance(item, dict) or str(item.get("id") or "") != asset_id:
+            continue
+        found = True
+        refs = []
+        for ref in item.get("references") or []:
+            text = str(ref).strip()
+            if text and text != asset_id and text not in refs:
+                refs.append(text)
+        if reference_id not in refs:
+            refs.append(reference_id)
+        item["references"] = refs
+        break
+    if not found:
+        raise ValueError("没有这个资产")
+    path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+    return spec
+
+
+def _note_reference_reading(folder, project_id, reference_id, reading):
     with project_lock(project_id):
-        project = read_project(project_id)
-        if project is None:
-            raise KeyError("没有这个项目")
-        spec = load_spec(project_id) or {}
-        if _spec_asset(spec, asset_id) is None:
-            raise ValueError("没有这个资产")
-        state = load_run_state(project_dir(project_id))
-        step = (state.get("steps") or {}).get(asset_id) or {}
-        if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
-            raise RuntimeError("这一步已经提交，完成前不能替换图片")
-        public_url = get_image_store().save(project_id, asset_id, _png_bytes(data))
-        note_local_image(project_dir(project_id), project_id, asset_id, public_url)
+        state = load_run_state(folder)
+        step = (state.get("steps") or {}).get(reference_id)
+        if not step:
+            return None
+        step["reading"] = str(reading or "")
+        save_run_state(folder, state)
+        return step
+
+
+def _retire_asset_file(folder, asset_id, output_file):
+    """Archive the previous 资产图 so the card no longer shows that upload as 图N."""
+    targets = []
+    recorded = None
+    text = str(output_file or "").strip().lstrip("/")
+    if text and ".." not in Path(text).parts:
+        recorded = Path(folder) / "outputs" / text
+    canonical, _relative = output_paths(folder, asset_id, "image")
+    for path in (recorded, canonical):
+        if path is None or path in targets:
+            continue
+        targets.append(path)
+    for path in targets:
+        _unlink_render_output(path, folder, "reference-replace")
+
+
+def save_asset_image(project_id, asset_id, data, mode=None):
+    """Replace one still.
+
+    资产图 uploads the file and stores that public URL on the asset. The still
+    stays through a later invalidate. 参考图 stores the file as a reference,
+    reads it, and leaves the asset pending so the next image pass generates
+    a new still. The upload is not that still.
+    """
+    chosen = _replace_mode(mode)
+    asset_id = str(asset_id or "")
+    if not _asset_id_ok(asset_id):
+        raise ValueError("没有这个资产")
+    png = _png_bytes(data)
+    if chosen == "reference":
+        return _save_reference_image(project_id, asset_id, png)
+    return _save_direct_asset(project_id, asset_id, png)
+
+
+def _save_direct_asset(project_id, asset_id, png):
+    with project_lock(project_id):
+        project, _spec, _step = _reject_busy_replace(project_id, asset_id)
+        folder = project_dir(project_id)
+        public_url = get_image_store().save(project_id, asset_id, png)
+        note_local_image(folder, project_id, asset_id, public_url)
+        lock_asset_still(folder, project_id, asset_id)
+        return project
+
+
+def _save_reference_image(project_id, asset_id, png):
+    reference_id = _reference_still_id(asset_id)
+    folder = project_dir(project_id)
+    with project_lock(project_id):
+        project, _spec, step = _reject_busy_replace(project_id, asset_id)
+        was_asset = bool(step.get("asset_still"))
+        output_file = step.get("output_file") or ""
+        public_url = get_image_store().save(project_id, reference_id, png)
+        note_local_image(folder, project_id, reference_id, public_url)
+    image_path = folder / "outputs" / "images" / (reference_id + ".png")
+    from end.trace import begin_trace, finish_trace
+
+    prompts = begin_trace(folder, "vision", repair=False, brief="读图")
+    token = _bind_job(project_id)
+    try:
+        if prompts:
+            reading = read_upload(image_path, trace_prompts=prompts)
+        else:
+            reading = read_upload(image_path)
+    except Exception as error:
+        if prompts:
+            finish_trace(folder, {}, error=str(error))
+        raise
+    finally:
+        _JOB_PROJECT.reset(token)
+    if prompts:
+        finish_trace(folder, {"readings": [{"id": reference_id, "reading": reading}]})
+    with project_lock(project_id):
+        _reject_busy_replace(project_id, asset_id)
+        _note_reference_reading(folder, project_id, reference_id, reading)
+        _attach_asset_reference(folder, asset_id, reference_id)
+        release_asset_for_generation(folder, project_id, asset_id)
+        if was_asset:
+            _retire_asset_file(folder, asset_id, output_file)
         return project
 
 
@@ -3431,7 +3573,12 @@ def rpc_set_asset_image(params):
     if len(data) > MAX_ASSET_IMAGE_BYTES:
         raise RpcError(413, "图片太大")
     try:
-        save_asset_image(project_id, str(params.get("asset_id") or ""), data)
+        save_asset_image(
+            project_id,
+            str(params.get("asset_id") or ""),
+            data,
+            params.get("mode"),
+        )
     except KeyError as error:
         raise RpcError(404, str(error))
     except (ValueError, RuntimeError) as error:
