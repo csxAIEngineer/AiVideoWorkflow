@@ -4,7 +4,9 @@
 duration rule is a hard gate on top of that script: merged shots may share a
 unit, the total may not shrink below the storyboard, dialogue may not be
 dropped, and a span over 15s is split instead of clamped. The voiceover patch
-attaches the official closed-lips phrase to that unit's voiceover.
+rewrites unofficial voiceover inside detailed_description onto a <Subject N>
+already defined in that unit, and keeps <d> and spoken lines out of
+overall_soundscape.
 
 When the model lock is H3, the generator brief already contains each packing
 unit's heading, planned duration, and the four Ref2VA section lines. The model
@@ -41,6 +43,7 @@ from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
 from end.product_names import (
     DRAFT_NAME,
+    H3_SUBJECT_SOUND_RULE,
     HEADING_RULE,
     UNIT_HEAD_ANY,
     UNIT_HEAD_LINE,
@@ -79,10 +82,14 @@ H3_OMITTED = (
     "retention_analysis",
 )
 H3_FILL_ONLY = (
-    "简报里的 ## 【%s N/M】、duration 和四段字段名是锁定骨架。"
-    "只填各段正文，不要自己发明 Ref2VA 版式，也不要输出 JSON。"
-    "不要写 summary 或 retention_analysis。"
-) % UNIT_NAME
+    (
+        "简报里的 ## 【%s N/M】、duration 和四段字段名是锁定骨架。"
+        "只填各段正文，不要自己发明 Ref2VA 版式，也不要输出 JSON。"
+        "不要写 summary 或 retention_analysis。"
+    )
+    % UNIT_NAME
+    + H3_SUBJECT_SOUND_RULE
+)
 _H3_FIELD_NAMES = H3_SECTIONS + H3_OMITTED
 _H3_NAME_ALT = "|".join(_H3_FIELD_NAMES)
 _H3_FIELD_LINE = re.compile(
@@ -235,6 +242,7 @@ def h3_packing_scaffold(groups):
             "不要改 ## 标题，不要改 duration，不要调换这四段的顺序。",
             "不要写 summary 或 retention_analysis。",
             "不要输出 JSON，不要把多个单元写进同一个 detailed_description。",
+            H3_SUBJECT_SOUND_RULE,
         ))
     ]
     for index, group in enumerate(groups, 1):

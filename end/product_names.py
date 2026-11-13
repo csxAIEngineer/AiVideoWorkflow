@@ -27,6 +27,12 @@ MACHINE_FAIL = "投喂机检没过。根据建议修改会按下面这些项改�
 MACHINE_BLOCKED = "投喂机检未通过"
 
 HEADING_RULE = "用 ## 【%s N/M】标题" % UNIT_NAME
+# H3 packing only. Seedance does not use this sentence.
+H3_SUBJECT_SOUND_RULE = (
+    "主体标签只写官方 <Subject N>，不要写 <s1>。"
+    "[Shot 1] 必须引用本单元 subject_definitions 里已经定义的 <Subject N>。"
+    "overall_soundscape 只写环境音和动作音，不要写 <d>，也不要写对白或旁白原文。"
+)
 MISSING_UNITS = "未找到封装单元（## 【%s N/M】格式）" % UNIT_NAME
 LEGACY_MISSING_UNITS = "未找到投喂单元"
 

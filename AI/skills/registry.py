@@ -4,7 +4,7 @@ import importlib.util
 import re
 from pathlib import Path
 
-from end.product_names import DRAFT_NAME, HEADING_RULE, UNIT_NAME
+from end.product_names import DRAFT_NAME, H3_SUBJECT_SOUND_RULE, HEADING_RULE, UNIT_NAME
 
 SKILLS = Path(__file__).resolve().parent
 SUITE = SKILLS / "manju-laoli-skill"
@@ -477,6 +477,7 @@ _MERGE_SHAPE = {
 _H3_FEED_CONTRACT = "\n".join((
     "模型是 H3。feed 只写四段英文正文。",
     "不要写 summary 或 retention_analysis。",
+    H3_SUBJECT_SOUND_RULE,
     "字段名必须单独成行并带冒号，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
     "不要使用七段式栏名。四段正文一律英文。对白写成 <d>[Chinese] 原文</d>。画面内文字保留原语言。",
 ))

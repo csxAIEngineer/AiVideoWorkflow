@@ -217,6 +217,12 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn(scaffold, note)
         self.assertIn("不要输出 JSON", note)
         self.assertIn("不要写 summary 或 retention_analysis", note)
+        from end.product_names import H3_SUBJECT_SOUND_RULE
+
+        self.assertIn("<s1>", H3_SUBJECT_SOUND_RULE)
+        self.assertIn("[Shot 1]", H3_SUBJECT_SOUND_RULE)
+        self.assertIn("overall_soundscape", H3_SUBJECT_SOUND_RULE)
+        self.assertIn(H3_SUBJECT_SOUND_RULE, note)
         self.assertNotIn("\nsummary:", scaffold)
         self.assertNotIn("\nretention_analysis:", scaffold)
         chunks = scaffold.split("## 【封装单元 ")
@@ -231,13 +237,17 @@ class PackingPlanTest(unittest.TestCase):
                 self.assertIn("\n%s:\n" % name, block + "\n")
         messages = generator_messages(dict(state, attempt=0, source=state["storyboard"]))
         self.assertIn("不要自己发明 Ref2VA 版式", messages[0]["content"])
+        self.assertIn(H3_SUBJECT_SOUND_RULE, messages[0]["content"])
         self.assertIn("## 【封装单元 5/5】", messages[-1]["content"])
         self.assertIn("\nnon_diegetic_music:", messages[-1]["content"])
         seedance = dict(state, locks={"model": "2.5"})
         seedance_note = packing_plan_note(seedance)
         self.assertIn("6+5=11", seedance_note)
         self.assertNotIn("subject_definitions:", seedance_note)
-        self.assertNotIn("不要输出 JSON", generator_messages(dict(seedance, attempt=0, source="分镜"))[0]["content"])
+        self.assertNotIn(H3_SUBJECT_SOUND_RULE, seedance_note)
+        seedance_system = generator_messages(dict(seedance, attempt=0, source="分镜"))[0]["content"]
+        self.assertNotIn("不要输出 JSON", seedance_system)
+        self.assertNotIn(H3_SUBJECT_SOUND_RULE, seedance_system)
 
     def test_json_blob_unwraps_nested_units_for_the_h3_check(self):
         inner = []

@@ -26,6 +26,7 @@ from end.product_names import (
     FEED_PASS,
     GATE_UNIT_HEAD,
     HEADING_RULE,
+    H3_SUBJECT_SOUND_RULE,
     MACHINE_FAIL,
     MACHINE_GATE,
     STAGE_NAME,
@@ -774,6 +775,7 @@ _INSTRUCTION = {
         "%s。每一段只写四段英文正文。" % HEADING_RULE,
         "不要使用七段式栏名（【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】）。",
         "不要写 summary 或 retention_analysis。",
+        H3_SUBJECT_SOUND_RULE,
         "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
         "四段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
         "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。" % UNIT_NAME,
@@ -2740,12 +2742,96 @@ _NARRATE_LINE = re.compile(
 )
 
 
-def _subject_voice(unit):
-    subject = re.search(r"<Subject\s+(\d+)>", unit)
-    number = subject.group(1) if subject else "1"
-    speaker = re.search(r"\(\s*(S\d+)\s*\)", unit)
-    sid = speaker.group(1) if speaker else "S1"
-    return "<Subject %s> (%s)" % (number, sid)
+_SHORT_SUBJECT = re.compile(r"<(?:s|S)\s*(\d+)\s*>")
+_D_BLOCK = re.compile(r"<d\b[^>]*>.*?</d>", re.I | re.S)
+_CJK_NAME = re.compile(r"[\u4e00-\u9fff]{2,8}")
+_EN_NAME = re.compile(r"\b[A-Z][a-zA-Z]{1,}(?:\s+[A-Z][a-zA-Z]+)*\b")
+_NAME_STOP = {
+    "subject", "picture", "video", "audio", "she", "he", "her", "his", "the",
+    "and", "with", "from", "this", "that", "woman", "man", "girl", "boy",
+    "standing", "indoors", "fully", "preserved", "room", "tone", "none",
+    "shot", "chinese", "english", "says", "voice", "voiceover", "off",
+    "screen", "while", "lips", "remain", "completely", "closed", "narrator",
+    "calm", "soft", "named", "reference", "character", "person", "female",
+    "male", "young", "old",
+}
+_FILLER_WORDS = {
+    "a", "an", "the", "calm", "soft", "quiet", "low", "male", "female",
+    "narrator", "narrates", "his", "her", "their", "off", "screen",
+    "off-screen", "and", "with", "says", "in", "to", "of",
+}
+_FILLER_CJK = {"一声", "低声", "轻声"}
+_SUBJECT_LEAD = re.compile(
+    r"(?:<Subject\s+\d+>\s*(?:\(\s*S\d+\s*\)\s*)?|\(\s*S\d+\s*\)\s*)$"
+)
+_OFFICIAL_LEAD = re.compile(
+    r"(?:<Subject\s+\d+>\s*(?:\(\s*S\d+\s*\)\s*)?)?"
+    r"says\s+in\s+an\s+off[- ]screen\s+voiceover\s*:\s*$",
+    re.I,
+)
+
+
+def _defined_numbers(definitions):
+    return list(dict.fromkeys(re.findall(r"<Subject\s+(\d+)>", definitions or "")))
+
+
+def _subject_names(definitions):
+    found = []
+    for line in str(definitions or "").splitlines():
+        match = re.search(r"<Subject\s+(\d+)>", line)
+        if not match:
+            continue
+        number = match.group(1)
+        plain = re.sub(r"<[^>\n]+>", " ", line)
+        for token in _CJK_NAME.findall(plain):
+            found.append((number, token))
+        for token in _EN_NAME.findall(plain):
+            if token.lower() not in _NAME_STOP:
+                found.append((number, token))
+    return found
+
+
+def _name_at(hint, name):
+    if re.search(r"[\u4e00-\u9fff]", name):
+        return hint.rfind(name)
+    matches = list(re.finditer(r"(?<![A-Za-z])%s(?![A-Za-z])" % re.escape(name), hint))
+    if not matches:
+        return -1
+    return matches[-1].start()
+
+
+def _match_subject(definitions, hint, defined):
+    """Pick a defined subject from a nearby tag, ``<sN>``, or definition name."""
+    defined_set = set(defined)
+    hint = hint or ""
+    best = None
+
+    def consider(position, priority, number):
+        nonlocal best
+        if number not in defined_set or position < 0:
+            return
+        rank = (position, priority)
+        if best is None or rank > best[0]:
+            best = (rank, number)
+
+    for match in re.finditer(r"<Subject\s+(\d+)>", hint):
+        consider(match.start(), 2, match.group(1))
+    for match in _SHORT_SUBJECT.finditer(hint):
+        consider(match.start(), 2, match.group(1))
+    for number, name in _subject_names(definitions):
+        consider(_name_at(hint, name), 3, number)
+    if best:
+        return best[1]
+    return defined[0]
+
+
+def _subject_voice(definitions, hint=""):
+    """Official speaker tag for a voiceover, or empty when none is defined."""
+    defined = _defined_numbers(definitions)
+    if not defined:
+        return ""
+    number = _match_subject(definitions, hint, defined)
+    return "<Subject %s> (S%s)" % (number, number)
 
 
 def _lips_follow(text, end):
@@ -2768,60 +2854,427 @@ def _drop_orphan_lips(text):
     return pattern.sub(keep, text)
 
 
-def _patch_vo_unit(unit):
-    if not _VO_CUE.search(unit):
+def _content_offset(core, name, line_start, line_len):
+    patterns = (
+        r"^[ \t]*(?:【[ \t]*)?%s(?:[ \t]*】)?[ \t]*[:：][ \t]*",
+        r"^[ \t]*【[ \t]*%s[ \t]*】[ \t]*",
+    )
+    for pattern in patterns:
+        matched = re.match(pattern % re.escape(name), core)
+        if matched and matched.end() < len(core):
+            return line_start + matched.end()
+    return line_start + line_len
+
+
+def _section_spans(unit):
+    """Body offsets for Ref2VA fields. The header line itself stays put."""
+    headers = []
+    offset = 0
+    for line in str(unit or "").splitlines(keepends=True):
+        newline = len(line) - len(line.rstrip("\r\n"))
+        core = line[: len(line) - newline]
+        found = _h3_field_header(core)
+        if found:
+            name, kind = found
+            if kind == "close":
+                headers.append((None, offset))
+            else:
+                headers.append((name, offset, _content_offset(core, name, offset, len(line))))
+        offset += len(line)
+    spans = {}
+    for index, item in enumerate(headers):
+        name = item[0]
+        if not name or name in spans:
+            continue
+        end = headers[index + 1][1] if index + 1 < len(headers) else len(unit)
+        content_start = item[2]
+        if content_start > end:
+            content_start = end
+        spans[name] = (content_start, end)
+    return spans
+
+
+def _normalize_short_subjects(unit):
+    """Rewrite ``<s1>`` / ``<s2>`` to ``<Subject 1>`` / ``<Subject 2>`` when defined.
+
+    The same number is kept. A short tag that is not in this unit's
+    subject_definitions, and is not already a ``<Subject N>`` there, stays
+    as written so the patch does not invent an undefined subject.
+    """
+    spans = _section_spans(unit)
+    if "subject_definitions" not in spans:
+        return unit
+    start, end = spans["subject_definitions"]
+    definitions = unit[start:end]
+    allowed = set(re.findall(r"<Subject\s+(\d+)>", definitions))
+    allowed.update(_SHORT_SUBJECT.findall(definitions))
+    if not allowed:
         return unit
 
-    def add_lips(match):
-        phrase = match.group(0)
-        if _LIPS_RE.search(phrase) or _lips_follow(unit, match.end()):
-            return phrase
-        return phrase + _LIPS_CLAUSE
+    def repl(match):
+        number = match.group(1)
+        if number not in allowed:
+            return match.group(0)
+        return "<Subject %s>" % number
 
-    patched = _OFFICIAL_VO.sub(add_lips, unit)
+    return _SHORT_SUBJECT.sub(repl, unit)
 
+
+def _eat_filler_backward(text, start):
+    cursor = start
+    while cursor > 0:
+        trimmed = cursor
+        while trimmed > 0 and text[trimmed - 1] in " \t":
+            trimmed -= 1
+        if trimmed == 0 or text[trimmed - 1] in ".。!！?？\n;；":
+            break
+        word = re.search(r"([A-Za-z]+(?:-[A-Za-z]+)?|[\u4e00-\u9fff]{1,4})$", text[:trimmed])
+        if not word:
+            break
+        token = word.group(1)
+        if token.lower() not in _FILLER_WORDS and token not in _FILLER_CJK:
+            break
+        cursor = word.start()
+    return cursor
+
+
+def _cue_start(before):
+    official = _OFFICIAL_LEAD.search(before)
+    if official:
+        return official.start()
+    cues = list(re.finditer(r"voice[- ]?over|画外音|旁白|内心独白", before, re.I))
+    if not cues:
+        return len(before)
+    start = _eat_filler_backward(before, cues[-1].start())
+    subject = _SUBJECT_LEAD.search(before[:start])
+    if subject:
+        return subject.start()
+    return start
+
+
+def _span_end(text, index):
+    match = re.match(
+        r"\s*while\s+(?:their|his/her|his|her)\s+lips\s+remain\s+completely\s+closed\.?",
+        text[index:],
+        re.I,
+    )
+    if not match:
+        return index
+    return index + match.end()
+
+
+def _merge_spans(spans):
+    merged = []
+    for start, end in sorted(spans):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            continue
+        merged.append((start, end))
+    return merged
+
+
+def _dialogue_key(tag):
+    inner = re.search(r"<d\b[^>]*>(.*?)</d>", tag, re.I | re.S)
+    body = (inner.group(1) if inner else "").strip()
+    body = re.sub(r"^\[[^\]\n]+\]\s*", "", body).strip()
+    return body.strip(" \"'“”")
+
+
+def _dialogue_present(tag, detailed):
+    if not detailed or not tag:
+        return False
+    if tag in detailed:
+        return True
+    key = _dialogue_key(tag)
+    return bool(key) and key in detailed
+
+
+def _drop_undefined_subjects(text, definitions):
+    defined = set(_defined_numbers(definitions))
+
+    def repl(match):
+        if match.group(1) in defined:
+            return match.group(0)
+        return ""
+
+    return re.sub(r"<Subject\s+(\d+)>", repl, text or "")
+
+
+def _prepare_move(clause, definitions):
+    cleaned = _drop_undefined_subjects(clause, definitions)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    return cleaned
+
+
+def _spoken_span(sound, start, end):
+    """Expand a dialogue match back over its voiceover lead-in, not the ambience."""
+    cue = _cue_start(sound[:start])
+    return cue, _span_end(sound, end)
+
+
+def _clauses_to_move(sound, detailed, definitions):
+    if not sound:
+        return []
+    moves = []
+    covered = []
+    for match in _D_BLOCK.finditer(sound):
+        tag = match.group(0)
+        if _dialogue_present(tag, detailed):
+            continue
+        start, end = _spoken_span(sound, match.start(), match.end())
+        prepared = _prepare_move(sound[start:end], definitions)
+        if not prepared:
+            continue
+        moves.append(prepared)
+        covered.append((start, end))
+    for match in _NARRATE_LINE.finditer(sound):
+        rest = (match.group("rest") or "").strip()
+        if not rest or rest.startswith("<d>"):
+            continue
+        key = rest.strip(" \"'“”")
+        if key and key in (detailed or ""):
+            continue
+        if any(start <= match.start() < end for start, end in covered):
+            continue
+        cue = re.search(r"voice[- ]?over|画外音|旁白|内心独白", match.group(0), re.I)
+        cue_at = match.start() + (cue.start() if cue else 0)
+        start = _eat_filler_backward(sound[:cue_at], cue_at)
+        subject = _SUBJECT_LEAD.search(sound[:start])
+        if subject:
+            start = subject.start()
+        prepared = _prepare_move(sound[start:match.end()], definitions)
+        if prepared:
+            moves.append(prepared)
+    return moves
+
+
+def _append_moves(body, moves):
+    extra = []
+    for item in moves:
+        text = str(item or "").strip()
+        if not text or text in (body or ""):
+            continue
+        extra.append(text)
+    if not extra:
+        return body
+    block = "\n".join(extra)
+    if not str(body or "").strip():
+        return block
+    if body.endswith("\n"):
+        return body + block
+    return body + "\n" + block
+
+
+def _finish_body(original, updated, at_end):
+    if updated == original:
+        return original
+    if updated and not updated.endswith("\n") and ((not at_end) or str(original or "").endswith("\n")):
+        return updated + "\n"
+    return updated
+
+
+def _splice(text, replacements):
+    updated = text
+    for start, end, new in sorted(replacements, key=lambda item: item[0], reverse=True):
+        updated = updated[:start] + new + updated[end:]
+    return updated
+
+
+def _with_lips(phrase, text, end):
+    """Closed lips on a voiceover that has no defined subject to name."""
+    if _LIPS_RE.search(phrase) or _lips_follow(text, end):
+        return phrase
+    return phrase + _LIPS_CLAUSE
+
+
+def _shot_prefix(head):
+    """Keep the shot sentence that sits in front of a voiceover cue on the same line."""
+    cue = re.search(r"voice[- ]?over|画外音|旁白|内心独白", head or "", re.I)
+    if not cue or cue.start() <= 0:
+        return ""
+    prefix = head[: _eat_filler_backward(head[: cue.start()], cue.start())].rstrip()
+    if not prefix:
+        return ""
+    return prefix + " "
+
+
+def _add_lips(match, text):
+    phrase = match.group(0)
+    if _LIPS_RE.search(phrase) or _lips_follow(text, match.end()):
+        return phrase
+    return phrase + _LIPS_CLAUSE
+
+
+def _rewrite_unofficial(text, definitions):
     def rewrite(match):
         head = match.group("head") or ""
-        if re.search(r"says\s+in\s+an\s+off[- ]screen\s+voiceover", head, re.I):
-            return match.group(0)
+        dialog = match.group("dialog") or ""
         tail = head.rstrip()
-        if re.search(r"\bsays\s*:\s*$", tail, re.I) and not _VO_CUE.search(tail[-48:]):
+        before = text[max(0, match.start() - 90) : match.start()]
+        hint = before + head + dialog
+        if re.search(r"says\s+in\s+an\s+off[- ]screen\s*$", before, re.I):
             return match.group(0)
-        return "%s says in an off-screen voiceover: %s%s" % (
-            _subject_voice(patched),
-            match.group("dialog"),
-            _LIPS_CLAUSE,
-        )
+        voice = _subject_voice(definitions, hint)
+        official = re.search(r"says\s+in\s+an\s+off[- ]screen\s+voiceover", head, re.I)
+        if official and re.search(r"<Subject\s+\d+>", before + match.group(0)):
+            return match.group(0)
+        if (not official) and re.search(r"\bsays\s*:\s*$", tail, re.I) and not _VO_CUE.search(tail[-48:]):
+            return match.group(0)
+        if not voice:
+            return _with_lips(match.group(0), text, match.end())
+        return _shot_prefix(head) + "%s says in an off-screen voiceover: %s" % (voice, dialog)
 
-    patched = _UNOFFICIAL_VO.sub(rewrite, patched)
+    return _UNOFFICIAL_VO.sub(rewrite, text)
 
+
+def _rewrite_narration(text, definitions):
     def narrate(match):
         rest = (match.group("rest") or "").strip()
         if rest.startswith("<d>") or _OFFICIAL_VO.search(match.group(0)):
             return match.group(0)
+        hint = text[max(0, match.start() - 80) : match.start()] + (match.group(0) or "")
+        voice = _subject_voice(definitions, hint)
+        if not voice:
+            return _with_lips(match.group(0), text, match.end())
         language = "Chinese" if re.search(r"[\u4e00-\u9fff]", rest) else "English"
         spoken = rest.strip(" \"'“”")
-        return "%s says in an off-screen voiceover: <d>[%s] %s</d>%s" % (
-            _subject_voice(patched),
-            language,
-            spoken,
-            _LIPS_CLAUSE,
+        return _shot_prefix(match.group("head") or "") + (
+            "%s says in an off-screen voiceover: <d>[%s] %s</d>"
+            % (voice, language, spoken)
         )
 
-    if not _OFFICIAL_VO.search(patched):
-        patched = _NARRATE_LINE.sub(narrate, patched, count=1)
+    return _NARRATE_LINE.sub(narrate, text)
+
+
+def _rewrite_detailed_vo(body, definitions):
+    """Official voiceover formula inside detailed_description only."""
+    if not body or not _VO_CUE.search(body):
+        return body
+    patched = _rewrite_narration(_rewrite_unofficial(body, definitions), definitions)
+    patched = _OFFICIAL_VO.sub(lambda match: _add_lips(match, patched), patched)
     return _drop_orphan_lips(patched)
 
 
-def patch_h3_voiceover(text):
-    """Put the official voiceover sentence, with closed lips, on that voiceover.
+def _clean_sound(text, original):
+    lines = []
+    for line in str(text or "").splitlines():
+        line = re.sub(r"[ \t]{2,}", " ", line).strip()
+        line = re.sub(r"\s+([,.;:。，、])", r"\1", line)
+        line = re.sub(r"^[,;:，、]+\s*", "", line)
+        line = line.strip(" \t-—")
+        if not line or re.fullmatch(r"[.。,，;；:：]+", line):
+            continue
+        lines.append(line)
+    ending = ""
+    if str(original or "").endswith("\r\n"):
+        ending = "\r\n"
+    elif str(original or "").endswith("\n"):
+        ending = "\n"
+    if not lines:
+        return ending
+    return "\n".join(lines) + ending
 
-    Lips attach to the voiceover's ``</d>`` inside the same unit. They are not
-    appended at the end of the feed, and they are not added to on-screen speech.
-    A lips phrase somewhere else in the document does not satisfy this unit.
+
+def _strip_soundscape(sound, detailed):
+    """Drop dialogue that detailed_description already carries. Leave ambience."""
+    if not sound:
+        return sound
+    spans = []
+    for match in _D_BLOCK.finditer(sound):
+        if not _dialogue_present(match.group(0), detailed):
+            continue
+        spans.append(_spoken_span(sound, match.start(), match.end()))
+    for match in _NARRATE_LINE.finditer(sound):
+        rest = (match.group("rest") or "").strip()
+        if not rest or rest.startswith("<d>"):
+            continue
+        key = rest.strip(" \"'“”")
+        if not key or key not in (detailed or ""):
+            continue
+        cue = re.search(r"voice[- ]?over|画外音|旁白|内心独白", match.group(0), re.I)
+        cue_at = match.start() + (cue.start() if cue else 0)
+        start = _eat_filler_backward(sound[:cue_at], cue_at)
+        subject = _SUBJECT_LEAD.search(sound[:start])
+        if subject:
+            start = subject.start()
+        spans.append((start, match.end()))
+    keys = []
+    for match in _D_BLOCK.finditer(detailed or ""):
+        key = _dialogue_key(match.group(0))
+        if key and key not in keys:
+            keys.append(key)
+    if not spans and not any(key and key in sound for key in keys):
+        return sound
+    text = sound
+    for start, end in reversed(_merge_spans(spans)):
+        text = text[:start] + text[end:]
+    for key in sorted(keys, key=len, reverse=True):
+        if len(key) < 2:
+            continue
+        text = re.sub(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(key), "", text)
+    return _clean_sound(text, sound)
+
+
+def _patch_vo_unit(unit):
+    normalized = _normalize_short_subjects(unit)
+    spans = _section_spans(normalized)
+    if "detailed_description" not in spans:
+        if "overall_soundscape" in spans or not _VO_CUE.search(normalized):
+            return normalized
+        return _rewrite_detailed_vo(normalized, normalized)
+    d0, d1 = spans["detailed_description"]
+    detailed = normalized[d0:d1]
+    sound_span = spans.get("overall_soundscape")
+    if sound_span:
+        s0, s1 = sound_span
+        sound = normalized[s0:s1]
+    else:
+        s0 = s1 = None
+        sound = ""
+    definitions = ""
+    if "subject_definitions" in spans:
+        a, b = spans["subject_definitions"]
+        definitions = normalized[a:b]
+    moves = _clauses_to_move(sound, detailed, definitions) if sound else []
+    detailed_out = _rewrite_detailed_vo(_append_moves(detailed, moves), definitions)
+    detailed_out = _finish_body(detailed, detailed_out, d1 == len(normalized))
+    sound_out = sound
+    if sound:
+        sound_out = _strip_soundscape(sound, detailed_out)
+        sound_out = _finish_body(sound, sound_out, s1 == len(normalized))
+    if detailed_out == detailed and sound_out == sound:
+        return normalized
+    replacements = []
+    if detailed_out != detailed:
+        replacements.append((d0, d1, detailed_out))
+    if sound_span and sound_out != sound:
+        replacements.append((s0, s1, sound_out))
+    return _splice(normalized, replacements)
+
+
+def patch_h3_voiceover(text):
+    """Put official voiceover in detailed_description, never in overall_soundscape.
+
+    Unofficial voiceover in detailed_description becomes
+    ``<Subject N> (SN) says in an off-screen voiceover: <d>…</d>`` with closed
+    lips. N is a subject already defined in that unit. ``<s1>`` / ``<s2>`` in
+    the unit's subject_definitions are rewritten to ``<Subject 1>`` /
+    ``<Subject 2>`` with the same number. No undefined ``<Subject 1>`` is inserted.
+
+    overall_soundscape stays ambient. A ``<d>`` or spoken line already in
+    detailed_description is removed from the soundscape. A spoken line that
+    exists only in the soundscape is copied into detailed_description first
+    (as the official voiceover sentence when it is voiceover) and then removed.
+    Lips attach to that voiceover's ``</d>``. They are not appended at the end
+    of the feed, and they are not added to on-screen speech.
     """
     raw = str(text or "")
-    if "subject_definitions" not in raw or not _VO_CUE.search(raw):
+    if "subject_definitions" not in raw:
+        return raw
+    hears_dialogue = bool(re.search(r"<d\b", raw, re.I))
+    if not (_VO_CUE.search(raw) or _SHORT_SUBJECT.search(raw) or ("overall_soundscape" in raw and hears_dialogue)):
         return raw
     heads = list(_UNIT_HEAD_LINE.finditer(raw))
     if not heads:

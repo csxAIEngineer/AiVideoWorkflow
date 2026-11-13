@@ -365,12 +365,16 @@ class FeedDurationTest(unittest.TestCase):
         self.assertTrue(result["critic_report"]["stripped_rewrite"])
 
 
+def _section(text, name, nxt):
+    return text.split(name, 1)[1].split(nxt, 1)[0]
+
+
 class VoiceoverPatchTest(unittest.TestCase):
-    def _unit(self, body, index=1, total=1):
+    def _unit(self, body, index=1, total=1, soundscape="Room tone.", definitions="<Subject 1> is a woman."):
         return "\n".join((
             "## 【投喂单元 %s/%s】" % (index, total),
             "subject_definitions:",
-            "<Subject 1> is a woman.",
+            definitions,
             "summary:",
             "She waits.",
             "retention_analysis:",
@@ -378,10 +382,15 @@ class VoiceoverPatchTest(unittest.TestCase):
             "detailed_description:",
             body,
             "overall_soundscape:",
-            "Room tone.",
+            soundscape,
             "non_diegetic_music:",
             "none.",
         ))
+
+    def _parts(self, text):
+        detailed = _section(text, "detailed_description:\n", "\noverall_soundscape:")
+        sound = _section(text, "overall_soundscape:\n", "\nnon_diegetic_music:")
+        return detailed, sound
 
     def test_unofficial_voiceover_gets_lips_on_that_line_not_at_the_end(self):
         raw = "\n\n".join((
@@ -406,6 +415,140 @@ class VoiceoverPatchTest(unittest.TestCase):
         self.assertNotIn("lips", spoken)
         self.assertFalse(patched.rstrip().endswith("while their lips remain completely closed"))
         self.assertIn("She says: <d>[Chinese] 你好。</d>", patched)
+        detailed, sound = self._parts(patched)
+        self.assertIn("off-screen voiceover", detailed)
+        self.assertNotIn("<d", sound)
+        self.assertNotIn("off-screen voiceover", sound)
+        self.assertIn("Room tone.", sound)
+        self.assertIn("summary:\nShe waits.", patched)
+
+    def test_duplicated_voiceover_is_stripped_from_the_soundscape(self):
+        raw = self._unit(
+            "[Shot 1] <Subject 1> stands. A calm voice-over narrates: <d>[Chinese] 别改了。</d>",
+            soundscape="Rain on the roof. voice-over: <d>[Chinese] 别改了。</d>",
+        )
+        patched = patch_h3_voiceover(raw)
+        detailed, sound = self._parts(patched)
+        self.assertIn(
+            "<Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 别改了。</d>",
+            detailed,
+        )
+        self.assertIn("[Shot 1] <Subject 1> stands.", detailed)
+        self.assertEqual(detailed.count("别改了"), 1)
+        self.assertNotIn("<d", sound)
+        self.assertNotIn("off-screen voiceover", sound)
+        self.assertNotIn("<Subject", sound)
+        self.assertIn("Rain on the roof.", sound)
+        self.assertIn("别改了", patched)
+
+    def test_voiceover_only_in_the_soundscape_moves_then_leaves_ambience(self):
+        raw = "\n\n".join((
+            self._unit(
+                "[Shot 1] <Subject 1> stands inside.",
+                soundscape="Rain. A calm voice-over narrates: <d>[Chinese] 别改了。</d>",
+            ),
+            self._unit("[Shot 1] <Subject 1> waits.", index=2, total=2),
+        ))
+        patched = patch_h3_voiceover(raw)
+        first, second = patched.split("## 【投喂单元 2/2】", 1)
+        detailed, sound = self._parts(first)
+        self.assertIn(
+            "<Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 别改了。</d>",
+            detailed,
+        )
+        self.assertIn("lips remain completely closed", detailed)
+        self.assertNotIn("<d", sound)
+        self.assertNotIn("off-screen voiceover", sound)
+        self.assertNotIn("别改了", sound)
+        self.assertIn("Rain.", sound)
+        self.assertNotIn("别改了", second)
+
+        plain = self._unit(
+            "[Shot 1] <Subject 1> stands inside.",
+            soundscape="Rain. A calm voice-over narrates: 别改了。",
+        )
+        patched = patch_h3_voiceover(plain)
+        detailed, sound = self._parts(patched)
+        self.assertIn("<d>[Chinese] 别改了。</d>", detailed)
+        self.assertIn("off-screen voiceover", detailed)
+        self.assertNotIn("别改了", sound)
+        self.assertIn("Rain.", sound)
+
+    def test_spoken_line_only_in_the_soundscape_is_moved_not_turned_into_voiceover(self):
+        raw = self._unit(
+            "[Shot 1] <Subject 1> stands inside.",
+            soundscape="Rain. <d>[Chinese] 别改了。</d>",
+        )
+        patched = patch_h3_voiceover(raw)
+        detailed, sound = self._parts(patched)
+        self.assertIn("<d>[Chinese] 别改了。</d>", detailed)
+        self.assertNotIn("off-screen voiceover", detailed)
+        self.assertNotIn("<d", sound)
+        self.assertNotIn("别改了", sound)
+        self.assertIn("Rain.", sound)
+        self.assertIn("别改了", patched)
+
+    def test_short_tags_normalize_and_undefined_subject_is_not_invented(self):
+        defined = "\n".join((
+            "## 【投喂单元 1/1】",
+            "subject_definitions:",
+            "<s1> is Mei, a woman.",
+            "<s2> is Wei, a man.",
+            "detailed_description:",
+            "[Shot 1] <s1> stands. Mei voice-over: <d>[Chinese] 别改了。</d>",
+            "overall_soundscape:",
+            "Rain. voice-over: <d>[Chinese] 别改了。</d>",
+            "non_diegetic_music:",
+            "none.",
+        ))
+        patched = patch_h3_voiceover(defined)
+        definitions = _section(patched, "subject_definitions:\n", "\ndetailed_description:")
+        detailed, sound = self._parts(patched)
+        self.assertIn("<Subject 1>", definitions)
+        self.assertIn("<Subject 2>", definitions)
+        self.assertNotIn("<s1>", patched)
+        self.assertNotIn("<s2>", patched)
+        self.assertIn("[Shot 1] <Subject 1> stands.", detailed)
+        self.assertIn(
+            "<Subject 1> (S1) says in an off-screen voiceover: <d>[Chinese] 别改了。</d>",
+            detailed,
+        )
+        self.assertNotIn("<d", sound)
+        self.assertNotIn("off-screen voiceover", sound)
+        self.assertNotIn("<Subject", sound)
+        self.assertIn("Rain.", sound)
+
+        undefined = "\n".join((
+            "## 【投喂单元 1/1】",
+            "subject_definitions:",
+            "A woman in a coat.",
+            "detailed_description:",
+            "[Shot 1] She stands inside.",
+            "overall_soundscape:",
+            "Rain. A calm voice-over narrates: <d>[Chinese] 别改了。</d>",
+            "non_diegetic_music:",
+            "none.",
+        ))
+        patched = patch_h3_voiceover(undefined)
+        detailed, sound = self._parts(patched)
+        self.assertNotIn("<Subject", patched)
+        self.assertIn("别改了", detailed)
+        self.assertIn("lips remain completely closed", detailed)
+        self.assertNotIn("<d", sound)
+        self.assertNotIn("off-screen voiceover", sound)
+        self.assertIn("Rain.", sound)
+
+    def test_voiceover_uses_the_named_subject(self):
+        raw = self._unit(
+            "[Shot 1] <Subject 1> sits across from her. Mei voice-over: <d>[Chinese] 别改了。</d>",
+            definitions="<Subject 1> is a man named Wei.\n<Subject 2> is a woman named Mei.",
+        )
+        patched = patch_h3_voiceover(raw)
+        self.assertIn(
+            "<Subject 2> (S2) says in an off-screen voiceover: <d>[Chinese] 别改了。</d>",
+            patched,
+        )
+        self.assertNotIn("<Subject 1> (S1) says", patched)
 
     def test_the_feed_loop_patches_the_voiceover_before_the_gate(self):
         body = self._unit("A calm voice-over narrates: <d>[Chinese] 别改了。</d>")

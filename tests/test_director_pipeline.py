@@ -1927,11 +1927,15 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertIn("subject_definitions:", h3)
         self.assertIn("四段正文一律英文", h3)
         self.assertIn("不要写 summary 或 retention_analysis", h3)
+        from end.product_names import H3_SUBJECT_SOUND_RULE
+
+        self.assertIn(H3_SUBJECT_SOUND_RULE, h3)
         self.assertNotIn("retention_analysis:", h3)
         self.assertIn("<d>[Chinese]", h3)
         seedance = stage_instruction("feed", {"model": "2.5"})
         self.assertIn("下面写七段", seedance)
         self.assertNotIn("<d>[Chinese]", seedance)
+        self.assertNotIn(H3_SUBJECT_SOUND_RULE, seedance)
 
         folder = Path(tempfile.mkdtemp())
         internal = folder / "_内部_"
