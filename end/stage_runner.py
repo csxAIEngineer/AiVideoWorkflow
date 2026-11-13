@@ -3026,9 +3026,9 @@ def _worker_complete(project, folder, write_model, prompts):
 
 def _produce_with_worker(stage, project, folder, locks, write_model, opening, prompts=None):
     """One Agents loop. Machine-check retries stay inside that loop."""
-    from Agents.feed_loop import run_feed_loop
-    from Agents.script_loop import run_script_loop
-    from Agents.storyboard_loop import run_storyboard_loop
+    from Agents.workers.feed import run_feed_loop
+    from Agents.workers.script import run_script_loop
+    from Agents.workers.storyboard import run_storyboard_loop
 
     complete = _worker_complete(project, folder, write_model, prompts)
     spec = _load_spec(folder)

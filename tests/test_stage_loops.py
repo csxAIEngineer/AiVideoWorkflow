@@ -9,9 +9,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from Agents.feed_loop import compile_feed_graph, run_feed_loop
-from Agents.script_loop import compile_script_graph, run_script_loop
-from Agents.storyboard_loop import compile_storyboard_graph, run_storyboard_loop
+from Agents.workers.feed import compile_feed_graph, run_feed_loop
+from Agents.workers.script import compile_script_graph, run_script_loop
+from Agents.workers.storyboard import compile_storyboard_graph, run_storyboard_loop
 from end.stage_runner import (
     _declared_h3_duration,
     _fill_duration_block,

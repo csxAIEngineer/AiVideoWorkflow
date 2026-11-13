@@ -343,7 +343,7 @@ class RpcContractTest(unittest.TestCase):
             raise AssertionError("script write must not enter the P2 loop")
 
         with patch("AI.agent.layout.run_suite", side_effect=fake_suite), patch(
-            "Agents.p2_asset.run_p2_asset_loop", side_effect=forbid_p2
+            "Agents.workers.asset.run_p2_asset_loop", side_effect=forbid_p2
         ):
             snap = self.rpc("write", {"brief": SCRIPT_BRIEF, "skill_pack": "", "model": "qwen3.8-flash"})
         self.assertEqual(snap["status"], "running")
@@ -382,7 +382,7 @@ class RpcContractTest(unittest.TestCase):
             raise AssertionError("repair must not enter the P2 loop")
 
         with patch("AI.qwen_api.repair_graph.run_repair", side_effect=fake_repair), patch(
-            "Agents.p2_asset.run_p2_asset_loop", side_effect=forbid_p2
+            "Agents.workers.asset.run_p2_asset_loop", side_effect=forbid_p2
         ):
             snap = self.rpc("write", {"brief": REPAIR_BRIEF})
         self.assertEqual(snap["nodes"][-1]["id"], "merge")

@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from Agents.machine_check import ASSET_BLOCK_SCRIPT, check_asset_draft
-from Agents.p2_asset import (
+from Agents.workers.asset import (
     DEFAULT_MAX_ATTEMPTS,
     apply_generator_output,
     compile_p2_asset_graph,
@@ -419,7 +419,7 @@ class TextClientTest(unittest.TestCase):
             seen.append({"role": role, "model": model, "timeout": timeout})
             return _accept(role, messages)
 
-        with patch("Agents.p2_asset.complete_text", fake):
+        with patch("Agents.workers.asset.complete_text", fake):
             result = run_p2_asset_loop(SCRIPT, model="qwen3.8-flash")
         self.assertEqual([item["role"] for item in seen], ["generator", "critic"])
         self.assertEqual(seen[0]["model"], "qwen3.8-flash")

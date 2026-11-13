@@ -157,7 +157,7 @@ def _run_asset(job_id, params):
     from AI.qwen_api.jobs import DONE, RUNNING, set_node
 
     from Agents.machine_check import check_asset_draft
-    from Agents.p2_asset import run_p2_asset_loop
+    from Agents.workers.asset import run_p2_asset_loop
     from Agents.text import complete_text
 
     model = params.get("model") or None
