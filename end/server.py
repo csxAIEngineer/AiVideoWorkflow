@@ -1232,14 +1232,24 @@ def answer_gate(project, text):
         and body in ("补写分镜", "补全", ASSET_REVISE)
         and needs_human(str(pipeline.get("report") or ""))
     ):
-        pipeline["action"] = "write"
-        pipeline["passed"] = True
+        report = str(pipeline.get("report") or "")
+        named = bool(re.search(r"S\d+\s*缺", report))
         pipeline["retry_write"] = False
-        pipeline["repair"] = ""
-        pipeline["report"] = ""
         pipeline["repairs"] = 0
         pipeline["auto_retries"] = 0
         pipeline["machine_repairs"] = 0
+        pipeline.pop("worker_exhausted", None)
+        if named and body in ("补全", ASSET_REVISE):
+            pipeline["action"] = "rewrite"
+            pipeline["passed"] = False
+            pipeline["repair"] = report
+            pipeline["report"] = report
+            _enqueue_stage(project, pipeline, "补全分镜")
+            return public_view(read_project(project["id"]) or project)
+        pipeline["action"] = "write"
+        pipeline["passed"] = True
+        pipeline["repair"] = ""
+        pipeline["report"] = ""
         _enqueue_stage(project, pipeline, body if body in ("补写分镜", "补全") else "补写分镜")
         return public_view(read_project(project["id"]) or project)
     if body == ASSET_REVISE and (passed or not current):

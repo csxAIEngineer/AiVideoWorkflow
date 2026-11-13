@@ -1309,7 +1309,7 @@ class MachineAndMountTest(unittest.TestCase):
         outcome = execute(project, folder, locks, feed_writer, lambda *args, **kwargs: "pack")
         self.assertFalse(outcome["progress"]["pipeline"]["passed"])
         execute({"template": "short-drama-director", "progress": outcome["progress"]}, folder, locks, feed_writer, lambda *args, **kwargs: "pack")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 3)
         self.assertIn("根据建议修改会按下面这些项改", outcome["message"]["content"])
         self.assertNotIn("已按检查结果自动改了", outcome["message"]["content"])
 
@@ -1326,7 +1326,7 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertFalse(stopped["progress"]["pipeline"]["passed"])
         self.assertEqual(stopped["progress"]["phase"], "gate_storyboard")
         self.assertFalse(any(path.name.endswith("-预演故事板.md") for path in folder.iterdir()))
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 4)
 
     def test_storyboard_repair_keeps_panels_and_asks_for_real_grids(self):
         rich = "\n".join((

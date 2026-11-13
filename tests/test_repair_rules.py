@@ -393,10 +393,10 @@ class RuleBeforeModelTest(unittest.TestCase):
         ), patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"):
             run_project("p-rule-then-ai")
         saved = read_project("p-rule-then-ai")
-        self.assertEqual(order, ["rules", "ai", "rules", "ai", "rules", "ai"])
+        self.assertEqual(order, ["rules", "ai", "ai", "ai"])
         self.assertEqual(saved["status"], "gate")
         self.assertEqual(saved["progress"]["pipeline"]["repairs"], 3)
-        self.assertEqual(saved["progress"]["pipeline"]["rule_repairs"], 3)
+        self.assertEqual(saved["progress"]["pipeline"]["rule_repairs"], 1)
         self.assertIn("未找到投喂单元", saved["messages"][-1]["content"])
         self.assertIn("缺【画幅风格】", saved["messages"][-1]["content"])
 

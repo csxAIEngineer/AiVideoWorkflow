@@ -1085,12 +1085,14 @@ def auto_gate_action(outcome):
     repairs = int(pipeline.get("repairs") or 0)
     needs_retry = bool(pipeline.get("retry_write")) and not passed
     if current == "script":
-        if needs_retry and retries < REPAIR_LIMIT - 1:
+        if needs_retry and not pipeline.get("worker_exhausted") and retries < REPAIR_LIMIT - 1:
             return "retry_write"
         return "stop"
     if current not in ("recon", "asset", "storyboard", "feed"):
         return "stop"
     if current == "storyboard" and not passed and needs_human(pipeline.get("report")):
+        return "stop"
+    if pipeline.get("worker_exhausted") and current in ("storyboard", "feed") and not passed:
         return "stop"
     if needs_retry:
         if retries >= REPAIR_LIMIT - 1:
@@ -1234,8 +1236,14 @@ def check_stage(folder, stage, locks, title=""):
         if claim:
             return False, "没看见图，却写了%s" % claim
         code, report = check_feed(path, locks.get("model") or "h3", mode, locks.get("track") or "1")
+        spec_now = _load_spec(folder)
+        extras = feed_duration_failures(text, _read(internal / "分镜.md"), spec_now.get("shots"))
         if code != 0:
+            if extras:
+                return False, (report or "").rstrip() + "\n" + "\n".join(extras)
             return False, report
+        if extras:
+            return False, "\n".join(extras)
         return True, ""
     return True, ""
 
@@ -1895,8 +1903,15 @@ def _settle_ready_units(raw):
 
 
 def _declared_h3_duration(seconds):
-    whole = int(math.ceil(float(seconds)))
-    return max(4, min(15, whole))
+    """Integer seconds H3 writes on ``duration``.
+
+    Four seconds is the shortest H3 render. A span over 15 seconds stays over
+    15. Callers split that unit. They do not clamp it to 15.
+    """
+    whole = int(math.ceil(float(seconds) - 1e-9))
+    if whole < 4:
+        return 4
+    return whole
 
 
 def _last_cut_seconds(block):
@@ -1914,15 +1929,24 @@ def _unit_without_tail(block):
     return block[: match.start()], block[match.start() :]
 
 
-def _fill_duration_block(block):
-    """Add duration from the last cut inside the unit. Leave shot sentences and the footer alone."""
+def _fill_duration_block(block, last_shot_seconds=0):
+    """Declare the unit span. The last cut is only the start of the last shot.
+
+    ``last_shot_seconds`` is that shot's length. Leaving it at 0 keeps a unit
+    that already ends on the last cut. Adding it stops the declaration from
+    dropping the last shot. An existing duration line is left alone so a short
+    declaration stays visible to the hard gate.
+    """
     body, tail = _unit_without_tail(block)
     if _DURATION_LINE.search(body):
         return block
     seconds = _last_cut_seconds(body)
+    extra = float(last_shot_seconds or 0)
     if seconds is None:
-        return block
-    shown = _declared_h3_duration(seconds)
+        if extra <= 0:
+            return block
+        seconds = 0
+    shown = _declared_h3_duration(float(seconds) + extra)
     unit = _UNIT_HEAD_LINE.search(body)
     line = "duration: %s" % shown
     if unit:
@@ -1934,16 +1958,174 @@ def _fill_duration_block(block):
     return filled + tail
 
 
-def _fill_missing_h3_duration(text):
+def _fill_missing_h3_duration(text, shot_durations=None):
+    raw = str(text or "")
+    durations = [float(item) for item in (shot_durations or [])]
+    heads = list(_UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        last = durations[-1] if len(durations) == 1 else 0
+        return _fill_duration_block(raw, last_shot_seconds=last)
+    parts = [raw[: heads[0].start()]]
+    cursor = 0
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        block = raw[match.start() : end]
+        count = len(_SHOT_HEAD.findall(block))
+        last = 0
+        if durations and count:
+            chunk = durations[cursor : cursor + count]
+            cursor += len(chunk)
+            if chunk:
+                last = chunk[-1]
+        parts.append(_fill_duration_block(block, last_shot_seconds=last))
+    return "".join(parts)
+
+
+def format_seconds(value):
+    number = float(value)
+    if abs(number - round(number)) < 1e-6:
+        return str(int(round(number)))
+    text = ("%.1f" % number).rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def group_shot_durations(durations, limit=15):
+    """Pack consecutive shot lengths into H3 units.
+
+    Merging is allowed. A unit never keeps more than ``limit`` seconds by
+    shortening a shot. A shot longer than ``limit`` stays in its own unit at
+    its real length so the caller can split the shot instead of clamping.
+    """
+    groups = []
+    bucket = []
+    total = 0.0
+    for raw in durations or []:
+        try:
+            seconds = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if seconds <= 0:
+            continue
+        if seconds > limit:
+            if bucket:
+                groups.append(bucket)
+                bucket = []
+                total = 0.0
+            groups.append([seconds])
+            continue
+        if bucket and total + seconds > limit + 1e-6:
+            groups.append(bucket)
+            bucket = [seconds]
+            total = seconds
+        else:
+            bucket.append(seconds)
+            total += seconds
+    if bucket:
+        groups.append(bucket)
+    return groups
+
+
+def storyboard_duration_list(text):
+    found = []
+    for line in str(text or "").splitlines():
+        match = re.match(r"^时长\s*[:：]\s*(\d+(?:\.\d+)?)", line.strip())
+        if match:
+            found.append(float(match.group(1)))
+    return found
+
+
+def storyboard_spoken_lines(text):
+    found = []
+    for line in str(text or "").splitlines():
+        match = re.match(r"^(?:对白|旁白)\s*[:：]\s*(.+)$", line.strip())
+        if not match:
+            continue
+        spoken = match.group(1).strip()
+        if spoken:
+            found.append(spoken)
+    return found
+
+
+def _feed_units(text):
     raw = str(text or "")
     heads = list(_UNIT_HEAD_LINE.finditer(raw))
     if not heads:
-        return _fill_duration_block(raw)
-    parts = [raw[: heads[0].start()]]
+        return [raw] if raw.strip() else []
+    units = []
     for index, match in enumerate(heads):
         end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
-        parts.append(_fill_duration_block(raw[match.start() : end]))
-    return "".join(parts)
+        units.append(raw[match.start() : end])
+    return units
+
+
+def _unit_declared_seconds(block):
+    match = re.search(r"(?m)^(?:duration|duration_seconds)\s*[:=]\s*(\d+(?:\.\d+)?)", str(block or ""))
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def feed_duration_failures(feed, storyboard="", shots=None, limit=15):
+    """Hard failures when a packed feed is shorter than the storyboard.
+
+    Merging shots into one H3 unit is allowed. The sum of declared unit
+    durations must not fall below the storyboard total, spoken lines must
+    remain, and a storyboard span over ``limit`` must be split rather than
+    clamped. A feed that has not declared a duration yet is not failed here.
+    The H3 checker still owns missing-field warnings.
+    """
+    durations = []
+    for shot in shots or []:
+        if isinstance(shot, dict) and shot.get("duration") not in (None, ""):
+            try:
+                durations.append(float(shot.get("duration")))
+            except (TypeError, ValueError):
+                continue
+    if not durations:
+        durations = storyboard_duration_list(storyboard)
+    declared = []
+    if _UNIT_HEAD_LINE.search(str(feed or "")):
+        for block in _feed_units(feed):
+            seconds = _unit_declared_seconds(block)
+            if seconds is not None:
+                declared.append(seconds)
+    errors = []
+    board_total = sum(durations)
+    feed_total = sum(declared)
+    if durations and declared and feed_total + 0.05 < board_total:
+        groups = group_shot_durations(durations, limit)
+        rendered = "；".join(
+            "%s=%s" % (
+                "+".join(format_seconds(item) for item in group),
+                format_seconds(sum(group)),
+            )
+            for group in groups
+        )
+        errors.append(
+            "时长被压缩：分镜合计 %ss，投喂声明 %ss（%s）。"
+            "可以合并镜头，但总时长不得短于分镜，情节和对白不得压缩。"
+            "单段故事板跨度超过 %ss 必须拆成下一单元，禁止钳到 %ss。"
+            "应按这些单元写回时长：%s。"
+            % (
+                format_seconds(board_total),
+                format_seconds(feed_total),
+                "+".join(format_seconds(item) for item in declared),
+                format_seconds(limit),
+                format_seconds(limit),
+                rendered,
+            )
+        )
+    for seconds in durations:
+        if seconds > limit + 0.05:
+            errors.append(
+                "单镜 %ss 超过 %ss，不能钳成 %ss，必须把这一镜拆开。"
+                % (format_seconds(seconds), format_seconds(limit), format_seconds(limit))
+            )
+    if _UNIT_HEAD_LINE.search(str(feed or "")):
+        for spoken in storyboard_spoken_lines(storyboard):
+            if spoken not in str(feed or ""):
+                errors.append("对白被压缩：投喂稿缺少「%s」。不要为了压时长删对白或旁白。" % spoken)
+    return errors
 
 
 def _flip_leading_shot_clocks(text):
@@ -2444,26 +2626,115 @@ def render_feed_text(value):
     return normalize_h3_shot_cuts("\n\n".join(blocks).strip())
 
 
-def patch_h3_voiceover(text):
-    """H3 voiceover must carry the checker's closed-lips phrase."""
-    raw = str(text or "")
-    if "subject_definitions" not in raw:
-        return raw
-    if not re.search(r"voiceover|画外音|旁白", raw, re.I):
-        return raw
-    block = re.compile(r"(says in an off-screen voiceover:\s*<d>.*?</d>)", re.I | re.S)
-    lips = re.compile(r"lips\s+(?:remain|stay)\s+(?:completely\s+)?closed", re.I)
+_LIPS_RE = re.compile(r"lips\s+(?:remain|stay)\s+(?:completely\s+)?closed", re.I)
+_LIPS_CLAUSE = " while his/her lips remain completely closed"
+_VO_CUE = re.compile(r"voice[- ]?over|画外音|旁白|内心独白", re.I)
+_OFFICIAL_VO = re.compile(
+    r"says\s+in\s+an\s+off[- ]screen\s+voiceover\s*:\s*<d>.*?</d>",
+    re.I | re.S,
+)
+_UNOFFICIAL_VO = re.compile(
+    r"(?P<head>[^\n]{0,180}?(?:voice[- ]?over|画外音|旁白|内心独白)[^\n<]{0,80}?)"
+    r"(?P<dialog><d>.*?</d>)",
+    re.I | re.S,
+)
+_NARRATE_LINE = re.compile(
+    r"(?P<head>[^\n]{0,80}?voice[- ]?over[^\n]{0,40}?narrates\s*:\s*)(?P<rest>[^\n]+)",
+    re.I,
+)
 
-    def _with_lips(match):
-        follow = raw[match.end():match.end() + 160]
-        if lips.search(match.group(0) + follow):
+
+def _subject_voice(unit):
+    subject = re.search(r"<Subject\s+(\d+)>", unit)
+    number = subject.group(1) if subject else "1"
+    speaker = re.search(r"\(\s*(S\d+)\s*\)", unit)
+    sid = speaker.group(1) if speaker else "S1"
+    return "<Subject %s> (%s)" % (number, sid)
+
+
+def _lips_follow(text, end):
+    return bool(_LIPS_RE.search(text[end : end + 90]))
+
+
+def _drop_orphan_lips(text):
+    """Remove a closed-lips clause that is not attached to a voiceover ``</d>``."""
+    pattern = re.compile(
+        r"[ \t]*while\s+(?:their|his/her|his|her)\s+lips\s+remain\s+completely\s+closed\.?[ \t]*$",
+        re.I | re.M,
+    )
+
+    def keep(match):
+        before = text[: match.start()]
+        if re.search(r"</d>\s*$", before):
             return match.group(0)
-        return match.group(0) + " while their lips remain completely closed"
+        return ""
 
-    patched = block.sub(_with_lips, raw)
-    if re.search(r"voiceover|画外音|旁白", patched, re.I) and not lips.search(patched):
-        return patched.rstrip() + "\nwhile their lips remain completely closed\n"
-    return patched
+    return pattern.sub(keep, text)
+
+
+def _patch_vo_unit(unit):
+    if not _VO_CUE.search(unit):
+        return unit
+
+    def add_lips(match):
+        phrase = match.group(0)
+        if _LIPS_RE.search(phrase) or _lips_follow(unit, match.end()):
+            return phrase
+        return phrase + _LIPS_CLAUSE
+
+    patched = _OFFICIAL_VO.sub(add_lips, unit)
+
+    def rewrite(match):
+        head = match.group("head") or ""
+        if re.search(r"says\s+in\s+an\s+off[- ]screen\s+voiceover", head, re.I):
+            return match.group(0)
+        tail = head.rstrip()
+        if re.search(r"\bsays\s*:\s*$", tail, re.I) and not _VO_CUE.search(tail[-48:]):
+            return match.group(0)
+        return "%s says in an off-screen voiceover: %s%s" % (
+            _subject_voice(patched),
+            match.group("dialog"),
+            _LIPS_CLAUSE,
+        )
+
+    patched = _UNOFFICIAL_VO.sub(rewrite, patched)
+
+    def narrate(match):
+        rest = (match.group("rest") or "").strip()
+        if rest.startswith("<d>") or _OFFICIAL_VO.search(match.group(0)):
+            return match.group(0)
+        language = "Chinese" if re.search(r"[\u4e00-\u9fff]", rest) else "English"
+        spoken = rest.strip(" \"'“”")
+        return "%s says in an off-screen voiceover: <d>[%s] %s</d>%s" % (
+            _subject_voice(patched),
+            language,
+            spoken,
+            _LIPS_CLAUSE,
+        )
+
+    if not _OFFICIAL_VO.search(patched):
+        patched = _NARRATE_LINE.sub(narrate, patched, count=1)
+    return _drop_orphan_lips(patched)
+
+
+def patch_h3_voiceover(text):
+    """Put the official voiceover sentence, with closed lips, on that voiceover.
+
+    Lips attach to the voiceover's ``</d>`` inside the same unit. They are not
+    appended at the end of the feed, and they are not added to on-screen speech.
+    A lips phrase somewhere else in the document does not satisfy this unit.
+    """
+    raw = str(text or "")
+    if "subject_definitions" not in raw or not _VO_CUE.search(raw):
+        return raw
+    heads = list(_UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        return _patch_vo_unit(raw)
+    parts = [raw[: heads[0].start()]]
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        parts.append(_patch_vo_unit(raw[match.start() : end]))
+    return "".join(parts)
 
 
 def _repair_line(stage, repair):
@@ -2637,12 +2908,233 @@ def _script_brief(project, folder, locks, only, pipeline, step_id, previous):
     return "\n".join(line for line in lines if line is not None).strip()
 
 
+def _uses_worker(stage, pipeline):
+    """Script, storyboard, and feed writes go through the Agents loops.
+
+    A person's polish note stays on the existing script writer. A legacy
+    previs repair that is still about 六问 stays on the old storyboard path.
+    """
+    pipeline = pipeline or {}
+    if stage == "script":
+        return not str(pipeline.get("revise_note") or "").strip()
+    if stage == "feed":
+        return True
+    if stage == "storyboard":
+        return "缺六问" not in str(pipeline.get("repair") or "")
+    return False
+
+
+def _clear_draft_file(folder, name):
+    path = Path(folder) / "_内部_" / name
+    if not path.is_file():
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _stage_machine_report(passed, report, *, needs_human=False):
+    text = str(report or "").strip()
+    errors = [] if passed else [text or "机检没过"]
+    return {
+        "ok": bool(passed),
+        "fatal": "",
+        "exit_code": 0 if passed else 1,
+        "errors": errors,
+        "warnings": [],
+        "stats": {},
+        "blocks": 0,
+        "report": text,
+        "needs_human": bool(needs_human) and not passed,
+    }
+
+
+def _named_storyboard_gap(report):
+    return bool(re.search(r"S\d+\s*缺", str(report or "")))
+
+
+def _script_worker_checker(folder, locks):
+    def checker(draft, _state=None):
+        if str(draft or "").strip():
+            _write_internal(folder, "剧本.md", draft)
+        else:
+            _clear_draft_file(folder, "剧本.md")
+        passed, report = check_stage(folder, "script", locks, "")
+        return _stage_machine_report(passed, report)
+
+    return checker
+
+
+def _storyboard_worker_checker(folder, locks):
+    def checker(draft, _state=None):
+        if str(draft or "").strip():
+            _write_internal(folder, "分镜.md", draft)
+            write_marker(folder)
+        else:
+            _clear_draft_file(folder, "分镜.md")
+        passed, report = check_stage(folder, "storyboard", locks, "")
+        human = (not passed) and needs_human(report) and not _named_storyboard_gap(report)
+        return _stage_machine_report(passed, report, needs_human=human)
+
+    return checker
+
+
+def _feed_worker_checker(folder, locks, storyboard, shots):
+    del storyboard, shots
+
+    def checker(draft, _state=None):
+        text = str(draft or "")
+        if text.strip():
+            _write_internal(folder, "feed.md", text)
+        else:
+            _clear_draft_file(folder, "feed.md")
+        passed, report = check_stage(folder, "feed", locks, "")
+        return _stage_machine_report(passed, report)
+
+    return checker
+
+
+def _worker_complete(project, folder, write_model, prompts):
+    def complete(role, messages):
+        if role != "generator":
+            from Agents.text import complete_text
+
+            return complete_text(role, messages, model=project.get("model"))
+        brief = "\n\n".join(
+            str(item.get("content") or "").strip()
+            for item in messages or []
+            if str(item.get("content") or "").strip()
+        )
+        debug = bool((project.get("progress") or {}).get("debug_llm"))
+        debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
+        result = _write_model(
+            write_model,
+            brief,
+            "",
+            debug_dir=debug_dir,
+            model=project.get("model"),
+            template=project.get("template"),
+            prompts=prompts,
+        )
+        if isinstance(result, dict):
+            return json.dumps(result, ensure_ascii=False)
+        return str(result or "")
+
+    return complete
+
+
+def _produce_with_worker(stage, project, folder, locks, write_model, opening, prompts=None):
+    """One Agents loop. Machine-check retries stay inside that loop."""
+    from Agents.feed_loop import run_feed_loop
+    from Agents.script_loop import run_script_loop
+    from Agents.storyboard_loop import run_storyboard_loop
+
+    complete = _worker_complete(project, folder, write_model, prompts)
+    spec = _load_spec(folder)
+    if stage == "script":
+        outcome = run_script_loop(
+            str(project.get("brief") or ""),
+            locks=locks,
+            intake=load_intake(folder),
+            opening=opening,
+            prior_draft=_read(Path(folder) / "_内部_" / "剧本.md"),
+            model=project.get("model"),
+            complete=complete,
+            checker=_script_worker_checker(folder, locks),
+        )
+        script = str(outcome.get("script") or outcome.get("draft") or "")
+        if not script.strip() and outcome.get("generator_note") == "model_error":
+            raise RuntimeError(outcome.get("error") or "这一步没有正文")
+        title = str(outcome.get("title") or "").strip()
+        internal = str(outcome.get("internal") or "").strip()
+        partials = outcome.get("partials") or []
+        chain = _chain_dir(folder)
+        _save_script_partials(chain, partials)
+        if script.strip():
+            _write_internal(folder, "剧本.md", script)
+            (chain / "05-正式剧本.md").write_text(script if script.endswith("\n") else script + "\n", encoding="utf-8")
+        if internal:
+            _write_internal(folder, "剧本过程.md", internal)
+        from end.trace import finish_trace
+
+        finish_trace(folder, {"script": script, "title": title, "internal": internal, "partials": partials})
+        return {
+            "title": title,
+            "script": script,
+            "internal": internal,
+            "partials": partials,
+            "_worker_loop": True,
+            "_worker_passed": bool(outcome.get("passed")),
+            "_worker_attempts": int(outcome.get("attempts") or 0),
+        }
+    if stage == "storyboard":
+        outcome = run_storyboard_loop(
+            _read(Path(folder) / "_内部_" / "剧本.md"),
+            locks=locks,
+            intake=load_intake(folder),
+            known_ids=known_ids(spec.get("assets")),
+            assets=spec.get("assets") or [],
+            shots=spec.get("shots") or [],
+            hold=read_hold(folder) or str(spec.get("storyboard_hold") or ""),
+            opening=opening,
+            prior_draft=_read(Path(folder) / "_内部_" / "分镜.md"),
+            model=project.get("model"),
+            complete=complete,
+            checker=_storyboard_worker_checker(folder, locks),
+        )
+        if not str(outcome.get("draft") or "").strip() and outcome.get("generator_note") == "model_error":
+            raise RuntimeError(outcome.get("error") or "这一步没有正文")
+        payload = {
+            "storyboard": outcome.get("storyboard") or outcome.get("draft") or "",
+            "_storyboard_contract": bool(str(outcome.get("draft") or "").strip()),
+            "_worker_loop": True,
+            "_worker_passed": bool(outcome.get("passed")),
+            "_worker_attempts": int(outcome.get("attempts") or 0),
+        }
+        if outcome.get("supplied_shots"):
+            payload["shots"] = outcome.get("supplied_shots")
+        return payload
+    board = _read(Path(folder) / "_内部_" / "分镜.md")
+    outcome = run_feed_loop(
+        board,
+        locks=locks,
+        shots=spec.get("shots") or [],
+        opening=opening,
+        prior_draft=_read(Path(folder) / "_内部_" / "feed.md"),
+        model=project.get("model"),
+        complete=complete,
+        checker=_feed_worker_checker(folder, locks, board, spec.get("shots") or []),
+    )
+    if not str(outcome.get("draft") or "").strip() and outcome.get("generator_note") == "model_error":
+        raise RuntimeError(outcome.get("error") or "这一步没有正文")
+    return {
+        "feed": outcome.get("feed") or outcome.get("draft") or "",
+        "_worker_loop": True,
+        "_worker_passed": bool(outcome.get("passed")),
+        "_worker_attempts": int(outcome.get("attempts") or 0),
+    }
+
+
 def _produce_script(project, folder, locks, only, write_model, load_pack, pipeline):
     from end.trace import begin_trace, finish_trace
 
     del load_pack
     pipeline = pipeline or {}
     revise = str(pipeline.get("revise_note") or "").strip()
+    if _uses_worker("script", pipeline):
+        fresh = not (
+            pipeline.get("repair")
+            or pipeline.get("script_from")
+            or str(pipeline.get("action") or "") == "rewrite"
+        )
+        if fresh:
+            chain = _chain_dir(folder)
+            for child in chain.glob("*.md"):
+                child.unlink()
+        brief = _script_suite_brief(project, folder, locks, only, pipeline)
+        prompts = begin_trace(folder, "script", bool(pipeline.get("repair")), brief, label="剧本")
+        return _produce_with_worker("script", project, folder, locks, write_model, brief, prompts)
     repair = str(pipeline.get("repair") or "").strip()
     rewriting = str(pipeline.get("action") or "") == "rewrite"
     continuing = bool(str(pipeline.get("script_from") or "").strip())
@@ -2768,7 +3260,8 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
     asset_catalog = ""
     if stage == "storyboard":
         asset_catalog = locked_asset_catalog(_load_spec(folder).get("assets"))
-    if (repair or repair_choices) and stage in ("asset", "storyboard", "feed"):
+    use_worker = _uses_worker(stage, pipeline)
+    if (repair or repair_choices) and stage in ("asset", "storyboard", "feed") and not use_worker:
         return _repair_with_graph(
             folder,
             stage,
@@ -2821,6 +3314,8 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
     from end.trace import begin_trace
 
     prompts = begin_trace(folder, stage, repair=bool(repair), brief=brief)
+    if use_worker:
+        return _produce_with_worker(stage, project, folder, locks, write_model, brief, prompts)
     result = _write_model(
         write_model,
         brief,
@@ -3163,6 +3658,9 @@ def execute(project, folder, locks, write_model, load_pack):
         except RuntimeError as error:
             finish_trace(folder, {}, error=str(error))
             has_draft = _has_saved_draft(folder, current)
+            if _uses_worker(current, pipeline):
+                pipeline["worker_loop"] = True
+                pipeline["worker_exhausted"] = True
             if has_draft:
                 status = dict(pipeline)
                 if checked:
@@ -3239,6 +3737,15 @@ def execute(project, folder, locks, write_model, load_pack):
                 raise RuntimeError(
                     "资产提示词是空的（图块可能被写成了对象而不是 #### 图N 正文）"
                 )
+        worker_loop = bool(isinstance(result, dict) and result.pop("_worker_loop", False))
+        worker_passed = bool(isinstance(result, dict) and result.pop("_worker_passed", False))
+        worker_attempts = int(result.pop("_worker_attempts", 0)) if isinstance(result, dict) else 0
+        if worker_loop:
+            pipeline["worker_loop"] = True
+            if not worker_passed:
+                pipeline["worker_exhausted"] = True
+            if worker_attempts:
+                pipeline["repairs"] = worker_attempts
         if current == "storyboard":
             previous_board = _read(Path(folder) / "_内部_" / "分镜.md")
             legacy_previs = "缺六问" in str(pipeline.get("repair") or "")
@@ -3280,6 +3787,8 @@ def execute(project, folder, locks, write_model, load_pack):
             pipeline["rule_repairs"] = int(pipeline.get("rule_repairs") or 0) + 1
         else:
             attempts += 1
+            if worker_attempts:
+                attempts = worker_attempts
             pipeline["repairs"] = attempts
         pipeline["repair"] = "" if passed else (report or "")
         if current == "script" and not passed and not pipeline["repair"]:
@@ -3301,7 +3810,7 @@ def execute(project, folder, locks, write_model, load_pack):
             pipeline["machine_repairs"] = 0
             if str(report or "").strip() == "分镜是空的" and shots_are_placeholder(spec.get("shots")):
                 spec["shots"] = []
-        if passed or current in ("asset", "storyboard", "feed") or attempts >= REPAIR_LIMIT:
+        if worker_loop or passed or current in ("asset", "storyboard", "feed") or attempts >= REPAIR_LIMIT:
             break
     if passed:
         pipeline.pop("repair_round", None)
