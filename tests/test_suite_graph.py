@@ -195,7 +195,10 @@ class SuiteGraphTest(unittest.TestCase):
         self.assertEqual(pack_cohorts(files)[0], [adapter])
         prompt = merge_prompt("feed", brief)
         self.assertIn("<d>[Chinese]", prompt)
-        self.assertIn("六段英文正文", prompt)
+        self.assertIn("四段英文正文", prompt)
+        self.assertIn("不要写 summary 或 retention_analysis", prompt)
+        self.assertNotIn("summary:", prompt)
+        self.assertNotIn("retention_analysis:", prompt)
         seedance = "\n".join(("阶段：P4", "模型：2.5", "任务：提示词封装"))
         self.assertNotIn("<d>[Chinese]", merge_prompt("feed", seedance))
 

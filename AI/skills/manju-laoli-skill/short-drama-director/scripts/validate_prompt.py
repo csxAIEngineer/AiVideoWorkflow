@@ -267,7 +267,7 @@
             ★ 编号：C30 已用于「外挂指纹与跨阶段交接探针」，本码取 C32（编号不重排）。
 
 H 系列（--model h3 · MiniMax H3 格式支线 · h3-adapter.md）：
-  H1 字段集       Ref2VA 六段齐全且顺序正确；基础模式三字段齐全
+  H1 字段集       Ref2VA 四段齐全且顺序正确（不要求 summary / retention_analysis）；基础模式三字段齐全
   H2 镜号/切点    [Shot 1] 不得带时间戳；[Shot N] 切点 MM:SS.mmm 严格递增；切镜动词须用官方绑定短语（the camera/shot cuts to…）
   H3 时长         声明时长落在 4–15s；最后切点 ≤15s
   H4 语言         正文应为英文（2026-10-02 官方复核：base-en/ref-en "Write all six rewrite sections in English"）；
@@ -588,8 +588,10 @@ CAM_HEAVY_LIMITS = (
 )
 
 # ---- H 系列：MiniMax H3 格式支线（references/h3-adapter.md）----
-H3_SECTIONS = ["subject_definitions", "summary", "retention_analysis",
-               "detailed_description", "overall_soundscape", "non_diegetic_music"]
+H3_SECTIONS = ["subject_definitions", "detailed_description",
+               "overall_soundscape", "non_diegetic_music"]
+# 旧稿仍可能带这两段。缺了不报 H1；多了不因“多字段”失败。顺序只比四段。
+H3_OMITTED = ("summary", "retention_analysis")
 H3_FIELDS = ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"]
 H3_MARK_VIS = {"fully_preserved", "partially_preserved", "attribute_transfer", "weak_reference"}
 H3_MARK_AUD = {"fully_copy", "partially_copy", "reference", "weak_reference"}
@@ -630,7 +632,7 @@ H3_PARALLEL_PAT = re.compile(r"同框|同在画面|一同入画|同处一室")
 H3_DEIXIS_PAT = re.compile(r"(这只|那只|这个|那个|这双|那副)(手|脸|眼睛|脚|背影|身体)")
 
 
-_H3_NAMES = H3_SECTIONS + ["scene_description", "camera", "action", "dialogue", "audio"]
+_H3_NAMES = H3_SECTIONS + ["summary", "retention_analysis", "scene_description", "camera", "action", "dialogue", "audio"]
 H3_ALIAS = {
     "subject_definitions": "subject_definitions",
     "summary": "summary",
@@ -691,14 +693,15 @@ def validate_h3(text, mode="new"):
     order = _h3_order(text)
     is_ref = "subject_definitions" in sec
 
-    # H1 字段集
+    # H1 字段集。summary / retention_analysis 不再要求，出现也不单独判失败。
     if is_ref:
         missing = [s for s in H3_SECTIONS if s not in sec]
+        order_kept = [name for name in order if name not in H3_OMITTED]
         if missing:
-            issues.append(f"H1 Ref2VA 缺段 {missing}（六段式：subject_definitions/summary/retention_analysis/"
+            issues.append(f"H1 Ref2VA 缺段 {missing}（四段式：subject_definitions/"
                           "detailed_description/overall_soundscape/non_diegetic_music，顺序不可调换）")
-        elif order != H3_SECTIONS:
-            issues.append(f"H1 Ref2VA 段序错误：实际 {order}")
+        elif order_kept != H3_SECTIONS:
+            issues.append(f"H1 Ref2VA 段序错误：实际 {order_kept}")
     else:
         missing = [f for f in H3_FIELDS if f not in text]
         if missing:
@@ -4347,13 +4350,16 @@ def _self_test():
     iss, _, _ = validate_h3(h3_ok)
     if iss:
         print("FAIL self-test: 合规 H3 Ref2VA 样例不应报错", iss); ok = 0
-    # H1 缺段
-    iss, _, _ = validate_h3(h3_ok.replace("<Subject 1>（出现于 [Shot 1]、[Shot 2]）：fully_preserved - 长发低髆与炭灰长袍保留。\n", "")
-                               .replace("<Subject 2>（出现于 [Shot 1]、[Shot 2]）：fully_preserved - 深色短发与眉上细疤保留。\n", "")
-                               .replace("<Audio 1>：reference - 只取其音色引导念白，不复制原始信号。\n", "")
-                               .replace("retention_analysis:\n", ""))
+    # H1 缺段（summary / retention_analysis 不再算缺段；缺 overall_soundscape 仍报）
+    iss, _, _ = validate_h3(h3_ok.replace("overall_soundscape:\n雨打石板，风铃轻响两声。\n\n", ""))
     if not any("H1" in i for i in iss):
         print("FAIL self-test: Ref2VA 缺段应报 H1", iss); ok = 0
+    _four = ("subject_definitions:\n<Subject 1> is a woman.\n\n"
+             "detailed_description:\n[Shot 1] <Subject 1> stands inside.\n\n"
+             "overall_soundscape:\nRoom tone.\n\nnon_diegetic_music:\nnone.\n")
+    iss, _, _ = validate_h3(_four)
+    if any(i.startswith("H1") for i in iss):
+        print("FAIL self-test: 四段式缺 summary/retention_analysis 不应报 H1", iss); ok = 0
     # H2 首镜带时间戳
     iss, _, _ = validate_h3(h3_ok.replace("[Shot 1] 全景确立回廊。", "[Shot 1] 在 00:00.000 处，全景确立回廊。"))
     if not any("H2" in i for i in iss):

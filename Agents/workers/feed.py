@@ -7,9 +7,11 @@ dropped, and a span over 15s is split instead of clamped. The voiceover patch
 attaches the official closed-lips phrase to that unit's voiceover.
 
 When the model lock is H3, the generator brief already contains each packing
-unit's heading, planned duration, and the six Ref2VA section lines. The model
-fills those bodies. A JSON object or a merged ``detailed_description`` is
-unwrapped back into that scaffold before the gate runs.
+unit's heading, planned duration, and the four Ref2VA section lines. The model
+fills those bodies. ``summary`` and ``retention_analysis`` are not written.
+If the model still emits them, restore strips those sections before the gate.
+A JSON object or a merged ``detailed_description`` is unwrapped back into
+that scaffold before the gate runs.
 """
 
 import importlib
@@ -64,21 +66,27 @@ GENERATOR_SYSTEM = "\n".join((
     "审查报告里夹带的稿作废。",
 ))
 
-# Ref2VA order. The structure check and validate_prompt H1 use this same sequence.
+# Ref2VA order the packing scaffold writes. summary and retention_analysis are
+# recognized only so their bodies can be discarded instead of leaking sideways.
 H3_SECTIONS = (
     "subject_definitions",
-    "summary",
-    "retention_analysis",
     "detailed_description",
     "overall_soundscape",
     "non_diegetic_music",
 )
+H3_OMITTED = (
+    "summary",
+    "retention_analysis",
+)
 H3_FILL_ONLY = (
-    "简报里的 ## 【%s N/M】、duration 和六段字段名是锁定骨架。"
+    "简报里的 ## 【%s N/M】、duration 和四段字段名是锁定骨架。"
     "只填各段正文，不要自己发明 Ref2VA 版式，也不要输出 JSON。"
+    "不要写 summary 或 retention_analysis。"
 ) % UNIT_NAME
+_H3_FIELD_NAMES = H3_SECTIONS + H3_OMITTED
+_H3_NAME_ALT = "|".join(_H3_FIELD_NAMES)
 _H3_FIELD_LINE = re.compile(
-    r"^[ \t]*(?:【[ \t]*)?(%s)(?:[ \t]*】)?[ \t]*[:：][ \t]*(.*)$" % "|".join(H3_SECTIONS)
+    r"^[ \t]*(?:【[ \t]*)?(%s)(?:[ \t]*】)?[ \t]*[:：][ \t]*(.*)$" % _H3_NAME_ALT
 )
 _H3_SUBJECT_LINE = re.compile(r"(?m)^[ \t]*subject_definitions[ \t]*[:：]")
 _LEADING_DURATION = re.compile(
@@ -101,6 +109,7 @@ CRITIC_SYSTEM = "\n".join((
     "没有要改的地方时 verdict 为 accept，issues 为空数组。",
     "detail 只指出问题，不写替换后的单元。",
     "评判标准只是机检技能：validate_prompt 的 H1–H12，加上时长不得缩短、画外音闭口必须紧跟画外音。",
+    "summary 和 retention_analysis 不是封装字段。缺了不算问题，不要要求补上。",
     "不要用写作技能审查。机检会在你之后再跑。单独的 WARN 不算失败。",
 ))
 
@@ -210,9 +219,10 @@ def _generator_system(state):
 
 
 def h3_packing_scaffold(groups):
-    """Headings, planned durations, and the six empty section lines.
+    """Headings, planned durations, and the four empty section lines.
 
-    The model fills the bodies. It does not invent another Ref2VA layout.
+    The model fills the bodies. It does not invent another Ref2VA layout,
+    and it does not write summary or retention_analysis.
     """
     runner = importlib.import_module("end.stage_runner")
     groups = list(groups or [])
@@ -222,7 +232,8 @@ def h3_packing_scaffold(groups):
     blocks = [
         "\n".join((
             "H3 的 Ref2VA 骨架已经按%s写好。只填每个字段名下面的正文。" % UNIT_NAME,
-            "不要改 ## 标题，不要改 duration，不要调换这六段的顺序。",
+            "不要改 ## 标题，不要改 duration，不要调换这四段的顺序。",
+            "不要写 summary 或 retention_analysis。",
             "不要输出 JSON，不要把多个单元写进同一个 detailed_description。",
         ))
     ]
@@ -482,9 +493,13 @@ def _parse_one_block(block):
         field = _H3_FIELD_LINE.match(line)
         if field:
             current = field.group(1)
+            if current in H3_OMITTED:
+                continue
             rest = field.group(2).strip()
             if rest:
                 sections[current].append(rest)
+            continue
+        if current in H3_OMITTED:
             continue
         if current:
             sections[current].append(line)
@@ -677,9 +692,10 @@ def _render_h3_units(units, groups):
 def restore_h3_scaffold(text, state=None):
     """Turn a JSON blob or a merged description back into per-unit H3 markdown.
 
-    A draft that is already markdown, including a prose unit, is left as written.
-    Empty section lines are not invented, so a missing field still fails H1.
-    Spoken lines are not invented here.
+    A draft that is already markdown, including a prose unit, keeps its four
+    sections. Empty section lines are not invented, so a missing field of those
+    four still fails H1. ``summary`` and ``retention_analysis`` are stripped
+    when the model still emits them. Spoken lines are not invented here.
     """
     raw = str(text or "")
     if not raw.strip():
@@ -690,12 +706,13 @@ def restore_h3_scaffold(text, state=None):
         units = _units_from_payload(loaded)
     if not units:
         units = _units_from_merged_markdown(raw)
+    runner = importlib.import_module("end.stage_runner")
     if not units:
-        return raw
+        return runner.strip_omitted_h3_sections(raw)
     rendered = _render_h3_units(units, packing_groups(state or {}))
     if not rendered.strip():
-        return raw
-    return rendered
+        return runner.strip_omitted_h3_sections(raw)
+    return runner.strip_omitted_h3_sections(rendered)
 
 
 def apply_packing_plan(text, state):
@@ -752,7 +769,7 @@ def compile_feed_graph(complete, checker=None):
             produced = run_generator(
                 TASK,
                 brief,
-                role=GENERATOR_SYSTEM,
+                role=_generator_system(state),
                 complete=complete,
                 partials=state.get("partials") or [],
                 repair_text=brief if attempt > 1 else "",

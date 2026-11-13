@@ -30,9 +30,11 @@ from end.product_names import (
     MACHINE_GATE,
     STAGE_NAME,
     STORYBOARD_PASS,
+    UNIT_HEAD_ANY,
     UNIT_HEAD_LINE,
     UNIT_NAME,
     UNIT_RENUMBER,
+    UNIT_TOKEN,
     has_unit_heading,
     is_empty_draft,
     mentions_unit,
@@ -769,10 +771,11 @@ _INSTRUCTION = {
     )),
     "feed": "\n".join((
         "只写%s，放在 feed。feed 必须是字符串。" % DRAFT_NAME,
-        "%s。每一段只写六段英文正文。" % HEADING_RULE,
+        "%s。每一段只写四段英文正文。" % HEADING_RULE,
         "不要使用七段式栏名（【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】）。",
-        "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
-        "六段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
+        "不要写 summary 或 retention_analysis。",
+        "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+        "四段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
         "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。" % UNIT_NAME,
         "每个 Subject 必须对应 assets.md 里已经有的图。没有关键帧资产就不要写 Picture。",
         "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
@@ -864,7 +867,7 @@ def mount_header(stage, locks, carried, only):
 
 
 def stage_instruction(stage, locks=None):
-    """H3 feed is six English sections. Seedance keeps the seven-section sheet."""
+    """H3 feed is four English sections. Seedance keeps the seven-section sheet."""
     if stage != "feed":
         return _INSTRUCTION.get(stage, "")
     model = str((locks or {}).get("model") or "h3").lower()
@@ -1598,6 +1601,81 @@ _H3_SECTION_FIELDS = (
     "overall_soundscape",
     "non_diegetic_music",
 )
+# Packing no longer writes these. They stay recognizable so a leftover block
+# can be removed without pouring its body into the next section.
+_H3_OMITTED_FIELDS = ("summary", "retention_analysis")
+_H3_OMITTED_ALT = "|".join(_H3_SECTION_FIELDS)
+
+
+def _h3_field_header(line):
+    """A Ref2VA field line. Closing angle tags are marked ``close``."""
+    text = str(line or "").strip()
+    if not text:
+        return None
+    close = re.match(r"^</[ \t]*(%s)[ \t]*>[ \t]*$" % _H3_OMITTED_ALT, text)
+    if close:
+        return close.group(1), "close"
+    wrap = re.match(
+        r"^<[ \t]*(%s)[ \t]*>.*?</[ \t]*\1[ \t]*>[ \t]*$" % _H3_OMITTED_ALT,
+        text,
+    )
+    if wrap:
+        return wrap.group(1), "wrap"
+    opened = re.match(r"^<[ \t]*(%s)[ \t]*>" % _H3_OMITTED_ALT, text)
+    if opened:
+        return opened.group(1), "open"
+    bracket = re.match(r"^【[ \t]*(%s)[ \t]*】" % _H3_OMITTED_ALT, text)
+    if bracket:
+        return bracket.group(1), "head"
+    colon = re.match(r"^(%s)[ \t]*[:：]" % _H3_OMITTED_ALT, text)
+    if colon:
+        return colon.group(1), "head"
+    bare = re.match(r"^(%s)[ \t]*$" % _H3_OMITTED_ALT, text)
+    if bare:
+        return bare.group(1), "head"
+    return None
+
+
+_LOOSE_UNIT_HEAD = re.compile(r"^【[ \t]*%s[ \t]+\d+[ \t]*/[ \t]*\d+" % UNIT_TOKEN)
+
+
+def strip_omitted_h3_sections(text):
+    """Drop ``summary`` and ``retention_analysis`` blocks, including their bodies.
+
+    The other four sections stay in place. A line that merely mentions those
+    words is not a heading and is left alone. A unit heading ends a dropped
+    block so the next unit is not swallowed.
+    """
+    raw = str(text or "")
+    if not raw or not any(name in raw for name in _H3_OMITTED_FIELDS):
+        return raw
+    kept = []
+    omitting = False
+    for line in raw.splitlines(keepends=True):
+        core = line[:-2] if line.endswith("\r\n") else line[:-1] if line.endswith(("\n", "\r")) else line
+        header = _h3_field_header(core)
+        if header:
+            name, kind = header
+            if kind == "close":
+                if name in _H3_OMITTED_FIELDS or omitting:
+                    omitting = False
+                    continue
+                kept.append(line)
+                continue
+            if name in _H3_OMITTED_FIELDS:
+                omitting = kind != "wrap"
+                continue
+            omitting = False
+            kept.append(line)
+            continue
+        if UNIT_HEAD_ANY.match(core) or _LOOSE_UNIT_HEAD.match(core.strip()):
+            omitting = False
+            kept.append(line)
+            continue
+        if omitting:
+            continue
+        kept.append(line)
+    return "".join(kept)
 
 
 _FEED_FENCE = re.compile(

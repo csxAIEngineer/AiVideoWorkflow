@@ -92,16 +92,15 @@ class H6RetentionTest(unittest.TestCase):
         code, report = check_feed(dest, "h3", "M1", "1")
         self.assertEqual(code, 0, report)
         self.assertNotIn("非法保留度标记「top」", report)
-        self.assertIn("[i] 段1：时长12.0s 镜头0 字符2569 | FAIL=0 WARN=0", report)
-        self.assertIn("[i] 段2：时长14.0s 镜头5 字符3520 | FAIL=0 WARN=2", report)
-        self.assertIn("[i] 段3：时长12.0s 镜头4 字符2573 | FAIL=0 WARN=1", report)
-        self.assertIn("[i] 段4：时长12.0s 镜头4 字符2724 | FAIL=0 WARN=2", report)
         self.assertIn("[段2] H4 正文出现中文", report)
         self.assertIn("[段2] H12a 首镜无具名主体锚", report)
         self.assertIn("[段3] H12a 首镜无具名主体锚", report)
         self.assertIn("[段4] H9 画外声未用官方固定短语", report)
         self.assertIn("[段4] H12a 首镜无具名主体锚", report)
-        self.assertIn("top-down natural light", dest.read_text(encoding="utf-8"))
+        stored = dest.read_text(encoding="utf-8")
+        self.assertNotIn("\nretention_analysis:", stored)
+        self.assertNotIn("\nsummary:", stored)
+        self.assertIn("\ndetailed_description:", stored)
 
 
 if __name__ == "__main__":

@@ -475,9 +475,10 @@ _MERGE_SHAPE = {
     )),
 }
 _H3_FEED_CONTRACT = "\n".join((
-    "模型是 H3。feed 只写六段英文正文。",
-    "字段名必须单独成行并带冒号，顺序固定：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
-    "不要使用七段式栏名。六段正文一律英文。对白写成 <d>[Chinese] 原文</d>。画面内文字保留原语言。",
+    "模型是 H3。feed 只写四段英文正文。",
+    "不要写 summary 或 retention_analysis。",
+    "字段名必须单独成行并带冒号，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+    "不要使用七段式栏名。四段正文一律英文。对白写成 <d>[Chinese] 原文</d>。画面内文字保留原语言。",
 ))
 _NODE_SHAPE = "\n".join((
     "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",

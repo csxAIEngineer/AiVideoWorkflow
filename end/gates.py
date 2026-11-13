@@ -56,8 +56,6 @@ _H3_FEED = re.compile(
 )
 _H3_SECTIONS = (
     "subject_definitions",
-    "summary",
-    "retention_analysis",
     "detailed_description",
     "overall_soundscape",
     "non_diegetic_music",
@@ -83,7 +81,7 @@ def _ref2va_heading(text):
 
 def _h3_structure_line():
     return (
-        "[-] FAIL: %s。模型已锁定 H3，封装稿必须写成 Ref2VA 六段式（%s）。"
+        "[-] FAIL: %s。模型已锁定 H3，封装稿必须写成 Ref2VA 四段式（%s）。"
         "字段名单独成行并带冒号，顺序固定。不能用自由正文或七段式顶替。"
         % (H3_STRUCTURE_MARK, "、".join(_H3_SECTIONS))
     )
@@ -91,8 +89,8 @@ def _h3_structure_line():
 
 def _h3_unit_structure_line(number):
     return (
-        "[-] FAIL: [段%s] 这一段不是 H3 结构，缺 subject_definitions 及其余五段。"
-        "改成 Ref2VA 六段式（%s），不要补【画幅风格】或【时间轴分镜】。"
+        "[-] FAIL: [段%s] 这一段不是 H3 结构，缺 subject_definitions 及其余三段。"
+        "改成 Ref2VA 四段式（%s），不要补【画幅风格】或【时间轴分镜】。"
         % (number, "、".join(_H3_SECTIONS))
     )
 
@@ -129,12 +127,16 @@ def h3_structure_report(text):
 
 
 def _prepare_h3_feed(path, text):
-    """A bare subject_definitions line is still an H3 feed. Give it a colon before checking."""
+    """A bare subject_definitions line is still an H3 feed. Give it a colon before checking.
+
+    ``summary`` and ``retention_analysis`` are removed here so a draft that still
+    has them is cleaned instead of failing only because those extra fields exist.
+    """
     if "subject_definitions" not in str(text or ""):
         return text
-    from end.stage_runner import normalize_h3_shot_cuts, render_feed_text
+    from end.stage_runner import normalize_h3_shot_cuts, render_feed_text, strip_omitted_h3_sections
 
-    rendered = normalize_h3_shot_cuts(render_feed_text(text))
+    rendered = strip_omitted_h3_sections(normalize_h3_shot_cuts(render_feed_text(text)))
     bare = bool(re.search(r"(?m)^[ \t]*subject_definitions[ \t]*$", str(text or "")))
     if rendered.strip() and rendered.strip() != str(text or "").strip():
         Path(path).write_text(rendered.strip() + "\n", encoding="utf-8")

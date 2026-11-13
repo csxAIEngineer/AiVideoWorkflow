@@ -216,6 +216,9 @@ class PackingPlanTest(unittest.TestCase):
         scaffold = h3_packing_scaffold(packing_groups(state))
         self.assertIn(scaffold, note)
         self.assertIn("不要输出 JSON", note)
+        self.assertIn("不要写 summary 或 retention_analysis", note)
+        self.assertNotIn("\nsummary:", scaffold)
+        self.assertNotIn("\nretention_analysis:", scaffold)
         chunks = scaffold.split("## 【封装单元 ")
         self.assertEqual(len(chunks), 6)
         for index, seconds in enumerate(PLANNED, 1):
@@ -273,11 +276,13 @@ class PackingPlanTest(unittest.TestCase):
             self.assertTrue(chunk.startswith("## 【封装单元 %s/5】" % index))
             positions = [chunk.index("\n%s:\n" % name) for name in H3_SECTIONS]
             self.assertEqual(positions, sorted(positions))
-            self.assertIn("summary-body-%s" % index, chunk)
+            self.assertNotIn("summary-body-%s" % index, chunk)
+            self.assertNotIn("summary:", chunk)
+            self.assertNotIn("retention_analysis:", chunk)
             self.assertIn("beat %s." % index, chunk)
             self.assertIn("<Subject 1> is a woman standing indoors.", chunk)
             self.assertIn("Room tone.", chunk)
-            self.assertIn("fully_preserved", chunk)
+            self.assertNotIn("fully_preserved", chunk)
             for other in range(1, 6):
                 if other == index:
                     continue
@@ -329,12 +334,14 @@ class PackingPlanTest(unittest.TestCase):
         for index, chunk in enumerate(chunks, 1):
             self.assertIn("beat %s." % index, chunk)
             self.assertIn("\nsubject_definitions:\n", chunk)
-            self.assertIn("She waits by the door.", chunk)
+            self.assertNotIn("She waits by the door.", chunk)
+            self.assertNotIn("retention_analysis:", chunk)
+            self.assertNotIn("fully_preserved", chunk)
             self.assertIn("Room tone.", chunk)
             self.assertIn("\nnon_diegetic_music:\n", chunk)
             self.assertNotIn("## 【封装单元", chunk.split("\n", 1)[1])
 
-    def test_a_correct_six_section_draft_stays_and_still_reaches_validate_prompt(self):
+    def test_omitted_sections_are_stripped_and_the_gate_still_runs(self):
         body = "\n\n".join(
             "\n".join((
                 "## 【封装单元 %s/5】" % index,
@@ -362,7 +369,24 @@ class PackingPlanTest(unittest.TestCase):
         state = _state([EXACT])
         state["locks"] = {"model": "h3"}
         self.assertEqual(h3_structure_report(spoken), "")
-        self.assertEqual(apply_packing_plan(spoken, state), spoken)
+        restored = apply_packing_plan(spoken, state)
+        self.assertNotIn("\nsummary:", restored)
+        self.assertNotIn("\nretention_analysis:", restored)
+        self.assertNotIn("She waits in unit", restored)
+        self.assertNotIn("fully_preserved", restored)
+        self.assertEqual(_declared(restored), PLANNED)
+        self.assertIn("<d>[Chinese] %s</d>" % EXACT, restored)
+        for chunk in _unit_chunks(restored):
+            positions = [chunk.index("\n%s:\n" % name) for name in H3_SECTIONS]
+            self.assertEqual(positions, sorted(positions))
+        mention = spoken.replace(
+            "[Shot 1] She stands in unit 2.",
+            "[Shot 1] She stands in unit 2. The summary of this beat stays in the shot.",
+            1,
+        )
+        kept_word = apply_packing_plan(mention, state)
+        self.assertIn("The summary of this beat stays in the shot.", kept_word)
+        self.assertNotIn("\nsummary:", kept_word)
         path = Path(tempfile.mkdtemp()) / "feed.md"
         path.write_text(spoken, encoding="utf-8")
         seen = []
@@ -375,9 +399,15 @@ class PackingPlanTest(unittest.TestCase):
         from end.gates import check_feed
 
         with patch("end.gates.run_script", side_effect=spy):
-            _code, report = check_feed(path, "h3", "M1", "1")
+            code, report = check_feed(path, "h3", "M1", "1")
         self.assertEqual(seen, ["validate_prompt.py"])
         self.assertNotIn(H3_STRUCTURE_MARK, report)
+        self.assertEqual(code, 0, report)
+        stored = path.read_text(encoding="utf-8")
+        self.assertNotIn("\nsummary:", stored)
+        self.assertNotIn("\nretention_analysis:", stored)
+        self.assertIn("\nsubject_definitions:\n", stored)
+        self.assertIn("\ndetailed_description:\n", stored)
         prose = "\n".join((
             "## 【封装单元 1/1】",
             "duration: 11",
