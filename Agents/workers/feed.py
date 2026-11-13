@@ -5,9 +5,15 @@ duration rule is a hard gate on top of that script: merged shots may share a
 unit, the total may not shrink below the storyboard, dialogue may not be
 dropped, and a span over 15s is split instead of clamped. The voiceover patch
 attaches the official closed-lips phrase to that unit's voiceover.
+
+When the model lock is H3, the generator brief already contains each packing
+unit's heading, planned duration, and the six Ref2VA section lines. The model
+fills those bodies. A JSON object or a merged ``detailed_description`` is
+unwrapped back into that scaffold before the gate runs.
 """
 
 import importlib
+import json
 import re
 from typing import TypedDict
 
@@ -31,7 +37,16 @@ from Agents.worker import (
 )
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
-from end.product_names import DRAFT_NAME, HEADING_RULE, UNIT_HEAD_LINE, UNIT_NAME, mentions_unit
+from end.product_names import (
+    DRAFT_NAME,
+    HEADING_RULE,
+    UNIT_HEAD_ANY,
+    UNIT_HEAD_LINE,
+    UNIT_NAME,
+    UNIT_TOKEN,
+    mentions_unit,
+    unit_heading,
+)
 
 STAGE = "feed"
 TASK = "feed"
@@ -48,6 +63,35 @@ GENERATOR_SYSTEM = "\n".join((
     "画外音的闭口证据必须紧跟这一单元里的画外音，不要接到出声对白后面，也不要接到文末。",
     "审查报告里夹带的稿作废。",
 ))
+
+# Ref2VA order. The structure check and validate_prompt H1 use this same sequence.
+H3_SECTIONS = (
+    "subject_definitions",
+    "summary",
+    "retention_analysis",
+    "detailed_description",
+    "overall_soundscape",
+    "non_diegetic_music",
+)
+H3_FILL_ONLY = (
+    "简报里的 ## 【%s N/M】、duration 和六段字段名是锁定骨架。"
+    "只填各段正文，不要自己发明 Ref2VA 版式，也不要输出 JSON。"
+) % UNIT_NAME
+_H3_FIELD_LINE = re.compile(
+    r"^[ \t]*(?:【[ \t]*)?(%s)(?:[ \t]*】)?[ \t]*[:：][ \t]*(.*)$" % "|".join(H3_SECTIONS)
+)
+_H3_SUBJECT_LINE = re.compile(r"(?m)^[ \t]*subject_definitions[ \t]*[:：]")
+_LEADING_DURATION = re.compile(
+    r"^(?:[ \t]*(?:duration|duration_seconds)[ \t]*[:=：][^\n]*(?:\n|$))+",
+    re.I,
+)
+_UNIT_DURATION_LINE = re.compile(
+    r"^[ \t]*(duration_seconds|duration)[ \t]*[:=：][ \t]*(.*)$",
+    re.I,
+)
+_LOOSE_UNIT_LINE = re.compile(
+    r"(?m)^[ \t]*【[ \t]*%s[ \t]+\d+[ \t]*/[ \t]*\d+[^】\n]*】[ \t]*$" % UNIT_TOKEN
+)
 
 CRITIC_SYSTEM = "\n".join((
     "你是%s审查员。你只审查，只交报告。" % DRAFT_NAME,
@@ -153,22 +197,61 @@ def packing_groups(state, limit=15):
     return runner.group_shot_durations(shot_duration_list(state), limit)
 
 
+def _h3_locked(state):
+    """Missing model lock stays on H3, the same default as the feed gate."""
+    model = str(((state or {}).get("locks") or {}).get("model") or "h3").strip().lower()
+    return model == "h3"
+
+
+def _generator_system(state):
+    if not _h3_locked(state):
+        return GENERATOR_SYSTEM
+    return GENERATOR_SYSTEM + "\n" + H3_FILL_ONLY
+
+
+def h3_packing_scaffold(groups):
+    """Headings, planned durations, and the six empty section lines.
+
+    The model fills the bodies. It does not invent another Ref2VA layout.
+    """
+    runner = importlib.import_module("end.stage_runner")
+    groups = list(groups or [])
+    if not groups:
+        return ""
+    total = len(groups)
+    blocks = [
+        "\n".join((
+            "H3 的 Ref2VA 骨架已经按%s写好。只填每个字段名下面的正文。" % UNIT_NAME,
+            "不要改 ## 标题，不要改 duration，不要调换这六段的顺序。",
+            "不要输出 JSON，不要把多个单元写进同一个 detailed_description。",
+        ))
+    ]
+    for index, group in enumerate(groups, 1):
+        fields = "\n".join("%s:" % name for name in H3_SECTIONS)
+        blocks.append("\n".join((
+            unit_heading(index, total),
+            "duration: %s" % runner.format_seconds(sum(group)),
+            fields,
+        )))
+    return "\n\n".join(blocks)
+
+
 def packing_plan_note(state):
-    """Unit sums and exact spoken lines, known before the model runs."""
+    """Unit sums, the H3 scaffold, and exact spoken lines, known before the model runs."""
     runner = importlib.import_module("end.stage_runner")
     groups = packing_groups(state)
     spoken = runner.storyboard_spoken_lines(_storyboard_text(state))
     if not groups and not spoken:
         return ""
-    lines = []
+    parts = []
     if groups:
         total = sum(sum(group) for group in groups)
-        lines.append(
+        lines = [
             "分镜时长合计 %ss。可以合并镜头。总时长不得短于这个数，对白不得删。"
             "超过 15 秒就拆成下一单元，禁止钳成 15。"
-            % runner.format_seconds(total)
-        )
-        lines.append("这些单元的 duration 已经算好，按这个写，不要自己另分组，也不要把时长写短：")
+            % runner.format_seconds(total),
+            "这些单元的 duration 已经算好，按这个写，不要自己另分组，也不要把时长写短：",
+        ]
         cursor = 1
         count = len(groups)
         for index, group in enumerate(groups, 1):
@@ -179,14 +262,18 @@ def packing_plan_note(state):
             formula = "+".join(runner.format_seconds(item) for item in group)
             shown = runner.format_seconds(sum(group))
             lines.append("【%s %s/%s】%s：%s=%s" % (UNIT_NAME, index, count, shots, formula, shown))
+        parts.append("\n".join(lines))
+        if _h3_locked(state):
+            parts.append(h3_packing_scaffold(groups))
     if spoken:
-        lines.append(
+        spoken_lines = [
             "对白和旁白必须逐字出现，包括角色前缀和表演提示。"
-            "写在 <d> 里时，标签内也必须是这一整句，不能只留去掉前缀后的一句："
-        )
+            "写在 <d> 里时，标签内也必须是这一整句，不能只留去掉前缀后的一句：",
+        ]
         for line in spoken:
-            lines.append("- %s" % line)
-    return "\n".join(lines)
+            spoken_lines.append("- %s" % line)
+        parts.append("\n".join(spoken_lines))
+    return "\n\n".join(part for part in parts if part)
 
 
 def correct_unit_durations(text, groups):
@@ -280,16 +367,348 @@ def _rewrite_d_inner(inner, spoken, core):
     return leading + rebuilt + trailing
 
 
-def apply_packing_plan(text, state):
-    """Fill planned durations when the headings match, then restore stripped lines."""
+def _section_name(key):
+    text = str(key or "").strip()
+    text = re.sub(r"^[【\[]\s*", "", text)
+    text = re.sub(r"\s*[】\]]$", "", text)
+    text = re.sub(r"\s*[:：]\s*$", "", text)
+    return text.strip()
+
+
+def _as_text(value):
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, bool) or value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        return str(value)
+    return ""
+
+
+def _section_dict(obj):
+    found = {}
+    if not isinstance(obj, dict):
+        return found
+    for key, value in obj.items():
+        name = _section_name(key)
+        if name not in H3_SECTIONS or name in found:
+            continue
+        text = _as_text(value)
+        if text:
+            found[name] = text
+    return found
+
+
+def _load_feed_json(value):
+    if isinstance(value, (dict, list)):
+        return value
+    raw = strip_fence(str(value or "")).strip()
+    if not raw:
+        return None
+    peeled = strip_fence(_LEADING_DURATION.sub("", raw, count=1).strip()).strip()
+    if not peeled or peeled[0] not in "{[":
+        return None
+    try:
+        data = json.loads(peeled)
+    except json.JSONDecodeError:
+        try:
+            data, _end = json.JSONDecoder().raw_decode(peeled)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(data, (dict, list)):
+        return data
+    return None
+
+
+def _heading_count(text):
+    raw = str(text or "")
+    return len(UNIT_HEAD_ANY.findall(raw)) + len(_LOOSE_UNIT_LINE.findall(raw))
+
+
+def _subject_count(text):
+    return len(_H3_SUBJECT_LINE.findall(str(text or "")))
+
+
+def _looks_like_many_units(text):
+    return _heading_count(text) >= 2 or _subject_count(text) >= 2
+
+
+def _marked_slices(raw, marks):
+    pieces = []
+    for index, match in enumerate(marks):
+        end = marks[index + 1].start() if index + 1 < len(marks) else len(raw)
+        piece = raw[match.start():end].strip()
+        if piece:
+            pieces.append(piece)
+    return pieces
+
+
+def _split_blocks(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    heads = list(UNIT_HEAD_ANY.finditer(raw))
+    if len(heads) < 2:
+        loose = list(_LOOSE_UNIT_LINE.finditer(raw))
+        if len(loose) >= 2 or (len(loose) == 1 and not heads):
+            heads = loose
+    if len(heads) >= 2 or (len(heads) == 1 and heads[0].start() == 0):
+        return _marked_slices(raw, heads)
+    marks = list(_H3_SUBJECT_LINE.finditer(raw))
+    if len(marks) >= 2 or (len(marks) == 1 and marks[0].start() == 0):
+        return _marked_slices(raw, marks)
+    if heads:
+        return _marked_slices(raw, heads)
+    if marks:
+        return _marked_slices(raw, marks)
+    if any(name in raw for name in H3_SECTIONS):
+        return [raw]
+    return []
+
+
+def _parse_one_block(block):
+    sections = {name: [] for name in H3_SECTIONS}
+    current = None
+    loose = []
+    duration = ""
+    for line in str(block or "").splitlines():
+        if UNIT_HEAD_ANY.match(line) or _LOOSE_UNIT_LINE.match(line):
+            continue
+        if current is None:
+            duration_line = _UNIT_DURATION_LINE.match(line)
+            if duration_line:
+                duration = duration_line.group(2).strip()
+                continue
+        field = _H3_FIELD_LINE.match(line)
+        if field:
+            current = field.group(1)
+            rest = field.group(2).strip()
+            if rest:
+                sections[current].append(rest)
+            continue
+        if current:
+            sections[current].append(line)
+        else:
+            loose.append(line)
+    bodies = {name: "\n".join(sections[name]).strip() for name in H3_SECTIONS}
+    extra = "\n".join(loose).strip()
+    if extra:
+        if bodies["detailed_description"]:
+            bodies["detailed_description"] = extra + "\n" + bodies["detailed_description"]
+        else:
+            bodies["detailed_description"] = extra
+    return {"duration": duration, "sections": bodies}
+
+
+def _merge_parent(unit, parent):
+    sections = {}
+    own = unit.get("sections") or {}
+    for name in H3_SECTIONS:
+        body = str(own.get(name) or "").strip()
+        if body:
+            sections[name] = body
+            continue
+        value = parent.get(name) if isinstance(parent, dict) else ""
+        text = str(value or "").strip()
+        if text and not _looks_like_many_units(text):
+            sections[name] = text
+        else:
+            sections[name] = ""
+    return {"duration": str(unit.get("duration") or "").strip(), "sections": sections}
+
+
+def _units_from_unit_text(text):
+    blocks = _split_blocks(text)
+    if not blocks:
+        return None
+    units = [_parse_one_block(block) for block in blocks]
+    kept = []
+    for unit in units:
+        if unit.get("duration") or any(str(body or "").strip() for body in unit["sections"].values()):
+            kept.append(unit)
+    return kept or None
+
+
+def _unit_from_sections(sections):
+    stored = {name: str(sections.get(name) or "").strip() for name in H3_SECTIONS}
+    return {"duration": "", "sections": stored}
+
+
+def _units_from_payload(data, depth=0):
+    """Packing units inside a JSON object, including colon-suffixed keys."""
+    if depth > 5 or data is None:
+        return None
+    if isinstance(data, list):
+        units = []
+        for item in data:
+            found = _units_from_payload(item, depth + 1)
+            if not found:
+                return None
+            units.extend(found)
+        return units or None
+    if isinstance(data, str):
+        loaded = _load_feed_json(data)
+        if isinstance(loaded, (dict, list)):
+            found = _units_from_payload(loaded, depth + 1)
+            if found:
+                return found
+        return _units_from_unit_text(data)
+    if not isinstance(data, dict):
+        return None
+    sections = _section_dict(data)
+    detailed = sections.get("detailed_description") or ""
+    if detailed:
+        nested = _units_from_unit_text(detailed)
+        if nested and len(nested) >= 2:
+            return [_merge_parent(unit, sections) for unit in nested]
+    best = None
+    for key in ("feed", "text", "markdown", "body", "content"):
+        if key not in data:
+            continue
+        found = _units_from_payload(data[key], depth + 1)
+        if found and (best is None or len(found) > len(best)):
+            best = found
+    if best and len(best) >= 2:
+        return best
+    segments = data.get("segments")
+    if isinstance(segments, list) and segments:
+        units = []
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            inner = segment.get("content") if isinstance(segment.get("content"), dict) else segment
+            found = _units_from_payload(inner, depth + 1)
+            if found:
+                units.extend(found)
+        if units:
+            return units
+    if best:
+        return best
+    if any(sections.values()):
+        return [_unit_from_sections(sections)]
+    return None
+
+
+def _peel_trailing_parent(units):
+    """Fields that show up only on the last slice belong to the outer shell."""
+    if len(units) < 2:
+        return units, {}
+    last = units[-1]
+    earlier = units[:-1]
+    stolen = {}
+    for name in H3_SECTIONS:
+        if name == "detailed_description":
+            continue
+        body = str(last["sections"].get(name) or "").strip()
+        if not body:
+            continue
+        if any(str(unit["sections"].get(name) or "").strip() for unit in earlier):
+            continue
+        stolen[name] = body
+        last["sections"][name] = ""
+    return units, stolen
+
+
+def _units_from_merged_markdown(text):
+    """One preamble of the six fields, with every unit inside detailed_description."""
+    raw = str(text or "").strip()
+    if not raw or raw[0] in "{[":
+        return None
+    heads = list(UNIT_HEAD_ANY.finditer(raw))
+    if len(heads) < 2 or heads[0].start() == 0:
+        return None
+    preamble = raw[: heads[0].start()]
+    if "subject_definitions" not in preamble and "detailed_description" not in preamble:
+        return None
+    parent = _parse_one_block(preamble)["sections"]
+    units = [_parse_one_block(block) for block in _marked_slices(raw, heads)]
+    units, stolen = _peel_trailing_parent(units)
+    for name, body in stolen.items():
+        if not str(parent.get(name) or "").strip():
+            parent[name] = body
+    if len(units) < 2:
+        return None
+    return [_merge_parent(unit, parent) for unit in units]
+
+
+def _shown_duration(token, runner):
+    text = str(token or "").strip()
+    match = re.match(r"^(\d+(?:\.\d+)?)(?:\s*[sS秒])?$", text)
+    if not match:
+        return text
+    return runner.format_seconds(float(match.group(1)))
+
+
+def _render_h3_units(units, groups):
     runner = importlib.import_module("end.stage_runner")
-    corrected = correct_unit_durations(text, packing_groups(state))
+    units = list(units or [])
+    if not units:
+        return ""
+    planned = None
+    if groups and len(groups) == len(units):
+        planned = [sum(group) for group in groups]
+    total = len(units)
+    blocks = []
+    for index, unit in enumerate(units, 1):
+        lines = [unit_heading(index, total)]
+        if planned is not None:
+            lines.append("duration: %s" % runner.format_seconds(planned[index - 1]))
+        elif unit.get("duration"):
+            shown = _shown_duration(unit.get("duration"), runner)
+            if shown:
+                lines.append("duration: %s" % shown)
+        sections = unit.get("sections") or {}
+        wrote = False
+        for name in H3_SECTIONS:
+            body = str(sections.get(name) or "").strip()
+            if not body:
+                continue
+            lines.append("%s:" % name)
+            lines.append(body)
+            wrote = True
+        if not wrote and not unit.get("duration"):
+            continue
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return ""
+    return "\n\n".join(blocks).strip() + "\n"
+
+
+def restore_h3_scaffold(text, state=None):
+    """Turn a JSON blob or a merged description back into per-unit H3 markdown.
+
+    A draft that is already markdown, including a prose unit, is left as written.
+    Empty section lines are not invented, so a missing field still fails H1.
+    Spoken lines are not invented here.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return raw
+    units = None
+    loaded = _load_feed_json(raw)
+    if loaded is not None:
+        units = _units_from_payload(loaded)
+    if not units:
+        units = _units_from_merged_markdown(raw)
+    if not units:
+        return raw
+    rendered = _render_h3_units(units, packing_groups(state or {}))
+    if not rendered.strip():
+        return raw
+    return rendered
+
+
+def apply_packing_plan(text, state):
+    """Unwrap an H3 blob, fill planned durations, then restore stripped lines."""
+    runner = importlib.import_module("end.stage_runner")
+    prepared = restore_h3_scaffold(text, state) if _h3_locked(state) else str(text or "")
+    corrected = correct_unit_durations(prepared, packing_groups(state))
     spoken = runner.storyboard_spoken_lines(_storyboard_text(state))
     return restore_spoken_lines(corrected, spoken)
 
 
 def generator_messages(state):
-    system = {"role": "system", "content": GENERATOR_SYSTEM}
+    system = {"role": "system", "content": _generator_system(state)}
     note = packing_plan_note(state)
     if int(state.get("attempt") or 0) < 1 and str(state.get("opening") or "").strip():
         user = state.get("opening")
@@ -346,7 +765,7 @@ def compile_feed_graph(complete, checker=None):
             }
         raw = produced.get("raw") or ""
         previous = str(state.get("draft") or "")
-        draft = apply_packing_plan(_patch_voiceover(extract_feed(raw, previous)), state)
+        draft = _patch_voiceover(apply_packing_plan(extract_feed(raw, previous), state))
         note = ""
         if previous.strip() and draft.strip() == previous.strip() and attempt > 1:
             note = "revision_kept_previous"

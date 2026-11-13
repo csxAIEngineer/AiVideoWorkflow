@@ -8,16 +8,23 @@ corrects it before the machine check.
 
 import json
 import re
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from Agents.workers.feed import (
+    H3_SECTIONS,
     apply_packing_plan,
     correct_unit_durations,
     generator_messages,
+    h3_packing_scaffold,
     packing_groups,
+    packing_plan_note,
     restore_spoken_lines,
     run_feed_loop,
 )
+from end.gates import H3_STRUCTURE_MARK, _H3_SECTIONS, h3_structure_report
 from end.stage_runner import feed_duration_failures, group_shot_durations
 
 SHOTS = [6, 5, 5, 6, 6, 4, 6, 7, 5, 6]
@@ -63,6 +70,17 @@ def _declared(text):
     for match in re.finditer(r"(?m)^duration:\s*(\d+(?:\.\d+)?)", text):
         found.append(float(match.group(1)))
     return found
+
+
+def _unit_chunks(text):
+    from end.product_names import UNIT_HEAD_ANY
+
+    heads = list(UNIT_HEAD_ANY.finditer(text))
+    chunks = []
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(text)
+        chunks.append(text[match.start():end].strip())
+    return chunks
 
 
 class PackingPlanTest(unittest.TestCase):
@@ -186,3 +204,209 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn("任务：建议修补", repair)
         self.assertIn("6+7=13", repair)
         self.assertIn(LINE, repair)
+
+    def test_h3_brief_locks_headings_durations_and_section_lines(self):
+        state = _state([LINE])
+        state["locks"] = {"model": "h3"}
+        note = packing_plan_note(state)
+        self.assertEqual(H3_SECTIONS, _H3_SECTIONS)
+        self.assertIn("6+5=11", note)
+        self.assertIn("【封装单元 1/5】镜头 1-2：6+5=11", note)
+        self.assertIn(LINE, note)
+        scaffold = h3_packing_scaffold(packing_groups(state))
+        self.assertIn(scaffold, note)
+        self.assertIn("不要输出 JSON", note)
+        chunks = scaffold.split("## 【封装单元 ")
+        self.assertEqual(len(chunks), 6)
+        for index, seconds in enumerate(PLANNED, 1):
+            block = "## 【封装单元 " + chunks[index]
+            self.assertTrue(block.startswith("## 【封装单元 %s/5】" % index))
+            self.assertIn("\nduration: %s\n" % seconds, block)
+            positions = [block.index("\n%s:" % name) for name in H3_SECTIONS]
+            self.assertEqual(positions, sorted(positions))
+            for name in H3_SECTIONS:
+                self.assertIn("\n%s:\n" % name, block + "\n")
+        messages = generator_messages(dict(state, attempt=0, source=state["storyboard"]))
+        self.assertIn("不要自己发明 Ref2VA 版式", messages[0]["content"])
+        self.assertIn("## 【封装单元 5/5】", messages[-1]["content"])
+        self.assertIn("\nnon_diegetic_music:", messages[-1]["content"])
+        seedance = dict(state, locks={"model": "2.5"})
+        seedance_note = packing_plan_note(seedance)
+        self.assertIn("6+5=11", seedance_note)
+        self.assertNotIn("subject_definitions:", seedance_note)
+        self.assertNotIn("不要输出 JSON", generator_messages(dict(seedance, attempt=0, source="分镜"))[0]["content"])
+
+    def test_json_blob_unwraps_nested_units_for_the_h3_check(self):
+        inner = []
+        for index in range(1, 6):
+            shot = "[Shot 1] beat %s." % index
+            if index == 1:
+                shot += " <d>[Chinese] 三天没洗，贴得跟浆糊似的。</d>"
+            inner.append("\n".join((
+                "## 【封装单元 %s/5】" % index,
+                "duration: 6",
+                "summary:",
+                "summary-body-%s" % index,
+                "detailed_description:",
+                shot,
+            )))
+        payload = {
+            "subject_definitions:": "<Subject 1> is a woman standing indoors.",
+            "summary:": "parent-summary",
+            "retention_analysis:": "<Subject 1>: fully_preserved for the woman.",
+            "detailed_description:": "\n\n".join(inner),
+            "overall_soundscape:": "Room tone.",
+            "non_diegetic_music:": "none.",
+        }
+        blob = "duration: 6\n" + json.dumps(payload, ensure_ascii=False)
+        state = _state([LINE, MISSING])
+        state["locks"] = {"model": "h3"}
+        restored = apply_packing_plan(blob, state)
+        self.assertFalse(restored.lstrip().startswith("{"))
+        self.assertNotIn('"subject_definitions:"', restored)
+        self.assertNotIn("parent-summary", restored)
+        self.assertNotIn("\nduration: 6\n", "\n" + restored)
+        self.assertEqual(_declared(restored), PLANNED)
+        chunks = _unit_chunks(restored)
+        self.assertEqual(len(chunks), 5)
+        for index, chunk in enumerate(chunks, 1):
+            self.assertTrue(chunk.startswith("## 【封装单元 %s/5】" % index))
+            positions = [chunk.index("\n%s:\n" % name) for name in H3_SECTIONS]
+            self.assertEqual(positions, sorted(positions))
+            self.assertIn("summary-body-%s" % index, chunk)
+            self.assertIn("beat %s." % index, chunk)
+            self.assertIn("<Subject 1> is a woman standing indoors.", chunk)
+            self.assertIn("Room tone.", chunk)
+            self.assertIn("fully_preserved", chunk)
+            for other in range(1, 6):
+                if other == index:
+                    continue
+                self.assertNotIn("summary-body-%s" % other, chunk)
+                self.assertNotIn("beat %s." % other, chunk)
+        self.assertIn("<d>[Chinese] %s</d>" % LINE, restored)
+        self.assertNotIn(MISSING, restored)
+        self.assertEqual(h3_structure_report(restored), "")
+        self.assertNotIn(H3_STRUCTURE_MARK, h3_structure_report(restored))
+        wrapped = json.dumps({"feed": blob}, ensure_ascii=False)
+        wrapped_restored = apply_packing_plan(wrapped, state)
+        self.assertEqual(_unit_chunks(wrapped_restored), chunks)
+        seedance = apply_packing_plan(blob, dict(state, locks={"model": "2.5"}))
+        self.assertIn('"subject_definitions:"', seedance)
+        self.assertEqual(_unit_chunks(seedance), [])
+        self.assertIn(LINE, seedance)
+
+    def test_merged_markdown_shell_becomes_five_units(self):
+        inner = "\n\n".join(
+            "\n".join((
+                "## 【封装单元 %s/5】" % index,
+                "duration: 6",
+                "[Shot 1] beat %s." % index,
+            ))
+            for index in range(1, 6)
+        )
+        shell = "\n".join((
+            "duration: 6",
+            "subject_definitions:",
+            "<Subject 1> is a woman standing indoors.",
+            "summary:",
+            "She waits by the door.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved for the woman.",
+            "detailed_description:",
+            inner,
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+        ))
+        state = _state([])
+        state["locks"] = {"model": "h3"}
+        restored = apply_packing_plan(shell, state)
+        chunks = _unit_chunks(restored)
+        self.assertEqual(len(chunks), 5, restored)
+        self.assertEqual(_declared(restored), PLANNED)
+        self.assertEqual(h3_structure_report(restored), "")
+        for index, chunk in enumerate(chunks, 1):
+            self.assertIn("beat %s." % index, chunk)
+            self.assertIn("\nsubject_definitions:\n", chunk)
+            self.assertIn("She waits by the door.", chunk)
+            self.assertIn("Room tone.", chunk)
+            self.assertIn("\nnon_diegetic_music:\n", chunk)
+            self.assertNotIn("## 【封装单元", chunk.split("\n", 1)[1])
+
+    def test_a_correct_six_section_draft_stays_and_still_reaches_validate_prompt(self):
+        body = "\n\n".join(
+            "\n".join((
+                "## 【封装单元 %s/5】" % index,
+                "duration: %s" % seconds,
+                "subject_definitions:",
+                "<Subject 1> is a woman standing indoors.",
+                "summary:",
+                "She waits in unit %s." % index,
+                "retention_analysis:",
+                "<Subject 1>: fully_preserved for the woman.",
+                "detailed_description:",
+                "[Shot 1] She stands in unit %s." % index,
+                "overall_soundscape:",
+                "Room tone.",
+                "non_diegetic_music:",
+                "none.",
+            ))
+            for index, seconds in enumerate(PLANNED, 1)
+        ) + "\n"
+        spoken = body.replace(
+            "[Shot 1] She stands in unit 1.",
+            "[Shot 1] She stands in unit 1. <d>[Chinese] %s</d>" % EXACT,
+            1,
+        )
+        state = _state([EXACT])
+        state["locks"] = {"model": "h3"}
+        self.assertEqual(h3_structure_report(spoken), "")
+        self.assertEqual(apply_packing_plan(spoken, state), spoken)
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(spoken, encoding="utf-8")
+        seen = []
+        real_run = __import__("end.gates", fromlist=["run_script"]).run_script
+
+        def spy(script, args, timeout=90):
+            seen.append(Path(script).name)
+            return real_run(script, args, timeout)
+
+        from end.gates import check_feed
+
+        with patch("end.gates.run_script", side_effect=spy):
+            _code, report = check_feed(path, "h3", "M1", "1")
+        self.assertEqual(seen, ["validate_prompt.py"])
+        self.assertNotIn(H3_STRUCTURE_MARK, report)
+        prose = "\n".join((
+            "## 【封装单元 1/1】",
+            "duration: 11",
+            "She waits in the doorway.",
+        ))
+        kept = apply_packing_plan(prose, {
+            "locks": {"model": "h3"},
+            "storyboard": "时长：11\n",
+            "shots": [{"duration": 11}],
+        })
+        self.assertEqual(kept, prose)
+        self.assertIn(H3_STRUCTURE_MARK, h3_structure_report(kept))
+
+    def test_duration_and_spoken_lines_still_restore_on_a_markdown_draft(self):
+        draft = _units(
+            [6, 6, 6, 6, 6],
+            [
+                "<d>[Chinese] 三天没洗，贴得跟浆糊似的。</d>",
+                "She waits.",
+                "She waits.",
+                "She waits.",
+                "She waits.",
+            ],
+        )
+        state = _state([LINE, MISSING])
+        state["locks"] = {"model": "h3"}
+        fixed = apply_packing_plan(draft, state)
+        self.assertEqual(_declared(fixed), PLANNED)
+        self.assertIn("<d>[Chinese] %s</d>" % LINE, fixed)
+        self.assertNotIn(MISSING, fixed)
+        self.assertIn("\ndetailed_description:\n", fixed)
+        self.assertNotIn("subject_definitions:", fixed)
