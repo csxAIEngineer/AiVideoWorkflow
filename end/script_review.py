@@ -57,6 +57,9 @@ _OWNERS = {
     "资产": "asset",
     "分镜": "storyboard",
     "投喂": "feed",
+    "封装": "feed",
+    "封装稿": "feed",
+    "提示词封装": "feed",
 }
 _FIELDS = ("location", "evidence", "category", "severity", "reason", "owner", "revision")
 _STORY = {"causal", "motivation", "continuity"}
@@ -190,7 +193,7 @@ def story_context(folder, brief=""):
 
 def _system(kind):
     common = "\n".join((
-        "你只做审查，不改写故事，不输出新剧本、新分镜或新投喂稿。",
+        "你只做审查，不改写故事，不输出新剧本、新分镜或新封装稿。",
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
         "格式：{\"issues\":[...]}。没有问题时 issues 是空数组。",
         "每条必须有 location、evidence、category、severity、reason、owner、revision。",

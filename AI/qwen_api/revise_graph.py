@@ -15,6 +15,7 @@ from langgraph.graph import END, START, StateGraph
 from AI.qwen_api.graph import TextState, prompt_debug_enabled
 from AI.qwen_api.suite_graph import _complete, _node_text, _object, _record, _retry_empty
 from AI.script import normalize_model
+from end.product_names import UNIT_HEAD_ANY, UNIT_NAME, UNIT_TOKEN
 
 _TOKENS = 8000
 _RETRY_TOKENS = 8000
@@ -31,10 +32,10 @@ _SYSTEM = {
         _JSON,
     )),
     "shot": "\n".join((
-        "按用户的感觉和修改建议，只改当前这一块：这一个镜头对应的投喂单元。不要整份改写 feed。",
+        "按用户的感觉和修改建议，只改当前这一块：这一个镜头对应的%s。不要整份改写 feed。" % UNIT_NAME,
         _KEEP,
         "不要写其他镜头。",
-        "保住已有的投喂单元标题行，让现有投喂识别还能认出这一单元。不要改镜号，不要再写第二个单元。",
+        "保住已有的%s标题行。旧稿标题里的投喂单元也不要改掉。不要改镜号，不要再写第二个单元。" % UNIT_NAME,
         _IDS,
         _JSON,
     )),
@@ -43,8 +44,9 @@ _GUARD_ERROR = "改写超出了当前这一块"
 # Revise briefs name the current block, then the suggestion. Unlabeled text is the whole block.
 _CURRENT_LABEL = {
     "asset": "当前图块：",
-    "shot": "当前投喂单元：",
+    "shot": "当前%s：" % UNIT_NAME,
 }
+_LEGACY_SHOT_LABEL = "当前投喂单元："
 _SUGGESTION_LABEL = "修改建议："
 _ASSET_ID = re.compile(
     r"(?<![A-Za-z0-9])(?P<latin>[APU])(?P<latin_n>\d+)(?![A-Za-z0-9])|图\s*(?P<figure>\d+)",
@@ -54,11 +56,11 @@ _SHOT_REF = re.compile(
     r"\[Shot\s*(?P<bracket>\d+)\]"
     r"|(?<!\[)(?<![A-Za-z])Shot\s*(?P<shot>\d+)(?!\d)"
     r"|(?<![A-Za-z0-9])S(?P<sid>\d{2,})(?![A-Za-z0-9])"
-    r"|投喂单元\s*(?P<unit_n>\d+)\s*/\s*(?P<unit_m>\d+)",
+    r"|%s\s*(?P<unit_n>\d+)\s*/\s*(?P<unit_m>\d+)" % UNIT_TOKEN,
     re.IGNORECASE,
 )
-# A markdown heading that names 投喂单元. Delivery splits units on this shape.
-_UNIT_HEAD = re.compile(r"(?m)^#{1,6}[^\n]*投喂单元[^\n]*$")
+# A markdown heading that names a packing unit. Delivery splits units on this shape.
+_UNIT_HEAD = UNIT_HEAD_ANY
 _FIGURE_HEAD = re.compile(r"(?m)^#{1,6}[^\n]*图\s*\d+[^\n]*$")
 
 
@@ -112,7 +114,7 @@ def build_block_graph(kind, model, kind_name="write"):
 
 def describe_block_graph(graph, kind):
     """Nodes and edges, read before compile."""
-    label = "图块" if kind == "asset" else "投喂单元"
+    label = "图块" if kind == "asset" else UNIT_NAME
     lines = [
         "StateGraph 修改建议",
         "状态 TextState",
@@ -177,6 +179,9 @@ def _source_text(kind, brief):
     text = str(brief or "")
     label = _CURRENT_LABEL.get(kind) or ""
     start = text.find(label)
+    if start < 0 and kind == "shot":
+        label = _LEGACY_SHOT_LABEL
+        start = text.find(label)
     if start < 0:
         return text
     start += len(label)

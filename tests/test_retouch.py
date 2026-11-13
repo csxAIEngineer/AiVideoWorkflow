@@ -278,7 +278,7 @@ class RetouchTest(unittest.TestCase):
         self.assertIn("第一镜", feed)
         self.assertIn("新的第二镜", feed)
         self.assertIn("第三镜", feed)
-        self.assertEqual(feed.count("投喂单元"), 3)
+        self.assertEqual(feed.count("封装单元") + feed.count("投喂单元"), 3)
         self.assertTrue((folder / "outputs" / "images" / "A1.png").is_file())
         self.assertTrue((folder / "outputs" / "images" / "A3.png").is_file())
         self.assertTrue((folder / "outputs" / "clips" / "S01.mp4").is_file())

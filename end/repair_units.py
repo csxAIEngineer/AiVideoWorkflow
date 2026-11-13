@@ -8,13 +8,15 @@ import os
 import re
 import tempfile
 
+from end.product_names import DRAFT_NAME, UNIT_TOKEN
+
 _ASSET_HEAD = re.compile(r"^(#{2,6})\s*\*{0,2}\s*图\s*(\d+)\b", re.M)
 _FIGURE_SUMMARY = re.compile(
     r"^\[([+x])\]\s*图\s*(\d+)\s+\S+\s+(PASS|FAIL)\s+(.*?)\s*$"
 )
 _BOARD_SEG = re.compile(r"^#{1,6}\s*\**\s*段\s*(\d+)\b[^\n]*", re.M)
 _FEED_HEAD = re.compile(
-    r"^#{1,6}[^\n]{0,80}?(?:投喂单元|段)\s*([0-9]+)\s*(?:[/／]\s*([0-9]+))?[^\n]*$",
+    r"^#{1,6}[^\n]{0,80}?(?:%s|段)\s*([0-9]+)\s*(?:[/／]\s*([0-9]+))?[^\n]*$" % UNIT_TOKEN,
     re.M,
 )
 _FEED_BRACKET = re.compile(
@@ -464,7 +466,7 @@ def _feed_units(report, text):
         ))
     if loose and not units:
         if not pieces and str(text or "").strip():
-            units.append(_unit("feed-rest", "投喂稿", "\n".join(loose), text, number=0))
+            units.append(_unit("feed-rest", DRAFT_NAME, "\n".join(loose), text, number=0))
         else:
             units.extend(_loose_piece_units("段", loose, pieces))
     return units

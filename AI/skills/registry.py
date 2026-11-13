@@ -4,6 +4,8 @@ import importlib.util
 import re
 from pathlib import Path
 
+from end.product_names import DRAFT_NAME, HEADING_RULE, UNIT_NAME
+
 SKILLS = Path(__file__).resolve().parent
 SUITE = SKILLS / "manju-laoli-skill"
 HOST = SKILLS / "short-drama-director" / "host"
@@ -458,13 +460,14 @@ _MERGE_SHAPE = {
     "feed": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
         _MARKDOWN_FIELDS,
-        "投喂稿放在 feed（字符串）。不要写 segments 对象，不要写接口 JSON。",
-        "每个投喂单元单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。",
+        "%s放在 feed（字符串）。不要写 segments 对象，不要写接口 JSON。" % DRAFT_NAME,
+        "%s。" % HEADING_RULE,
+        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。" % UNIT_NAME,
         "这一阶段用不到的字段不要写。",
     )),
     "qc": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-        "质检意见放在 text。不要改写剧本、资产、分镜或投喂稿。",
+        "质检意见放在 text。不要改写剧本、资产、分镜或%s。" % DRAFT_NAME,
     )),
     "board": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",

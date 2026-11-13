@@ -34,7 +34,7 @@ def revision_brief(node, current, suggestion):
 
 def block_brief(kind, current, suggestion):
     """User message for the one-block StateGraph."""
-    title = "当前图块：" if kind == "asset" else "当前投喂单元："
+    title = "当前图块：" if kind == "asset" else "当前封装单元："
     return "\n".join((
         title,
         str(current or "").strip(),

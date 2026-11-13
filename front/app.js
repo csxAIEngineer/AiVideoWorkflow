@@ -70,7 +70,7 @@ const CREW_FALLBACK = [
   { id: "asset", name: "资产" },
   { id: "storyboard", name: "分镜" },
   { id: "check", name: "机检" },
-  { id: "feed", name: "投喂" },
+  { id: "feed", name: "提示词封装" },
 ];
 const DEBUG_FILE_LABELS = {
   skill_pack: "Skill 规则",
@@ -150,7 +150,7 @@ function autoRun(project) {
   let text = key === "check" ? "正在机检…" : ({
     asset: "正在自动写资产…",
     storyboard: "正在自动写分镜…",
-    feed: "正在自动写投喂…",
+    feed: "正在自动写提示词封装…",
   })[key];
   if (attempt) text += "，自动返修第 " + attempt + " 次";
   return { key: key, text: text, attempt: attempt };
@@ -3798,7 +3798,7 @@ function syncRetouchPanel(project) {
   const note = document.querySelector("#retouch-advanced-note");
   if (note) {
     note.textContent = active.node === "shot"
-      ? "只读这一镜的提示词。不改整份投喂稿。"
+      ? "只读这一镜的提示词。不改整份封装稿。"
       : "手改原文在这张图卡片的「高级 / 调试」里，不是修片主路径。";
   }
   const prompt = document.querySelector("#retouch-prompt");

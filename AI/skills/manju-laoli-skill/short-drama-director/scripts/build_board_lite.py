@@ -93,7 +93,7 @@ def zone_of(title: str) -> str:
         return "publish"
     if re.search(r"出图提示词|P2\.5|P2c|资产出图", t):
         return "ap"
-    if re.search(r"投喂提示词|P4|分镜提示词", t):
+    if re.search(r"投喂提示词|提示词封装|封装稿|P4|分镜提示词", t):
         return "seg"
     if re.search(r"视听圣经|风格圣经", t):
         return "bible"
@@ -221,7 +221,7 @@ def parse_md(md_text: str) -> dict:
             section = m_sec.group(1).strip()
             seg, ap, sub_head = None, None, ""
             data["_head"] = None            # 表头映射不跨章节
-            if re.match(r"^【?投喂单元", section) or re.match(r"^段\s*\d", section):
+            if re.match(r"^【?(?:封装单元|投喂单元)", section) or re.match(r"^段\s*\d", section):
                 seg = {"no": len(data["segments"]) + 1, "name": section,
                        "raw": "", "shots": [], "fields": {}, "warnings": []}
                 data["segments"].append(seg)
@@ -806,7 +806,7 @@ def export_timeline_csv_text(data):
 def self_test():
     sample = (
         "# 测试剧目\n"
-        "## 【投喂单元 1/1 · 段1】\n"
+        "## 【封装单元 1/1 · 段1】\n"
         "```text\n"
         "【画幅风格】16:9 横屏\n"
         "【场景资产】@走廊\n"
@@ -821,6 +821,7 @@ def self_test():
     )
     d = parse_md(sample)
     assert len(d["segments"]) == 1 and len(d["segments"][0]["shots"]) == 2
+    assert len(parse_md(sample.replace("封装单元", "投喂单元"))["segments"]) == 1
     srt = export_srt_text(d)
     csv_txt = export_timeline_csv_text(d)
     html = build_html(d)
@@ -835,7 +836,7 @@ def self_test():
             assert abs(_got - _exp) < 1e-9, f"to_seconds({_tok!r}) = {_got}，应为 {_exp}"
     sample2 = (
         "# 半秒时码回归用例\n"
-        "## 【投喂单元 1/1 · 段1】\n"
+        "## 【封装单元 1/1 · 段1】\n"
         "```text\n"
         "【画幅风格】16:9 横屏\n"
         "【场景资产】@走廊\n"
@@ -865,7 +866,7 @@ def self_test():
     #   改为「总毫秒一次取整再拆分」后，4.9995s 必须结转为 00:00:05,000。
     _d3 = parse_md(
         "# SRT进位\n"
-        "## 【投喂单元 1/1 · 段1】\n"
+        "## 【封装单元 1/1 · 段1】\n"
         "```text\n"
         "【画幅风格】16:9 横屏\n"
         "【场景资产】@走廊\n"

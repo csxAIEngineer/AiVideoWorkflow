@@ -19,6 +19,26 @@ from end.gates import (
 )
 from end.intake import enrich_brief, load_intake, writer_upload_block
 from end.locks import lock_brief
+from end.product_names import (
+    DRAFT_NAME,
+    EMPTY_DRAFT,
+    EMPTY_DRAFT_REPLY,
+    FEED_PASS,
+    GATE_UNIT_HEAD,
+    HEADING_RULE,
+    MACHINE_FAIL,
+    MACHINE_GATE,
+    STAGE_NAME,
+    STORYBOARD_PASS,
+    UNIT_HEAD_LINE,
+    UNIT_NAME,
+    UNIT_RENUMBER,
+    has_unit_heading,
+    is_empty_draft,
+    mentions_unit,
+    report_says_empty_draft,
+    unit_heading,
+)
 from end.storyboard_contract import (
     STORYBOARD_INSTRUCTION,
     COMPLETE,
@@ -671,6 +691,8 @@ def assets_from_markdown(text, previous):
 _ORDER = ("script", "asset", "storyboard", "feed")
 _NAMED = (
     ("只要打戏", "combat"),
+    ("只要提示词封装", "feed"),
+    ("只要封装稿", "feed"),
     ("只要投喂稿", "feed"),
     ("只要投喂", "feed"),
     ("只要分镜", "storyboard"),
@@ -698,7 +720,7 @@ _GATE_LABEL = {
     "script": "剧本门",
     "asset": "资产门",
     "storyboard": "分镜门",
-    "feed": "投喂前",
+    "feed": STAGE_NAME,
 }
 _PERCENT = {"recon": 18, "script": 30, "asset": 46, "storyboard": 62, "feed": 76, "qc": 88}
 _ENGINE = {
@@ -746,21 +768,21 @@ _INSTRUCTION = {
         STORYBOARD_INSTRUCTION,
     )),
     "feed": "\n".join((
-        "只写投喂稿，放在 feed。feed 必须是字符串。",
-        "用 ## 【投喂单元 N/M】标题。每一段只写六段英文正文。",
+        "只写%s，放在 feed。feed 必须是字符串。" % DRAFT_NAME,
+        "%s。每一段只写六段英文正文。" % HEADING_RULE,
         "不要使用七段式栏名（【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】）。",
         "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
         "六段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
-        "每个投喂单元单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。",
+        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。" % UNIT_NAME,
         "每个 Subject 必须对应 assets.md 里已经有的图。没有关键帧资产就不要写 Picture。",
         "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
     )),
 }
 
 _FEED_SEEDANCE = "\n".join((
-    "只写投喂稿，放在 feed。feed 必须是字符串。",
-    "用 ## 【投喂单元 N/M】标题，下面写七段：【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】。",
-    "每个投喂单元单独计时，单段不超过该模型上限。",
+    "只写%s，放在 feed。feed 必须是字符串。" % DRAFT_NAME,
+    "%s，下面写七段：【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】。" % HEADING_RULE,
+    "每个%s单独计时，单段不超过该模型上限。" % UNIT_NAME,
     "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
 ))
 
@@ -980,17 +1002,14 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
     if passed and stage == "asset":
         return "资产门。机检已过。继续就进入分镜。", ["继续"]
     if passed and stage == "storyboard":
-        return "分镜门。继续之后才写投喂稿。", ["继续"]
+        return STORYBOARD_PASS, ["继续"]
     if passed and stage == "feed":
-        return "投喂前。闸门已过。继续就做投喂机检并交付。", ["继续"]
+        return FEED_PASS, ["继续"]
     tail = (report or "").strip()
     if len(tail) > 1200:
         tail = tail[-1200:]
-    if stage == "feed" and str(report or "").strip() == "投喂稿是空的":
-        return (
-            "投喂稿没写出来。根据建议修改会按分镜和资产再写一版。",
-            [ASSET_REVISE],
-        )
+    if stage == "feed" and is_empty_draft(report):
+        return EMPTY_DRAFT_REPLY, [ASSET_REVISE]
     if stage == "storyboard" and needs_human(report):
         if str(report or "").strip() == "分镜是空的" or not has_draft:
             reply = "分镜没写出来。预演稿不能当作分镜。"
@@ -1003,7 +1022,7 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
         return reply, options
     if stage in ("asset", "storyboard", "feed"):
         if stage == "feed":
-            reply = "投喂机检没过。根据建议修改会按下面这些项改。"
+            reply = MACHINE_FAIL
         else:
             reply = "机检没过。根据建议修改会按下面这些项改。"
         if tries:
@@ -1034,7 +1053,7 @@ def gate_result(stage, passed, report, pipeline, has_draft=False):
     label = _GATE_LABEL.get(stage, "停在门上")
     if not passed and str((pipeline or {}).get("check") or "") == "machine":
         phase = "gate_machine"
-        label = "投喂机检"
+        label = MACHINE_GATE
     stored = dict(pipeline or {})
     stored.update(
         {
@@ -1231,7 +1250,7 @@ def check_stage(folder, stage, locks, title=""):
             text = patch_h3_voiceover(text)
             _write_internal(folder, "feed.md", text)
         if not text.strip():
-            return False, "投喂稿是空的"
+            return False, EMPTY_DRAFT
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
@@ -1704,7 +1723,7 @@ _SHOT_RANGE = re.compile(
 _LEADING_SHOT_CLOCK = re.compile(
     r"(?m)^([ \t]*)(?:At|在)\s+(\d{1,2}:\d{2}\.\d{3})\s+(\[Shot\s+(\d+)\])[ \t]*"
 )
-_UNIT_HEAD_LINE = re.compile(r"(?m)^##[^\n]*投喂单元[^\n]*$")
+_UNIT_HEAD_LINE = UNIT_HEAD_LINE
 _DURATION_LINE = re.compile(r"(?m)^(?:duration|duration_seconds)\s*[:=]")
 
 
@@ -1848,8 +1867,7 @@ def _renumber_feed_heads(text):
     out = text
     for number, match in reversed(list(enumerate(matches, 1))):
         line = match.group(0)
-        replaced = re.sub(
-            r"(投喂单元\s*)\d+\s*/\s*\d+",
+        replaced = UNIT_RENUMBER.sub(
             lambda found, index=number, count=total: "%s%s/%s" % (found.group(1), index, count),
             line,
             count=1,
@@ -2102,7 +2120,7 @@ def feed_duration_failures(feed, storyboard="", shots=None, limit=15):
             for group in groups
         )
         errors.append(
-            "时长被压缩：分镜合计 %ss，投喂声明 %ss（%s）。"
+            "时长被压缩：分镜合计 %ss，封装声明 %ss（%s）。"
             "可以合并镜头，但总时长不得短于分镜，情节和对白不得压缩。"
             "单段故事板跨度超过 %ss 必须拆成下一单元，禁止钳到 %ss。"
             "应按这些单元写回时长：%s。"
@@ -2124,7 +2142,7 @@ def feed_duration_failures(feed, storyboard="", shots=None, limit=15):
     if _UNIT_HEAD_LINE.search(str(feed or "")):
         for spoken in storyboard_spoken_lines(storyboard):
             if spoken not in str(feed or ""):
-                errors.append("对白被压缩：投喂稿缺少「%s」。不要为了压时长删对白或旁白。" % spoken)
+                errors.append("对白被压缩：%s缺少「%s」。不要为了压时长删对白或旁白。" % (DRAFT_NAME, spoken))
     return errors
 
 
@@ -2281,7 +2299,7 @@ def _shot_groups(pieces):
     return groups
 
 
-_UNIT_HEAD = re.compile(r"(?m)^## 【投喂单元")
+_UNIT_HEAD = GATE_UNIT_HEAD
 _TAIL_MARK = re.compile(r"^(?:---\s*|强制禁止项)")
 
 
@@ -2451,7 +2469,7 @@ def _coerce_h3_field_heads(text):
 def _normalize_loose_h3(text):
     """Turn bare H3 field names into line-oriented sections the checker can see."""
     raw = _coerce_h3_field_heads(str(text or ""))
-    ready = bool(re.search(r"(?m)^subject_definitions\s*[:：]", raw)) and "## 【投喂单元" in raw
+    ready = bool(re.search(r"(?m)^subject_definitions\s*[:：]", raw)) and has_unit_heading(raw)
     sections = {} if ready else _loose_h3_sections(raw)
     bare = len(re.findall(
         r"(?m)^(?:%s)\s*$" % "|".join(_H3_SECTION_FIELDS),
@@ -2466,7 +2484,7 @@ def _normalize_loose_h3(text):
     total = len(groups)
     blocks = []
     for index, (origin, shots) in enumerate(groups, 1):
-        lines = ["## 【投喂单元 %s/%s · 段%s】" % (index, total, index)]
+        lines = [unit_heading(index, total, index)]
         last = origin
         shot_text = []
         for number, seconds, chunk in shots:
@@ -2494,7 +2512,7 @@ def _looks_like_feed_text(text):
     raw = str(text or "")
     return (
         "subject_definitions" in raw
-        or "投喂单元" in raw
+        or mentions_unit(raw)
         or "【时间轴分镜】" in raw
     )
 
@@ -2609,7 +2627,7 @@ def render_feed_text(value):
         content = segment.get("content")
         if not isinstance(content, dict):
             content = segment
-        lines = ["## 【投喂单元 %s/%s · 段%s】" % (index, total, index)]
+        lines = [unit_heading(index, total, index)]
         start, span = _feed_span(segment.get("time_range") or "")
         if span:
             shown = int(span) if span == int(span) else span
@@ -2762,7 +2780,7 @@ def _repair_task(stage):
         target = "资产图块"
         locked = "剧本"
     elif stage == "feed":
-        target = "投喂稿"
+        target = DRAFT_NAME
         locked = "剧本、资产和分镜"
     else:
         target = "这一阶段正文"
@@ -2778,7 +2796,7 @@ _REPAIR_FIELD = {
     "storyboard": "改完的分镜放在 storyboard，预演放在 previs。",
     "asset": "改完的图块放在 image_prompts。",
     "script": "改完的剧本放在 script。",
-    "feed": "改完的投喂稿放在 feed。",
+    "feed": "改完的%s放在 feed。" % DRAFT_NAME,
     "recon": "改完的情报卡放在 intel。",
 }
 
@@ -3294,7 +3312,7 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
     debug = bool((project.get("progress") or {}).get("debug_llm"))
     debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
     feed_file = _read(Path(folder) / "_内部_" / "feed.md")
-    empty_feed_report = stage == "feed" and not feed_file.strip() and "投喂稿是空的" in repair and "FAIL" not in repair
+    empty_feed_report = stage == "feed" and not feed_file.strip() and report_says_empty_draft(repair) and "FAIL" not in repair
     if empty_feed_report:
         repair = ""
         repair_choices = {}
@@ -3848,7 +3866,7 @@ def execute(project, folder, locks, write_model, load_pack):
             )
         ):
             pipeline["retry_write"] = True
-        if current == "feed" and not passed and str(report or "").strip() == "投喂稿是空的":
+        if current == "feed" and not passed and is_empty_draft(report):
             pipeline["retry_write"] = True
         if current == "storyboard" and not passed and needs_human(report):
             pipeline["repairs"] = 0

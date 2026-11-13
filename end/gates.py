@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from end.product_names import UNIT_TOKEN
+
 ROOT = Path(__file__).resolve().parents[1]
 SUITE = ROOT / "AI" / "skills" / "manju-laoli-skill"
 ASSET_CHECK = SUITE / "short-drama-director" / "scripts" / "check_asset_blocks.py"
@@ -13,7 +15,7 @@ VALIDATOR = SUITE / "short-drama-director" / "scripts" / "validate_prompt.py"
 P45_CHECK = SUITE / "sd-storyboard-engine" / "scripts" / "check_p45.py"
 BOARD = SUITE / "short-drama-director" / "scripts" / "build_board_lite.py"
 
-_SEGMENT = re.compile(r"(?:投喂单元|段)\s*(\d+)")
+_SEGMENT = re.compile(r"(?:%s|段)\s*(\d+)" % UNIT_TOKEN)
 _VERIFY = ("已核验", "与资产图册一致")
 
 

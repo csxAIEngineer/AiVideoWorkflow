@@ -2,7 +2,7 @@
 
 机检没过时先跑这里的规则，规则改不动才叫模型。规则改成功**不占用** 3 次模型返修（`repairs`）。规则自己记在 `rule_repairs`。
 
-资产、分镜、投喂，以及投喂机检（`check == machine`），都会先走这一层。
+资产、分镜、提示词封装，以及投喂机检（`check == machine`），都会先走这一层。
 
 ## 加一条规则
 
@@ -20,7 +20,7 @@
 
 ## 已有规则
 
-`feed-unit-headers`：报告里有「未找到投喂单元（## 【投喂单元 N/M】格式）」。稿子里已有 H3 或 Seedance 正文，但单元头缺失或不是 `## 【投喂单元 N/M】`。先 `render_feed_text`，再按 `align_feed_unit_headers` 的切分把每段头改成这个格式。
+`feed-unit-headers`：报告里有「未找到封装单元（## 【封装单元 N/M】格式）」。旧报告里的「未找到投喂单元」也算。稿子里已有 H3 或 Seedance 正文，但单元头缺失或不是 `## 【封装单元 N/M】`。先 `render_feed_text`，再按 `align_feed_unit_headers` 的切分把缺的头补成这个格式。旧稿里已经能切开的单元标题保持原词。
 
 `storyboard-p453-sixq`：报告里有「缺六问」。分镜门禁重新渲染的是预演故事板，不是 `分镜.md`。规则改 `context["folder"]/_内部_/previs.md`；这份是空的，就改目录或 `_内部_` 里第一份有字的 `*-预演故事板.md`。改完写回 `previs.md`，并覆盖找到的 `*-预演故事板.md` 副本。`分镜.md` 原样返回，用 `rule_touched` 记这次已修理，不占 `repairs`。读不到预演稿、或没有一格要改，则不动文件。
 

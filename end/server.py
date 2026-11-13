@@ -27,6 +27,15 @@ from urllib.parse import parse_qs, unquote, urlparse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from end.product_names import (
+    DRAFT_NAME,
+    EMPTY_DRAFT,
+    MACHINE_BLOCKED,
+    MACHINE_GATE,
+    STAGE_NAME,
+    report_says_empty_draft,
+)
+
 from end.ai_client import (
     default_model,
     job_message,
@@ -622,7 +631,7 @@ def _begin_writing(project):
             folder=folder,
             brief=project.get("brief") or "",
         )
-        label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
+        label = MACHINE_GATE if pipeline.get("action") == "finish" else "下一段"
         _enqueue_stage(project, pipeline, label)
         return public_view(read_project(project["id"]) or project)
     pipeline = initial_pipeline(detect_only(project.get("brief") or ""))
@@ -1273,7 +1282,7 @@ def answer_gate(project, text):
         "文件不存在" in report_text
         or "资产稿是空的" in report_text
         or "资产提示词是空的" in report_text
-        or "投喂稿是空的" in report_text
+        or report_says_empty_draft(report_text)
         or "预演故事板是空的" in report_text
     ):
         # Missing assets.md cannot be figure-repaired; rewrite the whole stage.
@@ -1373,7 +1382,7 @@ def answer_gate(project, text):
     pipeline, _action = accept_pipeline(pipeline, locks, folder=folder, brief=brief)
     if pipeline.get("action") == "wait" and pipeline.get("current") == "script":
         return _repeat_gate(project, pipeline.get("report") or "剧本还不能进入下游")
-    label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
+    label = MACHINE_GATE if pipeline.get("action") == "finish" else "下一段"
     _enqueue_stage(project, pipeline, label)
     return public_view(read_project(project["id"]) or project)
 
@@ -1593,7 +1602,7 @@ def _follow_auto_gate(project, folder, locks, outcome):
     pipeline, step = accept_pipeline(pipeline, locks, folder=folder, brief=project.get("brief") or "")
     if step == "wait":
         return None
-    label = "投喂机检" if step == "finish" else _AUTO_LABEL.get(pipeline.get("current") or "", "下一段")
+    label = MACHINE_GATE if step == "finish" else _AUTO_LABEL.get(pipeline.get("current") or "", "下一段")
     return _mark_writing(project, pipeline, label)
 
 
@@ -1815,7 +1824,7 @@ WRITE_STAGES = (
     ("P1", "写剧本", 20),
     ("P2", "资产提示词", 36),
     ("P3", "分镜", 52),
-    ("P4", "投喂稿", 68),
+    ("P4", STAGE_NAME, 68),
 )
 
 
@@ -1855,7 +1864,7 @@ def _write_prompt_files(project_id, spec, brief):
     folder.mkdir(parents=True, exist_ok=True)
     feed = feed_text(spec)
     if not feed:
-        raise RuntimeError("投喂稿是空的")
+        raise RuntimeError(EMPTY_DRAFT)
     (folder / "feed.md").write_text(feed + "\n", encoding="utf-8")
     (folder / "project.md").write_text(project_markdown(spec, brief), encoding="utf-8")
     return folder / "feed.md", folder / "project.md"
@@ -2103,7 +2112,7 @@ def _run_project(project_id, debug_llm=False):
                 "机检",
                 progress={"percent": 82, "phase": "writing", "message": "机检", "debug_llm": debug},
             )
-            repair_brief = _stage_brief("", "P4", "投喂稿", _carried_text(spec))
+            repair_brief = _stage_brief("", "P4", DRAFT_NAME, _carried_text(spec))
             repair_brief += "\n\n机检报告，按它重修一次，画幅和模型不要改：\n" + (report or "")[-8000:]
             pack = load_skill_pack(template, repair_brief, stage="P4")
             spec = _merge_spec(
@@ -2122,7 +2131,7 @@ def _run_project(project_id, debug_llm=False):
             feed_path, markdown_path = _write_prompt_files(project_id, spec, brief)
             code, report = validate_feed(feed_path, aspect)
             if code != 0:
-                raise RuntimeError("投喂稿机检未通过：%s" % ((report or "")[-800:]))
+                raise RuntimeError("%s：%s" % (MACHINE_BLOCKED, (report or "")[-800:]))
         remember(
             read_project(project_id) or project,
             "writing",
@@ -2205,7 +2214,7 @@ def fail_project(project_id, error):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
     progress = None
-    if "投喂稿机检未通过" in str(error):
+    if MACHINE_BLOCKED in str(error) or "投喂稿机检未通过" in str(error):
         progress = {"phase": "error", "message": "机检未通过"}
     job = (project.get("progress") or {}).get("retouching") or {}
     if job:
@@ -3334,7 +3343,7 @@ def _continue_accepted_script(project):
     if pipeline.get("action") == "wait" and pipeline.get("current") == "script":
         raise RevisionError(409, "这一稿还不能进入下一段", "continue_not_queued", True, True, True, False)
     stage = "finish" if pipeline.get("action") == "finish" else str(pipeline.get("current") or "")
-    label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
+    label = MACHINE_GATE if pipeline.get("action") == "finish" else "下一段"
     remember(
         project,
         "writing",

@@ -7,6 +7,8 @@ an encapsulated feed. Warnings alone do not fail a gate that has no FAIL.
 import importlib
 import re
 
+from end.product_names import EMPTY_DRAFT
+
 
 def _stage_runner():
     return importlib.import_module("end.stage_runner")
@@ -116,7 +118,7 @@ def check_feed_draft(text, state=None):
     gates = _gates()
     raw = str(text or "")
     if not raw.strip():
-        return report(["投喂稿是空的"])
+        return report([EMPTY_DRAFT])
     errors = []
     warnings = []
     mode = str((state.get("locks") or {}).get("material_mode") or "M1")

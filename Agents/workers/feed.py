@@ -30,15 +30,17 @@ from Agents.worker import (
 )
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
+from end.product_names import DRAFT_NAME, HEADING_RULE, UNIT_NAME, mentions_unit
 
 STAGE = "feed"
 TASK = "feed"
 
 GENERATOR_SYSTEM = "\n".join((
-    "你是提示词封装的生成员。你只写已经封装的投喂稿，放在 feed 字符串。",
+    "你是提示词封装的生成员。你只写%s，放在 feed 字符串。" % DRAFT_NAME,
     "投喂机检是这一环的硬门。审查员只交报告，不会替你改稿。",
     "H3 怎么写，以技能原文为准。不要跑在还没封装的剧本或分镜上。",
-    "可以把分镜合并进同一个投喂单元，但各单元 duration 相加不得短于分镜总时长。",
+    "%s。" % HEADING_RULE,
+    "可以把分镜合并进同一个%s，但各单元 duration 相加不得短于分镜总时长。" % UNIT_NAME,
     "对白和旁白必须原样留下。禁止为了压进 15 秒删情节或对白。",
     "一个单元若按分镜时长会超过 15 秒，拆成下一个单元，禁止把声明时长钳成 15。",
     "画外音的闭口证据必须紧跟这一单元里的画外音，不要接到出声对白后面，也不要接到文末。",
@@ -46,10 +48,10 @@ GENERATOR_SYSTEM = "\n".join((
 ))
 
 CRITIC_SYSTEM = "\n".join((
-    "你是投喂稿审查员。你只审查，只交报告。",
-    "禁止改写投喂稿，禁止输出 feed、draft、rewrite、text。",
+    "你是%s审查员。你只审查，只交报告。" % DRAFT_NAME,
+    "禁止改写%s，禁止输出 feed、draft、rewrite、text。" % DRAFT_NAME,
     "整段回复只能是一个 JSON 对象：",
-    '{"verdict":"accept 或 revise","issues":[{"target":"投喂单元","severity":"blocking 或 note","detail":"一句话"}]}',
+    '{"verdict":"accept 或 revise","issues":[{"target":"%s","severity":"blocking 或 note","detail":"一句话"}]}' % UNIT_NAME,
     "没有要改的地方时 verdict 为 accept，issues 为空数组。",
     "detail 只指出问题，不写替换后的单元。",
     "评判标准只是机检技能：validate_prompt 的 H1–H12，加上时长不得缩短、画外音闭口必须紧跟画外音。",
@@ -83,7 +85,7 @@ class FeedState(TypedDict, total=False):
 
 def _looks_like_feed(text):
     raw = str(text or "")
-    return "投喂单元" in raw or "subject_definitions" in raw or '"feed"' in raw
+    return mentions_unit(raw) or "subject_definitions" in raw or '"feed"' in raw
 
 
 def extract_feed(raw, previous=""):
@@ -97,7 +99,7 @@ def extract_feed(raw, previous=""):
                 break
     if not text:
         cleaned = strip_fence(raw)
-        if "投喂单元" in cleaned or "subject_definitions" in cleaned:
+        if mentions_unit(cleaned) or "subject_definitions" in cleaned:
             text = cleaned.strip()
     if not text:
         return str(previous or "")
@@ -169,7 +171,7 @@ def critic_messages(state):
         {"role": "system", "content": CRITIC_SYSTEM},
         {"role": "user", "content": critic_user(
             TASK,
-            "待审投喂稿：\n%s" % str(state.get("draft") or "").strip(),
+            "待审%s：\n%s" % (DRAFT_NAME, str(state.get("draft") or "").strip()),
         )},
     ]
 

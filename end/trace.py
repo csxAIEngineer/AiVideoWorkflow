@@ -9,20 +9,22 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from end.product_names import STAGE_NAME, WRITE_LABEL
+
 _NAME = {
     "vision": "读图",
     "recon": "对标",
     "script": "剧本",
     "asset": "资产",
     "storyboard": "分镜",
-    "feed": "投喂",
+    "feed": STAGE_NAME,
 }
 _WRITE_LABEL = {
     "recon": "写对标",
     "script": "写剧本",
     "asset": "写资产",
     "storyboard": "写分镜",
-    "feed": "写投喂稿",
+    "feed": WRITE_LABEL,
 }
 _FILES = {
     "recon": ("对标情报卡.md",),

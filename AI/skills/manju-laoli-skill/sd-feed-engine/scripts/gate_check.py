@@ -61,8 +61,11 @@ def img_gate_check(nfig, model, override=0):
 
 
 def parse_units(text):
-    """切分投喂单元，返回 [(标题, 代码框正文)]，兼容 ## 【投喂单元...】 / ### 段N... / ### 第N段... / 代码框内含【画幅风格】"""
-    unit_hdr_re = re.compile(r'^(?:##\s*【投喂单元[^\n]*|###+\s*(?:第\s*\d+\s*段|段\s*\d+)[^\n]*)', re.M)
+    """切分封装单元，返回 [(标题, 代码框正文)]，兼容 ## 【封装单元...】 / 旧稿投喂单元标题 / ### 段N... / ### 第N段... / 代码框内含【画幅风格】"""
+    unit_hdr_re = re.compile(
+        r'^(?:##\s*【(?:封装单元|投喂单元)[^\n]*|###+\s*(?:第\s*\d+\s*段|段\s*\d+)[^\n]*)',
+        re.M,
+    )
     matches = list(unit_hdr_re.finditer(text))
     units = []
     if matches:
@@ -244,13 +247,16 @@ def self_test():
         print(f'FAIL self-test: parse_shots 应解析 4 镜，实得 {len(sh)}（丢镜即本用例拦截目标）'); ok = 1
     elif abs(sh[2][2] - 10.5) > 1e-9 or abs(sh[3][1] - 10.5) > 1e-9:
         print(f'FAIL self-test: 00:10.5 应解为 10.5s（旧缺陷为 10.05s），实得 {sh[2][2]}'); ok = 1
-    unit_md = ('## 【投喂单元 1/1 · 段1】\n'
+    unit_md = ('## 【封装单元 1/1 · 段1】\n'
                '```text\n【画幅风格】16:9 横屏\n【时间轴分镜】\n'
                '00:00-00:04 [镜头1] 中景 · 平视 · 固定。甲开口。声音：无。台词：【甲：“你好。”】\n'
                '```\n')
     us = parse_units(unit_md)
     if len(us) != 1 or '【画幅风格】' not in us[0][1]:
-        print(f'FAIL self-test: parse_units 应切出 1 个投喂单元，实得 {len(us)}'); ok = 1
+        print(f'FAIL self-test: parse_units 应切出 1 个封装单元，实得 {len(us)}'); ok = 1
+    legacy = parse_units(unit_md.replace('封装单元', '投喂单元'))
+    if len(legacy) != 1:
+        print(f'FAIL self-test: 旧标题仍应切开，实得 {len(legacy)}'); ok = 1
     # ★2026-10-17 闸门5 分档双向用例（原实现写死 >9，两向都会判错）
     #   误杀向：2.5 挂 12 张，文档允许 30 → 必须判合规（旧实现 FAIL）
     if img_gate_check(12, '2.5')[0]:
@@ -297,7 +303,7 @@ def main():
         text = source.read()
     units = parse_units(text)
     if not units:
-        print('未找到投喂单元（## 【投喂单元 N/M】格式）'); sys.exit(2)
+        print('未找到封装单元（## 【封装单元 N/M】格式）'); sys.exit(2)
 
     print(f'=== 六道闸门校验 · {os.path.basename(a.path)} · model={a.model} ===')
 

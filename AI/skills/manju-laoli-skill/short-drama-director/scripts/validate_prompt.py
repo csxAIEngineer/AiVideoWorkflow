@@ -773,7 +773,7 @@ def validate_h3(text, mode="new"):
                       "正文语言见下，2026-10-02 起一律英文）")
     _no_d = re.sub(r"<d>.*?</d>", "", text, flags=re.S)          # 台词/歌词保原语言，先摘除
     _no_d = re.sub(r"[\"“][^\"”\n]{0,60}[\"”]", "", _no_d)       # 双引号内画内文字保原语言，摘除
-    _no_d = re.sub(r"(?m)^[ \t]{0,3}#{1,6}(?:[ \t][^\n]*)?$", "", _no_d)  # ATX 标题（## 【投喂单元】）不算正文
+    _no_d = re.sub(r"(?m)^[ \t]{0,3}#{1,6}(?:[ \t][^\n]*)?$", "", _no_d)  # ATX 标题（## 【封装单元】）不算正文
     if is_ref and order:                                          # 仅审 H3 原生格式稿（七段式旧稿不套用）
         if H3_CJK.search(_no_d):
             warns.append("H4 正文出现中文——官方 base-en/ref-en 明文「Write all six rewrite sections in English」，"
@@ -4442,7 +4442,7 @@ def _self_test():
         print("FAIL self-test: H3 中文正文应报 H4 WARN（官方要求六段正文英文）", warns); ok = 0
     # H4 标题中文不算正文；<d> 与引号画内文字仍不算。正文里的中文照报。
     _h4_title = (
-        "## 【投喂单元 1/1】\n"
+        "## 【封装单元 1/1】\n"
         "subject_definitions:\n<Subject 1> is a woman.\n\n"
         "summary:\nShe waits.\n\n"
         "retention_analysis:\n<Subject 1>: fully_preserved - stays.\n\n"
@@ -5480,7 +5480,7 @@ def _looks_like_feed(text):
         return True
     if re.search(r"(?m)^【\s*subject_definitions\s*】", text):
         return True
-    if re.search(r"(?m)^##\s*【投喂单元", text):
+    if re.search(r"(?m)^##\s*【(?:封装单元|投喂单元)", text):
         return True
     return False
 
@@ -5510,7 +5510,7 @@ def _segment_is_feed(body):
 
 
 SEG_HEAD_RE = re.compile(
-    r"^#{1,6}[^\n]{0,80}?(?:投喂单元|段)\s*([0-9]+)\s*(?:[/／]\s*([0-9]+))?[^\n]*$",
+    r"^#{1,6}[^\n]{0,80}?(?:封装单元|投喂单元|段)\s*([0-9]+)\s*(?:[/／]\s*([0-9]+))?[^\n]*$",
     re.M,
 )
 SEG_BRACKET_RE = re.compile(r"^[ \t]*【?[ \t]*段[ \t]*([0-9]+)[ \t]*(?:[/／][ \t]*([0-9]+))?[ \t]*】?[ \t]*$", re.M)
@@ -5519,7 +5519,7 @@ SEG_BRACKET_RE = re.compile(r"^[ \t]*【?[ \t]*段[ \t]*([0-9]+)[ \t]*(?:[/／][
 def _split_feed_segments(text):
     """按「段」标题切分多段投喂稿。返回 [(标签, 正文), ...]；不足 2 段返回 []。
 
-    只认「段 + 数字」或「投喂单元 N/M」标题（`### 段1/3`、`## 【投喂单元 1/4】`）。
+    只认「段 + 数字」或封装单元 N/M 标题（`### 段1/3`、`## 【封装单元 1/4】`）。旧稿的投喂单元标题同样切开。
     不认正文里出现的「段」字。H3 每一段是一次独立生成，不能把各段切点收成一条轴。
     """
     marks = [(m.start(), m.group(1)) for m in SEG_HEAD_RE.finditer(text)]
@@ -5563,7 +5563,7 @@ def finalize_checks(text, issues, warns, *, delivery=None, contract=False,
     _asset_pack = re.search(r"资产提示词|角色四格板|场景母版|九宫格提示词", text)
     _feed_units = text.count("【画幅风格】")
     # H3 六段式没有【画幅风格】。带 ## 且超过 1500 字时仍是投喂单元，不是整包项目。
-    _h3_feed = "subject_definitions" in text and "投喂单元" in text
+    _h3_feed = "subject_definitions" in text and ("封装单元" in text or "投喂单元" in text)
     _is_feed_unit = (not _asset_pack) and (_feed_units >= 2 or _h3_feed)
     project_doc = (bool(re.search(r"^#{1,3}\s+", text, re.M)) and len(text) > 1500
                    and not _is_feed_unit)

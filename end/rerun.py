@@ -11,6 +11,7 @@ from pathlib import Path
 from end.prompt_gate import align_feed_unit_headers, delivery_units
 from end.repair_units import asset_pieces
 from end.render_loop import invalidate_steps, load_run_state, thread_is_current
+from end.product_names import REWRITE_LABEL, mentions_unit, unit_heading
 from end.stage_runner import markdown_from_asset_items, stages_for
 from end.trace import clear_downstream, write_internal
 from end.workflow_from_spec import _safe_id, collect_steps
@@ -21,7 +22,7 @@ _RENDER_PHASES = ("images", "videos", "join", "audio", "subtitles", "done", "ima
 _RESUME_LABEL = {
     "asset": "重写资产",
     "storyboard": "重写分镜",
-    "feed": "重写投喂稿",
+    "feed": REWRITE_LABEL,
     "script": "重写剧本",
     "recon": "重写对标",
 }
@@ -317,9 +318,9 @@ def _ensure_unit(text, index, total):
     """Keep a replaced block visible to delivery_units, which drops text before the first head."""
     body = str(text or "").strip()
     first = body.splitlines()[0].strip() if body else ""
-    if first.startswith("#") and "投喂单元" in first:
+    if first.startswith("#") and mentions_unit(first):
         return body
-    return "## 【投喂单元 %s/%s】\n%s" % (index + 1, total, body)
+    return "%s\n%s" % (unit_heading(index + 1, total), body)
 
 
 def _shots_with_prompts(stored, shots, prompts, edited):

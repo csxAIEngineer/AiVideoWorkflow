@@ -327,14 +327,14 @@ class DirectorDbTest(unittest.TestCase):
                     "current": "feed",
                     "action": "wait",
                     "passed": False,
-                    "report": "投喂稿是空的",
-                    "repair": "投喂稿是空的",
+                    "report": "封装稿是空的",
+                    "repair": "封装稿是空的",
                     "check": "",
                 },
                 "question": {
                     "id": "feed",
                     "kind": "single",
-                    "reply": "投喂机检没过。根据建议修改会按下面这些项改。\n投喂稿是空的",
+                    "reply": "投喂机检没过。根据建议修改会按下面这些项改。\n封装稿是空的",
                     "options": ["根据建议修改"],
                     "cards": [],
                 },
@@ -1096,7 +1096,7 @@ class MachineAndMountTest(unittest.TestCase):
         kept = execute(project, folder, _base_locks(), writer, lambda *_a, **_k: "pack")
         stored = (internal / "feed.md").read_text(encoding="utf-8")
         self.assertIn("subject_definitions", stored)
-        self.assertNotEqual(kept["progress"]["pipeline"].get("report"), "投喂稿是空的")
+        self.assertNotEqual(kept["progress"]["pipeline"].get("report"), "封装稿是空的")
 
         empty_dir = Path(tempfile.mkdtemp())
         empty_internal = empty_dir / "_内部_"
@@ -1110,7 +1110,7 @@ class MachineAndMountTest(unittest.TestCase):
             lambda *_a, **_k: {},
             lambda *_a, **_k: "pack",
         )
-        self.assertEqual(empty["progress"]["pipeline"]["report"], "投喂稿是空的")
+        self.assertEqual(empty["progress"]["pipeline"]["report"], "封装稿是空的")
         self.assertTrue(empty["progress"]["pipeline"]["retry_write"])
         self.assertIn("再写一版", empty["message"]["content"])
         self.assertFalse((empty_internal / "feed.md").is_file())
@@ -1131,8 +1131,8 @@ class MachineAndMountTest(unittest.TestCase):
                     "current": "feed",
                     "accepted": ["script", "asset", "storyboard"],
                     "passed": False,
-                    "report": "投喂稿是空的",
-                    "repair": "投喂稿是空的",
+                    "report": "封装稿是空的",
+                    "repair": "封装稿是空的",
                     "only": "",
                 }
             },
@@ -1496,7 +1496,7 @@ class MachineAndMountTest(unittest.TestCase):
         }
         text = render_feed_text(payload)
         self.assertEqual(render_feed_text(str(payload)), text)
-        self.assertTrue(text.startswith("## 【投喂单元 1/1 · 段1】"))
+        self.assertTrue(text.startswith("## 【封装单元 1/1 · 段1】"))
         self.assertIn("\nsubject_definitions:\n", text)
         self.assertIn("duration: 15", text)
         self.assertTrue(feed_uses_h3(text, "h3"))
@@ -1527,7 +1527,7 @@ class MachineAndMountTest(unittest.TestCase):
         loose = render_feed_text(bare)
         self.assertIn("\nsubject_definitions:\n", loose)
         self.assertNotIn("[Shot 1] At", loose)
-        self.assertEqual(loose.count("## 【投喂单元"), 2)
+        self.assertEqual(loose.count("## 【封装单元"), 2)
         loose_path = Path(tempfile.mkdtemp()) / "feed.md"
         loose_path.write_text(loose, encoding="utf-8")
         _loose_code, loose_report = check_feed(loose_path, "h3", "M2", "1")
@@ -1875,7 +1875,7 @@ class PageTest(unittest.TestCase):
         self.assertIn("active_role", app)
         self.assertIn("正在自动写资产…", app)
         self.assertIn("正在自动写分镜…", app)
-        self.assertIn("正在自动写投喂…", app)
+        self.assertIn("正在自动写提示词封装…", app)
         self.assertIn("正在机检…", app)
         self.assertIn("自动返修第 ", app)
         self.assertIn("继续才进入资产", app)

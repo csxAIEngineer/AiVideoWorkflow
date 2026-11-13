@@ -1,11 +1,13 @@
 """Who is working, derived from phase, stage, and pipeline. Not stored."""
 
+from end.product_names import MACHINE_GATE, STAGE_NAME
+
 CREW = (
     {"id": "script", "name": "编剧"},
     {"id": "asset", "name": "资产"},
     {"id": "storyboard", "name": "分镜"},
     {"id": "check", "name": "机检"},
-    {"id": "feed", "name": "投喂"},
+    {"id": "feed", "name": STAGE_NAME},
 )
 
 _PHASE_ROLE = {
@@ -99,9 +101,9 @@ def _message_is_check(message):
     text = str(message or "").strip()
     if not text:
         return False
-    if text in ("机检", "投喂机检", "独立质检"):
+    if text in ("机检", MACHINE_GATE, "独立质检"):
         return True
-    if "投喂机检" in text:
+    if MACHINE_GATE in text:
         return True
     if text.startswith("机检") and "已过" not in text:
         return True

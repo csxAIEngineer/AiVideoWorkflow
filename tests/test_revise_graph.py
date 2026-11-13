@@ -18,7 +18,7 @@ from AI.qwen_api.revise_graph import block_system, build_block_graph, describe_b
 
 def _brief(kind, current, suggestion):
     """Same labels the revise user message uses: current block, then 修改建议."""
-    title = "当前图块：" if kind == "asset" else "当前投喂单元："
+    title = "当前图块：" if kind == "asset" else "当前封装单元："
     return "\n".join((
         title,
         str(current or "").strip(),
@@ -77,11 +77,11 @@ class ReviseGraphSystemTest(unittest.TestCase):
             self.assertIn("改完的这一块放在 text。", text)
         self.assertIn("这一张图", asset)
         self.assertIn("不要写其他图", asset)
-        self.assertNotIn("投喂单元标题", asset)
-        self.assertIn("这一个镜头对应的投喂单元", shot)
+        self.assertNotIn("封装单元标题", asset)
+        self.assertIn("这一个镜头对应的封装单元", shot)
         self.assertIn("不要整份改写 feed", shot)
         self.assertIn("不要写其他镜头", shot)
-        self.assertIn("保住已有的投喂单元标题行", shot)
+        self.assertIn("保住已有的封装单元标题行", shot)
         self.assertIn("不要改镜号，不要再写第二个单元。", shot)
 
     def test_script_and_storyboard_stay_closed(self):
@@ -94,7 +94,7 @@ class ReviseGraphSystemTest(unittest.TestCase):
         asset = describe_block_graph(build_block_graph("asset", model), "asset")
         shot = describe_block_graph(build_block_graph("shot", model), "shot")
         self.assertIn("revise  图块", asset)
-        self.assertIn("revise  投喂单元", shot)
+        self.assertIn("revise  封装单元", shot)
         for text in (asset, shot):
             self.assertIn("merge  汇总", text)
             self.assertIn("START -> revise", text)
