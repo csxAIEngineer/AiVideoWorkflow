@@ -454,8 +454,11 @@ class SkillPackPromptTest(unittest.TestCase):
             if role in ("generator", "director"):
                 seen.append(messages[0]["content"])
                 return json.dumps({"image_prompts": PASS_ROLE}, ensure_ascii=False)
-            self.assertIn("SKILL-SENTINEL-只在技能里", messages[-1]["content"])
-            self.assertNotIn(SENTINEL, messages[-1]["content"])
+            user = messages[-1]["content"]
+            self.assertNotIn("SKILL-SENTINEL-只在技能里", user)
+            self.assertIn("check_asset_blocks.py", user)
+            self.assertIn("A1 ", user)
+            self.assertNotIn(SENTINEL, user)
             return json.dumps({
                 "verdict": "revise",
                 "image_prompts": SENTINEL,

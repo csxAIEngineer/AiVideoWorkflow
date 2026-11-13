@@ -26,9 +26,9 @@ from Agents.worker import (
     result_from_state,
     revision_brief,
     run_compiled,
-    skill_reference,
     strip_fence,
 )
+from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
 
 STAGE = "feed"
@@ -52,7 +52,8 @@ CRITIC_SYSTEM = "\n".join((
     '{"verdict":"accept 或 revise","issues":[{"target":"投喂单元","severity":"blocking 或 note","detail":"一句话"}]}',
     "没有要改的地方时 verdict 为 accept，issues 为空数组。",
     "detail 只指出问题，不写替换后的单元。",
-    "你不是机检。H3 字段、时长有没有被缩短、画外音闭口，由机检判定。",
+    "评判标准只是机检技能：validate_prompt 的 H1–H12，加上时长不得缩短、画外音闭口必须紧跟画外音。",
+    "不要用写作技能审查。机检会在你之后再跑。单独的 WARN 不算失败。",
 ))
 
 
@@ -164,13 +165,12 @@ def generator_messages(state):
 
 
 def critic_messages(state):
-    sections = ["待审投喂稿：\n%s" % str(state.get("draft") or "").strip()]
-    reference = skill_reference(state.get("skill_pack"))
-    if reference:
-        sections.insert(0, reference)
     return [
         {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": "\n\n".join(sections)},
+        {"role": "user", "content": critic_user(
+            TASK,
+            "待审投喂稿：\n%s" % str(state.get("draft") or "").strip(),
+        )},
     ]
 
 

@@ -37,7 +37,8 @@ from Agents.machine_check import (
     load_checker,
 )
 from Agents.text import complete_text, resolved_model
-from Agents.worker import missing_skill_state, resolve_skill_pack, skill_reference
+from Agents.worker import missing_skill_state, resolve_skill_pack
+from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
 
 STAGE = "P2"
@@ -80,8 +81,8 @@ CRITIC_SYSTEM = "\n".join((
     '{"verdict":"accept 或 revise","issues":[{"target":"图N","severity":"blocking 或 note","detail":"一句话"}]}',
     "没有要改的地方时 verdict 为 accept，issues 为空数组。",
     "detail 只指出问题，不写替换后的整块正文。",
-    "你不是机检脚本。机检由 check_asset_blocks.py 在你之后判定。",
-    "对照技能原文审查。看到就写成 issue。不要自己改。",
+    "评判标准只是机检技能里的 check_asset_blocks.py（A1–A8）。不要用写作技能原文。",
+    "机检脚本会在你之后再跑。你只交报告。WARN 不算失败。",
 ))
 
 
@@ -403,13 +404,10 @@ def critic_messages(state):
     listed = format_asset_list(state.get("asset_list"))
     if listed:
         sections.append("资产清单：\n%s" % listed)
-    reference = skill_reference(state.get("skill_pack"))
-    if reference:
-        sections.append(reference)
     sections.append("待审稿：\n%s" % str(state.get("draft") or "").strip())
     return [
         {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": "\n\n".join(sections)},
+        {"role": "user", "content": critic_user(TASK, *sections)},
     ]
 
 

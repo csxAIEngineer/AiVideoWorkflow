@@ -24,9 +24,9 @@ from Agents.worker import (
     result_from_state,
     revision_brief,
     run_compiled,
-    skill_reference,
     strip_fence,
 )
+from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
 
 STAGE = "script"
@@ -48,8 +48,8 @@ CRITIC_SYSTEM = "\n".join((
     '{"verdict":"accept 或 revise","issues":[{"target":"位置","severity":"blocking 或 note","detail":"一句话"}]}',
     "没有要改的地方时 verdict 为 accept，issues 为空数组。",
     "detail 只指出问题，不写替换后的正文。",
-    "你不是机检。空稿、未核验声称和编造上传编号由机检判定。",
-    "不要用文风意见挡住机检已经通过的稿。",
+    "评判标准只是机检技能：空稿、没看见图却写已核验、编造的上传图编号。",
+    "不要用文风或写作技能审查。机检会在你之后再跑。你只交报告。",
 ))
 
 
@@ -135,16 +135,13 @@ def generator_messages(state):
 
 
 def critic_messages(state):
-    sections = [
-        "阶段：剧本审查。只交 JSON 报告，不要改稿。",
-    ]
-    reference = skill_reference(state.get("skill_pack"))
-    if reference:
-        sections.append(reference)
-    sections.append("待审稿：\n%s" % str(state.get("draft") or "").strip())
     return [
         {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": "\n\n".join(sections)},
+        {"role": "user", "content": critic_user(
+            TASK,
+            "阶段：剧本审查。只交 JSON 报告，不要改稿。",
+            "待审稿：\n%s" % str(state.get("draft") or "").strip(),
+        )},
     ]
 
 
