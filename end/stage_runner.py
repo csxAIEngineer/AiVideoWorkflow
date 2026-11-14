@@ -691,7 +691,7 @@ def assets_from_markdown(text, previous):
     return items
 
 
-_ORDER = ("script", "asset", "storyboard", "feed")
+_ORDER = ("script", "asset", "storyboard", "seam", "feed")
 _NAMED = (
     ("只要打戏", "combat"),
     ("只要提示词封装", "feed"),
@@ -709,6 +709,7 @@ _STAGE_CODE = {
     "script": "P1",
     "asset": "P2",
     "storyboard": "P3",
+    "seam": "P3",
     "feed": "P4",
 }
 _GATE_PHASE = {
@@ -716,6 +717,7 @@ _GATE_PHASE = {
     "script": "gate_script",
     "asset": "gate_asset",
     "storyboard": "gate_storyboard",
+    "seam": "gate_seam",
     "feed": "gate_feed",
 }
 _GATE_LABEL = {
@@ -723,9 +725,10 @@ _GATE_LABEL = {
     "script": "剧本门",
     "asset": "资产门",
     "storyboard": "分镜门",
+    "seam": "分镜衔接",
     "feed": STAGE_NAME,
 }
-_PERCENT = {"recon": 18, "script": 30, "asset": 46, "storyboard": 62, "feed": 76, "qc": 88}
+_PERCENT = {"recon": 18, "script": 30, "asset": 46, "storyboard": 62, "seam": 69, "feed": 76, "qc": 88}
 _ENGINE = {
     "script": "sd-script-engine/",
     "asset": "sd-asset-engine/",
@@ -742,12 +745,14 @@ _DRAFT_FILE = {
     "script": "剧本.md",
     "asset": "assets.md",
     "storyboard": "分镜.md",
+    "seam": "分镜衔接.json",
     "feed": "feed.md",
 }
 _TASK_LINE = {
     "script": "任务：剧本",
     "asset": "任务：资产锁定",
     "storyboard": "任务：分镜",
+    "seam": "任务：分镜衔接",
     "feed": "任务：提示词封装",
 }
 _SCRIPT_CHAIN = {
@@ -770,6 +775,7 @@ _INSTRUCTION = {
         "有打斗时招式只来自已挂载的打戏原文。",
         STORYBOARD_INSTRUCTION,
     )),
+    "seam": "只写分镜衔接账本，放在 seam_ledger。不要改剧本，不要改分镜正文。",
     "feed": "\n".join((
         "只写%s，放在 feed。feed 必须是字符串。" % DRAFT_NAME,
         "%s。每一段只写四段英文正文。" % HEADING_RULE,
@@ -824,6 +830,9 @@ def stages_for(locks, only):
 
 def next_pending(stages, accepted):
     done = set(accepted or [])
+    # Projects that already accepted 提示词封装 started before 分镜衔接 existed.
+    if "feed" in done:
+        done.add("seam")
     for name in stages or []:
         if name not in done:
             return name
@@ -963,6 +972,12 @@ def store_stage(folder, stage, result):
                 result = dict(result)
                 result["previs"] = previs
                 _write_internal(folder, "previs.md", previs)
+    elif stage == "seam":
+        payload = {
+            "seam_ledger": result.get("seam_ledger") if isinstance(result.get("seam_ledger"), dict) else {},
+            "shots": result.get("shots") if isinstance(result.get("shots"), list) else [],
+        }
+        _write_internal(folder, "分镜衔接.json", json.dumps(payload, ensure_ascii=False, indent=2))
     elif stage == "feed":
         from end.repair_rules.feed_unit_headers import recover_feed_units
 
@@ -1112,11 +1127,11 @@ def auto_gate_action(outcome):
         if needs_retry and not pipeline.get("worker_exhausted") and retries < REPAIR_LIMIT - 1:
             return "retry_write"
         return "stop"
-    if current not in ("recon", "asset", "storyboard", "feed"):
+    if current not in ("recon", "asset", "storyboard", "seam", "feed"):
         return "stop"
     if current == "storyboard" and not passed and needs_human(pipeline.get("report")):
         return "stop"
-    if pipeline.get("worker_exhausted") and current in ("storyboard", "feed") and not passed:
+    if pipeline.get("worker_exhausted") and current in ("storyboard", "seam", "feed") and not passed:
         return "stop"
     if needs_retry:
         if retries >= REPAIR_LIMIT - 1:
@@ -1155,6 +1170,14 @@ def _spec_patch(stage, result, previous):
             if result.get("previs"):
                 merged["previs"] = coerce_previs(result.get("previs") or "")
             merged = apply_storyboard_shots(merged)
+        from end.seam_ledger import strip_seam
+
+        merged = strip_seam(merged)
+    elif stage == "seam":
+        if isinstance(result.get("seam_ledger"), dict):
+            merged["seam_ledger"] = result.get("seam_ledger")
+        if isinstance(result.get("shots"), list) and result.get("shots"):
+            merged["shots"] = result.get("shots")
     elif stage == "feed":
         if result.get("feed"):
             merged["feed"] = result.get("feed")
@@ -1243,6 +1266,25 @@ def check_stage(folder, stage, locks, title=""):
         if hold:
             return False, hold
         return True, ""
+    if stage == "seam":
+        path = internal / "分镜衔接.json"
+        text = _read(path)
+        if not text.strip():
+            return False, "分镜衔接是空的"
+        try:
+            saved = json.loads(text)
+        except json.JSONDecodeError:
+            return False, "分镜衔接不是账本"
+        from end.seam_ledger import check_seam_ledger
+
+        body = saved.get("seam_ledger") if isinstance(saved, dict) else {}
+        shot_rows = saved.get("shots") if isinstance(saved, dict) else []
+        if not shot_rows:
+            shot_rows = _load_spec(folder).get("shots") or []
+        produced = check_seam_ledger(body or {}, shot_rows)
+        if produced.get("ok"):
+            return True, ""
+        return False, produced.get("report") or "分镜衔接没过"
     if stage == "feed":
         from end.repair_rules.feed_unit_headers import recover_feed_units
 
@@ -2087,13 +2129,34 @@ def format_seconds(value):
     return text or "0"
 
 
-def group_shot_durations(durations, limit=15):
+def _seam_locks(shots):
+    """Inbound D-locks aligned with shots that have a positive duration."""
+    locks = []
+    for shot in shots or []:
+        if not isinstance(shot, dict) or shot.get("duration") in (None, ""):
+            continue
+        try:
+            seconds = float(shot.get("duration"))
+        except (TypeError, ValueError):
+            continue
+        if seconds <= 0:
+            continue
+        locks.append(str(shot.get("seam_d_lock") or ""))
+    return locks
+
+
+def group_shot_durations(durations, limit=15, locks=None):
     """Pack consecutive shot lengths into H3 units.
 
     Merging is allowed. A unit never keeps more than ``limit`` seconds by
     shortening a shot. A shot longer than ``limit`` stays in its own unit at
     its real length so the caller can split the shot instead of clamping.
+    A ②, ③, or ④ seam starts a new unit instead of merging across it.
     """
+    if locks and any(str(item) in ("2", "3", "4") for item in locks):
+        from end.seam_ledger import group_durations
+
+        return group_durations(durations, locks, limit)
     groups = []
     bucket = []
     total = 0.0
@@ -2191,7 +2254,7 @@ def feed_duration_failures(feed, storyboard="", shots=None, limit=15):
     board_total = sum(durations)
     feed_total = sum(declared)
     if durations and declared and feed_total + 0.05 < board_total:
-        groups = group_shot_durations(durations, limit)
+        groups = group_shot_durations(durations, limit, _seam_locks(shots))
         rendered = "；".join(
             "%s=%s" % (
                 "+".join(format_seconds(item) for item in group),
@@ -3470,6 +3533,8 @@ def _uses_worker(stage, pipeline):
         return True
     if stage == "storyboard":
         return "缺六问" not in str(pipeline.get("repair") or "")
+    if stage == "seam":
+        return True
     return False
 
 
@@ -3602,7 +3667,9 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
     """One Agents loop. Script retries stay inside that loop, including semantic review."""
     from Agents.workers.feed import run_feed_loop
     from Agents.workers.script import run_script_loop
+    from Agents.workers.seam import run_seam_loop
     from Agents.workers.storyboard import run_storyboard_loop
+    from end.seam_ledger import check_seam_ledger
 
     complete = _worker_complete(project, folder, write_model, prompts)
     spec = _load_spec(folder)
@@ -3677,6 +3744,28 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
         if outcome.get("supplied_shots"):
             payload["shots"] = outcome.get("supplied_shots")
         return payload
+    if stage == "seam":
+        board = _read(Path(folder) / "_内部_" / "分镜.md")
+        outcome = run_seam_loop(
+            _read(Path(folder) / "_内部_" / "剧本.md"),
+            board,
+            shots=spec.get("shots") or [],
+            feed=_read(Path(folder) / "_内部_" / "feed.md"),
+            opening=opening,
+            prior_draft=_read(Path(folder) / "_内部_" / "分镜衔接.json"),
+            model=project.get("model"),
+            complete=complete,
+            checker=check_seam_ledger,
+        )
+        if not (outcome.get("seam_ledger") or {}).get("entries") and outcome.get("generator_note") == "model_error":
+            raise RuntimeError(outcome.get("error") or "这一步没有账本")
+        return {
+            "seam_ledger": outcome.get("seam_ledger") or {},
+            "shots": outcome.get("shots") or [],
+            "_worker_loop": True,
+            "_worker_passed": bool(outcome.get("passed")),
+            "_worker_attempts": int(outcome.get("attempts") or 0),
+        }
     board = _read(Path(folder) / "_内部_" / "分镜.md")
     outcome = run_feed_loop(
         board,
@@ -4221,10 +4310,10 @@ def execute(project, folder, locks, write_model, load_pack):
     worker_semantic = None
     spec = _load_spec(folder)
     attempts = 0
-    if action == "rewrite" and current in ("asset", "storyboard", "feed"):
+    if action == "rewrite" and current in ("asset", "storyboard", "seam", "feed"):
         attempts = int(pipeline.get("repairs") or 0)
     while True:
-        if attempts >= REPAIR_LIMIT and current in ("asset", "storyboard", "feed"):
+        if attempts >= REPAIR_LIMIT and current in ("asset", "storyboard", "seam", "feed"):
             passed = bool(pipeline.get("passed"))
             report = str(pipeline.get("report") or "")
             break
@@ -4373,6 +4462,8 @@ def execute(project, folder, locks, write_model, load_pack):
             note_hold(folder, spec.get("storyboard_hold") or "")
         passed, report = check_stage(folder, current, locks, spec.get("title") or "")
         checked = True
+        if passed:
+            pipeline.pop("worker_exhausted", None)
         if healed_feed:
             pipeline["rule_repairs"] = int(pipeline.get("rule_repairs") or 0) + 1
         else:
@@ -4400,7 +4491,7 @@ def execute(project, folder, locks, write_model, load_pack):
             pipeline["machine_repairs"] = 0
             if str(report or "").strip() == "分镜是空的" and shots_are_placeholder(spec.get("shots")):
                 spec["shots"] = []
-        if worker_loop or passed or current in ("asset", "storyboard", "feed") or attempts >= REPAIR_LIMIT:
+        if worker_loop or passed or current in ("asset", "storyboard", "seam", "feed") or attempts >= REPAIR_LIMIT:
             break
     if passed:
         pipeline.pop("repair_round", None)

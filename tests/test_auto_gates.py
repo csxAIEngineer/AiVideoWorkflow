@@ -67,11 +67,11 @@ class AutoGateDecisionTest(unittest.TestCase):
         self.assertEqual(auto_gate_action(revise), "stop")
 
     def test_passed_auto_stages_advance(self):
-        for stage in ("recon", "asset", "storyboard", "feed"):
+        for stage in ("recon", "asset", "storyboard", "seam", "feed"):
             self.assertEqual(auto_gate_action(_gate(stage, True)), "advance", stage)
 
     def test_failed_auto_stages_repair_until_the_limit(self):
-        for stage in ("asset", "storyboard", "feed"):
+        for stage in ("asset", "storyboard", "seam", "feed"):
             self.assertEqual(auto_gate_action(_gate(stage, False, repairs=1)), "rewrite", stage)
             self.assertEqual(auto_gate_action(_gate(stage, False, repairs=REPAIR_LIMIT)), "stop", stage)
 
@@ -193,6 +193,8 @@ class AutoAdvanceTest(unittest.TestCase):
 
         def writer(brief, skill_pack, debug_dir=None, model=None, template=None):
             calls.append(brief)
+            if "任务：分镜衔接" in brief or "阶段：seam" in brief:
+                return {"seam_ledger": {"entries": []}}
             if "任务：赛道分流" in brief:
                 return {"text": "路线"}
             if "任务：剧本" in brief:

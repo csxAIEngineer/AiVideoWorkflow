@@ -378,17 +378,12 @@ class ShotContractTest(unittest.TestCase):
         self.assertFalse((folder / "outputs" / "images").exists())
         bare = view["shots"][1]
         self.assertEqual(bare["video_mode_resolved"], {
-            "value": "reference",
+            "value": "text",
             "inferred": True,
             "written": "",
         })
-        self.assertEqual(bare["reference"], [{
-            "id": "S02_tail",
-            "url": None,
-            "source": "previous_tail",
-            "pending": True,
-            "available": False,
-        }])
+        self.assertEqual(bare["reference"], [])
+        self.assertIsNone(bare["first_frame"])
         shot = view["shots"][2]
         self.assertEqual(shot["video_mode_resolved"]["value"], "reference")
         self.assertEqual(shot["reference"], [{
@@ -398,6 +393,7 @@ class ShotContractTest(unittest.TestCase):
             "pending": False,
             "available": True,
         }])
+        self.assertNotIn("previous_tail", [item["source"] for item in shot["reference"]])
         self.assertEqual(again["shots"][1]["reference"], bare["reference"])
         self.assertEqual(again["shots"][2]["reference"], shot["reference"])
 
@@ -406,7 +402,14 @@ class ShotContractTest(unittest.TestCase):
             "assets": [{"id": "图1", "title": "女主", "prompt": "woman"}],
             "shots": [
                 {"id": "S01", "duration": 5, "prompt": "开场", "images": ["图1"]},
-                {"id": "S02", "duration": 5, "prompt": "接上", "images": ["图1"]},
+                {
+                    "id": "S02",
+                    "duration": 5,
+                    "prompt": "接上",
+                    "images": ["图1"],
+                    "video_mode": "first_frame",
+                    "first_frame_source": "previous_tail",
+                },
             ],
         }
         folder = self._save("aabbcc000005", spec, {
@@ -432,12 +435,18 @@ class ShotContractTest(unittest.TestCase):
                 patch("end.image_store.store.CosImageStore.publish", _forbid):
             shot = self._view("aabbcc000005")["shots"][1]
         self.assertEqual(tail.read_bytes(), b"already-there")
-        self.assertEqual(shot["reference"][1], {
+        self.assertEqual(shot["reference"], [])
+        self.assertEqual(shot["first_frame"], {
             "id": "S02_tail",
             "url": PUBLIC_BASE + "/media/projects/aabbcc000005/images/S02_tail.jpg",
             "source": "previous_tail",
             "pending": False,
             "available": True,
+        })
+        self.assertEqual(shot["video_mode_resolved"], {
+            "value": "first_frame",
+            "inferred": False,
+            "written": "first_frame",
         })
 
         os.environ["AIVIDEO_IMAGE_STORE"] = "cos"
@@ -445,18 +454,20 @@ class ShotContractTest(unittest.TestCase):
                 patch("end.image_store.store.CosImageStore.publish", _forbid), \
                 patch("end.image_store.store.LocalImageStore.publish", _forbid):
             cos_shot = self._view("aabbcc000005")["shots"][1]
-        self.assertTrue(cos_shot["reference"][1]["url"].startswith(
+        self.assertTrue(cos_shot["first_frame"]["url"].startswith(
             "/media/projects/aabbcc000005/images/S02_tail.jpg?v="
         ))
-        self.assertTrue(cos_shot["reference"][1]["available"])
-        self.assertFalse(cos_shot["reference"][1]["pending"])
+        self.assertTrue(cos_shot["first_frame"]["available"])
+        self.assertFalse(cos_shot["first_frame"]["pending"])
 
         state = json.loads((folder / "run_state.json").read_text(encoding="utf-8"))
         state["steps"]["S01"]["status"] = "running"
         save_run_state(folder, state)
         os.environ["AIVIDEO_IMAGE_STORE"] = "local"
         running = self._view("aabbcc000005")["shots"][1]
-        self.assertEqual([item["source"] for item in running["reference"]], ["bound_image"])
+        self.assertEqual(running["reference"], [])
+        self.assertTrue(running["first_frame"]["pending"])
+        self.assertFalse(running["first_frame"]["available"])
 
     def test_a_recorded_submit_beats_a_new_prediction(self):
         spec = {
@@ -525,9 +536,8 @@ class ShotContractTest(unittest.TestCase):
         state["steps"]["S02"].pop("video_mode", None)
         save_run_state(folder, state)
         predicted = self._view("aabbcc000006")["shots"][1]
-        self.assertEqual(predicted["reference"][-1]["source"], "previous_tail")
-        self.assertTrue(predicted["reference"][-1]["available"])
-        self.assertFalse(predicted["reference"][-1]["pending"])
+        self.assertEqual([item["source"] for item in predicted["reference"]], ["bound_image"])
+        self.assertNotIn("previous_tail", [item["source"] for item in predicted["reference"]])
 
     def test_nine_bound_images_leave_no_room_for_a_tail(self):
         folder = self.root / "nine"

@@ -1161,18 +1161,23 @@ def aspect_for_image(path):
 
 
 def choose_video_mode(shot, user_image_ids=(), continues=False):
-    """Pick text, first frame, first-and-last, or reference for one shot.
+    """Return the mode End will submit.
 
-    An explicit video_mode wins. Otherwise a single user still with no end
-    frame opens on that still. A start image plus end_image uses both frames.
-    Other pictured shots, and later shots that continue the previous clip,
-    stay on reference. A pictureless opening shot is text-to-video.
+    A written video_mode is the mode. A previous clip does not choose it.
+    Shots the seam stage never wrote still pick a mode from their own stills:
+    one replaced still is a first frame, a still plus end_image is both
+    frames, other stills are reference, and a pictureless shot is text.
+    ``continues`` is ignored so a finished neighbour cannot change the mode.
     """
+    del continues
     explicit = str((shot or {}).get("video_mode") or "").strip()
     if explicit:
         if explicit not in VIDEO_MODES:
             raise RuntimeError("未知的 video_mode：%s" % explicit)
         return explicit
+    source = str((shot or {}).get("first_frame_source") or "").strip()
+    if source and source != "none":
+        raise RuntimeError("镜头 %s 写了首帧来源，但没有 video_mode" % ((shot or {}).get("id") or ""))
     images = list((shot or {}).get("images") or [])
     end_image = str((shot or {}).get("end_image") or "").strip()
     user_ids = {str(item) for item in user_image_ids}
@@ -1180,38 +1185,57 @@ def choose_video_mode(shot, user_image_ids=(), continues=False):
         return "first_frame"
     if images and end_image:
         return "first_last_frame"
-    if images or continues:
+    if images:
         return "reference"
     return "text"
 
 
+def _resolve_first_frame(shot, url_for, tail_url):
+    """First frame from the written source. Reference stills are not sent along."""
+    shot_id = (shot or {}).get("id") or ""
+    source = str((shot or {}).get("first_frame_source") or "").strip()
+    if source == "previous_tail":
+        if not tail_url:
+            raise RuntimeError("镜头 %s 的首帧要等上一段真实尾帧" % shot_id)
+        return tail_url, None
+    if source and source != "none":
+        url, path = url_for(source)
+        if not url:
+            raise RuntimeError("镜头 %s 缺少首帧 %s" % (shot_id, source))
+        return url, path
+    images = list((shot or {}).get("images") or [])
+    if not images:
+        raise RuntimeError("首帧模式需要一张起始图")
+    url, path = url_for(images[0])
+    if not url:
+        raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, images[0]))
+    return url, path
+
+
 def assemble_shot_media(shot, mode, url_for, tail_url=None):
-    """Roles and aspect for one H3 request. The previous clip's mp4 is never sent."""
+    """Roles and aspect for one H3 request. The previous clip's mp4 is never sent.
+
+    Reference mode sends only this shot's stills. The previous clip's tail is
+    a first_frame, and only when the seam ledger said previous_tail.
+    """
     images = list((shot or {}).get("images") or [])
     shot_id = (shot or {}).get("id") or ""
     if mode == "text":
         return "", []
-    if mode == "first_frame":
-        if not images:
-            raise RuntimeError("首帧模式需要一张起始图")
-        url, path = url_for(images[0])
-        if not url:
-            raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, images[0]))
-        return aspect_for_image(path), [{"role": "first_frame", "url": url}]
-    if mode == "first_last_frame":
+    if mode in ("first_frame", "first_last_frame"):
+        start_url, start_path = _resolve_first_frame(shot, url_for, tail_url)
+        media = [{"role": "first_frame", "url": start_url}]
+        aspect = aspect_for_image(start_path) if start_path else ""
+        if mode == "first_frame":
+            return aspect, media
         end_id = str((shot or {}).get("end_image") or "").strip()
-        if not images or not end_id:
-            raise RuntimeError("首尾帧模式需要起始图和结束帧")
-        start_url, start_path = url_for(images[0])
+        if not end_id:
+            raise RuntimeError("首尾帧模式需要结束帧")
         end_url, _end_path = url_for(end_id)
-        if not start_url:
-            raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, images[0]))
         if not end_url:
             raise RuntimeError("镜头 %s 缺少结束帧 %s" % (shot_id, end_id))
-        return aspect_for_image(start_path), [
-            {"role": "first_frame", "url": start_url},
-            {"role": "last_frame", "url": end_url},
-        ]
+        media.append({"role": "last_frame", "url": end_url})
+        return aspect, media
     if mode != "reference":
         raise RuntimeError("未知的 video_mode：%s" % mode)
     images = images[:H3_MAX_REFERENCE_IMAGES]
@@ -1221,8 +1245,6 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
         if not url:
             raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, asset_id))
         media.append({"role": "reference_image", "url": url})
-    if tail_url and len(media) < H3_MAX_REFERENCE_IMAGES:
-        media.append({"role": "reference_image", "url": tail_url})
     if not media:
         raise RuntimeError("参考模式没有可用的参考图")
     return "", media
@@ -2523,6 +2545,11 @@ def run_local_pipeline(
     images_only stops after the stills. Video, join, soundtrack, and subtitles are left for a later run.
     """
     assets, shots = collect_steps(spec)
+    from end.seam_ledger import seam_blocks_render
+
+    blocked = seam_blocks_render(spec, shots)
+    if blocked:
+        raise RuntimeError(blocked)
     aspect = aspect or resolve_aspect(spec, brief)
     if not images_only and not aspect:
         raise RuntimeError("没有锁定画幅，不能默认竖屏")
@@ -2718,10 +2745,10 @@ def run_local_pipeline(
                 if ctx.reload_step(asset_id, "image").get("local_override")
             ]
             previous = clips[-1] if clips else None
-            tail_url = _continuation_tail_url(ctx, previous, shot_id) if previous else ""
-            # An empty reference list pauses the shot. Continue only when the tail frame has a URL.
-            continues = bool(tail_url)
-            mode = choose_video_mode(current, user_image_ids=user_ids, continues=continues)
+            mode = choose_video_mode(current, user_image_ids=user_ids)
+            source = str(current.get("first_frame_source") or "")
+            use_tail = mode in ("first_frame", "first_last_frame") and source == "previous_tail"
+            tail_url = _continuation_tail_url(ctx, previous, shot_id) if use_tail and previous else ""
 
             def url_for(asset_id):
                 info = images.get(asset_id) or _saved_image(ctx, asset_id)

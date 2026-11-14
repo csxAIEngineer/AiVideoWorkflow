@@ -323,7 +323,7 @@ class DirectorDbTest(unittest.TestCase):
                 "lock_machine": True,
                 "pipeline": {
                     "only": "",
-                    "accepted": ["script", "asset", "storyboard"],
+                    "accepted": ["script", "asset", "storyboard", "seam"],
                     "current": "feed",
                     "action": "wait",
                     "passed": False,
@@ -426,7 +426,7 @@ class DirectorDbTest(unittest.TestCase):
         locks["style_look"] = "自然光，写实肤色"
         locks["style"] = locks["style_look"]
         locks["seams"] = []
-        self.assertEqual(stages_for(locks, ""), ["script", "asset", "storyboard", "feed"])
+        self.assertEqual(stages_for(locks, ""), ["script", "asset", "storyboard", "seam", "feed"])
         self.assertEqual(next_pending(stages_for(locks, ""), []), "script")
         self.assertEqual(stages_for(locks, detect_only("只要打戏")), ["script", "asset", "storyboard"])
         self.assertNotIn("feed", stages_for(locks, detect_only("只要打戏")))
@@ -827,7 +827,7 @@ class DirectorDbTest(unittest.TestCase):
         self.assertEqual((internal / "previs.md").read_text(encoding="utf-8"), previs)
         saved = read_project("p-board-keep")
         pipeline = saved["progress"]["pipeline"]
-        self.assertEqual(pipeline["current"], "feed")
+        self.assertEqual(pipeline["current"], "seam")
         self.assertEqual(pipeline["action"], "write")
         self.assertIn("storyboard", pipeline["accepted"])
         self.assertEqual(pipeline.get("repair") or "", "")
@@ -1040,7 +1040,7 @@ class MachineAndMountTest(unittest.TestCase):
             "template": "short-drama-director",
             "model": "deepseek-v4-pro",
             "brief": "雨夜",
-            "progress": {"pipeline": {"action": "write", "current": "feed", "accepted": ["script", "asset", "storyboard"], "only": ""}},
+            "progress": {"pipeline": {"action": "write", "current": "feed", "accepted": ["script", "asset", "storyboard", "seam"], "only": ""}},
         }
 
         def writer(*_args, **_kwargs):
@@ -1084,7 +1084,7 @@ class MachineAndMountTest(unittest.TestCase):
                 "pipeline": {
                     "action": "write",
                     "current": "feed",
-                    "accepted": ["script", "asset", "storyboard"],
+                    "accepted": ["script", "asset", "storyboard", "seam"],
                     "only": "",
                 }
             },
@@ -1129,7 +1129,7 @@ class MachineAndMountTest(unittest.TestCase):
                 "pipeline": {
                     "action": "rewrite",
                     "current": "feed",
-                    "accepted": ["script", "asset", "storyboard"],
+                    "accepted": ["script", "asset", "storyboard", "seam"],
                     "passed": False,
                     "report": "封装稿是空的",
                     "repair": "封装稿是空的",
@@ -1307,7 +1307,7 @@ class MachineAndMountTest(unittest.TestCase):
         project = {
             "template": "short-drama-director",
             "model": "deepseek-v4-pro",
-            "progress": {"pipeline": {"action": "write", "current": "feed", "accepted": ["script", "asset", "storyboard"], "only": ""}},
+            "progress": {"pipeline": {"action": "write", "current": "feed", "accepted": ["script", "asset", "storyboard", "seam"], "only": ""}},
         }
         outcome = execute(project, folder, locks, feed_writer, lambda *args, **kwargs: "pack")
         self.assertFalse(outcome["progress"]["pipeline"]["passed"])

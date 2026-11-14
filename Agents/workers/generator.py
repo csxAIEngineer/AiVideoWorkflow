@@ -9,13 +9,16 @@ skill, not any other skill original, and not a rewritten draft from the critic.
 
 import json
 import re
+from pathlib import Path
 
 _STAGE = {
     "script": "P1",
     "asset": "P2",
     "storyboard": "P3",
+    "seam": "P3",
     "feed": "P4",
 }
+_AGENT_SKILLS = Path(__file__).resolve().parents[1] / "skills"
 _STAGE_LINE = re.compile(r"(?m)^阶段：(P[0-5])\s*$")
 
 
@@ -47,7 +50,7 @@ def run_generator(
     notes = dict(previous)
     repairing = bool(str(repair_text or "").strip()) and bool(previous)
     for relative in selected:
-        system = _specialist_system(role, skill_node_prompt(relative, repair=repairing))
+        system = _specialist_system(role, _node_prompt(relative, repair=repairing))
         raw = complete("specialist", [
             {"role": "system", "content": system},
             {"role": "user", "content": _specialist_user(brief, repair_text if repairing else "")},
@@ -91,6 +94,21 @@ def _notes(partials):
         if skill:
             found[skill] = str(item.get("text") or "")
     return found
+
+
+def _node_prompt(relative, repair=False):
+    """One original. Agent-layer skills live outside the 漫剧 pack."""
+    path = _AGENT_SKILLS / str(relative)
+    from AI.skills.registry import _NODE_SHAPE, skill_node_prompt
+
+    if path.is_file():
+        body = path.read_text(encoding="utf-8").strip()
+        return "\n\n".join((
+            "# 本节点原文 %s" % relative,
+            body,
+            _NODE_SHAPE,
+        ))
+    return skill_node_prompt(relative, repair=repair)
 
 
 def _routing_context(task, brief):

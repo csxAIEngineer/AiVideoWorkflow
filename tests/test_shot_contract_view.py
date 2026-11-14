@@ -116,17 +116,17 @@ class ShotContractViewTest(unittest.TestCase):
         shots = [{"id": "S02"}, {"id": "S03"}]
         pending = {
             "id": "S03",
-            "video_mode_resolved": {"value": "reference", "inferred": True, "written": ""},
-            "reference": [
-                {"id": "图1", "url": "https://cdn.example/fig1.png", "source": "bound_image", "pending": False, "available": True},
-                {"id": "S02_tail", "url": None, "source": "previous_tail", "pending": True, "available": False},
-            ],
+            "first_frame_source": "previous_tail",
+            "first_frame": {"id": "S03_tail", "url": None, "source": "previous_tail", "pending": True, "available": False},
+            "video_mode_resolved": {"value": "first_frame", "inferred": False, "written": "first_frame"},
+            "reference": [],
         }
         note = view_eval("view.referenceNote(shot, shots)", pending, shots)
-        self.assertIn("按提交规则预测", note)
+        self.assertIn("真实尾帧", note)
         self.assertIn("S02", note)
         self.assertIn("上镜尾帧还没生成", note)
         self.assertNotIn("已经实际提交的存档列表", note)
+        self.assertEqual(view_eval("view.firstFrameText(shot)", pending), "上一镜真实尾帧")
         ready = {
             "id": "S03",
             "video_mode_resolved": {"value": "reference", "inferred": False, "written": "reference"},
@@ -135,7 +135,7 @@ class ShotContractViewTest(unittest.TestCase):
             ],
         }
         ready_note = view_eval("view.referenceNote(shot, shots)", ready, shots)
-        self.assertIn("可以和绑定资产图不同", ready_note)
+        self.assertIn("不会把上一镜尾帧当作参考图", ready_note)
         self.assertNotIn("还没生成", ready_note)
         text_shot = {
             "id": "S05",

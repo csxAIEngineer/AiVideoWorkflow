@@ -188,6 +188,13 @@ def assemble_steps(spec):
                 cleaned.append(ref)
         if cleaned:
             item["references"] = cleaned
+    from end.seam_ledger import designed_still_assets
+
+    for extra in designed_still_assets(spec):
+        if extra["id"] in known:
+            continue
+        assets.append(extra)
+        known.add(extra["id"])
 
     shots = []
     sources = []
@@ -219,6 +226,9 @@ def assemble_steps(spec):
         video_mode = str(item.get("video_mode") or "").strip()
         if video_mode:
             shot["video_mode"] = video_mode
+        source = str(item.get("first_frame_source") or "").strip()
+        if source:
+            shot["first_frame_source"] = source
         shots.append(shot)
         sources.append({"value": "storyboard", "index": None})
     # Clip files are keyed by id (clips/S01.mp4). Duplicate ids must not become
@@ -232,6 +242,12 @@ def assemble_steps(spec):
         # H3: one API call per feed unit. Never pad missing units with storyboard
         # Chinese rows — that is what made MiniMax ignore the Ref2VA contract.
         templates = shots
+        packed = None
+        ledger = spec.get("seam_ledger") if isinstance(spec.get("seam_ledger"), dict) else {}
+        if ledger.get("entries"):
+            from end.seam_ledger import remap_units
+
+            packed = remap_units(templates, ledger.get("entries"))
         rebuilt = []
         asset_rows = spec.get("assets") or []
         sources = []
@@ -290,9 +306,29 @@ def assemble_steps(spec):
                     "images": images,
                 }
             )
-            for key in ("end_image", "video_mode"):
-                if (template or {}).get(key):
-                    rebuilt[-1][key] = template[key]
+            chosen = packed[index] if packed is not None and index < len(packed) else None
+            if chosen is not None:
+                if chosen.get("video_mode"):
+                    rebuilt[-1]["video_mode"] = chosen["video_mode"]
+                source = str(chosen.get("first_frame_source") or "").strip()
+                if source:
+                    rebuilt[-1]["first_frame_source"] = source
+                if chosen.get("end_image"):
+                    rebuilt[-1]["end_image"] = chosen["end_image"]
+                else:
+                    rebuilt[-1].pop("end_image", None)
+                if chosen.get("video_mode") in ("first_frame", "first_last_frame", "text"):
+                    rebuilt[-1]["images"] = []
+                elif chosen.get("video_mode") == "reference":
+                    rebuilt[-1]["images"] = [
+                        name
+                        for name in (chosen.get("images") or [])
+                        if name in known or _is_upload_id(name)
+                    ][:MAX_SHOT_REFERENCES]
+            else:
+                for key in ("end_image", "video_mode", "first_frame_source"):
+                    if (template or {}).get(key):
+                        rebuilt[-1][key] = template[key]
         shots = rebuilt
     return assets, shots, sources
 

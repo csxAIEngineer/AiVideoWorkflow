@@ -67,6 +67,7 @@ GENERATOR_SYSTEM = "\n".join((
     "一个单元若按分镜时长会超过 15 秒，拆成下一个单元，禁止把声明时长钳成 15。",
     "画外音的闭口证据必须紧跟这一单元里的画外音，不要接到出声对白后面，也不要接到文末。",
     "审查报告里夹带的稿作废。",
+    "正文只写画面。不要写末态继承、拼接节点、换机位、可变数据。",
 ))
 
 # Ref2VA order the packing scaffold writes. summary and retention_analysis are
@@ -208,9 +209,16 @@ def shot_duration_list(state):
 
 
 def packing_groups(state, limit=15):
-    """The same 15s packing the machine check uses. The model does not regroup."""
+    """The same 15s packing the machine check uses. The model does not regroup.
+
+    ②③④ seams start a new unit. ① may still share a unit when the duration fits.
+    """
     runner = importlib.import_module("end.stage_runner")
-    return runner.group_shot_durations(shot_duration_list(state), limit)
+    durations = shot_duration_list(state)
+    locks = runner._seam_locks((state or {}).get("shots"))
+    if len(locks) != len(durations):
+        locks = None
+    return runner.group_shot_durations(durations, limit, locks)
 
 
 def _h3_locked(state):
@@ -255,6 +263,35 @@ def h3_packing_scaffold(groups):
     return "\n\n".join(blocks)
 
 
+def _writing_mode_lines(state, groups):
+    """Packing may read the ledger's writing suggestion. It stays out of the prose."""
+    timed = []
+    for shot in (state or {}).get("shots") or []:
+        if not isinstance(shot, dict) or shot.get("duration") in (None, ""):
+            continue
+        try:
+            seconds = float(shot.get("duration"))
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            timed.append(shot)
+    if len(timed) != sum(len(group) for group in groups or []):
+        return []
+    notes = []
+    if any(str(shot.get("seam_d_lock") or "") in ("2", "3", "4") for shot in timed):
+        notes.append("已经按段缝拆开的单元不要再合并。动作连续的镜头仍可以合在 15 秒里。")
+    cursor = 0
+    for index, group in enumerate(groups, 1):
+        mode = str(timed[cursor].get("writing_mode") or "").strip()
+        cursor += len(group)
+        if mode:
+            notes.append(
+                "单元 %s 的写法建议是「%s」。只按它写画面，不要把这个词写进正文。"
+                % (index, mode)
+            )
+    return notes
+
+
 def packing_plan_note(state):
     """Unit sums, the H3 scaffold, and exact spoken lines, known before the model runs."""
     runner = importlib.import_module("end.stage_runner")
@@ -281,6 +318,7 @@ def packing_plan_note(state):
             formula = "+".join(runner.format_seconds(item) for item in group)
             shown = runner.format_seconds(sum(group))
             lines.append("【%s %s/%s】%s：%s=%s" % (UNIT_NAME, index, count, shots, formula, shown))
+        lines.extend(_writing_mode_lines(state, groups))
         parts.append("\n".join(lines))
         if _h3_locked(state):
             parts.append(h3_packing_scaffold(groups))

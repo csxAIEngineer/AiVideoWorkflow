@@ -913,7 +913,7 @@ class RenderLoopTest(unittest.TestCase):
         )
         self.assertEqual(choose_video_mode({"images": ["A1"]}), "reference")
         self.assertEqual(choose_video_mode({"images": []}), "text")
-        self.assertEqual(choose_video_mode({"images": []}, continues=True), "reference")
+        self.assertEqual(choose_video_mode({"images": []}, continues=True), "text")
         self.assertEqual(
             choose_video_mode({"images": ["U1"], "video_mode": "reference"}, user_image_ids=["U1"]),
             "reference",
@@ -930,8 +930,16 @@ class RenderLoopTest(unittest.TestCase):
             url_for,
             "data:image/jpeg;base64,TAIL",
         )
-        self.assertEqual([item["role"] for item in continued], ["reference_image", "reference_image"])
-        self.assertTrue(continued[1]["url"].startswith("data:image/jpeg"))
+        self.assertEqual([item["role"] for item in continued], ["reference_image"])
+        self.assertNotIn("TAIL", continued[0]["url"])
+        _aspect, tailed = assemble_shot_media(
+            {"id": "S02", "images": ["A2"], "video_mode": "first_frame", "first_frame_source": "previous_tail"},
+            "first_frame",
+            url_for,
+            "data:image/jpeg;base64,TAIL",
+        )
+        self.assertEqual([item["role"] for item in tailed], ["first_frame"])
+        self.assertTrue(tailed[0]["url"].startswith("data:image/jpeg"))
         kept = delivery_prompt({"prompt": "她回头"}, [], 1, True, "reference")
         self.assertNotIn("轮子在转", kept)
         self.assertIn("本镜无对白", kept)

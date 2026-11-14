@@ -473,6 +473,13 @@ _MERGE_SHAPE = {
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
         "看板说明放在 text。不要写 HTML。",
     )),
+    "seam": "\n".join((
+        "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
+        "分镜衔接放在 seam_ledger。seam_ledger.entries 是数组，每个镜头一条，顺序与分镜相同。",
+        "第一条 d_lock 为 none。其后每条恰好是 1、2、3、4 之一。",
+        "每条写 shot_id、prev_id、d_lock、reason、scene_relation、action_continuous、end_size、start_size、camera_change、tail_croppable、crop_plan、writing_mode、transition、enter_exit。",
+        "video_mode、images、end_image、first_frame_source 按 D 锁填写。不要把段内衔接写进 entries。",
+    )),
 }
 _H3_FEED_CONTRACT = "\n".join((
     "模型是 H3。feed 只写四段英文正文。",

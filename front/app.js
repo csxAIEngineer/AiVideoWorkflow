@@ -3626,6 +3626,8 @@ function renderContractColumn(project, shot) {
   kv.append(
     contractKey("出片模式"),
     renderModeBadges(shot),
+    contractKey("首帧来源"),
+    contractSource(ShotContractView.firstFrameText(shot)),
     contractKey("绑定资产图"),
     renderBoundBlock(project, shot),
     contractKey("尾帧"),

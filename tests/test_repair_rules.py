@@ -309,7 +309,7 @@ class RuleBeforeModelTest(unittest.TestCase):
                 "lock_machine": True,
                 "pipeline": {
                     "current": "feed",
-                    "accepted": ["script", "asset", "storyboard"],
+                    "accepted": ["script", "asset", "storyboard", "seam"],
                     "action": "wait",
                     "passed": False,
                     "only": "",

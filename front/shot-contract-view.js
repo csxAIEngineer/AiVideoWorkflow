@@ -85,12 +85,27 @@
     return previous && previous.id ? String(previous.id) : "";
   }
 
+  function firstFrameText(shot) {
+    const source = shot && shot.first_frame_source != null ? String(shot.first_frame_source).trim() : "";
+    if (!source || source === "none") return "无";
+    if (source === "previous_tail") return "上一镜真实尾帧";
+    return source;
+  }
+
   function referenceNote(shot, shots) {
     const refs = shot && Array.isArray(shot.reference) ? shot.reference : [];
     const mode = String(resolvedOf(shot).value || "");
     const tail = refs.find((item) => item && item.source === "previous_tail");
+    const source = shot && shot.first_frame_source != null ? String(shot.first_frame_source).trim() : "";
     const prev = previousShotId(shot, shots);
     const prevLabel = prev || "上一镜";
+    if (source === "previous_tail" || (shot && shot.first_frame && shot.first_frame.source === "previous_tail")) {
+      const frame = shot.first_frame || {};
+      const pending = !!(frame.pending || frame.available === false || !frame.url);
+      let text = "首帧用上一镜 " + prevLabel + " 的真实尾帧，不进参考列表。";
+      if (pending) text += "上镜尾帧还没生成。";
+      return text;
+    }
     if (!refs.length) {
       const label = modeLabel(mode);
       if (label && mode !== "reference") {
@@ -98,11 +113,8 @@
       }
       return "按提交规则预测的参考列表。这一镜没有参考图。";
     }
-    if (tail) {
-      const pending = !!(tail.pending || tail.available === false || !tail.url);
-      let text = "按提交规则预测：参考模式在上一镜 " + prevLabel + " 已完成、且绑定图少于 9 张时，会把上一镜尾帧追进参考列表，所以这里可以和绑定资产图不同。";
-      if (pending) text += "上镜尾帧还没生成。";
-      return text;
+    if (tail && mode === "reference") {
+      return "参考模式只提交这一镜绑定的资产图，不会把上一镜尾帧当作参考图。";
     }
     return "按提交规则预测的参考列表。这一镜没有追加上镜尾帧。";
   }
@@ -155,6 +167,7 @@
         inferred: !!resolved.inferred,
         written: resolved.written != null ? String(resolved.written) : "",
       },
+      first_frame_source: shot.first_frame_source || "",
       reference: Array.isArray(shot.reference) ? shot.reference : [],
       feed: feedOf(shot),
     });
@@ -166,6 +179,7 @@
     submitBadge: submitBadge,
     writtenBadge: writtenBadge,
     imagesSourceText: imagesSourceText,
+    firstFrameText: firstFrameText,
     referenceNote: referenceNote,
     feedHeading: feedHeading,
     feedRows: feedRows,

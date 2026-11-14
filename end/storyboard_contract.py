@@ -241,7 +241,9 @@ def known_ids(assets):
 
 def project_into_spec(spec, result):
     """Project a new storyboard. Do not copy previs and do not keep a placeholder shot."""
-    spec = dict(spec or {})
+    from end.seam_ledger import strip_seam
+
+    spec = strip_seam(dict(spec or {}))
     result = result or {}
     text = str(result.get("storyboard") or "").strip()
     if text:

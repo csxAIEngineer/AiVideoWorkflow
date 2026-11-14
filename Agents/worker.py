@@ -28,6 +28,7 @@ _REWRITE_KEYS = (
     "storyboard",
     "feed",
     "image_prompts",
+    "seam_ledger",
 )
 
 
@@ -215,6 +216,8 @@ def revision_brief(stage, task_line, draft, critic_report, machine_report):
         sections.append(
             "时长不够就按分镜时长拆单元写回，禁止把超过 15 秒的跨度钳成 15，禁止缩短总时长或删对白。"
         )
+    if stage == "seam":
+        sections.append("按失败项改点名的那条段缝。不要把 ① 当成每条缝的默认。")
     body = str(draft or "").strip()
     if body:
         sections.append("上一稿：\n%s" % body)

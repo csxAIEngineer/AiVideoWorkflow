@@ -49,6 +49,7 @@ def annotate_shots(shots, sources, work_dir, project_id):
             "inferred": written == "",
             "written": written,
         }
+        row["first_frame_source"] = str(shot.get("first_frame_source") or "none")
         row["reference"] = _reference_items(
             row,
             value,
@@ -56,6 +57,15 @@ def annotate_shots(shots, sources, work_dir, project_id):
             shots,
             steps,
             leases,
+            work_dir,
+            project_id,
+        )
+        row["first_frame"] = _first_frame_item(
+            row,
+            value,
+            index,
+            shots,
+            steps,
             work_dir,
             project_id,
         )
@@ -259,6 +269,7 @@ def _ref_item(item_id, url, source, pending):
 
 
 def _reference_items(shot, mode, index, shots, steps, leases, work_dir, project_id):
+    del index, shots, leases, work_dir, project_id
     if mode != "reference":
         return []
     step = _video_step(steps, shot.get("id"))
@@ -270,19 +281,24 @@ def _reference_items(shot, mode, index, shots, steps, leases, work_dir, project_
     for asset_id in images:
         url = _stored_image_url(steps, asset_id)
         items.append(_ref_item(asset_id, url, "bound_image", pending=False))
-    if len(items) >= H3_MAX_REFERENCE_IMAGES or index <= 0:
-        return items
-    lease = (leases or {}).get("video:%s" % shot.get("id"))
-    recorded_tail = _recorded_has_tail(step, lease)
-    if recorded_tail is False:
-        return items
-    if recorded_tail is None and not _previous_ready(work_dir, shots, index):
-        return items
-    url = _existing_tail_url(work_dir, project_id, shot.get("id"))
-    pending = url is None and recorded_tail is not True
-    _stem, _filename = continuation_tail_name(shot.get("id"))
-    items.append(_ref_item(_stem + "_tail", url, "previous_tail", pending=pending))
     return items
+
+
+def _first_frame_item(shot, mode, index, shots, steps, work_dir, project_id):
+    """Where the first frame comes from. Reference mode does not borrow a tail."""
+    if mode not in ("first_frame", "first_last_frame"):
+        return None
+    source = str(shot.get("first_frame_source") or "").strip() or "none"
+    if source == "previous_tail":
+        url = None
+        if index > 0 and _previous_ready(work_dir, shots, index):
+            url = _existing_tail_url(work_dir, project_id, shot.get("id"))
+        pending = url is None
+        stem, _filename = continuation_tail_name(shot.get("id"))
+        return _ref_item(stem + "_tail", url, "previous_tail", pending=pending)
+    if source != "none":
+        return _ref_item(source, _stored_image_url(steps, source), "designed_still", pending=False)
+    return _ref_item("", None, "none", pending=False)
 
 
 def _stored_image_url(steps, asset_id):

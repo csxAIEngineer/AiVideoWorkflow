@@ -207,6 +207,13 @@ class QueueTest(unittest.TestCase):
 
         def writer(brief, skill_pack="", debug_dir=None, model=None, template=None, **_kwargs):
             calls.append(brief)
+            if "任务：分镜衔接" in brief or "阶段：seam" in brief:
+                return {"seam_ledger": {"entries": [{
+                    "shot_id": "S01",
+                    "d_lock": "none",
+                    "scene_relation": "opening",
+                    "start_size": "中景",
+                }]}}
             if "任务：提示词封装" in brief:
                 return {
                     "feed": "\n".join((
