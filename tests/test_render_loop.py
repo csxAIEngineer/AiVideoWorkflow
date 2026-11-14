@@ -462,6 +462,48 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(len(icreat.submits), 6)
         self.assertTrue((self.work / "outputs" / "images" / "A1.png").is_file())
 
+    def test_image_submit_timeout_does_not_auto_resubmit(self):
+        class Once(FakeICreat):
+            def submit_image(self, prompt, size=None, quality=None, image=None, timeout=60):
+                self._n += 1
+                self.submits.append({"prompt": prompt, "size": size, "image": image})
+                if self._n == 1:
+                    raise RuntimeError("生图超过 600 秒，没有自动重试，避免重复计费")
+                return ImageTask({"task_id": "img-ok", "status": "SUCCEEDED"})
+
+        icreat = Once()
+        project_id = "no-retry-still"
+        box = {}
+
+        def runner():
+            try:
+                box["result"] = run_local_pipeline(
+                    ONE,
+                    self.work,
+                    project_id=project_id,
+                    icreat=icreat,
+                    sleeper=_noop_sleep,
+                    images_only=True,
+                )
+            except Exception as error:
+                box["error"] = error
+
+        thread = threading.Thread(target=runner)
+        thread.start()
+        self.assertTrue(gate_for(project_id).blocked.wait(5))
+        self.assertEqual(len(icreat.submits), 1)
+        state = load_run_state(self.work)
+        self.assertEqual(state["paused_by"], "failure")
+        self.assertIn("没有自动重试", state["pause_reason"])
+        gate_for(project_id).resume()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", box)
+        self.assertEqual(box["result"]["stopped_after"], "images")
+        self.assertEqual(len(icreat.submits), 2)
+        hosted = "%s/media/projects/%s/images/A1.png" % (PUBLIC_BASE, project_id)
+        self.assertEqual(load_run_state(self.work)["steps"]["A1"]["public_url"], hosted)
+
     def test_transient_keeps_task_and_idempotency_key(self):
         icreat = FakeICreat()
         cr = FakeCR(fail_submit=1, fail_poll=1)
@@ -877,7 +919,9 @@ class RenderLoopTest(unittest.TestCase):
         self.assertIsNone(icreat.submits[0]["image"])
         self.assertNotIn("锁定同一张脸", icreat.submits[0]["prompt"])
         self.assertIn("同一个人淋着雨", icreat.submits[0]["prompt"])
-        self.assertEqual(cr.submits[0]["images"][0]["url"], "https://cdn.example/img-1.png")
+        hosted = "%s/media/projects/%s/images/A2.png" % (PUBLIC_BASE, project_id)
+        self.assertEqual(cr.submits[0]["images"][0]["url"], hosted)
+        self.assertNotIn("cdn.example", cr.submits[0]["images"][0]["url"])
         self.assertNotIn("uguu", json.dumps(cr.submits))
 
     def test_replaced_still_opens_on_first_frame(self):
@@ -1015,11 +1059,12 @@ class RenderLoopTest(unittest.TestCase):
         self.assertEqual(len(icreat.submits), 2)
         self.assertEqual(icreat.submits[0]["image"], ["https://cdn.example/U1.png"])
         self.assertIn("锁定同一张脸", icreat.submits[0]["prompt"])
-        self.assertEqual(icreat.submits[1]["image"], ["https://cdn.example/img-1.png"])
+        hosted = "%s/media/projects/%s/images/A1.png" % (PUBLIC_BASE, project_id)
+        self.assertEqual(icreat.submits[1]["image"], [hosted])
         self.assertNotIn("https://cdn.example/U1.png", icreat.submits[1]["image"])
         video = cr.submits[0]
         self.assertEqual(video["model"], "MiniMax/MiniMax-H3")
-        self.assertEqual(video["images"][0]["url"], "https://cdn.example/img-1.png")
+        self.assertEqual(video["images"][0]["url"], hosted)
         self.assertNotEqual(video["images"][0]["url"], "https://cdn.example/U1.png")
         self.assertIn("她在等最后一班车", video["text"])
 

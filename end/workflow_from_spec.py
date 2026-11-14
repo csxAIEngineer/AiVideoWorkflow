@@ -361,7 +361,7 @@ def ordered_assets(assets):
 
 
 def task_plan(spec, soundtrack="off"):
-    """Local render rows: Qwen stills, Wan clips, ffmpeg join, optional narration, then write 字幕.ass."""
+    """Local render rows: MiniMax stills, video clips, ffmpeg join, optional narration, then write 字幕.ass."""
     assets, shots = collect_steps(spec)
     if not assets or not shots:
         return []
@@ -375,7 +375,7 @@ def task_plan(spec, soundtrack="off"):
                 "title": asset["title"],
                 "duration": None,
                 "state": "pending",
-                "detail": "千问生图",
+                "detail": "MiniMax 生图",
             }
         )
     for shot in shots:

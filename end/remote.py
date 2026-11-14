@@ -12,16 +12,26 @@ class RemoteTask(object):
         self.error = data.get("error") or ""
         self.poll_url = data.get("poll_url") or ""
         self.platform = data.get("platform") or ""
+        self.revised_prompt = data.get("revised_prompt") or ""
 
 
 class RemoteImageClient(object):
     def submit_image(self, prompt, size=None, quality=None, image=None, timeout=60):
-        del quality, timeout
+        del quality
+        # The still call is synchronous and can run for 600s. A shorter RPC
+        # timeout would look like a failure and submit a second billed image.
+        wait = 660
+        try:
+            asked = int(timeout or 0)
+        except (TypeError, ValueError):
+            asked = 0
+        if asked > wait:
+            wait = asked
         return RemoteTask(
             call(
                 "image.submit",
                 {"prompt": prompt or "", "image": image, "size": size or ""},
-                timeout=90,
+                timeout=wait,
             )
         )
 

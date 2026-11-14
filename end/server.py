@@ -328,7 +328,7 @@ def remember(project, status, stage, progress=None):
 def load_tasks(project):
     """Fill the task list from the saved spec when older rows have none."""
     if project.get("status") == "done" and project.get("stage") == "工作流已生成，可以下载":
-        project["stage"] = "提示词已写好。出片改为千问生图 / MiniMax H3 出镜 / 本机拼接 / ffmpeg 烧字幕"
+        project["stage"] = "提示词已写好。出片改为 MiniMax 生图 / MiniMax H3 出镜 / 本机拼接 / ffmpeg 烧字幕"
         write_project(project)
     if project.get("tasks"):
         return

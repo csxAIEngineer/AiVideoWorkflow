@@ -1,8 +1,10 @@
 # MiniMax 接口与参数
 
-出镜走 MiniMax，经千问 DashScope 异步接口调用模型 `MiniMax/MiniMax-H3`。代码在 `AI/qwen_api/video.py`，由 `end/render_loop.py` 按镜头提交。
+出镜走 MiniMax，经千问 DashScope 异步接口调用模型 `MiniMax/MiniMax-H3`。代码在 `AI/qwen_api/video.py`，由 `end/render_loop.py` 按镜头提交。下面这一节只描述出镜，不描述静帧。
 
-旁白变量名叫 `minimax`，实际请求的是千问 TTS `qwen-audio-3.0-tts-flash`。生图走万相 `wan2.7-image`。这两处都不是 MiniMax。
+静帧走 MiniMax 官方图片接口，模型 `MiniMax-H3-Image`，代码在 `AI/minimax_api/image.py`。没有参考图时 `POST /v1/images/generations`，有参考图（含「参考图」）时 `POST /v1/images/edits`。主机是 `https://api.minimax.cn/v1`，密钥是 `MINIMAX_API_KEY`。返回的图片地址 24 小时过期，下载后立刻写入现有图片库，资产公网地址用图片库的地址。出镜不读这把密钥。
+
+旁白变量名叫 `minimax`，实际请求的是千问 TTS `qwen-audio-3.0-tts-flash`。旁白不是 MiniMax。
 
 ## 主机与鉴权
 

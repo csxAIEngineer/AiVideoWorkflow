@@ -1,4 +1,4 @@
-"""Text calls use Token Plan DeepSeek. Image stays on the Qwen host and wan2.7-image."""
+"""Text calls use Token Plan DeepSeek. Stills use MiniMax-H3-Image."""
 
 import json
 import os
@@ -7,9 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from AI.minimax_api.image import DEFAULT_BASE_URL, IMAGE_MODEL, MiniMaxImageClient
 from AI.qwen_api.graph import TEXT_HOST, TEXT_MODEL, generate_text, responses_client, text_base_host
-from AI.qwen_api.client import QwenClient
-from AI.qwen_api.image import IMAGE_MODEL, QwenImageClient
 
 
 class _FakeResponses(object):
@@ -23,7 +22,7 @@ class _FakeResponses(object):
 
 
 class TextRouteTest(unittest.TestCase):
-    def test_text_request_uses_token_plan_deepseek_and_image_stays_wan(self):
+    def test_text_request_uses_token_plan_deepseek_and_stills_use_minimax(self):
         seen = {}
 
         class FakeOpenAI(object):
@@ -50,16 +49,17 @@ class TextRouteTest(unittest.TestCase):
                 model="qwen3.8-flash",
                 client=fake,
             )
-            image = QwenImageClient(client=QwenClient(api_key="qwen-test", env_path=root))
+            image = MiniMaxImageClient(api_key="mm-test", env_path=root / ".env")
         self.assertEqual(text, "ok")
         self.assertEqual(seen["base_url"], TEXT_HOST + "/compatible-mode/v1")
         self.assertEqual(seen["api_key"], "plan-test")
         self.assertEqual(fake.calls[0]["model"], TEXT_MODEL)
         self.assertEqual(fake.calls[0]["model"], "deepseek-v4-flash-0731")
         self.assertNotEqual(fake.calls[0]["model"], IMAGE_MODEL)
-        self.assertEqual(image.client.base_url, "https://maas.qianwenaiapi.com")
-        self.assertNotIn("token-plan", image.client.base_url)
-        self.assertEqual(IMAGE_MODEL, "wan2.7-image")
+        self.assertEqual(image.base_url, DEFAULT_BASE_URL)
+        self.assertEqual(image.base_url, "https://api.minimax.cn/v1")
+        self.assertEqual(image.api_key, "mm-test")
+        self.assertEqual(IMAGE_MODEL, "MiniMax-H3-Image")
 
     def test_text_host_and_model_can_be_overridden_without_a_config_file(self):
         with patch.dict(

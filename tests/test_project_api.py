@@ -670,7 +670,13 @@ class ProjectApiTest(unittest.TestCase):
         self.assertEqual(len(icreat.submits), 1)
         self.assertEqual(icreat.submits[0]["image"], [reference])
         generated = load_run_state(folder)["steps"]["图1"]
-        self.assertEqual(generated["public_url"], "https://cdn.example/img-1.png")
+        generated_url = "%s/projects/%s/images/%s" % (
+            domain,
+            project_id,
+            urllib.parse.quote("图1.png"),
+        )
+        self.assertEqual(generated["public_url"], generated_url)
+        self.assertNotIn("cdn.example", generated["public_url"])
         self.assertNotEqual(generated["public_url"], reference)
         self.assertFalse(generated.get("asset_still"))
         self.assertEqual(upload.read_bytes(), png)
@@ -692,7 +698,7 @@ class ProjectApiTest(unittest.TestCase):
         self.assertEqual(blocked["error"]["code"], 400)
         self.assertIn("已经提交", blocked["error"]["message"])
         again.assert_not_called()
-        self.assertEqual(load_run_state(folder)["steps"]["图1"]["public_url"], "https://cdn.example/img-1.png")
+        self.assertEqual(load_run_state(folder)["steps"]["图1"]["public_url"], generated_url)
         gate_for(project_id).resume()
 
     def test_jpeg_upload_becomes_png(self):

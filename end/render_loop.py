@@ -1,4 +1,4 @@
-"""Local render: Qwen stills, Wan clips, ffmpeg join, optional Qwen narration, then write 字幕.ass."""
+"""Local render: MiniMax stills, video clips, ffmpeg join, optional Qwen narration, then write 字幕.ass."""
 
 import base64
 import json
@@ -7,6 +7,7 @@ import re
 import shutil
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -44,7 +45,7 @@ def _probe_media_url(url):
 MAX_ATTEMPTS = 5
 IMAGE_POLL_SEC = 4
 VIDEO_POLL_SEC = 10
-# wan2.7-image rejects a reference still smaller than 240 on either side.
+# Reference stills stay at least 240px on each side before an edit submit.
 MIN_REFERENCE_SIDE = 240
 FACE_LOCK = "参考图是同一身份的定妆，必须锁定同一张脸和外形，不要换脸。\n"
 TRANSIENT_HTTP = {429, 502, 503, 504}
@@ -1548,6 +1549,10 @@ class RenderContext(object):
             if reset_during_submit:
                 return dict(step)
             step["remote_task_id"] = remote_id
+            if kind == "image":
+                source_url = str(getattr(task, "url", "") or "").strip()
+                if source_url.startswith("http://") or source_url.startswith("https://"):
+                    step["source_url"] = source_url
             if poll_url:
                 step["poll_url"] = poll_url
             platform = str(getattr(task, "platform", "") or "").strip()
@@ -1563,6 +1568,16 @@ class RenderContext(object):
         with self.lock:
             step = (self.load_locked().get("steps") or {}).get(step_id) or blank_step(kind)
             attempts = self._attempts(step)
+        # A still request is not idempotent. Only a refused 429 is safe to send again.
+        if kind == "image" and getattr(error, "status", None) != 429:
+            with self.lock:
+                state = self.load_locked()
+                step = state["steps"].get(step_id) or blank_step(kind)
+                state["steps"][step_id] = step
+                step["idempotency_key"] = ""
+                self.write_locked()
+            self.pause_for_failure(step_id, kind, str(error))
+            return
         if is_transient(error):
             self.emit(
                 "重新连接：%s，第 %s/%s 次" % (label, attempts, MAX_ATTEMPTS),
@@ -2283,7 +2298,7 @@ def _ffmpeg_cover_still(source, dest, width, height):
 
 
 def ensure_reference_min_side(work_dir, project_id, asset_id, public_url="", source=None):
-    """Enlarge a reference still that wan2.7-image would reject.
+    """Enlarge a reference still below the 240px floor.
 
     Returns (url, output_file). output_file is relative to outputs/ and empty
     when this file is already large enough or not a readable image. The url is
@@ -2390,7 +2405,7 @@ def image_input_urls(ctx, asset):
     neither: no image is sent.
 
     A reference file under 240×240 is enlarged and republished first, so
-    wan2.7-image and its retries do not receive the tiny URL.
+    the edit request does not receive the tiny URL.
     """
     asset = asset or {}
     refs = [str(ref).strip() for ref in (asset.get("references") or []) if str(ref).strip()]
@@ -2519,6 +2534,72 @@ class LayoutAudio(object):
         return self._layout().compose(prompt, dest)
 
 
+class _RememberedStill(object):
+    def __init__(self, task_id, url):
+        self.id = task_id
+        self.status = "SUCCEEDED"
+        self.url = url
+        self.error = ""
+        self.revised_prompt = ""
+
+
+def _remembered_still(task_id, url):
+    return _RememberedStill(task_id, url)
+
+
+def _png_still_bytes(data):
+    """Keep png. jpeg and webp become png, matching the replace-image upload path."""
+    if not data:
+        raise RuntimeError("生图没有图片数据")
+    if data.startswith(b"\x89PNG"):
+        return data
+    if data.startswith(b"\xff\xd8\xff"):
+        suffix = ".jpg"
+    elif len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        suffix = ".webp"
+    else:
+        return data
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise RuntimeError("本机没有 ffmpeg，不能把生图结果转成 png")
+    folder = Path(tempfile.mkdtemp(prefix="aivideo-still-"))
+    source = folder / ("source" + suffix)
+    temporary = folder / "out.png"
+    try:
+        source.write_bytes(data)
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-i", str(source), str(temporary)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if proc.returncode != 0 or not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise RuntimeError("ffmpeg 转 png 失败：%s" % ((proc.stdout or "")[-300:]))
+        return temporary.read_bytes()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _publish_generated_still(ctx, asset_id, path, provider_url):
+    """Download already wrote the file. Publish those bytes and do not keep the 24h URL."""
+    path = Path(path)
+    payload = path.read_bytes()
+    png = _png_still_bytes(payload)
+    if png != payload:
+        temporary = path.with_name(path.name + ".part")
+        temporary.write_bytes(png)
+        temporary.replace(path)
+    if not ctx.project_id:
+        return provider_url
+    filename = "%s.png" % asset_id
+    if not valid_image_filename(filename):
+        filename = path.name
+    hosted = get_image_store().publish(ctx.project_id, filename, png)
+    if hosted and hosted != provider_url:
+        _append_render_log(ctx.work_dir, "生图已写入图片库 %s" % hosted)
+    return hosted
+
+
 def run_local_pipeline(
     spec,
     work_dir,
@@ -2631,7 +2712,7 @@ def run_local_pipeline(
     if images_only:
         ctx.emit("Debug：开始生图", "images", assets[0]["id"], "running")
     else:
-        steps = "千问生图 / MiniMax H3 出镜 / 本机拼接"
+        steps = "MiniMax 生图 / MiniMax H3 出镜 / 本机拼接"
         if soundtrack_enabled(mode):
             steps += " / 千问旁白"
         steps += " / 字幕另存"
@@ -2669,13 +2750,34 @@ def run_local_pipeline(
                 size=size,
             )
 
-        def poll(task_id):
-            return icreat.query_status(task_id)
+        def poll(task_id, asset_id=asset["id"]):
+            try:
+                current = icreat.query_status(task_id)
+            except (OSError, RuntimeError):
+                saved = str(ctx.reload_step(asset_id, "image").get("source_url") or "")
+                if not saved:
+                    raise
+                return _remembered_still(task_id, saved)
+            if str(getattr(current, "status", "") or "").upper() == "SUCCEEDED" and not getattr(current, "url", ""):
+                saved = str(ctx.reload_step(asset_id, "image").get("source_url") or "")
+                if saved:
+                    current.url = saved
+            return current
 
-        def download(task, path):
-            result = icreat.get_result(getattr(task, "id", "") or "")
-            icreat.download_image(result.url, path)
-            return result.url
+        def download(task, path, asset_id=asset["id"]):
+            url = str(getattr(task, "url", "") or "")
+            revised = str(getattr(task, "revised_prompt", "") or "")
+            if not url:
+                result = icreat.get_result(getattr(task, "id", "") or "")
+                url = str(getattr(result, "url", "") or "")
+                if not revised:
+                    revised = str(getattr(result, "revised_prompt", "") or "")
+            if not url:
+                raise RuntimeError("生图没有返回图片地址")
+            icreat.download_image(url, path)
+            if revised:
+                _append_render_log(ctx.work_dir, "生图提示词已增强：%s" % revised[:500])
+            return _publish_generated_still(ctx, asset_id, path, url)
 
         fresh = ctx.run_remote(
             asset["id"],

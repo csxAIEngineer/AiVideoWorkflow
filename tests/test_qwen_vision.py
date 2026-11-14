@@ -259,9 +259,9 @@ class QwenVisionTests(unittest.TestCase):
         self.assertNotIn("DEEPSEEK_API_KEY", text)
         self.assertNotIn("CR_API_KEY", text)
         self.assertNotIn("ICREAT_API_KEY", text)
-        self.assertNotIn("MINIMAX_API_KEY", text)
+        self.assertIn("MINIMAX_API_KEY=", text)
         for line in text.splitlines():
-            if line.startswith("QWEN_API_KEY=") or line.startswith("TOKE_PLAN_QWEN_API_KEY="):
+            if line.startswith(("QWEN_API_KEY=", "TOKE_PLAN_QWEN_API_KEY=", "MINIMAX_API_KEY=")):
                 self.assertEqual(line.split("=", 1)[1].strip(), "")
 
     def test_skill_keeps_identity_on_the_picture(self):

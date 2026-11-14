@@ -182,14 +182,17 @@ def _client_key(client):
 
 def _image_client():
     global _IMAGE
-    from AI.qwen_api.client import load_dotenv, qwen_api_key, resolve_qwen_host
-    from AI.qwen_api.image import QwenImageClient
+    from AI.minimax_api.image import DEFAULT_BASE_URL, MiniMaxImageClient, minimax_api_key
+    from AI.qwen_api.client import load_dotenv
 
     load_dotenv()
-    host = resolve_qwen_host()
-    key, _var = qwen_api_key()
-    if _IMAGE is None or _client_host(_IMAGE) != host or _client_key(_IMAGE) != key:
-        _IMAGE = QwenImageClient()
+    key = minimax_api_key()
+    if (
+        _IMAGE is None
+        or getattr(_IMAGE, "api_key", "") != key
+        or getattr(_IMAGE, "base_url", "") != DEFAULT_BASE_URL
+    ):
+        _IMAGE = MiniMaxImageClient()
     return _IMAGE
 
 
@@ -206,12 +209,16 @@ def _video_client():
 
 
 def _image(task):
-    return {
+    payload = {
         "id": getattr(task, "id", "") or "",
         "status": getattr(task, "status", "") or "",
         "url": getattr(task, "url", "") or "",
         "error": getattr(task, "error", "") or "",
     }
+    revised = str(getattr(task, "revised_prompt", "") or "")
+    if revised:
+        payload["revised_prompt"] = revised
+    return payload
 
 
 def _video(task):
