@@ -320,14 +320,14 @@ class FeedDurationTest(unittest.TestCase):
         self.assertIn("时长被压缩", report)
         self.assertIn("38", report)
 
-    def test_deleted_dialogue_fails_and_the_loop_repairs_duration(self):
+    def test_deleted_dialogue_is_restored_at_the_planned_durations(self):
         spoken = BOARD + "\n对白：别改了\n"
         errors = feed_duration_failures(SHORT_FEED, spoken)
         self.assertTrue(any("别改了" in item for item in errors))
         prompts = []
 
         def checker(text, state):
-            found = feed_duration_failures(text, spoken)
+            found = feed_duration_failures(text, spoken, state.get("shots"))
             return {
                 "ok": not found,
                 "errors": found,
@@ -341,27 +341,27 @@ class FeedDurationTest(unittest.TestCase):
                 return "节点正文"
             if role in ("generator", "director"):
                 prompts.append(messages[-1]["content"])
-                if len(prompts) == 1:
-                    return json.dumps({"feed": SHORT_FEED}, ensure_ascii=False)
-                restored = SHORT_FEED.replace("duration: 9", "duration: 13", 1)
-                restored = restored.replace("duration: 8", "duration: 13", 1)
-                restored = restored.replace("duration: 11", "duration: 15", 1)
-                restored = restored.replace("duration: 10", "duration: 19", 1)
-                restored += "\n<d>[Chinese] 别改了</d>\n"
-                return json.dumps({"feed": restored}, ensure_ascii=False)
+                return json.dumps({"feed": SHORT_FEED}, ensure_ascii=False)
             return json.dumps({
                 "verdict": "revise",
                 "feed": SENTINEL,
                 "issues": [{"target": "时长", "severity": "blocking", "detail": "总时长被缩短"}],
             }, ensure_ascii=False)
 
-        result = run_feed_loop(spoken, shots=[{"duration": seconds} for seconds in SHOTS], max_attempts=3, complete=complete, checker=checker)
+        shots = [{"duration": seconds} for seconds in SHOTS]
+        result = run_feed_loop(spoken, shots=shots, max_attempts=3, complete=complete, checker=checker)
         self.assertEqual(result["status"], "pass", result["machine_report"])
-        self.assertEqual(result["attempts"], 2)
+        self.assertEqual(result["attempts"], 1)
         self.assertNotIn(SENTINEL, result["feed"])
-        self.assertIn("时长被压缩", prompts[1])
+        planned = [sum(group) for group in group_shot_durations(SHOTS)]
+        declared = []
+        for line in result["feed"].splitlines():
+            if line.startswith("duration:"):
+                declared.append(float(line.split(":", 1)[1]))
+        self.assertEqual(declared, planned)
+        self.assertEqual(sum(declared), 60)
         self.assertIn("别改了", result["feed"])
-        self.assertIn("总时长被缩短", prompts[1])
+        self.assertGreater(result["feed"].count("## 【封装单元"), 1)
         self.assertTrue(result["critic_report"]["stripped_rewrite"])
 
 

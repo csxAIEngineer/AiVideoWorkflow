@@ -14,6 +14,13 @@ fills those bodies. ``summary`` and ``retention_analysis`` are not written.
 If the model still emits them, restore strips those sections before the gate.
 A JSON object or a merged ``detailed_description`` is unwrapped back into
 that scaffold before the gate runs.
+
+Unit count and each unit's duration are locked from the 15s groups before the
+model writes. After it writes, a draft with a different unit count is not
+stored as-is: the planned headings and durations are materialized, and a
+storyboard spoken line is put back into the unit that owns that shot even
+when the model omitted the ``<d>`` tag. A duration or dialogue failure names
+the packing writers so the repair runs those nodes again.
 """
 
 import importlib
@@ -301,25 +308,195 @@ def packing_plan_note(state):
     return "\n\n".join(part for part in parts if part)
 
 
-def correct_unit_durations(text, groups):
-    """Overwrite each unit duration when the draft has exactly these units.
+# A duration or dialogue failure does not name a skill file. These originals
+# own unit length and spoken lines, so the repair brief names them and
+# select_nodes runs those writers again.
+_UNIT_WRITERS = (
+    "sd-feed-engine/references/feed-mode-and-gates.md",
+    "short-drama-director/references/prompt-feeding-checklist.md",
+)
+_DIALOGUE_WRITERS = (
+    "sd-feed-engine/SKILL.md",
+    "short-drama-director/references/prompt-feeding-checklist.md",
+)
+_H3_UNIT_WRITER = "short-drama-director/references/h3-adapter.md"
+_BOARD_HEAD = re.compile(r"^##\s*(?:镜号\s*)?(S\d+)\b", re.I)
+_BOARD_SPOKEN = re.compile(r"^(?:对白|旁白)\s*[:：]\s*(.+)$")
+_BOARD_DURATION = re.compile(r"^时长\s*[:：]\s*(\d+(?:\.\d+)?)")
+_SHOT_BOUNDARY = re.compile(r"(?=\[Shot\s+\d+\])")
+_H3_FIELD_MARK = re.compile(
+    r"(?m)^(?P<name>%s):[ \t]*(?P<rest>.*)$" % "|".join(H3_SECTIONS)
+)
 
-    A different unit count is left alone. The machine check reports that.
-    This does not invent another grouping.
+
+def correct_unit_durations(text, groups):
+    """Write the planned heading and duration onto every unit.
+
+    The sums are the 15s groups. A draft that used a shot length, or that
+    closed early as one unit, is rewritten to this count. A span over 15s is
+    not clamped. This does not invent a different grouping.
     """
-    planned = [sum(group) for group in groups or []]
+    planned_groups = [list(group) for group in groups or []]
+    planned = [sum(group) for group in planned_groups]
     raw = str(text or "")
     if not planned:
         return raw
     heads = list(UNIT_HEAD_LINE.finditer(raw))
     if len(heads) != len(planned):
-        return raw
+        return _materialize_units(raw, planned_groups)
     runner = importlib.import_module("end.stage_runner")
     parts = [raw[: heads[0].start()]]
+    total = len(planned)
     for index, match in enumerate(heads):
         end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
-        parts.append(_write_unit_duration(raw[match.start() : end], planned[index], runner))
+        block = _rewrite_heading(raw[match.start() : end], index + 1, total)
+        parts.append(_write_unit_duration(block, planned[index], runner))
     return "".join(parts)
+
+
+def _rewrite_heading(block, index, total):
+    match = UNIT_HEAD_LINE.search(block)
+    if not match:
+        return block
+    return block[: match.start()] + unit_heading(index, total) + block[match.end() :]
+
+
+def _json_document(text):
+    """A Seedance JSON blob has no line-start unit headings. Leave it wrapped."""
+    peeled = _LEADING_DURATION.sub("", str(text or ""), count=1).strip()
+    peeled = strip_fence(peeled).strip()
+    return bool(peeled) and peeled[0] in "{["
+
+
+def _draft_uses_h3(text):
+    raw = str(text or "")
+    return any(name in raw for name in H3_SECTIONS)
+
+
+def _source_units(raw, heads):
+    if not heads:
+        text = str(raw or "").strip()
+        if not text:
+            return []
+        return [_parse_one_block(text)]
+    units = []
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        units.append(_parse_one_block(raw[match.start() : end]))
+    return units
+
+
+def _description_pieces(unit):
+    sections = unit.get("sections") or {}
+    desc = str(sections.get("detailed_description") or "")
+    parts = _SHOT_BOUNDARY.split(desc)
+    shots = [part.strip() for part in parts[1:] if part.strip()]
+    if shots:
+        lead = parts[0].strip()
+        if lead:
+            shots[0] = lead + "\n" + shots[0]
+        return shots
+    if desc.strip():
+        return [desc.strip()]
+    return []
+
+
+def _assign_source_units(sources, groups):
+    """Shot-marked prose follows the plan's shot counts. Other prose stays in order."""
+    flat = []
+    shot_mode = False
+    for unit in sources:
+        pieces = _description_pieces(unit)
+        sections = unit.get("sections") or {}
+        if any("[Shot" in piece for piece in pieces):
+            shot_mode = True
+        if not pieces:
+            if any(str(sections.get(name) or "").strip() for name in H3_SECTIONS if name != "detailed_description"):
+                flat.append(("", sections))
+            continue
+        for piece in pieces:
+            flat.append((piece, sections))
+    buckets = [[] for _ in groups]
+    if not groups:
+        return buckets
+    if not shot_mode:
+        for index, item in enumerate(flat):
+            buckets[min(index, len(groups) - 1)].append(item)
+        return buckets
+    cursor = 0
+    last = len(groups) - 1
+    for index, group in enumerate(groups):
+        if index == last:
+            buckets[index] = flat[cursor:]
+        else:
+            take = len(group)
+            buckets[index] = flat[cursor : cursor + take]
+            cursor += take
+    return buckets
+
+
+def _render_planned_unit(index, total, seconds, items, h3, runner):
+    lines = [
+        unit_heading(index, total),
+        "duration: %s" % runner.format_seconds(seconds),
+    ]
+    carried = {name: [] for name in H3_SECTIONS}
+    seen = {name: set() for name in H3_SECTIONS}
+    descriptions = []
+    for piece, source in items:
+        if str(piece or "").strip():
+            descriptions.append(str(piece).strip())
+        for name in H3_SECTIONS:
+            if name == "detailed_description":
+                continue
+            body = str((source or {}).get(name) or "").strip()
+            if body and body not in seen[name]:
+                seen[name].add(body)
+                carried[name].append(body)
+    rendered = {name: "\n\n".join(carried[name]).strip() for name in H3_SECTIONS}
+    rendered["detailed_description"] = "\n\n".join(descriptions).strip()
+    if h3:
+        for name in H3_SECTIONS:
+            body = rendered[name]
+            if not body:
+                continue
+            lines.append("%s:" % name)
+            lines.append(body)
+    elif rendered["detailed_description"]:
+        lines.append(rendered["detailed_description"])
+    return "\n".join(lines)
+
+
+def _materialize_units(raw, groups):
+    """Build one block per planned group. Durations are the group sums."""
+    if not groups:
+        return raw
+    if not UNIT_HEAD_LINE.search(raw) and _json_document(raw):
+        return raw
+    if not str(raw or "").strip():
+        return raw
+    runner = importlib.import_module("end.stage_runner")
+    heads = list(UNIT_HEAD_LINE.finditer(raw))
+    prefix = raw[: heads[0].start()] if heads else ""
+    buckets = _assign_source_units(_source_units(raw, heads), groups)
+    h3 = _draft_uses_h3(raw)
+    blocks = []
+    total = len(groups)
+    for index, group in enumerate(groups):
+        blocks.append(_render_planned_unit(
+            index + 1,
+            total,
+            sum(group),
+            buckets[index],
+            h3,
+            runner,
+        ))
+    body = "\n\n".join(blocks)
+    if body and not body.endswith("\n"):
+        body += "\n"
+    if str(prefix or "").strip():
+        return prefix.rstrip() + "\n\n" + body
+    return body
 
 
 def _write_unit_duration(block, seconds, runner):
@@ -390,6 +567,223 @@ def _rewrite_d_inner(inner, spoken, core):
         return None
     rebuilt = "%s %s" % (language, spoken) if language else spoken
     return leading + rebuilt + trailing
+
+
+def _storyboard_shot_spoken(text):
+    """Spoken lines in storyboard order, one bucket per shot heading."""
+    shots = []
+    current = None
+    loose = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if _BOARD_HEAD.match(stripped):
+            if current is not None:
+                shots.append(current)
+            current = {"spoken": [], "duration": None}
+            continue
+        spoken = _BOARD_SPOKEN.match(stripped)
+        if spoken:
+            uttered = spoken.group(1).strip()
+            if not uttered:
+                continue
+            if current is None:
+                loose.append(uttered)
+            else:
+                current["spoken"].append(uttered)
+            continue
+        duration = _BOARD_DURATION.match(stripped)
+        if duration and current is not None and current["duration"] is None:
+            current["duration"] = float(duration.group(1))
+    if current is not None:
+        shots.append(current)
+    if loose:
+        if shots:
+            shots[0]["spoken"] = loose + shots[0]["spoken"]
+        else:
+            shots.append({"spoken": loose, "duration": None})
+    return shots
+
+
+def _positive_float(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
+
+
+def _spoken_buckets(state):
+    """One spoken-line list per positive shot the packing groups consumed."""
+    shots = _storyboard_shot_spoken(_storyboard_text(state))
+    durations = shot_duration_list(state)
+    if not shots:
+        return []
+    positive = [item for item in durations if _positive_float(item) is not None]
+    timed = [shot for shot in shots if _positive_float(shot.get("duration")) is not None]
+    leftover = []
+    if timed and len(timed) == len(positive):
+        timed_ids = {id(shot) for shot in timed}
+        for shot in shots:
+            if id(shot) not in timed_ids:
+                leftover.extend(shot["spoken"])
+        shots = timed
+        durations = positive
+    elif len(shots) != len(durations):
+        buckets = []
+        pending = []
+        used = 0
+        for seconds in durations:
+            lines = list(shots[used]["spoken"]) if used < len(shots) else []
+            used += 1
+            pending.extend(lines)
+            if _positive_float(seconds) is None:
+                continue
+            buckets.append(pending)
+            pending = []
+        for shot in shots[used:]:
+            pending.extend(shot["spoken"])
+        if pending:
+            if buckets:
+                buckets[-1].extend(pending)
+            else:
+                buckets.append(pending)
+        return buckets
+    buckets = []
+    pending = []
+    for shot, seconds in zip(shots, durations):
+        pending.extend(shot["spoken"])
+        if _positive_float(seconds) is None:
+            continue
+        buckets.append(list(pending))
+        pending = []
+    pending.extend(leftover)
+    if pending:
+        if buckets:
+            buckets[-1].extend(pending)
+        else:
+            buckets.append(pending)
+    return buckets
+
+
+def spoken_lines_for_units(state, groups):
+    """Storyboard lines for each planned unit, in shot order."""
+    buckets = _spoken_buckets(state)
+    units = [[] for _ in (groups or [])]
+    if not units:
+        return units
+    cursor = 0
+    for index, group in enumerate(groups):
+        for _shot in group:
+            if cursor < len(buckets):
+                units[index].extend(buckets[cursor])
+            cursor += 1
+    if cursor < len(buckets):
+        for extra in buckets[cursor:]:
+            units[-1].extend(extra)
+    return units
+
+
+def _append_to_field(body, name, snippet):
+    matches = list(_H3_FIELD_MARK.finditer(body))
+    target = None
+    for index, match in enumerate(matches):
+        if match.group("name") == name:
+            target = index
+            break
+    if target is None:
+        return None
+    if target + 1 < len(matches):
+        at = matches[target + 1].start()
+        return body[:at].rstrip() + "\n" + snippet + "\n" + body[at:]
+    return body.rstrip() + "\n" + snippet
+
+
+def _insert_field(body, name, snippet):
+    section = "%s:\n%s" % (name, snippet)
+    matches = list(_H3_FIELD_MARK.finditer(body))
+    for match in matches:
+        if match.group("name") == "overall_soundscape":
+            return body[: match.start()] + section + "\n" + body[match.start() :]
+    return body.rstrip() + "\n" + section
+
+
+def _insert_spoken(block, line, h3_fields):
+    """Put the exact storyboard line in this unit, outside overall_soundscape."""
+    spoken = str(line or "").strip()
+    if not spoken or spoken in block:
+        return block
+    snippet = "<d>[Chinese] %s</d>" % spoken
+    trailing = block[len(block.rstrip()) :]
+    body = block.rstrip()
+    placed = _append_to_field(body, "detailed_description", snippet)
+    if placed is None and h3_fields:
+        placed = _insert_field(body, "detailed_description", snippet)
+    if placed is None:
+        placed = body + "\n" + snippet
+    return placed + trailing
+
+
+def place_owned_spoken_lines(text, state):
+    """Write each storyboard line into the unit that owns its shot.
+
+    A line the model never wrapped in ``<d>`` is still written. A line already
+    in that unit is left where it is. Lines are not copied into
+    overall_soundscape.
+    """
+    groups = packing_groups(state)
+    owned = spoken_lines_for_units(state, groups)
+    if not groups or not any(owned):
+        return text
+    raw = str(text or "")
+    heads = list(UNIT_HEAD_LINE.finditer(raw))
+    if len(heads) != len(groups):
+        return raw
+    h3_fields = _draft_uses_h3(raw)
+    parts = [raw[: heads[0].start()]]
+    changed = False
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        block = raw[match.start() : end]
+        updated = block
+        for line in owned[index]:
+            updated = _insert_spoken(updated, line, h3_fields)
+        if updated != block:
+            changed = True
+        parts.append(updated)
+    if not changed:
+        return raw
+    return "".join(parts)
+
+
+def packing_repair_targets(machine_report, h3=False):
+    """Skill paths a duration or dialogue failure must send back through.
+
+    Other failures name nothing here. ``select_nodes`` then leaves them on
+    the director, which is what an unnamed H1 report already does.
+    """
+    report = machine_report or {}
+    errors = "\n".join(str(item) for item in (report.get("errors") or []))
+    if not errors.strip():
+        errors = str(report.get("report") or "")
+    found = []
+    duration = any(mark in errors for mark in ("时长被压缩", "不能钳成", "必须把这一镜拆开"))
+    dialogue = "对白被压缩" in errors
+    if duration:
+        found.extend(_UNIT_WRITERS)
+        if h3:
+            found.append(_H3_UNIT_WRITER)
+    if dialogue:
+        found.extend(_DIALOGUE_WRITERS)
+    ordered = []
+    seen = set()
+    for relative in found:
+        if relative in seen:
+            continue
+        seen.add(relative)
+        ordered.append(relative)
+    return ordered
 
 
 def _section_name(key):
@@ -730,12 +1124,17 @@ def restore_h3_scaffold(text, state=None):
 
 
 def apply_packing_plan(text, state):
-    """Unwrap an H3 blob, fill planned durations, then restore stripped lines."""
+    """Unwrap an H3 blob, lock the planned units, then put spoken lines back.
+
+    Durations come from the groups. A missing storyboard line is written into
+    the unit that owns that shot, even when the model never opened a ``<d>``.
+    """
     runner = importlib.import_module("end.stage_runner")
     prepared = restore_h3_scaffold(text, state) if _h3_locked(state) else str(text or "")
     corrected = correct_unit_durations(prepared, packing_groups(state))
     spoken = runner.storyboard_spoken_lines(_storyboard_text(state))
-    return restore_spoken_lines(corrected, spoken)
+    restored = restore_spoken_lines(corrected, spoken)
+    return place_owned_spoken_lines(restored, state)
 
 
 def generator_messages(state):
@@ -760,6 +1159,12 @@ def generator_messages(state):
     )
     if note:
         user = user + "\n\n" + note
+    targets = packing_repair_targets(state.get("machine_report"), _h3_locked(state))
+    if targets:
+        user = user.rstrip() + "\n\n" + "\n".join((
+            "时长或对白没过投喂机检。重跑这些节点原文，按已经算好的单元数和 duration 重写画面与对白：",
+            *targets,
+        ))
     return [system, {"role": "user", "content": user}]
 
 
