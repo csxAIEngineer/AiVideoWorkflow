@@ -1367,6 +1367,11 @@ def check_stage(folder, stage, locks, title=""):
         code, report = check_feed(path, locks.get("model") or "h3", mode, locks.get("track") or "1")
         spec_now = _load_spec(folder)
         extras = feed_duration_failures(text, _read(internal / "分镜.md"), spec_now.get("shots"))
+        if str((locks or {}).get("model") or "h3").strip().lower() == "h3":
+            from Agents.workers.feed import agreed_style, style_lock_failures
+
+            script = _read(internal / "剧本.md") or str(spec_now.get("script") or "")
+            extras.extend(style_lock_failures(text, agreed_style({"script": script, "locks": locks or {}})))
         if code != 0:
             if extras:
                 return False, (report or "").rstrip() + "\n" + "\n".join(extras)
@@ -3820,10 +3825,12 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
             "_worker_attempts": int(outcome.get("attempts") or 0),
         }
     board = _read(Path(folder) / "_内部_" / "分镜.md")
+    script = _read(Path(folder) / "_内部_" / "剧本.md") or str(spec.get("script") or "")
     outcome = run_feed_loop(
         board,
         locks=locks,
         shots=spec.get("shots") or [],
+        script=script,
         opening=opening,
         prior_draft=_read(Path(folder) / "_内部_" / "feed.md"),
         skill_pack=skill_pack,

@@ -100,17 +100,24 @@ def _feed_skill():
     runner = importlib.import_module("end.stage_runner")
     gates = importlib.import_module("end.gates")
     checks = importlib.import_module("Agents.checks")
+    feed = importlib.import_module("Agents.workers.feed")
     return "\n\n".join((
         "来源：machine-check-manual.md 的 H1~H12。脚本是 validate_prompt.py，由 check_feed / check_prompt 调用。",
         "路径：%s" % _VALIDATOR.relative_to(_ROOT),
         _slice(manual, "**退出码与交付铁律**", "\n\n"),
         _slice(manual, "## 三、H1~H12", "## 四、"),
-        "本分支在 validate_prompt 之后还有两条硬门。超长跨度要拆开，禁止钳成 15 秒，总时长不得短于分镜。",
+        "本分支在 validate_prompt 之后还有硬门。超长跨度要拆开，禁止钳成 15 秒，总时长不得短于分镜。",
+        "画风锁也是硬门。程序把剧本「画风」或项目已定画风写成每一段 subject_definitions 的第一行。"
+        "缺这句、写成别的句子、或多写一种风格，都是 FAIL。只出现在房间或道具主体上不算通过。"
+        "不要要求生成员另写一种画风。",
         _source(runner.feed_duration_failures),
         _doc(runner.patch_h3_voiceover),
         _source(gates.check_feed),
         _source(gates.check_prompt),
         _source(checks.check_feed_draft),
+        _source(feed.style_lock_failures),
+        _source(feed.agreed_style),
+        _source(feed.style_lock_line),
     ))
 
 

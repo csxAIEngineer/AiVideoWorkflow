@@ -15,6 +15,12 @@ If the model still emits them, restore strips those sections before the gate.
 A JSON object or a merged ``detailed_description`` is unwrapped back into
 that scaffold before the gate runs.
 
+The episode style is not written by this generator. It is the script line
+``画风``, or the project lock when that line is absent. The program writes
+that exact sentence as the first line of every unit's ``subject_definitions``.
+A missing line, a different sentence, or a second style the model invented
+fails the feed gate.
+
 Unit count and each unit's duration are locked from the 15s groups before the
 model writes. After it writes, a draft with a different unit count is not
 stored as-is: the planned headings and durations are materialized, and a
@@ -97,6 +103,8 @@ H3_FILL_ONLY = (
     )
     % UNIT_NAME
     + H3_SUBJECT_SOUND_RULE
+    + "若简报里有锁定句，subject_definitions 的第一行只能是那一句。"
+    "不要自己写画风，不要翻译，不要另写一种风格。"
 )
 _H3_FIELD_NAMES = H3_SECTIONS + H3_OMITTED
 _H3_NAME_ALT = "|".join(_H3_FIELD_NAMES)
@@ -123,7 +131,8 @@ CRITIC_SYSTEM = "\n".join((
     '{"verdict":"accept 或 revise","issues":[{"target":"%s","severity":"blocking 或 note","detail":"一句话"}]}' % UNIT_NAME,
     "没有要改的地方时 verdict 为 accept，issues 为空数组。",
     "detail 只指出问题，不写替换后的单元。",
-    "评判标准只是机检技能：validate_prompt 的 H1–H12，加上时长不得缩短、画外音闭口必须紧跟画外音。",
+    "评判标准只是机检技能：validate_prompt 的 H1–H12，加上时长不得缩短、画外音闭口必须紧跟画外音、画风锁。",
+    "有锁定画风时，每一段 subject_definitions 的第一行必须是同一句。缺这句、写成别的句子、或多写一种风格，都是 blocking。只出现在房间或道具主体上不算。",
     "summary 和 retention_analysis 不是封装字段。缺了不算问题，不要要求补上。",
     "不要用写作技能审查。机检会在你之后再跑。单独的 WARN 不算失败。",
 ))
@@ -137,6 +146,7 @@ class FeedState(TypedDict, total=False):
     draft: str
     locks: dict
     storyboard: str
+    script: str
     shots: list
     skill_pack: str
     partials: list
@@ -151,6 +161,271 @@ class FeedState(TypedDict, total=False):
     passed: bool
     generator_note: str
     error: str
+
+
+# The program writes this line. The generator does not invent or paraphrase it.
+# It is the first line of subject_definitions, inside the Ref2VA four sections.
+# It is not a 【画幅风格】 heading and it is not a fifth field.
+STYLE_LOCK_LABEL = "画面风格："
+_SCRIPT_STYLE = re.compile(
+    r"(?m)^[ \t]*(?:[-*+][ \t]+)?(?:#{1,6}[ \t]*)?(?:\*\*|__)?画风(?:\*\*|__)?[ \t]*[:：][ \t]*(.+?)\s*$"
+)
+_STYLE_SLOT = re.compile(r"^[ \t]*画面风格[ \t]*[:：]")
+_OTHER_STYLE_LINE = re.compile(r"(?im)^[ \t]*(?:画风|visual style)[ \t]*[:：][ \t]*\S")
+_RENDERED_IN_STYLE = re.compile(r"(?i)\brendered\s+in\s+[^\n]{0,180}?\bstyle\b")
+_LIVE_ACTION_STYLE = re.compile(r"(?i)\blive-action\s+style\b|\blive action\s+style\b")
+_STYLE_WRITERS = (
+    "sd-feed-engine/references/feed-mode-and-gates.md",
+    "short-drama-director/references/h3-adapter.md",
+    "short-drama-director/references/prompt-feeding-checklist.md",
+)
+
+
+def _flat_style(text):
+    return " ".join(str(text or "").split())
+
+
+def script_style_line(text):
+    """The script's own ``画风：`` line. ``画风正文`` and prose that merely says 画风 do not count."""
+    match = _SCRIPT_STYLE.search(str(text or ""))
+    if not match:
+        return ""
+    return _flat_style(match.group(1))
+
+
+def agreed_style(state=None, script=None, locks=None):
+    """The episode style already agreed. An explicit script ``画风`` wins.
+
+    There is no packing default. An empty script line does not wipe
+    ``style_look``, and a fallback phrase is not invented here.
+    """
+    state = state or {}
+    if script is None:
+        script = state.get("script") or ""
+    if locks is None:
+        locks = state.get("locks") or {}
+    found = script_style_line(script)
+    if found:
+        return found
+    look = _flat_style((locks or {}).get("style_look"))
+    if look:
+        return look
+    return _flat_style((locks or {}).get("style"))
+
+
+def style_lock_line(style):
+    """The exact sentence written into every packed unit."""
+    text = _flat_style(style)
+    if not text:
+        return ""
+    return STYLE_LOCK_LABEL + text
+
+
+def style_lock_rule(style):
+    """Pre-written rule. It does not ask the model to compose a style."""
+    line = style_lock_line(style)
+    if not line:
+        return ""
+    return "\n".join((
+        "本集画风已经锁定。程序会把下面这一句写进每一段 subject_definitions 的第一行。",
+        "不要自己写画风，不要翻译，不要改字，不要删掉这句，也不要再写一种风格。",
+        "只写在某一个房间或道具的主体上不算。",
+        "锁定句：%s" % line,
+    ))
+
+
+def _style_units(text):
+    raw = str(text or "")
+    heads = list(UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        if "subject_definitions" in raw and raw.strip():
+            return [raw]
+        return []
+    units = []
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        units.append(raw[match.start():end])
+    return units
+
+
+def _unit_label(block, index, total):
+    match = re.search(r"(封装单元|投喂单元)\s*(\d+)\s*/\s*(\d+)", str(block or ""))
+    if match:
+        return "%s %s/%s" % (match.group(1), match.group(2), match.group(3))
+    return "%s %s/%s" % (UNIT_NAME, index, total)
+
+
+def _subject_body(block):
+    """``(header_index, inline_rest, body_lines, next_index)`` or None.
+
+    ``body_lines`` keep their original endings. The span stops at the next
+    Ref2VA field, so the style sentence stays inside subject_definitions.
+    """
+    lines = str(block or "").splitlines(keepends=True)
+    header_at = None
+    inline = ""
+    for index, raw_line in enumerate(lines):
+        core = raw_line.strip()
+        field = _H3_FIELD_LINE.match(core)
+        if field and field.group(1) == "subject_definitions":
+            header_at = index
+            inline = field.group(2).strip()
+            break
+    if header_at is None:
+        return None
+    body_end = header_at + 1
+    while body_end < len(lines):
+        field = _H3_FIELD_LINE.match(lines[body_end].strip())
+        if field and field.group(1) in _H3_FIELD_NAMES:
+            break
+        body_end += 1
+    return header_at, inline, lines[header_at + 1:body_end], body_end, lines
+
+
+def _first_body_line(inline, body_lines):
+    if inline:
+        return inline
+    for raw_line in body_lines:
+        stripped = raw_line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _style_phrase_hits(text, line):
+    """Invented style sentences. The exact lock line is not one of them.
+
+    Matching is the whole ``rendered in … style`` phrase or a style label.
+    A word inside ordinary prose, such as "washed away", is not a style.
+    """
+    hits = []
+    seen = set()
+    for raw_line in str(text or "").splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped == line:
+            continue
+        found = ""
+        if _STYLE_SLOT.match(stripped) or _OTHER_STYLE_LINE.match(stripped):
+            found = stripped
+        else:
+            rendered = _RENDERED_IN_STYLE.search(stripped)
+            live = _LIVE_ACTION_STYLE.search(stripped)
+            if rendered:
+                found = _flat_style(rendered.group(0))
+            elif live:
+                found = _flat_style(live.group(0))
+        if not found or found == line or found in line or found in seen:
+            continue
+        seen.add(found)
+        hits.append(found)
+    return hits
+
+
+def style_lock_failures(text, style):
+    """Fail a packed unit whose style line is missing, different, or extra.
+
+    The pass condition is the exact lock sentence as the first line of
+    ``subject_definitions``. A style mention on a room or prop subject does
+    not pass. This is not a keyword search: "washed away" does not count as
+    the locked style, and it does not fail a unit that already has the sentence.
+    """
+    line = style_lock_line(style)
+    if not line:
+        return []
+    units = _style_units(text)
+    if not units:
+        return []
+    total = len(units)
+    errors = []
+    for index, block in enumerate(units, 1):
+        label = _unit_label(block, index, total)
+        parsed = _subject_body(block)
+        first = ""
+        if parsed is not None:
+            _header, inline, body_lines, _end, _lines = parsed
+            first = _first_body_line(inline, body_lines)
+        if first != line:
+            if first and _STYLE_SLOT.match(first):
+                errors.append(
+                    "画风锁：%s 用了别的风格「%s」，不是锁定句「%s」。"
+                    "不要改写画风。subject_definitions 第一行必须是锁定句。"
+                    % (label, first, line)
+                )
+            else:
+                errors.append(
+                    "画风锁：%s 缺少锁定句「%s」。"
+                    "只写在房间或道具主体上不算。subject_definitions 第一行必须是这一句。"
+                    % (label, line)
+                )
+        for hit in _style_phrase_hits(block, line):
+            if hit == first:
+                continue
+            errors.append(
+                "画风锁：%s 多写了风格「%s」。删掉这句，只留锁定句「%s」。不要另拟画风。"
+                % (label, hit, line)
+            )
+    return errors
+
+
+def _with_newline(raw_line):
+    if raw_line.endswith(("\n", "\r")):
+        return raw_line
+    return raw_line + "\n"
+
+
+def _inject_block(block, line):
+    """Put the lock on the first subject line. Leave a different style sentence in place.
+
+    The first ``画面风格：`` slot is the program's line, so a wrong sentence
+    there is replaced. A later style sentence is an extra the gate still sees.
+    Exact copies of the lock line are not repeated.
+    """
+    parsed = _subject_body(block)
+    if parsed is None:
+        return block
+    header_at, inline, body_lines, body_end, lines = parsed
+    if not inline and _first_body_line("", body_lines) == line:
+        return block
+    kept = []
+    if inline and inline != line and not _STYLE_SLOT.match(inline):
+        kept.append(inline + "\n")
+    seen_content = False
+    for raw_line in body_lines:
+        stripped = raw_line.strip()
+        if not stripped:
+            kept.append(_with_newline(raw_line))
+            continue
+        if stripped == line:
+            continue
+        if not inline and not seen_content and _STYLE_SLOT.match(stripped):
+            seen_content = True
+            continue
+        seen_content = True
+        kept.append(_with_newline(raw_line))
+    while kept and not kept[0].strip():
+        kept.pop(0)
+    rebuilt = lines[:header_at] + ["subject_definitions:\n", line + "\n"] + kept + lines[body_end:]
+    return "".join(rebuilt)
+
+
+def inject_style_lock(text, style):
+    """Write the same lock sentence into every unit that has subject_definitions.
+
+    A model-written ``画面风格：`` line in that slot is replaced. Other prose,
+    including an invented ``rendered in … style`` sentence, is left for the gate.
+    """
+    line = style_lock_line(style)
+    raw = str(text or "")
+    if not line or "subject_definitions" not in raw:
+        return raw
+    heads = list(UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        return _inject_block(raw, line)
+    parts = [raw[: heads[0].start()]]
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        parts.append(_inject_block(raw[match.start():end], line))
+    return "".join(parts)
 
 
 def _looks_like_feed(text):
@@ -235,31 +510,50 @@ def _h3_locked(state):
 def _generator_system(state):
     if not _h3_locked(state):
         return GENERATOR_SYSTEM
-    return GENERATOR_SYSTEM + "\n" + H3_FILL_ONLY
+    system = GENERATOR_SYSTEM + "\n" + H3_FILL_ONLY
+    rule = style_lock_rule(agreed_style(state))
+    if rule:
+        system += "\n" + rule
+    return system
 
 
-def h3_packing_scaffold(groups):
-    """Headings, planned durations, and the four empty section lines.
+def _section_lines(style):
+    line = style_lock_line(style)
+    rows = []
+    for name in H3_SECTIONS:
+        if name == "subject_definitions" and line:
+            rows.append("subject_definitions:\n%s" % line)
+        else:
+            rows.append("%s:" % name)
+    return "\n".join(rows)
+
+
+def h3_packing_scaffold(groups, style=""):
+    """Headings, planned durations, and the four section lines.
 
     The model fills the bodies. It does not invent another Ref2VA layout,
-    and it does not write summary or retention_analysis.
+    and it does not write summary or retention_analysis. When ``style`` is
+    the agreed episode style, the lock sentence is already the first line of
+    subject_definitions. The model does not write that sentence.
     """
     runner = importlib.import_module("end.stage_runner")
     groups = list(groups or [])
     if not groups:
         return ""
     total = len(groups)
-    blocks = [
-        "\n".join((
-            "H3 的 Ref2VA 骨架已经按%s写好。只填每个字段名下面的正文。" % UNIT_NAME,
-            "不要改 ## 标题，不要改 duration，不要调换这四段的顺序。",
-            "不要写 summary 或 retention_analysis。",
-            "不要输出 JSON，不要把多个单元写进同一个 detailed_description。",
-            H3_SUBJECT_SOUND_RULE,
-        ))
+    header = [
+        "H3 的 Ref2VA 骨架已经按%s写好。只填每个字段名下面的正文。" % UNIT_NAME,
+        "不要改 ## 标题，不要改 duration，不要调换这四段的顺序。",
+        "不要写 summary 或 retention_analysis。",
+        "不要输出 JSON，不要把多个单元写进同一个 detailed_description。",
+        H3_SUBJECT_SOUND_RULE,
     ]
+    rule = style_lock_rule(style)
+    if rule:
+        header.append(rule)
+    blocks = ["\n".join(header)]
+    fields = _section_lines(style)
     for index, group in enumerate(groups, 1):
-        fields = "\n".join("%s:" % name for name in H3_SECTIONS)
         blocks.append("\n".join((
             unit_heading(index, total),
             "duration: %s" % runner.format_seconds(sum(group)),
@@ -296,7 +590,7 @@ def packing_plan_note(state):
             lines.append("【%s %s/%s】%s：%s=%s" % (UNIT_NAME, index, count, shots, formula, shown))
         parts.append("\n".join(lines))
         if _h3_locked(state):
-            parts.append(h3_packing_scaffold(groups))
+            parts.append(h3_packing_scaffold(groups, agreed_style(state)))
     if spoken:
         spoken_lines = [
             "对白和旁白必须逐字出现，包括角色前缀和表演提示。"
@@ -757,16 +1051,23 @@ def place_owned_spoken_lines(text, state):
     return "".join(parts)
 
 
-def packing_repair_targets(machine_report, h3=False):
-    """Skill paths a duration or dialogue failure must send back through.
-
-    Other failures name nothing here. ``select_nodes`` then leaves them on
-    the director, which is what an unnamed H1 report already does.
-    """
+def _machine_text(machine_report):
     report = machine_report or {}
     errors = "\n".join(str(item) for item in (report.get("errors") or []))
     if not errors.strip():
         errors = str(report.get("report") or "")
+    return errors
+
+
+def packing_repair_targets(machine_report, h3=False):
+    """Skill paths a duration, dialogue, or style-lock failure sends back through.
+
+    Other failures name nothing here. ``select_nodes`` then leaves them on
+    the director, which is what an unnamed H1 report already does.
+    A style-lock failure names the packing writers so they put the locked
+    sentence back. It does not ask them to compose a new style.
+    """
+    errors = _machine_text(machine_report)
     found = []
     duration = any(mark in errors for mark in ("时长被压缩", "不能钳成", "必须把这一镜拆开"))
     dialogue = "对白被压缩" in errors
@@ -776,6 +1077,8 @@ def packing_repair_targets(machine_report, h3=False):
             found.append(_H3_UNIT_WRITER)
     if dialogue:
         found.extend(_DIALOGUE_WRITERS)
+    if h3 and "画风锁" in errors:
+        found.extend(_STYLE_WRITERS)
     ordered = []
     seen = set()
     for relative in found:
@@ -1128,13 +1431,18 @@ def apply_packing_plan(text, state):
 
     Durations come from the groups. A missing storyboard line is written into
     the unit that owns that shot, even when the model never opened a ``<d>``.
+    The agreed style sentence is written into every H3 unit after that, including
+    a repair that dropped it.
     """
     runner = importlib.import_module("end.stage_runner")
     prepared = restore_h3_scaffold(text, state) if _h3_locked(state) else str(text or "")
     corrected = correct_unit_durations(prepared, packing_groups(state))
     spoken = runner.storyboard_spoken_lines(_storyboard_text(state))
     restored = restore_spoken_lines(corrected, spoken)
-    return place_owned_spoken_lines(restored, state)
+    placed = place_owned_spoken_lines(restored, state)
+    if not _h3_locked(state):
+        return placed
+    return inject_style_lock(placed, agreed_style(state))
 
 
 def generator_messages(state):
@@ -1159,22 +1467,53 @@ def generator_messages(state):
     )
     if note:
         user = user + "\n\n" + note
-    targets = packing_repair_targets(state.get("machine_report"), _h3_locked(state))
-    if targets:
+    errors = _machine_text(state.get("machine_report"))
+    h3 = _h3_locked(state)
+    length = []
+    if any(mark in errors for mark in ("时长被压缩", "不能钳成", "必须把这一镜拆开")):
+        length.extend(_UNIT_WRITERS)
+        if h3:
+            length.append(_H3_UNIT_WRITER)
+    if "对白被压缩" in errors:
+        length.extend(_DIALOGUE_WRITERS)
+    length_paths = []
+    seen = set()
+    for relative in length:
+        if relative in seen:
+            continue
+        seen.add(relative)
+        length_paths.append(relative)
+    if length_paths:
         user = user.rstrip() + "\n\n" + "\n".join((
             "时长或对白没过投喂机检。重跑这些节点原文，按已经算好的单元数和 duration 重写画面与对白：",
-            *targets,
+            *length_paths,
+        ))
+    if h3 and "画风锁" in errors:
+        line = style_lock_line(agreed_style(state))
+        user = user.rstrip() + "\n\n" + "\n".join((
+            "画风锁没过。不要改写画风，不要翻译，也不要新写一种风格。",
+            "每一段 subject_definitions 的第一行必须原样是这一句：",
+            line or "（锁定句）",
+            "删掉别处自拟的风格句，包括只写在房间或道具主体上的那句。",
+            "重跑这些节点时只把锁定句补回去：",
+            *_STYLE_WRITERS,
         ))
     return [system, {"role": "user", "content": user}]
 
 
 def critic_messages(state):
+    notes = []
+    if _h3_locked(state):
+        rule = style_lock_rule(agreed_style(state))
+        if rule:
+            notes.append(
+                "对照锁定句审查。缺这句、第一行不是这句、或还有别的风格句，severity 写 blocking。"
+                "不要改稿，不要另写画风。\n%s" % rule
+            )
+    notes.append("待审%s：\n%s" % (DRAFT_NAME, str(state.get("draft") or "").strip()))
     return [
         {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": critic_user(
-            TASK,
-            "待审%s：\n%s" % (DRAFT_NAME, str(state.get("draft") or "").strip()),
-        )},
+        {"role": "user", "content": critic_user(TASK, *notes)},
     ]
 
 
@@ -1277,6 +1616,7 @@ def run_feed_loop(
     *,
     locks=None,
     shots=None,
+    script="",
     opening="",
     prior_draft="",
     skill_pack="",
@@ -1299,6 +1639,7 @@ def run_feed_loop(
         extra={
             "locks": dict(locks or {}),
             "storyboard": str(storyboard or ""),
+            "script": str(script or ""),
             "shots": list(shots or []),
             "skill_pack": str(skill_pack or ""),
         },

@@ -107,10 +107,11 @@ def check_storyboard_draft(text, state=None):
 
 
 def check_feed_draft(text, state=None):
-    """H3 ``check_feed`` / ``validate_prompt``, plus the duration hard gate.
+    """H3 ``check_feed`` / ``validate_prompt``, plus duration and the style lock.
 
     A warnings-only validator exit still passes. Duration shrink, a clamped
-    over-15s span, and deleted dialogue are FAILs even when the validator
+    over-15s span, deleted dialogue, and a packed unit that misses the locked
+    style sentence or carries a different one are FAILs even when the validator
     only printed an info line.
     """
     state = state or {}
@@ -163,4 +164,9 @@ def check_feed_draft(text, state=None):
             state.get("shots") or [],
         )
     )
+    model = str((state.get("locks") or {}).get("model") or "h3").strip().lower()
+    if model == "h3":
+        from Agents.workers.feed import agreed_style, style_lock_failures
+
+        errors.extend(style_lock_failures(raw, agreed_style(state)))
     return report(errors, warnings)
