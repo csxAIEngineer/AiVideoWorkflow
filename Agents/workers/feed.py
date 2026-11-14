@@ -211,14 +211,12 @@ def shot_duration_list(state):
 def packing_groups(state, limit=15):
     """The same 15s packing the machine check uses. The model does not regroup.
 
-    ②③④ seams start a new unit. ① may still share a unit when the duration fits.
+    Merge is allowed. D-lock marks do not exist yet, so they do not split a unit.
+    A span over 15 seconds is split, not clamped.
     """
     runner = importlib.import_module("end.stage_runner")
     durations = shot_duration_list(state)
-    locks = runner._seam_locks((state or {}).get("shots"))
-    if len(locks) != len(durations):
-        locks = None
-    return runner.group_shot_durations(durations, limit, locks)
+    return runner.group_shot_durations(durations, limit)
 
 
 def _h3_locked(state):
@@ -263,35 +261,6 @@ def h3_packing_scaffold(groups):
     return "\n\n".join(blocks)
 
 
-def _writing_mode_lines(state, groups):
-    """Packing may read the ledger's writing suggestion. It stays out of the prose."""
-    timed = []
-    for shot in (state or {}).get("shots") or []:
-        if not isinstance(shot, dict) or shot.get("duration") in (None, ""):
-            continue
-        try:
-            seconds = float(shot.get("duration"))
-        except (TypeError, ValueError):
-            continue
-        if seconds > 0:
-            timed.append(shot)
-    if len(timed) != sum(len(group) for group in groups or []):
-        return []
-    notes = []
-    if any(str(shot.get("seam_d_lock") or "") in ("2", "3", "4") for shot in timed):
-        notes.append("已经按段缝拆开的单元不要再合并。动作连续的镜头仍可以合在 15 秒里。")
-    cursor = 0
-    for index, group in enumerate(groups, 1):
-        mode = str(timed[cursor].get("writing_mode") or "").strip()
-        cursor += len(group)
-        if mode:
-            notes.append(
-                "单元 %s 的写法建议是「%s」。只按它写画面，不要把这个词写进正文。"
-                % (index, mode)
-            )
-    return notes
-
-
 def packing_plan_note(state):
     """Unit sums, the H3 scaffold, and exact spoken lines, known before the model runs."""
     runner = importlib.import_module("end.stage_runner")
@@ -318,7 +287,6 @@ def packing_plan_note(state):
             formula = "+".join(runner.format_seconds(item) for item in group)
             shown = runner.format_seconds(sum(group))
             lines.append("【%s %s/%s】%s：%s=%s" % (UNIT_NAME, index, count, shots, formula, shown))
-        lines.extend(_writing_mode_lines(state, groups))
         parts.append("\n".join(lines))
         if _h3_locked(state):
             parts.append(h3_packing_scaffold(groups))

@@ -124,10 +124,11 @@ class TraceReplayTest(unittest.TestCase):
             begin_trace(folder, "feed", False, "投喂简报")
             finish_trace(folder, {"feed": "投喂正文", "shots": []})
         plan = restore_trace(folder, "1", {}, "")
-        self.assertEqual(plan["action"], "wait")
-        self.assertEqual(plan["current"], "feed")
-        self.assertEqual(plan["next"], "")
+        self.assertEqual(plan["action"], "write")
+        self.assertEqual(plan["current"], "seam")
+        self.assertEqual(plan["next"], "seam")
         self.assertIn("feed", plan["accepted"])
+        self.assertNotIn("seam", plan["accepted"])
         self.assertEqual((folder / "_内部_" / "feed.md").read_text(encoding="utf-8").strip(), "投喂正文")
 
     def test_route_trace_is_not_replayed(self):

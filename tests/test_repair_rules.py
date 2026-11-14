@@ -312,7 +312,7 @@ class RuleBeforeModelTest(unittest.TestCase):
                     "accepted": ["script", "asset", "storyboard", "seam"],
                     "action": "wait",
                     "passed": False,
-                    "only": "",
+                    "only": "feed",
                     "repairs": 0,
                     "report": report,
                     "repair": report,

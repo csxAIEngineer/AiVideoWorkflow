@@ -37,20 +37,20 @@ _FILES = {
     "feed": ("feed.md",),
 }
 _AFTER = {
-    "vision": ("recon", "script", "asset", "storyboard", "seam", "feed"),
-    "recon": ("script", "asset", "storyboard", "seam", "feed"),
-    "script": ("asset", "storyboard", "seam", "feed"),
-    "asset": ("storyboard", "seam", "feed"),
-    "storyboard": ("seam", "feed"),
-    "seam": ("feed",),
-    "feed": (),
+    "vision": ("recon", "script", "asset", "storyboard", "feed", "seam"),
+    "recon": ("script", "asset", "storyboard", "feed", "seam"),
+    "script": ("asset", "storyboard", "feed", "seam"),
+    "asset": ("storyboard", "feed", "seam"),
+    "storyboard": ("feed", "seam"),
+    "feed": ("seam",),
+    "seam": (),
 }
 _SPEC_KEYS = {
     "script": ("script", "internal"),
     "asset": ("image_prompts", "assets"),
     "storyboard": ("storyboard", "previs"),
     "seam": ("seam_ledger",),
-    "feed": ("feed", "shots"),
+    "feed": ("feed", "shots", "feed_units"),
 }
 _ACTIVE = {}
 
@@ -183,7 +183,7 @@ def stage_output(stage, result):
     if stage == "seam":
         return {
             "seam_ledger": result.get("seam_ledger") if isinstance(result.get("seam_ledger"), dict) else {},
-            "shots": result.get("shots") if isinstance(result.get("shots"), list) else [],
+            "feed_units": result.get("feed_units") if isinstance(result.get("feed_units"), list) else [],
         }
     if stage == "feed":
         return {
@@ -412,12 +412,12 @@ def _restore_output(folder, stage, output):
         spec = strip_seam(spec)
     elif stage == "seam":
         spec["seam_ledger"] = output.get("seam_ledger") if isinstance(output.get("seam_ledger"), dict) else {}
-        incoming = output.get("shots") if isinstance(output.get("shots"), list) else []
+        incoming = output.get("feed_units") if isinstance(output.get("feed_units"), list) else []
         if incoming:
-            spec["shots"] = incoming
+            spec["feed_units"] = incoming
         _put_text(folder, "分镜衔接.json", json.dumps({
             "seam_ledger": spec.get("seam_ledger") or {},
-            "shots": spec.get("shots") or [],
+            "feed_units": spec.get("feed_units") or [],
         }, ensure_ascii=False, indent=2))
     elif stage == "feed":
         _put_text(folder, "feed.md", output.get("feed") or "")

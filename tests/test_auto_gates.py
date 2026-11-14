@@ -211,9 +211,9 @@ class AutoAdvanceTest(unittest.TestCase):
                     "previs": "## 段 1\n第 1 格：人在门内。改过的分镜，身体朝门，视线看向门外。",
                 }
             if "任务：提示词封装" in brief:
-                return {"feed": "投喂正文"}
+                return {"feed": "## 【封装单元 1/1】\n投喂正文"}
             if "任务：建议修补" in brief and "阶段：feed" in brief:
-                return {"feed": "改过的投喂"}
+                return {"feed": "## 【封装单元 1/1】\n改过的投喂"}
             raise AssertionError(brief[:160])
 
         def check(folder, stage, locks, title=""):
@@ -319,9 +319,16 @@ class AutoAdvanceTest(unittest.TestCase):
 
         def writer(brief, skill_pack, debug_dir=None, model=None, template=None):
             calls.append(brief)
+            if "任务：分镜衔接" in brief or "阶段：seam" in brief:
+                return {"seam_ledger": {"entries": [{
+                    "shot_id": "封装单元 1",
+                    "d_lock": "none",
+                    "reason": "开场",
+                    "scene_relation": "opening",
+                }]}}
             if "任务：建议修补" in brief:
-                return {"feed": "改过的投喂"}
-            return {"feed": "投喂正文"}
+                return {"feed": "## 【封装单元 1/1】\n改过的投喂"}
+            return {"feed": "## 【封装单元 1/1】\n投喂正文"}
 
         def check(folder, stage, locks, title=""):
             return True, ""

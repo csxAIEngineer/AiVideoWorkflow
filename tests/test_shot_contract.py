@@ -276,10 +276,12 @@ class ShotContractTest(unittest.TestCase):
                     "duration": 6,
                     "prompt": "跟拍",
                     "images": ["图9"],
-                    "video_mode": "text",
                 },
             ],
             "feed": MATCH_UNIT + "\n\n" + FALLBACK_UNIT,
+            "feed_units": [
+                {"id": "封装单元 4", "video_mode": "text", "first_frame_source": "none"},
+            ],
         }
         self._save("aabbcc000003", spec)
         _assets, raw = collect_steps(spec)

@@ -1,14 +1,18 @@
-"""Storyboard seam ledger and the official H3 submit fields it writes.
+"""Packed-unit seam ledger and the official H3 submit fields it writes.
 
-The ledger is the source of video_mode, end_image, first-frame source, and
-reference images. End does not invent those from whichever stills happen to
-be nearby. D-lock is the judgment. Official parameters are mapped from it.
+One ledger row per packed feed unit. The row id is that unit's id.
+End submits video_mode, end_image, first-frame source, and reference images
+from the unit records. D-lock is the judgment. Official parameters are mapped
+from it. Packing does not read this ledger.
 """
+
+import re
+
+from end.product_names import UNIT_NAME
 
 VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
 H3_MAX_REFERENCE_IMAGES = 9
 D_LOCKS = ("none", "1", "2", "3", "4")
-HARD_SPLIT = ("2", "3", "4")
 FRAME_MODES = ("first_frame", "first_last_frame")
 WRITING_MODES = (
     "普通衔接",
@@ -142,6 +146,145 @@ def _frames(source, end_image=""):
     }
 
 
+_UNIT_ID = re.compile(r"(封装单元|投喂单元)\s*(\d+)")
+_DURATION_LINE = re.compile(
+    r"(?m)^(?:duration|duration_seconds)\s*[:=]\s*(\d+(?:\.\d+)?)"
+)
+_BARE_INDEX = re.compile(r"0*(\d+)$")
+
+
+def unit_id_from_text(text, index):
+    """Id packing already wrote on the unit heading. ``封装单元 1``."""
+    heading = ""
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if stripped:
+            heading = stripped
+            break
+    match = _UNIT_ID.search(heading)
+    if match:
+        return "%s %s" % (match.group(1), int(match.group(2)))
+    return "%s %s" % (UNIT_NAME, index)
+
+
+def _unit_duration(text):
+    match = _DURATION_LINE.search(str(text or ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def units_from_feed(feed):
+    """One record per packed feed unit, in heading order. No video fields yet."""
+    from end.prompt_gate import delivery_units
+
+    rows = []
+    for index, text in enumerate(delivery_units(feed), 1):
+        rows.append({
+            "id": unit_id_from_text(text, index),
+            "duration": _unit_duration(text),
+            "prompt": text,
+            "images": [],
+        })
+    return rows
+
+
+def packed_units(spec):
+    """Packed feed units, with stills and any video fields already stored on them.
+
+    Storyboard shots are not units. A stored ``feed_units`` row is used only
+    when its id is one of the units in the current feed.
+    """
+    spec = spec or {}
+    derived = units_from_feed(spec.get("feed") or "")
+    stored = [
+        item for item in (spec.get("feed_units") or [])
+        if isinstance(item, dict) and _text(item.get("id"))
+    ]
+    by_id = {str(item.get("id")): item for item in stored}
+    if not derived:
+        return [dict(item) for item in stored]
+    try:
+        from end.board_shots import images_for_feed_unit
+    except ImportError:
+        images_for_feed_unit = None
+    assets = spec.get("assets") or []
+    rows = []
+    for index, unit in enumerate(derived):
+        row = dict(unit)
+        saved = by_id.get(row["id"])
+        if saved is None and index < len(stored) and not by_id:
+            saved = stored[index]
+        images = []
+        if images_for_feed_unit is not None:
+            images = list(images_for_feed_unit(row.get("prompt") or "", assets) or [])
+        if not images and isinstance(saved, dict):
+            images = list(saved.get("images") or [])
+        row["images"] = images
+        if isinstance(saved, dict):
+            for key in SHOT_VIDEO_FIELDS:
+                if key in saved and saved.get(key) not in (None, ""):
+                    row[key] = saved.get(key)
+            if isinstance(saved.get("video_images"), list):
+                row["video_images"] = list(saved.get("video_images") or [])
+        rows.append(row)
+    return rows
+
+
+def _bare_index(value):
+    text = _text(value)
+    match = _BARE_INDEX.fullmatch(text)
+    if not match:
+        return None
+    number = int(match.group(1))
+    if number < 1:
+        return None
+    return number
+
+
+def normalize_entry_ids(entries, units):
+    """Map ``1``..``N`` onto unit ids only when that mapping is one-to-one.
+
+    Anything else, including ``S01``, is left for the exact-id check to reject.
+    """
+    rows = [unit for unit in units or [] if isinstance(unit, dict) and _text(unit.get("id"))]
+    items = [item for item in entries or [] if isinstance(item, dict)]
+    if not rows or len(items) != len(entries or []) or len(items) != len(rows):
+        return list(entries or [])
+    ids = [str(unit.get("id")) for unit in rows]
+    raw = [_text(item.get("shot_id")) for item in items]
+    if raw == ids:
+        return items
+    numbers = [_bare_index(item) for item in raw]
+    if any(number is None for number in numbers):
+        return items
+    if numbers != list(range(1, len(ids) + 1)):
+        return items
+    aligned = []
+    for item, unit_id in zip(items, ids):
+        row = dict(item)
+        row["shot_id"] = unit_id
+        aligned.append(row)
+    return aligned
+
+
+def units_for_submit(spec):
+    """Unit records End submits. A ledger that does not match is not copied on."""
+    units = packed_units(spec)
+    ledger = spec.get("seam_ledger") if isinstance(spec.get("seam_ledger"), dict) else {}
+    entries = ledger.get("entries") if isinstance(ledger.get("entries"), list) else []
+    if not units or not entries:
+        return units
+    aligned = normalize_entry_ids(entries, units)
+    report = check_seam_ledger({"entries": aligned}, units)
+    if not report.get("ok"):
+        return units
+    return write_unit_fields(units, apply_submit_params(aligned, units))
+
+
 def map_submit_params(entry, shot=None):
     """Official H3 fields for one inbound seam. D-lock decides. End does not."""
     entry = entry or {}
@@ -184,15 +327,6 @@ def map_submit_params(entry, shot=None):
     return _reference(bound)
 
 
-def default_writing_mode(lock, scene_relation=""):
-    lock = _lock(lock)
-    if lock == "1" and _text(scene_relation) == "same_scene":
-        return "视频延长强连续"
-    if lock == "1":
-        return "首帧增强"
-    return "普通衔接"
-
-
 def apply_submit_params(entries, shots):
     """Copy official fields onto each entry. Bound stills stay on bound_images."""
     by_id = {}
@@ -208,8 +342,6 @@ def apply_submit_params(entries, shots):
         row["shot_id"] = _text(row.get("shot_id"))
         shot = by_id.get(row["shot_id"]) or {}
         row["bound_images"] = _bound_images(shot)
-        if not _text(row.get("writing_mode")):
-            row["writing_mode"] = default_writing_mode(row["d_lock"], row.get("scene_relation"))
         row["empty_use"] = _empty_use(row.get("empty_use"))
         official = map_submit_params(row, shot)
         row.update(official)
@@ -228,37 +360,48 @@ def _duration(shot):
         return None
 
 
-def check_seam_ledger(ledger, shots):
-    """Hard gate. One D-lock per adjacent pair, then the official parameter rules."""
+def check_seam_ledger(ledger, units):
+    """Hard gate. One row per packed unit, then the official parameter rules.
+
+    ``units`` are the packed feed units. Storyboard shot ids do not satisfy it.
+    """
     errors = []
-    rows = _shot_rows(shots)
+    rows = _shot_rows(units)
     ledger = ledger if isinstance(ledger, dict) else {}
     raw_entries = ledger.get("entries") if isinstance(ledger.get("entries"), list) else []
     entries = [item for item in raw_entries if isinstance(item, dict)]
     if len(entries) != len(raw_entries):
         errors.append("分镜衔接里有无法读取的条目")
+    entries = normalize_entry_ids(entries, rows)
+    expected = "、".join(str(unit.get("id")) for unit in rows)
+    if len(entries) != len(rows):
+        errors.append(
+            "分镜衔接有 %s 条，封装单元有 %s 个。一条封装单元必须恰好一条段缝，不能把多个单元收成更少的段。封装单元 id：%s。"
+            % (len(entries), len(rows), expected or "（没有）")
+        )
     by_id = {}
     for entry in entries:
         shot_id = _text(entry.get("shot_id"))
         if not shot_id:
-            errors.append("有一条段缝没有镜头号")
+            errors.append("有一条段缝没有封装单元 id")
             continue
         if shot_id in by_id:
             errors.append("%s 有多于一条段缝" % shot_id)
         by_id[shot_id] = entry
     if not rows:
-        errors.append("没有镜头，不能做分镜衔接")
+        errors.append("没有封装单元，不能做分镜衔接")
     ordered = []
-    for index, shot in enumerate(rows):
-        shot_id = str(shot.get("id"))
+    known = {str(unit.get("id")) for unit in rows}
+    for index, unit in enumerate(rows):
+        shot_id = str(unit.get("id"))
         entry = by_id.get(shot_id)
         if entry is None:
             errors.append("%s 没有段缝" % shot_id)
             continue
-        ordered.append((index, shot, entry))
+        ordered.append((index, unit, entry))
     for shot_id in by_id:
-        if shot_id not in {str(shot.get("id")) for shot in rows}:
-            errors.append("段缝 %s 对不上分镜" % shot_id)
+        if shot_id not in known:
+            errors.append("段缝 %s 对不上封装单元。要原样照抄这些 id：%s。" % (shot_id, expected or "（没有）"))
     locks = []
     for index, shot, entry in ordered:
         shot_id = str(shot.get("id"))
@@ -268,7 +411,7 @@ def check_seam_ledger(ledger, shots):
             continue
         locks.append(lock)
         if index == 0 and lock != "none":
-            errors.append("第一镜没有入缝，D 锁要写 none")
+            errors.append("第一个封装单元没有入缝，D 锁要写 none")
         if index > 0 and lock == "none":
             errors.append("%s 缺少 D 锁" % shot_id)
         if index > 0 and lock not in ("1", "2", "3", "4"):
@@ -361,26 +504,29 @@ def check_seam_ledger(ledger, shots):
     }
 
 
-def write_shot_fields(shots, entries):
-    """Stamp official submit fields onto storyboard shots. Asset bindings stay."""
+def write_unit_fields(units, entries):
+    """Stamp official submit fields onto packed feed units. Asset bindings stay."""
     by_id = {}
     for entry in entries or []:
         if isinstance(entry, dict) and entry.get("shot_id"):
             by_id[str(entry.get("shot_id"))] = entry
     updated = []
-    for shot in shots or []:
-        if not isinstance(shot, dict):
+    for unit in units or []:
+        if not isinstance(unit, dict):
             continue
-        row = dict(shot)
+        row = dict(unit)
         entry = by_id.get(str(row.get("id") or ""))
         if entry is None:
+            for key in SHOT_VIDEO_FIELDS:
+                row.pop(key, None)
             updated.append(row)
             continue
         row["video_mode"] = entry.get("video_mode") or ""
         row["first_frame_source"] = entry.get("first_frame_source") or "none"
         row["seam_d_lock"] = entry.get("d_lock") or "none"
-        row["writing_mode"] = entry.get("writing_mode") or ""
         row["video_images"] = list(entry.get("images") or [])
+        if _text(entry.get("writing_mode")):
+            row["writing_mode"] = _text(entry.get("writing_mode"))
         if _text(entry.get("end_image")):
             row["end_image"] = _text(entry.get("end_image"))
         else:
@@ -393,146 +539,40 @@ def write_shot_fields(shots, entries):
     return updated
 
 
-def strip_seam(spec):
-    """Drop the ledger and every submit field a storyboard rewrite invalidates."""
-    spec = dict(spec or {})
-    spec.pop("seam_ledger", None)
-    shots = []
-    for shot in spec.get("shots") or []:
-        if not isinstance(shot, dict):
+def write_shot_fields(shots, entries):
+    """Stamp official submit fields onto records keyed by id. Units use this too."""
+    return write_unit_fields(shots, entries)
+
+
+def _strip_video_rows(rows):
+    cleaned = []
+    for item in rows or []:
+        if not isinstance(item, dict):
             continue
-        row = dict(shot)
+        row = dict(item)
         for key in SHOT_VIDEO_FIELDS:
             row.pop(key, None)
-        shots.append(row)
+        cleaned.append(row)
+    return cleaned
+
+
+def strip_seam(spec):
+    """Drop the ledger and the video fields written onto shots and packed units."""
+    spec = dict(spec or {})
+    spec.pop("seam_ledger", None)
     if "shots" in spec:
-        spec["shots"] = shots
+        spec["shots"] = _strip_video_rows(spec.get("shots"))
+    if "feed_units" in spec:
+        spec["feed_units"] = _strip_video_rows(spec.get("feed_units"))
     return spec
 
 
-def group_indexes(durations, locks=None, limit=15):
-    """Pack shot indexes. ②③④ always start a new unit. ① may merge."""
-    locks = list(locks or [])
-    groups = []
-    bucket = []
-    total = 0.0
-    for index, raw in enumerate(durations or []):
-        try:
-            seconds = float(raw)
-        except (TypeError, ValueError):
-            continue
-        if seconds <= 0:
-            continue
-        lock = _lock(locks[index]) if index < len(locks) and _text(locks[index]) else "none"
-        if lock not in D_LOCKS:
-            lock = "none"
-        if seconds > limit:
-            if bucket:
-                groups.append(bucket)
-                bucket = []
-                total = 0.0
-            groups.append([index])
-            continue
-        hard = lock in HARD_SPLIT and bool(bucket)
-        if bucket and (hard or total + seconds > limit + 1e-6):
-            groups.append(bucket)
-            bucket = [index]
-            total = seconds
-        else:
-            bucket.append(index)
-            total += seconds
-    if bucket:
-        groups.append(bucket)
-    return groups
-
-
-def group_durations(durations, locks=None, limit=15):
-    """Same groups as ``group_indexes``, as duration lists for the feed scaffold."""
-    kept = []
-    for raw in durations or []:
-        try:
-            seconds = float(raw)
-        except (TypeError, ValueError):
-            continue
-        if seconds > 0:
-            kept.append(seconds)
-    return [
-        [kept[index] for index in group]
-        for group in group_indexes(kept, locks, limit)
-    ]
-
-
-def _entry_map(entries):
-    found = {}
-    for entry in entries or []:
-        if isinstance(entry, dict) and entry.get("shot_id"):
-            found[str(entry.get("shot_id"))] = entry
-    return found
-
-
-def _timed(shots, entries):
-    by_id = _entry_map(entries)
-    kept = []
-    durations = []
-    locks = []
-    for shot in _shot_rows(shots):
-        duration = _duration(shot)
-        if duration is None or duration <= 0:
-            continue
-        entry = by_id.get(str(shot.get("id"))) or {}
-        lock = _text(shot.get("seam_d_lock")) or _lock(entry.get("d_lock")) or "none"
-        kept.append(shot)
-        durations.append(duration)
-        locks.append(lock)
-    return kept, durations, locks
-
-
-def remap_units(shots, entries, limit=15):
-    """One submit parameter set per packed feed unit.
-
-    A ① seam that was merged inside a unit is no longer its own H3 call.
-    The unit keeps the inbound seam of its first shot. ②③④ are never inside
-    a unit, because grouping already split them.
-    """
-    kept, durations, locks = _timed(shots, entries)
-    by_id = _entry_map(entries)
-    units = []
-    for group in group_indexes(durations, locks, limit):
-        first = kept[group[0]]
-        entry = by_id.get(str(first.get("id"))) or {}
-        mode = _text(entry.get("video_mode"))
-        params = {
-            "shot_ids": [str(kept[index].get("id")) for index in group],
-            "video_mode": mode,
-            "end_image": _text(entry.get("end_image")),
-            "first_frame_source": _text(entry.get("first_frame_source")) or "none",
-            "images": list(entry.get("images") or []),
-            "writing_mode": _text(entry.get("writing_mode")),
-            "d_lock": _lock(entry.get("d_lock")) or "none",
-        }
-        if mode == "reference":
-            images = []
-            for index in group:
-                shot = kept[index]
-                source = by_id.get(str(shot.get("id"))) or {}
-                bound = source.get("bound_images")
-                if not isinstance(bound, list) or not bound:
-                    bound = shot.get("images") or []
-                for asset in bound:
-                    text = _text(asset)
-                    if text and text not in images:
-                        images.append(text)
-            params["images"] = images[:H3_MAX_REFERENCE_IMAGES]
-            params["end_image"] = ""
-            params["first_frame_source"] = "none"
-        elif mode in FRAME_MODES:
-            params["images"] = []
-        elif mode == "text":
-            params["images"] = []
-            params["end_image"] = ""
-            params["first_frame_source"] = "none"
-        units.append(params)
-    return units
+def drop_packing(spec):
+    """A new storyboard invalidates packing and the unit ledger."""
+    spec = strip_seam(spec)
+    spec.pop("feed", None)
+    spec.pop("feed_units", None)
+    return spec
 
 
 def render_images_for(shot):
@@ -569,19 +609,29 @@ def designed_still_assets(spec):
 
 
 def seam_blocks_render(spec, shots=None):
-    """Locked storyboards cannot 出图 or 出片 until the seam ledger passes."""
+    """Locked storyboards cannot 出图 or 出片 until a unit-level ledger passes.
+
+    Packing may already exist. A shot-level ledger, or a ledger shorter than
+    the packed units, does not open stills or video.
+    """
     spec = spec or {}
     if spec.get("storyboard_contract") != CONTRACT:
         return ""
     if not _text(spec.get("storyboard")):
         return ""
+    units = packed_units(spec)
+    if not units:
+        return "分镜已锁定，还没有提示词封装，不能出图或出片。"
     ledger = spec.get("seam_ledger") if isinstance(spec.get("seam_ledger"), dict) else {}
     if not ledger.get("entries"):
-        return "分镜已锁定，还没有分镜衔接，不能出图或出片。"
-    report = check_seam_ledger(ledger, spec.get("shots") or [])
+        return "提示词封装已锁定，还没有分镜衔接，不能出图或出片。"
+    report = check_seam_ledger(ledger, units)
     if not report.get("ok"):
-        return "分镜已锁定，分镜衔接还没通过，不能出图或出片。"
-    rows = shots if shots is not None else (spec.get("shots") or [])
+        detail = str(report.get("report") or "").strip()
+        if detail:
+            return "分镜衔接还没通过，不能出图或出片。\n%s" % detail
+        return "分镜衔接还没通过，不能出图或出片。"
+    rows = shots if shots is not None else units
     missing = []
     for shot in rows or []:
         if not isinstance(shot, dict) or not shot.get("id"):
@@ -589,5 +639,5 @@ def seam_blocks_render(spec, shots=None):
         if _text(shot.get("video_mode")) not in VIDEO_MODES:
             missing.append(str(shot.get("id")))
     if missing:
-        return "分镜已锁定，这些镜头还没有 video_mode：%s。不能出图或出片。" % "、".join(missing)
+        return "这些封装单元还没有 video_mode：%s。不能出图或出片。" % "、".join(missing)
     return ""

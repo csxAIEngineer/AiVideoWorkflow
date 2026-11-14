@@ -242,12 +242,9 @@ def assemble_steps(spec):
         # H3: one API call per feed unit. Never pad missing units with storyboard
         # Chinese rows — that is what made MiniMax ignore the Ref2VA contract.
         templates = shots
-        packed = None
-        ledger = spec.get("seam_ledger") if isinstance(spec.get("seam_ledger"), dict) else {}
-        if ledger.get("entries"):
-            from end.seam_ledger import remap_units
+        from end.seam_ledger import units_for_submit
 
-            packed = remap_units(templates, ledger.get("entries"))
+        packed = units_for_submit(spec)
         rebuilt = []
         asset_rows = spec.get("assets") or []
         sources = []
@@ -306,10 +303,10 @@ def assemble_steps(spec):
                     "images": images,
                 }
             )
-            chosen = packed[index] if packed is not None and index < len(packed) else None
-            if chosen is not None:
-                if chosen.get("video_mode"):
-                    rebuilt[-1]["video_mode"] = chosen["video_mode"]
+            chosen = packed[index] if index < len(packed) else None
+            mode = str((chosen or {}).get("video_mode") or "").strip()
+            if mode:
+                rebuilt[-1]["video_mode"] = mode
                 source = str(chosen.get("first_frame_source") or "").strip()
                 if source:
                     rebuilt[-1]["first_frame_source"] = source
@@ -317,18 +314,19 @@ def assemble_steps(spec):
                     rebuilt[-1]["end_image"] = chosen["end_image"]
                 else:
                     rebuilt[-1].pop("end_image", None)
-                if chosen.get("video_mode") in ("first_frame", "first_last_frame", "text"):
+                if chosen.get("seam_d_lock"):
+                    rebuilt[-1]["seam_d_lock"] = chosen["seam_d_lock"]
+                if mode in ("first_frame", "first_last_frame"):
                     rebuilt[-1]["images"] = []
-                elif chosen.get("video_mode") == "reference":
+                elif mode == "reference":
+                    listed = chosen.get("video_images")
+                    if not isinstance(listed, list):
+                        listed = chosen.get("images") or []
                     rebuilt[-1]["images"] = [
                         name
-                        for name in (chosen.get("images") or [])
+                        for name in listed
                         if name in known or _is_upload_id(name)
                     ][:MAX_SHOT_REFERENCES]
-            else:
-                for key in ("end_image", "video_mode", "first_frame_source"):
-                    if (template or {}).get(key):
-                        rebuilt[-1][key] = template[key]
         shots = rebuilt
     return assets, shots, sources
 

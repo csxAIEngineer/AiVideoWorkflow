@@ -26,8 +26,8 @@ def project(status, phase, message, current="", action="write", **extra):
 
 class CrewSignalTest(unittest.TestCase):
     def test_names_follow_the_real_stages(self):
-        self.assertEqual([item["id"] for item in CREW], ["script", "asset", "storyboard", "check", "feed"])
-        self.assertEqual([item["name"] for item in CREW], ["编剧", "资产", "分镜", "机检", "提示词封装"])
+        self.assertEqual([item["id"] for item in CREW], ["script", "asset", "storyboard", "check", "feed", "seam"])
+        self.assertEqual([item["name"] for item in CREW], ["编剧", "资产", "分镜", "机检", "提示词封装", "分镜衔接"])
 
     def test_writing_and_gates_light_the_matching_role(self):
         cases = [
@@ -45,7 +45,7 @@ class CrewSignalTest(unittest.TestCase):
             (project("writing", "writing", "提示词封装", current="feed"), "feed"),
             (project("writing", "writing", "封装稿"), "feed"),
             (project("writing", "writing", "投喂稿"), "feed"),
-            (project("gate", "gate_feed", "提示词封装。闸门已过。继续就做投喂机检并交付。", current="feed", action="wait"), "feed"),
+            (project("gate", "gate_feed", "提示词封装。投喂机检已过。继续就做分镜衔接。", current="feed", action="wait"), "feed"),
             (project("writing", "writing", "投喂机检", current="feed", action="finish"), "check"),
             (project("writing", "writing", "机检"), "check"),
             (project("gate", "gate_machine", "投喂机检没过。", current="feed", action="wait"), "check"),

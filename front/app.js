@@ -65,13 +65,14 @@ let draftMaterials = [];
 let seamKept = new Set();
 const MAX_MATERIALS = 8;
 
-const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "离线看板"];
+const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接", "离线看板"];
 const CREW_FALLBACK = [
   { id: "script", name: "编剧" },
   { id: "asset", name: "资产" },
   { id: "storyboard", name: "分镜" },
   { id: "check", name: "机检" },
   { id: "feed", name: "提示词封装" },
+  { id: "seam", name: "分镜衔接" },
 ];
 const DEBUG_FILE_LABELS = {
   skill_pack: "Skill 规则",
@@ -114,9 +115,10 @@ function autoStageKey(project) {
   const message = String(progress.message || (project && project.stage) || "");
   if (phase === "gate_machine" || phase === "qc" || action === "finish" || role === "check" || pipeline.check === "machine") return "check";
   if ((message.indexOf("机检") >= 0 || message.indexOf("质检") >= 0) && message.indexOf("已过") < 0 && phase.indexOf("gate_") !== 0) return "check";
-  if (current === "asset" || current === "storyboard" || current === "feed" || current === "script" || current === "recon") return current;
-  if (role === "asset" || role === "storyboard" || role === "feed") return role;
+  if (current === "asset" || current === "storyboard" || current === "feed" || current === "seam" || current === "script" || current === "recon") return current;
+  if (role === "asset" || role === "storyboard" || role === "feed" || role === "seam") return role;
   if (message.indexOf("资产") >= 0) return "asset";
+  if (message.indexOf("分镜衔接") >= 0) return "seam";
   if (message.indexOf("分镜") >= 0) return "storyboard";
   if (message.indexOf("投喂") >= 0 || message.indexOf("封装") >= 0) return "feed";
   if (message.indexOf("剧本") >= 0) return "script";
@@ -146,12 +148,13 @@ function autoRun(project) {
   const phase = progress.phase || "";
   if (phase && phase !== "writing" && phase !== "qc") return null;
   const key = autoStageKey(project);
-  if (key !== "asset" && key !== "storyboard" && key !== "feed" && key !== "check") return null;
+  if (key !== "asset" && key !== "storyboard" && key !== "feed" && key !== "seam" && key !== "check") return null;
   const attempt = repairAttempt(progress.pipeline || {});
   let text = key === "check" ? "正在机检…" : ({
     asset: "正在自动写资产…",
     storyboard: "正在自动写分镜…",
     feed: "正在自动写提示词封装…",
+    seam: "正在自动写分镜衔接…",
   })[key];
   if (attempt) text += "，自动返修第 " + attempt + " 次";
   return { key: key, text: text, attempt: attempt };
@@ -209,7 +212,8 @@ function statusText(project) {
 
 function writeStep(project) {
   const message = ((project.progress && project.progress.message) || project.stage || "");
-  if (message.indexOf("看板") >= 0) return 7;
+  if (message.indexOf("看板") >= 0) return 8;
+  if (message.indexOf("分镜衔接") >= 0) return 7;
   if (message.indexOf("质检") >= 0 || message.indexOf("机检") >= 0) return 6;
   if (message.indexOf("投喂") >= 0 || message.indexOf("封装") >= 0) return 5;
   if (message.indexOf("分镜") >= 0) return 4;
@@ -251,12 +255,13 @@ function jobIndex(project) {
       gate_asset: 3,
       gate_storyboard: 4,
       gate_feed: 5,
+      gate_seam: 7,
       gate_fail: 6,
     };
     if (gateSteps[phase] != null) return gateSteps[phase];
   }
   if (project.status === "writing") {
-    const mapped = { recon: 1, script: 2, asset: 3, storyboard: 4, feed: 5, check: 6 }[autoStageKey(project)];
+    const mapped = { recon: 1, script: 2, asset: 3, storyboard: 4, feed: 5, check: 6, seam: 7 }[autoStageKey(project)];
     if (mapped != null) return mapped;
   }
   if (phase === "prompts_ready" || project.has_board) return JOB_STEPS.length;
@@ -506,7 +511,7 @@ function machineCheckNotice(project) {
   const check = String(pipeline.check || "");
   const current = String(pipeline.current || "");
   const technical = hold === "technical" || check === "machine" || phase === "gate_machine";
-  const stageGate = pipeline.passed === false && ["recon", "script", "asset", "storyboard", "feed"].indexOf(current) >= 0;
+  const stageGate = pipeline.passed === false && ["recon", "script", "asset", "storyboard", "feed", "seam"].indexOf(current) >= 0;
   if (!technical && !stageGate) return null;
   const reply = String((progress.question || project.question || {}).reply || "");
   const headline = String(progress.message || reply.split("\n")[0] || "").trim();

@@ -691,7 +691,7 @@ def assets_from_markdown(text, previous):
     return items
 
 
-_ORDER = ("script", "asset", "storyboard", "seam", "feed")
+_ORDER = ("script", "asset", "storyboard", "feed", "seam")
 _NAMED = (
     ("只要打戏", "combat"),
     ("只要提示词封装", "feed"),
@@ -728,7 +728,7 @@ _GATE_LABEL = {
     "seam": "分镜衔接",
     "feed": STAGE_NAME,
 }
-_PERCENT = {"recon": 18, "script": 30, "asset": 46, "storyboard": 62, "seam": 69, "feed": 76, "qc": 88}
+_PERCENT = {"recon": 18, "script": 30, "asset": 46, "storyboard": 62, "feed": 69, "seam": 76, "qc": 88}
 _ENGINE = {
     "script": "sd-script-engine/",
     "asset": "sd-asset-engine/",
@@ -775,7 +775,11 @@ _INSTRUCTION = {
         "有打斗时招式只来自已挂载的打戏原文。",
         STORYBOARD_INSTRUCTION,
     )),
-    "seam": "只写分镜衔接账本，放在 seam_ledger。不要改剧本，不要改分镜正文。",
+    "seam": "\n".join((
+        "只写分镜衔接账本，放在 seam_ledger。一条已锁定的封装单元恰好一条。",
+        "shot_id 必须原样照抄封装单元 id。不要把多个单元收成更少的段，不要改成 S01 或 1、2、3。",
+        "不要改封装稿，不要改分镜正文。",
+    )),
     "feed": "\n".join((
         "只写%s，放在 feed。feed 必须是字符串。" % DRAFT_NAME,
         "%s。每一段只写四段英文正文。" % HEADING_RULE,
@@ -828,15 +832,43 @@ def stages_for(locks, only):
     return stages
 
 
+def accepted_done(accepted):
+    """Stages that count as finished.
+
+    A seam accepted before packing is the old per-shot ledger. It does not
+    count. Packing can run with no ledger. After packing is accepted, seam
+    is still pending until it is accepted again.
+    """
+    seen_feed = False
+    done = set()
+    for name in accepted or []:
+        if name == "feed":
+            seen_feed = True
+        if name == "seam" and not seen_feed:
+            continue
+        done.add(name)
+    return done
+
+
 def next_pending(stages, accepted):
-    done = set(accepted or [])
-    # Projects that already accepted 提示词封装 started before 分镜衔接 existed.
-    if "feed" in done:
-        done.add("seam")
+    """The next stage that is not accepted."""
+    done = accepted_done(accepted)
     for name in stages or []:
         if name not in done:
             return name
     return ""
+
+
+def _unaccept_later(pipeline, stage):
+    """Writing this stage drops every later acceptance, including an old seam."""
+    if stage not in _ORDER:
+        return
+    later = set(_ORDER[_ORDER.index(stage) + 1 :])
+    if not later:
+        return
+    pipeline["accepted"] = [
+        name for name in (pipeline.get("accepted") or []) if name not in later
+    ]
 
 
 def draft_has_combat(text):
@@ -931,14 +963,18 @@ def carried_text(folder, stage):
         script = _read(internal / "剧本.md")
         if script:
             chunks.append(script)
-    if stage in ("storyboard", "feed"):
+    if stage in ("storyboard", "feed", "seam"):
         assets = _read(internal / "assets.md")
         if assets:
             chunks.append(assets)
-    if stage == "feed":
+    if stage in ("feed", "seam"):
         board = _read(internal / "分镜.md")
         if board:
             chunks.append(board)
+    if stage == "seam":
+        feed = _read(internal / "feed.md")
+        if feed:
+            chunks.append(feed)
     return "\n\n".join(chunks)
 
 
@@ -972,10 +1008,11 @@ def store_stage(folder, stage, result):
                 result = dict(result)
                 result["previs"] = previs
                 _write_internal(folder, "previs.md", previs)
+        _drop_packing_files(folder)
     elif stage == "seam":
         payload = {
             "seam_ledger": result.get("seam_ledger") if isinstance(result.get("seam_ledger"), dict) else {},
-            "shots": result.get("shots") if isinstance(result.get("shots"), list) else [],
+            "feed_units": result.get("feed_units") if isinstance(result.get("feed_units"), list) else [],
         }
         _write_internal(folder, "分镜衔接.json", json.dumps(payload, ensure_ascii=False, indent=2))
     elif stage == "feed":
@@ -986,7 +1023,22 @@ def store_stage(folder, stage, result):
         bound, _groups = bind_feed_document(draft, loaded.get("assets") or [])
         result["feed"] = bound or draft
         _write_internal(folder, "feed.md", result.get("feed") or "")
+        _drop_seam_file(folder)
     return result
+
+
+def _drop_seam_file(folder):
+    path = Path(folder) / "_内部_" / "分镜衔接.json"
+    if path.is_file():
+        path.unlink()
+
+
+def _drop_packing_files(folder):
+    folder = Path(folder)
+    _drop_seam_file(folder)
+    for path in (folder / "_内部_" / "feed.md", folder / "feed.md"):
+        if path.is_file():
+            path.unlink()
 
 
 SCRIPT_REVISE_OPTIONS = ("更贴我写的故事", "产品信息写清楚", "打斗再收着点", "其他")
@@ -1025,6 +1077,8 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
         return STORYBOARD_PASS, ["继续"]
     if passed and stage == "feed":
         return FEED_PASS, ["继续"]
+    if passed and stage == "seam":
+        return "分镜衔接。账本已过。继续才出图出片。", ["继续"]
     tail = (report or "").strip()
     if len(tail) > 1200:
         tail = tail[-1200:]
@@ -1170,15 +1224,18 @@ def _spec_patch(stage, result, previous):
             if result.get("previs"):
                 merged["previs"] = coerce_previs(result.get("previs") or "")
             merged = apply_storyboard_shots(merged)
-        from end.seam_ledger import strip_seam
+        from end.seam_ledger import drop_packing
 
-        merged = strip_seam(merged)
+        merged = drop_packing(merged)
     elif stage == "seam":
         if isinstance(result.get("seam_ledger"), dict):
             merged["seam_ledger"] = result.get("seam_ledger")
-        if isinstance(result.get("shots"), list) and result.get("shots"):
-            merged["shots"] = result.get("shots")
+        if isinstance(result.get("feed_units"), list) and result.get("feed_units"):
+            merged["feed_units"] = result.get("feed_units")
     elif stage == "feed":
+        from end.seam_ledger import packed_units, strip_seam
+
+        merged = strip_seam(merged)
         if result.get("feed"):
             merged["feed"] = result.get("feed")
         if merged.get("storyboard_contract"):
@@ -1191,6 +1248,7 @@ def _spec_patch(stage, result, previous):
                 merged["shots"] = incoming
             merged = apply_storyboard_shots(merged)
             merged = apply_feed_binding(merged)
+        merged["feed_units"] = packed_units(merged)
     merged.pop("locks", None)
     return merged
 
@@ -1267,6 +1325,16 @@ def check_stage(folder, stage, locks, title=""):
             return False, hold
         return True, ""
     if stage == "seam":
+        from end.seam_ledger import check_seam_ledger, packed_units
+
+        spec = _load_spec(folder)
+        feed_text = _read(internal / "feed.md") or spec.get("feed") or ""
+        spec = dict(spec)
+        if feed_text:
+            spec["feed"] = feed_text
+        units = packed_units(spec)
+        if not units:
+            return False, "还没有提示词封装，不能做分镜衔接"
         path = internal / "分镜衔接.json"
         text = _read(path)
         if not text.strip():
@@ -1275,13 +1343,8 @@ def check_stage(folder, stage, locks, title=""):
             saved = json.loads(text)
         except json.JSONDecodeError:
             return False, "分镜衔接不是账本"
-        from end.seam_ledger import check_seam_ledger
-
         body = saved.get("seam_ledger") if isinstance(saved, dict) else {}
-        shot_rows = saved.get("shots") if isinstance(saved, dict) else []
-        if not shot_rows:
-            shot_rows = _load_spec(folder).get("shots") or []
-        produced = check_seam_ledger(body or {}, shot_rows)
+        produced = check_seam_ledger(body or {}, units)
         if produced.get("ok"):
             return True, ""
         return False, produced.get("report") or "分镜衔接没过"
@@ -2129,34 +2192,15 @@ def format_seconds(value):
     return text or "0"
 
 
-def _seam_locks(shots):
-    """Inbound D-locks aligned with shots that have a positive duration."""
-    locks = []
-    for shot in shots or []:
-        if not isinstance(shot, dict) or shot.get("duration") in (None, ""):
-            continue
-        try:
-            seconds = float(shot.get("duration"))
-        except (TypeError, ValueError):
-            continue
-        if seconds <= 0:
-            continue
-        locks.append(str(shot.get("seam_d_lock") or ""))
-    return locks
-
-
 def group_shot_durations(durations, limit=15, locks=None):
     """Pack consecutive shot lengths into H3 units.
 
     Merging is allowed. A unit never keeps more than ``limit`` seconds by
     shortening a shot. A shot longer than ``limit`` stays in its own unit at
     its real length so the caller can split the shot instead of clamping.
-    A ②, ③, or ④ seam starts a new unit instead of merging across it.
+    D-lock marks are not available yet, so they do not split a unit.
     """
-    if locks and any(str(item) in ("2", "3", "4") for item in locks):
-        from end.seam_ledger import group_durations
-
-        return group_durations(durations, locks, limit)
+    del locks
     groups = []
     bucket = []
     total = 0.0
@@ -2254,7 +2298,7 @@ def feed_duration_failures(feed, storyboard="", shots=None, limit=15):
     board_total = sum(durations)
     feed_total = sum(declared)
     if durations and declared and feed_total + 0.05 < board_total:
-        groups = group_shot_durations(durations, limit, _seam_locks(shots))
+        groups = group_shot_durations(durations, limit)
         rendered = "；".join(
             "%s=%s" % (
                 "+".join(format_seconds(item) for item in group),
@@ -3745,12 +3789,21 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
             payload["shots"] = outcome.get("supplied_shots")
         return payload
     if stage == "seam":
+        from end.seam_ledger import packed_units
+
         board = _read(Path(folder) / "_内部_" / "分镜.md")
+        feed = _read(Path(folder) / "_内部_" / "feed.md") or spec.get("feed") or ""
+        viewed = dict(spec)
+        if feed:
+            viewed["feed"] = feed
+        units = packed_units(viewed)
+        if not units:
+            raise RuntimeError("还没有提示词封装，不能做分镜衔接")
         outcome = run_seam_loop(
             _read(Path(folder) / "_内部_" / "剧本.md"),
             board,
-            shots=spec.get("shots") or [],
-            feed=_read(Path(folder) / "_内部_" / "feed.md"),
+            units=units,
+            feed=feed,
             opening=opening,
             prior_draft=_read(Path(folder) / "_内部_" / "分镜衔接.json"),
             model=project.get("model"),
@@ -3761,7 +3814,7 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
             raise RuntimeError(outcome.get("error") or "这一步没有账本")
         return {
             "seam_ledger": outcome.get("seam_ledger") or {},
-            "shots": outcome.get("shots") or [],
+            "feed_units": outcome.get("feed_units") or [],
             "_worker_loop": True,
             "_worker_passed": bool(outcome.get("passed")),
             "_worker_attempts": int(outcome.get("attempts") or 0),
@@ -4287,11 +4340,17 @@ def execute(project, folder, locks, write_model, load_pack):
     stages = stages_for(locks, only)
     accepted = list(pipeline.get("accepted") or [])
     pending = next_pending(stages, accepted)
-    requested = pipeline.get("current") or pending
-    current = requested if requested == pending else pending
+    requested = str(pipeline.get("current") or "")
+    if action == "rewrite" and requested:
+        current = requested
+    else:
+        requested = requested or pending
+        current = requested if requested == pending else pending
+    if current and action in ("write", "rewrite"):
+        _unaccept_later(pipeline, current)
     if not current:
         return _done(project, folder, locks, pipeline, write_model)
-    if current in accepted and pipeline.get("action") != "rewrite":
+    if current in accepted_done(accepted) and pipeline.get("action") != "rewrite":
         pipeline = dict(pipeline)
         pipeline["action"] = "finish"
         return _done(project, folder, locks, pipeline, write_model)

@@ -503,6 +503,7 @@ _CALL_LABEL = {
     "asset": "资产锁定",
     "storyboard": "分镜",
     "feed": "提示词封装",
+    "seam": "分镜衔接",
     "recon": "对标",
     "qc": "独立质检",
     "board": "离线看板",
@@ -1402,6 +1403,7 @@ _AUTO_LABEL = {
     "asset": "资产锁定",
     "storyboard": "分镜",
     "feed": "提示词封装",
+    "seam": "分镜衔接",
 }
 _AUTO_CHAIN_LIMIT = 24
 

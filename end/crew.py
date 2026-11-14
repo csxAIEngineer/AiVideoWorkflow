@@ -8,6 +8,7 @@ CREW = (
     {"id": "storyboard", "name": "分镜"},
     {"id": "check", "name": "机检"},
     {"id": "feed", "name": STAGE_NAME},
+    {"id": "seam", "name": "分镜衔接"},
 )
 
 _PHASE_ROLE = {
@@ -16,8 +17,10 @@ _PHASE_ROLE = {
     "gate_asset": "asset",
     "gate_storyboard": "storyboard",
     "gate_feed": "feed",
+    "gate_seam": "seam",
     "gate_machine": "check",
     "feed": "feed",
+    "seam": "seam",
     "qc": "check",
 }
 
@@ -27,6 +30,7 @@ _CURRENT_ROLE = {
     "asset": "asset",
     "storyboard": "storyboard",
     "feed": "feed",
+    "seam": "seam",
     "qc": "check",
 }
 
@@ -115,6 +119,8 @@ def _from_message(message):
     if "机检" in text or "质检" in text:
         if "已过" not in text:
             return "check"
+    if "分镜衔接" in text or "段缝" in text:
+        return "seam"
     if "投喂" in text or "封装" in text:
         return "feed"
     if "分镜" in text:

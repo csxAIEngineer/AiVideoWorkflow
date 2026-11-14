@@ -426,7 +426,7 @@ class DirectorDbTest(unittest.TestCase):
         locks["style_look"] = "自然光，写实肤色"
         locks["style"] = locks["style_look"]
         locks["seams"] = []
-        self.assertEqual(stages_for(locks, ""), ["script", "asset", "storyboard", "seam", "feed"])
+        self.assertEqual(stages_for(locks, ""), ["script", "asset", "storyboard", "feed", "seam"])
         self.assertEqual(next_pending(stages_for(locks, ""), []), "script")
         self.assertEqual(stages_for(locks, detect_only("只要打戏")), ["script", "asset", "storyboard"])
         self.assertNotIn("feed", stages_for(locks, detect_only("只要打戏")))
@@ -827,7 +827,7 @@ class DirectorDbTest(unittest.TestCase):
         self.assertEqual((internal / "previs.md").read_text(encoding="utf-8"), previs)
         saved = read_project("p-board-keep")
         pipeline = saved["progress"]["pipeline"]
-        self.assertEqual(pipeline["current"], "seam")
+        self.assertEqual(pipeline["current"], "feed")
         self.assertEqual(pipeline["action"], "write")
         self.assertIn("storyboard", pipeline["accepted"])
         self.assertEqual(pipeline.get("repair") or "", "")
@@ -2012,7 +2012,7 @@ class PageTest(unittest.TestCase):
     def test_page_stops_on_gates_and_renders_seam_and_style(self):
         app = (ROOT / "front" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "front" / "styles.css").read_text(encoding="utf-8")
-        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "离线看板"]', app)
+        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接", "离线看板"]', app)
         self.assertIn('kind === "multi"', app)
         self.assertIn('type = "checkbox"', app)
         self.assertIn('kind === "cards"', app)

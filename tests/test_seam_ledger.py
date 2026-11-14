@@ -10,14 +10,21 @@ from end.render_loop import assemble_shot_media, choose_video_mode, run_local_pi
 from end.seam_ledger import (
     apply_submit_params,
     check_seam_ledger,
-    group_durations,
+    drop_packing,
     map_submit_params,
-    remap_units,
+    normalize_entry_ids,
+    packed_units,
     seam_blocks_render,
     strip_seam,
-    write_shot_fields,
+    write_unit_fields,
 )
-from end.stage_runner import group_shot_durations
+from end.stage_runner import (
+    _spec_patch,
+    accepted_done,
+    group_shot_durations,
+    next_pending,
+    stages_for,
+)
 from end.storyboard_contract import project_into_spec
 from end.workflow_from_spec import collect_steps
 
@@ -89,7 +96,7 @@ class MachineCheckTest(unittest.TestCase):
         self.assertEqual(by_id["S02"]["video_mode"], "first_frame")
         self.assertEqual(by_id["S02"]["first_frame_source"], "previous_tail")
         self.assertEqual(by_id["S02"]["images"], [])
-        self.assertEqual(by_id["S02"]["writing_mode"], "视频延长强连续")
+        self.assertNotIn("writing_mode", by_id["S02"])
         self.assertEqual(by_id["S03"]["video_mode"], "reference")
         self.assertEqual(by_id["S03"]["images"], ["图2"])
         self.assertEqual(by_id["S03"]["end_image"], "")
@@ -243,28 +250,34 @@ class SubmitAndPackingTest(unittest.TestCase):
         )
         self.assertEqual(framed, [{"role": "first_frame", "url": "https://cdn.example/tail.jpg"}])
 
-    def test_collect_steps_remaps_merged_seams_onto_feed_units(self):
-        shots, ledger = _board()
-        shots = shots[:3]
-        ledger = {"entries": ledger["entries"][:3]}
-        stamped = write_shot_fields(shots, ledger["entries"])
-        groups = group_durations(
-            [shot["duration"] for shot in stamped],
-            [shot["seam_d_lock"] for shot in stamped],
-        )
-        self.assertEqual(groups, [[5, 5], [5]])
+    def test_collect_steps_reads_fields_from_packed_units(self):
         self.assertEqual(group_shot_durations([5, 5, 6]), [[5, 5], [6]])
+        self.assertEqual(group_shot_durations([5, 5], locks=["2", "2"]), [[5, 5]])
         feed = "\n\n".join((
             "## 【封装单元 1/2】\nduration: 10\nsubject_definitions:\n<Subject 1>: a woman\ndetailed_description:\nShe stays.\noverall_soundscape:\nroom\nnon_diegetic_music:\nN/A",
             "## 【封装单元 2/2】\nduration: 5\nsubject_definitions:\n<Subject 1>: a door\ndetailed_description:\nThe door opens.\noverall_soundscape:\nroom\nnon_diegetic_music:\nN/A",
         ))
+        units = [
+            {"id": "封装单元 1", "duration": 10, "images": ["图1"], "prompt": "one"},
+            {"id": "封装单元 2", "duration": 5, "images": ["图2"], "prompt": "two"},
+        ]
+        entries = apply_submit_params([
+            _entry("封装单元 1", "", "none"),
+            _entry("封装单元 2", "封装单元 1", "2"),
+        ], units)
+        stamped = write_unit_fields(units, entries)
         spec = {
             "assets": [
                 {"id": "图1", "title": "人", "prompt": "一个人"},
                 {"id": "图2", "title": "门", "prompt": "一扇门"},
             ],
-            "shots": stamped,
-            "seam_ledger": ledger,
+            "shots": [
+                _shot("S01", ["图1"]),
+                _shot("S02", ["图1"]),
+                _shot("S03", ["图2"]),
+            ],
+            "seam_ledger": {"entries": entries},
+            "feed_units": stamped,
             "feed": feed,
         }
         _assets, built = collect_steps(spec)
@@ -275,11 +288,9 @@ class SubmitAndPackingTest(unittest.TestCase):
         self.assertEqual(built[1]["video_mode"], "reference")
         self.assertEqual(built[1]["images"], ["图2"])
         self.assertEqual(built[1]["first_frame_source"], "none")
-        self.assertNotEqual(built[1]["video_mode"], "first_frame")
-        units = remap_units(stamped, ledger["entries"])
-        self.assertEqual(units[0]["shot_ids"], ["S01", "S02"])
-        self.assertEqual(units[0]["video_mode"], "reference")
-        self.assertEqual(units[1]["d_lock"], "2")
+        self.assertEqual(built[1]["seam_d_lock"], "2")
+        self.assertNotIn("video_mode", spec["shots"][0])
+        self.assertNotIn("video_mode", spec["shots"][1])
 
     def test_locked_storyboard_blocks_image_and_video_until_the_ledger_passes(self):
         spec = {
@@ -293,15 +304,24 @@ class SubmitAndPackingTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 run_local_pipeline(spec, Path(tmp), images_only=True)
             self.assertIn("不能出图或出片", str(caught.exception))
-        shots, ledger = _board()
-        stamped = write_shot_fields(shots, ledger["entries"])
+        feed = "\n".join((
+            "## 【封装单元 1/1】",
+            "duration: 5",
+            "subject_definitions:",
+            "<Subject 1>: a woman",
+            "detailed_description:",
+            "She stays.",
+            "overall_soundscape:",
+            "room",
+            "non_diegetic_music:",
+            "N/A",
+        ))
+        units = packed_units({"feed": feed, "assets": spec["assets"], "shots": spec["shots"]})
+        entries = apply_submit_params([_entry(units[0]["id"], "", "none")], units)
         ready = dict(spec)
-        ready["shots"] = stamped
-        ready["seam_ledger"] = ledger
-        ready["assets"] = [
-            {"id": "图1", "title": "人", "prompt": "一个人"},
-            {"id": "图2", "title": "门", "prompt": "一扇门"},
-        ]
+        ready["feed"] = feed
+        ready["feed_units"] = write_unit_fields(units, entries)
+        ready["seam_ledger"] = {"entries": entries}
         self.assertEqual(seam_blocks_render(ready, collect_steps(ready)[1]), "")
 
     def test_a_new_storyboard_drops_the_ledger_and_written_video_fields(self):
@@ -310,16 +330,33 @@ class SubmitAndPackingTest(unittest.TestCase):
             "storyboard": "旧分镜",
             "storyboard_contract": "shot-prose-v1",
             "seam_ledger": ledger,
-            "shots": write_shot_fields(shots, ledger["entries"]),
+            "shots": write_unit_fields(shots, ledger["entries"]),
         }
         self.assertEqual(spec["shots"][1]["video_mode"], "first_frame")
+        spec["feed"] = "## 【封装单元 1/1】\nduration: 5\n"
+        spec["feed_units"] = [{"id": "封装单元 1", "video_mode": "reference", "seam_d_lock": "none"}]
         cleared = project_into_spec(spec, {"storyboard": "## S01\n动作：停\n景别机位：中景\n时长：5\n资产：图1", "_storyboard_contract": True})
         self.assertNotIn("seam_ledger", cleared)
+        self.assertNotIn("feed", cleared)
+        self.assertNotIn("feed_units", cleared)
         self.assertNotIn("video_mode", cleared["shots"][0])
         self.assertNotIn("first_frame_source", cleared["shots"][0])
-        again = strip_seam({"shots": write_shot_fields(shots, ledger["entries"]), "seam_ledger": ledger})
+        again = strip_seam({
+            "feed": spec["feed"],
+            "feed_units": write_unit_fields(
+                [{"id": "S02", "images": ["图1"]}],
+                ledger["entries"],
+            ),
+            "shots": write_unit_fields(shots, ledger["entries"]),
+            "seam_ledger": ledger,
+        })
         self.assertNotIn("seam_ledger", again)
         self.assertNotIn("video_mode", again["shots"][1])
+        self.assertNotIn("video_mode", again["feed_units"][0])
+        self.assertEqual(again["feed"], spec["feed"])
+        dropped = drop_packing(spec)
+        self.assertNotIn("feed", dropped)
+        self.assertNotIn("seam_ledger", dropped)
 
 
 class SeamWorkerTest(unittest.TestCase):
@@ -345,16 +382,128 @@ class SeamWorkerTest(unittest.TestCase):
         result = run_seam_loop(
             "她把药盒放下。",
             "## S01\n时长：5",
-            shots=shots,
+            units=shots,
             complete=complete,
         )
         self.assertTrue(result["passed"], result["machine_report"])
-        self.assertEqual([shot["id"] for shot in result["shots"]], ["S01", "S02", "S03", "S04"])
-        self.assertEqual(result["shots"][1]["video_mode"], "first_frame")
-        self.assertEqual(result["shots"][1]["first_frame_source"], "previous_tail")
+        self.assertEqual([unit["id"] for unit in result["feed_units"]], ["S01", "S02", "S03", "S04"])
+        self.assertEqual(result["feed_units"][1]["video_mode"], "first_frame")
+        self.assertEqual(result["feed_units"][1]["first_frame_source"], "previous_tail")
+        self.assertEqual(result["feed_units"][1]["seam_d_lock"], "1")
         self.assertTrue(result["critic_report"]["stripped_rewrite"])
         self.assertNotIn("NOPE", json.dumps(result["seam_ledger"], ensure_ascii=False))
         self.assertEqual(calls, ["specialist", "director", "critic"])
+
+
+class UnitOrderTest(unittest.TestCase):
+    def _feed(self, count):
+        blocks = []
+        for index in range(1, count + 1):
+            blocks.append("\n".join((
+                "## 【封装单元 %s/%s】" % (index, count),
+                "duration: 5",
+                "subject_definitions:",
+                "<Subject 1>: a woman",
+                "detailed_description:",
+                "She stays.",
+                "overall_soundscape:",
+                "room",
+                "non_diegetic_music:",
+                "N/A",
+            )))
+        return "\n\n".join(blocks)
+
+    def _spec(self, count, entries):
+        feed = self._feed(count)
+        spec = {
+            "storyboard_contract": "shot-prose-v1",
+            "storyboard": "## S01\n动作：停\n景别机位：中景\n时长：5\n资产：图1",
+            "assets": [{"id": "图1", "title": "人", "prompt": "一个人"}],
+            "shots": [_shot("S%02d" % index, ["图1"]) for index in range(1, count + 1)],
+            "feed": feed,
+            "seam_ledger": {"entries": entries},
+        }
+        spec["feed_units"] = packed_units(spec)
+        return spec
+
+    def test_packing_can_run_without_a_ledger(self):
+        stages = stages_for({}, "")
+        self.assertEqual(stages, ["script", "asset", "storyboard", "feed", "seam"])
+        self.assertEqual(next_pending(stages, ["script", "asset", "storyboard"]), "feed")
+        self.assertEqual(
+            next_pending(stages, ["script", "asset", "storyboard", "seam", "feed"]),
+            "seam",
+        )
+        self.assertEqual(
+            next_pending(stages, ["script", "asset", "storyboard", "feed"]),
+            "seam",
+        )
+        self.assertEqual(
+            next_pending(stages, ["script", "asset", "storyboard", "feed", "seam"]),
+            "",
+        )
+        self.assertNotIn("seam", accepted_done(["script", "asset", "storyboard", "seam", "feed"]))
+        self.assertIn("seam", accepted_done(["script", "asset", "storyboard", "feed", "seam"]))
+
+    def test_seam_matches_packed_unit_ids_and_count(self):
+        units = packed_units({"feed": self._feed(2)})
+        self.assertEqual([unit["id"] for unit in units], ["封装单元 1", "封装单元 2"])
+        entries = apply_submit_params([
+            _entry("封装单元 1", "", "none"),
+            _entry("封装单元 2", "封装单元 1", "2"),
+        ], units)
+        report = check_seam_ledger({"entries": entries}, units)
+        self.assertEqual(report["errors"], [], report["report"])
+        numbered = normalize_entry_ids([
+            _entry("1", "", "none"),
+            _entry("2", "1", "2"),
+        ], units)
+        numbered = apply_submit_params(numbered, units)
+        for entry, bare in zip(numbered, ("1", "2")):
+            entry["shot_id"] = bare
+        numbered_report = check_seam_ledger({"entries": numbered}, units)
+        self.assertEqual(numbered_report["errors"], [], numbered_report["report"])
+        self.assertEqual(
+            [item["shot_id"] for item in normalize_entry_ids(numbered, units)],
+            ["封装单元 1", "封装单元 2"],
+        )
+
+    def test_shot_level_and_short_ledgers_fail_the_gate(self):
+        shot_level = self._spec(2, apply_submit_params([
+            _entry("S01", "", "none"),
+            _entry("S02", "S01", "2"),
+        ], [_shot("S01", ["图1"]), _shot("S02", ["图1"])]))
+        blocked = seam_blocks_render(shot_level)
+        self.assertIn("不能出图或出片", blocked)
+        self.assertIn("对不上封装单元", blocked)
+        self.assertIn("S01", blocked)
+
+        short = self._spec(5, [
+            _entry(str(index), "", "none" if index == 1 else "2")
+            for index in range(1, 5)
+        ])
+        blocked = seam_blocks_render(short)
+        self.assertIn("不能出图或出片", blocked)
+        self.assertIn("不能把多个单元收成更少的段", blocked)
+        self.assertIn("5", blocked)
+
+    def test_packing_rewrite_drops_the_ledger_and_unit_video_fields(self):
+        units = packed_units({"feed": self._feed(1), "assets": [{"id": "图1", "title": "人", "prompt": "一个人"}]})
+        entries = apply_submit_params([_entry(units[0]["id"], "", "none")], units)
+        spec = {
+            "feed": self._feed(1),
+            "feed_units": write_unit_fields(units, entries),
+            "seam_ledger": {"entries": entries},
+            "shots": [_shot("S01", ["图1"], duration=5)],
+        }
+        spec["shots"][0]["video_mode"] = "reference"
+        rewritten = _spec_patch("feed", {"feed": self._feed(1).replace("duration: 5", "duration: 6")}, spec)
+        self.assertNotIn("seam_ledger", rewritten)
+        self.assertEqual(rewritten["feed_units"][0]["id"], "封装单元 1")
+        self.assertNotIn("video_mode", rewritten["feed_units"][0])
+        self.assertNotIn("seam_d_lock", rewritten["feed_units"][0])
+        self.assertNotIn("video_mode", rewritten["shots"][0])
+        self.assertIn("duration: 6", rewritten["feed"])
 
 
 if __name__ == "__main__":

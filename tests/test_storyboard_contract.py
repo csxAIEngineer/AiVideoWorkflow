@@ -209,8 +209,9 @@ class QueueTest(unittest.TestCase):
             calls.append(brief)
             if "任务：分镜衔接" in brief or "阶段：seam" in brief:
                 return {"seam_ledger": {"entries": [{
-                    "shot_id": "S01",
+                    "shot_id": "投喂单元 1",
                     "d_lock": "none",
+                    "reason": "开场",
                     "scene_relation": "opening",
                     "start_size": "中景",
                 }]}}

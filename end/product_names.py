@@ -22,7 +22,7 @@ LEGACY_EMPTY_DRAFT = "投喂稿是空的"
 EMPTY_DRAFT_REPLY = "封装稿没写出来。根据建议修改会按分镜和资产再写一版。"
 
 STORYBOARD_PASS = "分镜门。继续之后才写提示词封装。"
-FEED_PASS = "提示词封装。闸门已过。继续就做投喂机检并交付。"
+FEED_PASS = "提示词封装。投喂机检已过。继续就做分镜衔接。"
 MACHINE_FAIL = "投喂机检没过。根据建议修改会按下面这些项改。"
 MACHINE_BLOCKED = "投喂机检未通过"
 

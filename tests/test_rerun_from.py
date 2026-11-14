@@ -248,7 +248,7 @@ class RerunProjectTest(unittest.TestCase):
         self.assertTrue((folder / "outputs" / "images" / "A1.png").is_file())
         self.assertFalse((folder / "outputs" / "clips" / "S01.mp4").is_file())
         pipeline = read_project(project_id)["progress"]["pipeline"]
-        self.assertEqual(pipeline["current"], "seam")
+        self.assertEqual(pipeline["current"], "feed")
         self.assertEqual(pipeline["accepted"], ["script", "asset", "storyboard"])
         self.assertEqual(read_project(project_id)["storyboard"], "新分镜")
         self.assertEqual(read_project(project_id)["image_prompts"], "主角提示")

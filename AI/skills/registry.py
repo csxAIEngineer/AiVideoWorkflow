@@ -475,10 +475,13 @@ _MERGE_SHAPE = {
     )),
     "seam": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-        "分镜衔接放在 seam_ledger。seam_ledger.entries 是数组，每个镜头一条，顺序与分镜相同。",
+        "分镜衔接放在 seam_ledger。对象是已经封装好的单元，不是分镜镜头。",
+        "seam_ledger.entries 的条数必须等于封装单元数，顺序与封装单元相同。不要把多个单元收成更少的段。",
+        "每条 shot_id 必须原样照抄封装单元 id。不要改成 1、2、3，也不要写成 S01。",
         "第一条 d_lock 为 none。其后每条恰好是 1、2、3、4 之一。",
-        "每条写 shot_id、prev_id、d_lock、reason、scene_relation、action_continuous、end_size、start_size、camera_change、tail_croppable、crop_plan、writing_mode、transition、enter_exit。",
-        "video_mode、images、end_image、first_frame_source 按 D 锁填写。不要把段内衔接写进 entries。",
+        "每条写 shot_id、prev_id、d_lock、reason、scene_relation、action_continuous、end_size、start_size、camera_change、tail_croppable、crop_plan、transition、enter_exit。",
+        "不要再写 writing_mode。五种写法是封装策略，不是第二套 D 锁。",
+        "video_mode、images、end_image、first_frame_source 按 D 锁填写。一次调用不能混用帧和参考图。不要把段内衔接写进 entries。",
     )),
 }
 _H3_FEED_CONTRACT = "\n".join((
