@@ -918,6 +918,41 @@ class ProjectApiTest(unittest.TestCase):
         self.assertEqual(progress["soundtrack_note"], "没有旁白")
         self.assertEqual(progress["phase"], "subtitles")
 
+    def test_project_get_adds_the_read_only_video_contract(self):
+        project_id = "a11c0de000c1"
+        make_project(project_id)
+        view_patches = (
+            patch("end.server.normalize_model", side_effect=lambda model: model or ""),
+            patch("end.server.model_label", return_value=""),
+            patch("end.server.normalize_template", side_effect=lambda template: template or ""),
+            patch("end.server.template_label", return_value=""),
+        )
+        for item in view_patches:
+            item.start()
+        self.addCleanup(lambda: [item.stop() for item in view_patches])
+        body = self.rpc("projects.get", {"id": project_id})["result"]
+        self.assertNotIn("feed", body)
+        shot = body["shots"][0]
+        self.assertEqual(shot["end_image"], "")
+        self.assertEqual(shot["images"], ["A1"])
+        self.assertEqual(shot["prompt"], "离开")
+        self.assertEqual(
+            shot["video_mode_resolved"],
+            {"value": "reference", "inferred": True, "written": ""},
+        )
+        self.assertEqual(shot["images_source"], {"value": "storyboard", "index": None})
+        self.assertEqual(shot["reference"], [{
+            "id": "A1",
+            "url": None,
+            "source": "bound_image",
+            "pending": False,
+            "available": False,
+        }])
+        self.assertEqual(shot["feed"]["heading"], "")
+        self.assertEqual(shot["feed"]["subject_definitions"], "")
+        self.assertEqual(shot["feed"]["unit"], "")
+        self.assertIsNone(shot["feed"]["index"])
+
 
 if __name__ == "__main__":
     unittest.main()

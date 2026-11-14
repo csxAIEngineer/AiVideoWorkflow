@@ -1310,10 +1310,23 @@ def _tail_frame(clip_path, dest):
     return dest
 
 
+def continuation_tail_name(shot_id):
+    """File stem and name ``_continuation_tail_url`` writes for this shot.
+
+    The stem is the shot id with the same character rules as the extractor.
+    Read-only callers use this so a GET can find an existing tail without
+    extracting a frame or uploading it.
+    """
+    stem = "".join(
+        ch if ch.isalnum() or ch in "-_" else "_" for ch in str(shot_id or "tail")
+    )[:40] or "tail"
+    return stem, "%s_tail.jpg" % stem
+
+
 def _continuation_tail_url(ctx, previous_clip, shot_id):
     """Publish the previous clip's last frame. Reference mode has nothing else to send."""
-    stem = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(shot_id or "tail"))[:40] or "tail"
-    dest = Path(ctx.work_dir) / "outputs" / "images" / ("%s_tail.jpg" % stem)
+    _stem, filename = continuation_tail_name(shot_id)
+    dest = Path(ctx.work_dir) / "outputs" / "images" / filename
     frame = _tail_frame(previous_clip, dest)
     if frame is None or not ctx.project_id:
         return ""

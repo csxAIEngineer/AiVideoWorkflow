@@ -118,7 +118,7 @@ from end.stage_runner import (
     storyboard_has_draft,
 )
 from end.soundtrack import normalize_soundtrack, project_soundtrack, soundtrack_enabled
-from end.workflow_from_spec import _safe_id, collect_steps, task_plan
+from end.workflow_from_spec import _safe_id, task_plan
 from end.task_queue import Task, TaskQueue
 
 STATIC = ROOT / "front"
@@ -417,7 +417,11 @@ def public_view(project):
                 json.dumps(spec, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-        assets, shots = collect_steps(spec)
+        from end.shot_contract import annotate_shots
+        from end.workflow_from_spec import assemble_steps
+
+        assets, shots, sources = assemble_steps(spec)
+        shots = annotate_shots(shots, sources, folder, project["id"])
     debug_dir = folder / "debug"
     debug_files = [
         key for key, name in DEBUG_FILES.items() if (debug_dir / name).is_file()

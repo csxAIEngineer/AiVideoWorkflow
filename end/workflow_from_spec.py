@@ -127,8 +127,30 @@ def _image_prompt(item, blocks):
     return prompt
 
 
-def collect_steps(spec):
-    """Assets and shots that actually become nodes, in run order."""
+def _feed_shot_images(unit, asset_rows, known, template):
+    """Images collect_steps binds for one packed unit, and why.
+
+    A non-empty ``images_for_feed_unit`` match wins. An empty match copies the
+    storyboard shot at the same index. This does not read or write run state.
+    """
+    from end.board_shots import images_for_feed_unit
+
+    matched = [
+        name
+        for name in images_for_feed_unit(unit, asset_rows)
+        if name in known or _is_upload_id(name)
+    ]
+    if matched:
+        return list(matched), "unit_match"
+    return list((template or {}).get("images") or []), "storyboard_index_fallback"
+
+
+def assemble_steps(spec):
+    """Assets, shots, and how each shot's images were chosen.
+
+    The shot dicts match ``collect_steps``. Image-source rows are for the
+    read-only project view and are not part of the render contract.
+    """
     from end.prompt_gate import delivery_units
 
     spec = spec or {}
@@ -168,6 +190,7 @@ def collect_steps(spec):
             item["references"] = cleaned
 
     shots = []
+    sources = []
     for index, item in enumerate(spec.get("shots") or []):
         if item.get("images") is None:
             images = [assets[0]["id"]] if assets else []
@@ -197,27 +220,36 @@ def collect_steps(spec):
         if video_mode:
             shot["video_mode"] = video_mode
         shots.append(shot)
+        sources.append({"value": "storyboard", "index": None})
     # Clip files are keyed by id (clips/S01.mp4). Duplicate ids must not become
     # duplicate concat inputs, or each segment plays back-to-back several times.
     before_ids = [shot["id"] for shot in shots]
-    shots = _first_shots_by_id(shots)
+    ordered = _first_shots_by_id(shots)
+    source_by_shot = {id(shot): source for shot, source in zip(shots, sources)}
+    shots = ordered
+    sources = [source_by_shot[id(shot)] for shot in ordered]
     if units:
         # H3: one API call per feed unit. Never pad missing units with storyboard
         # Chinese rows — that is what made MiniMax ignore the Ref2VA contract.
         templates = shots
         rebuilt = []
-        from end.board_shots import images_for_feed_unit
-
         asset_rows = spec.get("assets") or []
+        sources = []
         for index, unit in enumerate(units):
             template = templates[index] if index < len(templates) else (
                 templates[-1] if templates else {}
             )
-            matched = [
-                name
-                for name in images_for_feed_unit(unit, asset_rows)
-                if name in known or _is_upload_id(name)
-            ]
+            if index < len(templates):
+                template_index = index
+            elif templates:
+                template_index = len(templates) - 1
+            else:
+                template_index = index
+            images, image_kind = _feed_shot_images(unit, asset_rows, known, template)
+            source = {"value": image_kind, "index": None}
+            if image_kind == "storyboard_index_fallback":
+                source["index"] = template_index
+            sources.append(source)
             feed_duration = _duration_from_feed(unit)
             # region agent log
             try:
@@ -255,13 +287,19 @@ def collect_steps(spec):
                     "prompt": unit,
                     "dialogue": str((template or {}).get("dialogue") or ""),
                     "narration": str((template or {}).get("narration") or ""),
-                    "images": matched or list((template or {}).get("images") or []),
+                    "images": images,
                 }
             )
             for key in ("end_image", "video_mode"):
                 if (template or {}).get(key):
                     rebuilt[-1][key] = template[key]
         shots = rebuilt
+    return assets, shots, sources
+
+
+def collect_steps(spec):
+    """Assets and shots that actually become nodes, in run order."""
+    assets, shots, _sources = assemble_steps(spec)
     return assets, shots
 
 
