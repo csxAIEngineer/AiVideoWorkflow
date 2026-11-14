@@ -168,7 +168,7 @@ class ProjectApiTest(unittest.TestCase):
         self.assertIn(b"/rpc.js", page)
         self.assertIn("Debug：只到意图解析".encode(), page)
         self.assertIn("Debug：只到提示词".encode(), page)
-        self.assertIn(b"/app.js?v=79", page)
+        self.assertIn(b"/app.js?v=80", page)
         self.assertIn(b"id=\"crew\"", page)
         status, script = self.request("GET", "/app.js")
         self.assertEqual(status, 200)

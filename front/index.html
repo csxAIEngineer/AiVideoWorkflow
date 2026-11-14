@@ -9,7 +9,7 @@
       if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
     } catch (_error) {}
   </script>
-  <link rel="stylesheet" href="/styles.css?v=47" />
+  <link rel="stylesheet" href="/styles.css?v=48" />
 </head>
 <body>
   <aside id="app-menu" class="sidebar" aria-label="项目菜单">
@@ -105,6 +105,7 @@
           <pre id="retouch-prompt" class="retouch-prompt"></pre>
         </details>
       </aside>
+      <section id="shot-contract" class="shot-contract hidden" aria-label="分镜详情"></section>
       <div id="shot-strip" class="shot-strip" aria-label="镜头"></div>
       </div>
       <div id="chat-column" class="chat-column">
@@ -204,6 +205,7 @@
   </main>
   <script src="/rpc.js?v=2"></script>
   <script src="/script-edit.js?v=2"></script>
-  <script src="/app.js?v=79"></script>
+  <script src="/shot-contract-view.js?v=1"></script>
+  <script src="/app.js?v=80"></script>
 </body>
 </html>

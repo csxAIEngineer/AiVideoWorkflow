@@ -45,6 +45,7 @@ let surfaceLock = "";
 let surfaced = "";
 let centerView = "canvas";
 let previewShotId = "";
+let contractShotId = "";
 let sideTab = "history";
 let canvasSig = "";
 let canvasEdges = [];
@@ -1504,7 +1505,10 @@ function renderThread(options) {
     canvasSig = "";
     centerView = "canvas";
     previewShotId = "";
+    contractShotId = "";
+    syncContract.sig = "";
     hideWorkflow();
+    syncContract(null);
     empty.classList.remove("hidden");
     thread.classList.add("hidden");
     thread.innerHTML = "";
@@ -1523,6 +1527,7 @@ function renderThread(options) {
     thread.classList.remove("hidden");
     paintTranscript(opts, true);
     syncRetouchPanel(current);
+    syncContract(null);
     return;
   }
   showWorkflow();
@@ -1533,6 +1538,7 @@ function renderThread(options) {
   syncDocNav(current);
   syncShotStrip(current);
   syncPreview(current);
+  syncContract(current);
   syncDock(current);
   refreshLogs();
   syncComposer();
@@ -1881,6 +1887,8 @@ async function openProject(id) {
     canvasSig = "";
     centerView = "canvas";
     previewShotId = "";
+    contractShotId = "";
+    syncContract.sig = "";
     syncDocNav.sig = "";
     syncShotStrip.sig = "";
     resetRetouch();
@@ -2617,7 +2625,8 @@ function spreadColumns() {
 function planSignature(plan) {
   return plan.nodes.map((node) => {
     const ids = (node.assets || []).map((asset) => asset.id + ":" + (asset.view || "")).join(",");
-    return node.kind + ":" + node.id + ":" + ids;
+    const extra = node.kind === "shot" ? ShotContractView.contractSig(node.shot) : "";
+    return node.kind + ":" + node.id + ":" + ids + ":" + extra;
   }).join("|")
     + "#"
     + plan.edges.map((edge) => edge.from + ">" + edge.to).join("|");
@@ -2762,6 +2771,9 @@ function renderNode(project, info) {
   if (info.kind === "shot" && retouchSelection && retouchSelection.node === "shot" && retouchSelection.targetId === info.id) {
     node.classList.add("is-selected");
   }
+  if (info.kind === "shot" && contractShotId && contractShotId === info.id) {
+    node.classList.add("is-contract");
+  }
   node.dataset.id = info.id;
   node.dataset.kind = info.kind;
   node.dataset.col = String(info.col);
@@ -2784,6 +2796,7 @@ function renderNode(project, info) {
   else if (info.kind === "shot") meta.textContent = (info.assets || []).length + " 张";
   head.append(dot, title, meta);
   node.append(head);
+  if (info.kind === "shot") node.append(renderContractTags(info.shot || {}));
   if (info.kind === "script") node.append(makeField(project, "script", 8));
   else if (info.kind === "storyboard") node.append(makeField(project, "storyboard", 8));
   else if (info.kind === "image") {
@@ -3420,13 +3433,296 @@ function focusCanvasField(nodeId, fieldKey) {
   });
 }
 
+function looksLikeMediaUrl(value) {
+  const text = String(value || "").trim();
+  return /^https?:\/\//i.test(text) || text.charAt(0) === "/" || text.indexOf("/media/") >= 0;
+}
+
+function mediaUrl(project, value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (looksLikeMediaUrl(text)) return text;
+  return imageUrlFor(project, text);
+}
+
+function mediaName(value) {
+  const path = String(value || "").split("?")[0];
+  const parts = path.split("/");
+  return parts[parts.length - 1] || "尾帧";
+}
+
 function shotThumbUrl(project, shot) {
   const ids = (shot && shot.images) || [];
   for (let index = 0; index < ids.length; index += 1) {
     const url = imageUrlFor(project, ids[index]);
     if (url) return url;
   }
+  const refs = (shot && shot.reference) || [];
+  for (let index = 0; index < refs.length; index += 1) {
+    if (refs[index] && refs[index].url) return String(refs[index].url);
+  }
+  if (shot && looksLikeMediaUrl(shot.end_image)) return String(shot.end_image);
   return shot ? imageUrlFor(project, shot.id) : "";
+}
+
+function renderContractTag(info, mode) {
+  const tag = document.createElement("span");
+  tag.className = "contract-tag" + (info.empty ? " empty" : (mode ? " mode" : ""));
+  tag.textContent = info.text;
+  return tag;
+}
+
+function renderContractTags(shot) {
+  const meta = document.createElement("span");
+  meta.className = "contract-tags";
+  meta.append(
+    renderContractTag(ShotContractView.modeBadge(shot), true),
+    renderContractTag(ShotContractView.tailBadge(shot), false)
+  );
+  return meta;
+}
+
+function contractHold(text) {
+  const hold = document.createElement("span");
+  hold.className = "none";
+  hold.textContent = text || "空";
+  return hold;
+}
+
+function renderContractThumb(item) {
+  const thumb = document.createElement("div");
+  thumb.className = "contract-thumb";
+  if (item.kind === "image" && item.url) {
+    const img = document.createElement("img");
+    img.className = "pic";
+    img.src = item.url;
+    img.alt = item.label || "";
+    img.draggable = false;
+    img.addEventListener("error", () => {
+      img.replaceWith(contractHold(item.hold || "空"));
+    });
+    thumb.append(img);
+  } else {
+    thumb.append(contractHold(item.hold || "空"));
+  }
+  const label = document.createElement("span");
+  label.textContent = item.label || "空";
+  thumb.append(label);
+  return thumb;
+}
+
+function boundThumbs(project, shot) {
+  const ids = shot && Array.isArray(shot.images) ? shot.images : [];
+  if (!ids.length) return [{ kind: "empty", label: "空", hold: "空" }];
+  return ids.map((id) => {
+    const text = id != null ? String(id) : "";
+    const url = text ? mediaUrl(project, text) : "";
+    if (!url) return { kind: "empty", label: text || "空", hold: text ? "无图" : "空" };
+    return { kind: "image", label: text || "空", url: url };
+  });
+}
+
+function endThumb(project, shot) {
+  const raw = shot && shot.end_image != null ? String(shot.end_image).trim() : "";
+  if (!raw) return { kind: "empty", label: "end_image", hold: "空" };
+  const url = mediaUrl(project, raw);
+  const label = looksLikeMediaUrl(raw) ? mediaName(raw) : raw;
+  if (!url) return { kind: "empty", label: label || "end_image", hold: "无图" };
+  return { kind: "image", label: label, url: url };
+}
+
+function referenceThumb(project, item) {
+  const source = String((item && item.source) || "");
+  const id = item && item.id != null ? String(item.id) : "";
+  const pendingTail = source === "previous_tail" && !(item && item.url);
+  if (pendingTail) return { kind: "pending", label: "上镜尾帧", hold: "待生成" };
+  const direct = item && item.url ? String(item.url) : "";
+  const url = direct || (id && source !== "previous_tail" ? mediaUrl(project, id) : "");
+  const label = source === "previous_tail" ? "上镜尾帧" : (id || "空");
+  if (!url) return { kind: "empty", label: label, hold: id ? "无图" : "空" };
+  return { kind: "image", label: label, url: url };
+}
+
+function referenceThumbs(project, shot) {
+  const refs = shot && Array.isArray(shot.reference) ? shot.reference : [];
+  if (!refs.length) return [{ kind: "empty", label: "空", hold: "空" }];
+  return refs.map((item) => referenceThumb(project, item || {}));
+}
+
+function contractKey(text) {
+  const key = document.createElement("div");
+  key.className = "contract-key";
+  key.textContent = text;
+  return key;
+}
+
+function contractSource(text) {
+  const line = document.createElement("p");
+  line.className = "contract-src";
+  line.textContent = text;
+  return line;
+}
+
+function renderContractBadge(info) {
+  const badge = document.createElement("span");
+  badge.className = "contract-badge" + (info.warn || info.empty ? " warn" : "");
+  badge.textContent = info.text;
+  return badge;
+}
+
+function renderModeBadges(shot) {
+  const box = document.createElement("div");
+  box.className = "contract-mode";
+  box.append(
+    renderContractBadge(ShotContractView.submitBadge(shot)),
+    renderContractBadge(ShotContractView.writtenBadge(shot))
+  );
+  return box;
+}
+
+function renderThumbGroup(items) {
+  const thumbs = document.createElement("div");
+  thumbs.className = "contract-thumbs";
+  items.forEach((item) => thumbs.append(renderContractThumb(item)));
+  return thumbs;
+}
+
+function renderBoundBlock(project, shot) {
+  const box = document.createElement("div");
+  box.append(renderThumbGroup(boundThumbs(project, shot)));
+  box.append(contractSource("来源：" + ShotContractView.imagesSourceText(shot && shot.images_source)));
+  return box;
+}
+
+function renderEndBlock(project, shot) {
+  const box = document.createElement("div");
+  box.append(renderThumbGroup([endThumb(project, shot)]));
+  return box;
+}
+
+function renderReferenceBlock(project, shot) {
+  const box = document.createElement("div");
+  box.append(renderThumbGroup(referenceThumbs(project, shot)));
+  box.append(contractSource(ShotContractView.referenceNote(shot, (project && project.shots) || [])));
+  return box;
+}
+
+function renderContractColumn(project, shot) {
+  const col = document.createElement("div");
+  col.className = "contract-col";
+  const head = document.createElement("div");
+  head.className = "contract-head";
+  const title = document.createElement("h2");
+  title.textContent = "分镜详情 · " + (shot.id || "");
+  const sub = document.createElement("span");
+  sub.className = "sub";
+  sub.textContent = "出片合同 · " + ShotContractView.durationText(shot);
+  head.append(title, sub);
+  const note = document.createElement("p");
+  note.className = "contract-note";
+  note.textContent = ShotContractView.contractNote();
+  const kv = document.createElement("div");
+  kv.className = "contract-kv";
+  kv.append(
+    contractKey("出片模式"),
+    renderModeBadges(shot),
+    contractKey("绑定资产图"),
+    renderBoundBlock(project, shot),
+    contractKey("尾帧"),
+    renderEndBlock(project, shot),
+    contractKey("实际参考图"),
+    renderReferenceBlock(project, shot)
+  );
+  col.append(head, note, kv);
+  return col;
+}
+
+function renderFeedColumn(shot) {
+  const col = document.createElement("div");
+  col.className = "contract-col contract-feed";
+  const title = document.createElement("h3");
+  title.textContent = ShotContractView.feedHeading(shot);
+  col.append(title);
+  ShotContractView.feedRows(shot).forEach((row) => {
+    const field = document.createElement("div");
+    field.className = "contract-field";
+    const name = document.createElement("b");
+    name.textContent = row.label;
+    const body = document.createElement("p");
+    body.textContent = row.text;
+    if (row.empty) body.className = "contract-empty";
+    else body.title = row.text;
+    field.append(name, body);
+    col.append(field);
+  });
+  return col;
+}
+
+function markContractNodes() {
+  if (!canvasNodes) return;
+  canvasNodes.querySelectorAll(".wf-node.shot").forEach((node) => {
+    node.classList.toggle("is-contract", !!contractShotId && node.dataset.id === contractShotId);
+  });
+}
+
+function placeRetouch() {
+  if (!stageCenter) return;
+  const panel = document.querySelector("#shot-contract");
+  const contract = panel && !panel.classList.contains("hidden") ? panel.offsetHeight : 0;
+  const strip = shotStrip && !shotStrip.classList.contains("hidden") ? shotStrip.offsetHeight : 0;
+  const clearance = Math.max(0, contract + strip + 12 - 72);
+  stageCenter.style.setProperty("--contract-offset", clearance + "px");
+}
+
+function openShotContract(id) {
+  contractShotId = id || "";
+  syncContract.sig = "";
+  if (!current) return;
+  syncShotStrip(current);
+  syncContract(current);
+}
+
+function syncContract(project) {
+  const panel = document.querySelector("#shot-contract");
+  if (!panel) return;
+  const workflow = !!(project && main && main.classList.contains("workflow"));
+  panel.classList.toggle("hidden", !workflow);
+  if (!workflow || !project) {
+    panel.classList.remove("is-idle");
+    panel.replaceChildren();
+    syncContract.sig = "";
+    syncContract.open = false;
+    markContractNodes();
+    placeRetouch();
+    return;
+  }
+  const shots = project.shots || [];
+  if (contractShotId && !shots.some((shot) => shot && shot.id === contractShotId)) contractShotId = "";
+  const shot = shots.find((item) => item && item.id === contractShotId) || null;
+  const sig = (shot ? shot.id : "") + "\u0001" + ShotContractView.contractSig(shot);
+  const opened = !!shot;
+  if (sig === syncContract.sig && panel.childElementCount) {
+    markContractNodes();
+    placeRetouch();
+    return;
+  }
+  syncContract.sig = sig;
+  panel.classList.toggle("is-idle", !shot);
+  panel.replaceChildren();
+  if (!shot) {
+    const idle = document.createElement("p");
+    idle.className = "shot-contract-idle";
+    idle.textContent = "点某一镜，在这里看分镜详情。";
+    panel.append(idle);
+  } else {
+    panel.append(renderContractColumn(project, shot), renderFeedColumn(shot));
+  }
+  markContractNodes();
+  placeRetouch();
+  if (syncContract.open !== opened) {
+    syncContract.open = opened;
+    refitCanvas();
+  }
 }
 
 function previewUrl(project) {
@@ -3464,8 +3760,9 @@ function shotStripSignature(project) {
     (shot.images || []).join(","),
     shotThumbUrl(project, shot),
     clipUrlFor(project, shot.id) ? "1" : "",
+    ShotContractView.contractSig(shot),
   ].join(":")).join("|");
-  return [project.id, project.video_url || "", shots, previewShotId, centerView].join("\u0001");
+  return [project.id, project.video_url || "", shots, previewShotId, contractShotId, centerView].join("\u0001");
 }
 
 function shotChip(shot) {
@@ -3475,6 +3772,7 @@ function shotChip(shot) {
   const film = !!shot.film;
   const selected = film ? !previewShotId : previewShotId === shot.id;
   button.classList.toggle("on", selected && centerView === "preview");
+  button.classList.toggle("is-contract", !film && !!shot.id && contractShotId === shot.id);
   const url = film || !current ? "" : shotThumbUrl(current, shot);
   if (url) {
     const img = document.createElement("img");
@@ -3495,13 +3793,16 @@ function shotChip(shot) {
     time.textContent = shot.duration + " 秒";
     button.append(time);
   }
+  if (!film) button.append(renderContractTags(shot));
   button.addEventListener("click", () => {
     previewShotId = film ? "" : shot.id;
+    if (!film && shot.id) contractShotId = shot.id;
     centerView = "preview";
     syncCenter();
     if (!current) return;
     syncShotStrip(current);
     syncPreview(current);
+    syncContract(current);
   });
   return button;
 }
@@ -3956,6 +4257,7 @@ function onCanvasClick(event) {
   if (node && node.dataset.kind === "shot") {
     if (event.target.closest("video, textarea, input, button, a")) return;
     selectRetouch("shot", node.dataset.id);
+    openShotContract(node.dataset.id);
     return;
   }
   if (!node) clearRetouchSelection();
