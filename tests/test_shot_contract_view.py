@@ -164,6 +164,13 @@ class ShotContractViewTest(unittest.TestCase):
         self.assertNotIn("已经实际提交的存档列表", app)
         self.assertNotIn("已经实际提交的存档列表", view)
         self.assertIn(".shot-contract", css)
+        field = css.split(".contract-field p {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("max-height", field)
+        self.assertNotIn("line-clamp", field)
+        self.assertNotIn("overflow: hidden", field)
+        self.assertIn("pre-wrap", field)
+        column = css.split(".contract-col {", 1)[1].split("}", 1)[0]
+        self.assertIn("overflow: auto", column)
         self.assertIn("尾帧空", view)
         self.assertIn("尾帧有", view)
 
