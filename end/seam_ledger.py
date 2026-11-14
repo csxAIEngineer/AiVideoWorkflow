@@ -46,6 +46,45 @@ SCENE_RELATIONS = (
     "oner",
     "emotion_landing",
 )
+# First packed unit has no inbound seam. Later units stay in the same place
+# unless the ledger names another relation. 剧情段 default is ②, and most
+# cuts in this product do not change place.
+FIRST_UNIT_SCENE_RELATION = "opening"
+DEFAULT_SCENE_RELATION = "same_scene"
+# Longer phrases are listed first. The lookup also sorts by length so a
+# short alias cannot claim a more specific phrase.
+_SCENE_RELATION_PHRASES = (
+    ("同场景，连续", "same_scene"),
+    ("同场景，事件断开", "same_scene"),
+    ("同场景", "same_scene"),
+    ("同场", "same_scene"),
+    ("same_scene", "same_scene"),
+    ("新场景", "new_scene"),
+    ("换场", "new_scene"),
+    ("new_scene", "new_scene"),
+    ("时间跳跃", "time_jump"),
+    ("时间跳", "time_jump"),
+    ("换时间", "time_jump"),
+    ("time_jump", "time_jump"),
+    ("地点跳", "place_jump"),
+    ("换地点", "place_jump"),
+    ("place_jump", "place_jump"),
+    ("剧情段", "plot_group"),
+    ("剧情组", "plot_group"),
+    ("plot_group", "plot_group"),
+    ("一句话被拆开", "dialogue_split"),
+    ("对白拆分", "dialogue_split"),
+    ("dialogue_split", "dialogue_split"),
+    ("一镜到底", "oner"),
+    ("oner", "oner"),
+    ("情绪落地", "emotion_landing"),
+    ("情绪收尾", "emotion_landing"),
+    ("emotion_landing", "emotion_landing"),
+    ("无入缝", "opening"),
+    ("开场", "opening"),
+    ("首段", "opening"),
+    ("opening", "opening"),
+)
 CONTINUE_RELATIONS = ("same_scene", "dialogue_split", "oner")
 EMPTY_USES = ("情绪空镜", "音效桥", "时空转场")
 _EMPTY_ALIAS = {
@@ -71,6 +110,79 @@ CONTRACT = "shot-prose-v1"
 
 def _text(value):
     return str(value or "").strip()
+
+
+def _fold_scene_relation(value):
+    """Strip, casefold, and read fullwidth punctuation as ASCII."""
+    chars = []
+    for ch in str(value or ""):
+        code = ord(ch)
+        if code == 0x3000:
+            chars.append(" ")
+        elif code == 0x3001:
+            chars.append(",")
+        elif code == 0x3002:
+            chars.append(".")
+        elif 0xFF01 <= code <= 0xFF5E:
+            chars.append(chr(code - 0xFEE0))
+        else:
+            chars.append(ch)
+    return "".join(chars).strip().casefold()
+
+
+def _compile_scene_relation_aliases():
+    folded = []
+    for phrase, token in _SCENE_RELATION_PHRASES:
+        key = _fold_scene_relation(phrase)
+        if key and token in SCENE_RELATIONS:
+            folded.append((key, token))
+    folded.sort(key=lambda item: len(item[0]), reverse=True)
+    return tuple(folded)
+
+
+_SCENE_RELATION_ALIASES = _compile_scene_relation_aliases()
+
+
+def _relation_alias_at(text, alias):
+    if text == alias:
+        return True
+    if not alias or not text.startswith(alias):
+        return False
+    nxt = text[len(alias):len(alias) + 1]
+    if not nxt:
+        return True
+    ch = nxt[0]
+    if ch == "_" or ch.isalnum():
+        return False
+    return True
+
+
+def normalize_scene_relation(value, *, first=False):
+    """Return the SCENE_RELATIONS token to store.
+
+    A value already in the closed set is kept. Aliases match after strip,
+    casefold, and fullwidth punctuation folded to ASCII. A longer phrase
+    wins. Missing or unrecognized text uses FIRST_UNIT_SCENE_RELATION on
+    the first packed unit and DEFAULT_SCENE_RELATION on every later unit.
+    """
+    text = _fold_scene_relation(value)
+    if text:
+        for token in SCENE_RELATIONS:
+            if text == token:
+                return token
+        for alias, token in _SCENE_RELATION_ALIASES:
+            if _relation_alias_at(text, alias):
+                return token
+    if first:
+        return FIRST_UNIT_SCENE_RELATION
+    return DEFAULT_SCENE_RELATION
+
+
+def invalid_scene_relation_error(shot_id):
+    return "%s 的场景关系无效。scene_relation 只能是：%s。" % (
+        shot_id,
+        "、".join(SCENE_RELATIONS),
+    )
 
 
 def _lock(value):
@@ -380,11 +492,19 @@ def map_submit_params(entry, shot=None):
 
 
 def apply_submit_params(entries, shots):
-    """Copy official fields onto each entry. Bound stills stay on bound_images."""
+    """Copy official fields onto each entry. Bound stills stay on bound_images.
+
+    scene_relation is stored as a SCENE_RELATIONS token. The first packed
+    unit defaults to FIRST_UNIT_SCENE_RELATION. Every later unit defaults
+    to DEFAULT_SCENE_RELATION. A recognized alias or enum token is kept.
+    """
     by_id = {}
+    first_id = ""
     for shot in shots or []:
         if isinstance(shot, dict) and shot.get("id"):
             by_id[str(shot.get("id"))] = shot
+            if not first_id:
+                first_id = _text(shot.get("id"))
     applied = []
     for entry in entries or []:
         if not isinstance(entry, dict):
@@ -392,6 +512,14 @@ def apply_submit_params(entries, shots):
         row = dict(entry)
         row["d_lock"] = _lock(row.get("d_lock"))
         row["shot_id"] = _text(row.get("shot_id"))
+        if first_id:
+            is_first = row["shot_id"] == first_id
+        else:
+            is_first = not applied
+        row["scene_relation"] = normalize_scene_relation(
+            row.get("scene_relation"),
+            first=is_first,
+        )
         shot = by_id.get(row["shot_id"]) or {}
         row["bound_images"] = _bound_images(shot)
         row["empty_use"] = _empty_use(row.get("empty_use"))
@@ -468,9 +596,12 @@ def check_seam_ledger(ledger, units):
             errors.append("%s 缺少 D 锁" % shot_id)
         if index > 0 and lock not in ("1", "2", "3", "4"):
             errors.append("%s 的相邻段缝必须恰好是 ①②③④ 之一" % shot_id)
-        relation = _text(entry.get("scene_relation"))
-        if relation and relation not in SCENE_RELATIONS:
-            errors.append("%s 的场景关系无效" % shot_id)
+        relation = normalize_scene_relation(
+            entry.get("scene_relation"),
+            first=(index == 0),
+        )
+        if relation not in SCENE_RELATIONS:
+            errors.append(invalid_scene_relation_error(shot_id))
         writing = _text(entry.get("writing_mode"))
         if writing and writing not in WRITING_MODES:
             errors.append("%s 的写法建议无效" % shot_id)

@@ -4,15 +4,21 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from Agents.workers.seam import GENERATOR_SYSTEM, compile_seam_graph, generator_messages, run_seam_loop
 from end.render_loop import assemble_shot_media, choose_video_mode, run_local_pipeline
 from end.seam_ledger import (
+    DEFAULT_SCENE_RELATION,
+    FIRST_UNIT_SCENE_RELATION,
+    SCENE_RELATIONS,
     apply_submit_params,
     check_seam_ledger,
     drop_packing,
+    invalid_scene_relation_error,
     map_submit_params,
     normalize_entry_ids,
+    normalize_scene_relation,
     packed_units,
     seam_blocks_render,
     strip_seam,
@@ -675,6 +681,188 @@ class UnitOrderTest(unittest.TestCase):
             "要原样照抄这些 id：投喂单元 1/2、投喂单元 2/2。",
             mismatched["report"],
         )
+
+
+def _packed_units(count):
+    blocks = []
+    for index in range(1, count + 1):
+        blocks.append("\n".join((
+            "## 【封装单元 %s/%s】" % (index, count),
+            "duration: 5",
+            "subject_definitions:",
+            "<Subject 1>: a woman",
+            "detailed_description:",
+            "She stays.",
+            "overall_soundscape:",
+            "room",
+            "non_diegetic_music:",
+            "N/A",
+        )))
+    return packed_units({"feed": "\n\n".join(blocks)})
+
+
+class SceneRelationTest(unittest.TestCase):
+    def test_aliases_keep_an_explicit_relation_and_default_the_rest(self):
+        self.assertEqual(FIRST_UNIT_SCENE_RELATION, "opening")
+        self.assertEqual(DEFAULT_SCENE_RELATION, "same_scene")
+        self.assertIn(FIRST_UNIT_SCENE_RELATION, SCENE_RELATIONS)
+        self.assertIn(DEFAULT_SCENE_RELATION, SCENE_RELATIONS)
+
+        continuous = "同场景" + "\uff0c" + "连续"
+        disconnected = "同场景" + "\uff0c" + "事件断开"
+        self.assertEqual(normalize_scene_relation(continuous, first=True), "same_scene")
+        self.assertEqual(normalize_scene_relation("同场景,连续", first=True), "same_scene")
+        self.assertEqual(normalize_scene_relation("  " + continuous + "  ", first=True), "same_scene")
+        self.assertEqual(normalize_scene_relation(disconnected, first=False), "same_scene")
+        self.assertEqual(normalize_scene_relation("同场景", first=True), "same_scene")
+        self.assertEqual(normalize_scene_relation("同场", first=False), "same_scene")
+        self.assertEqual(normalize_scene_relation("SAME_SCENE", first=True), "same_scene")
+        self.assertEqual(normalize_scene_relation("同场景" + "\u3001" + "连续", first=True), "same_scene")
+
+        self.assertEqual(normalize_scene_relation("", first=True), "opening")
+        self.assertEqual(normalize_scene_relation(None, first=True), "opening")
+        self.assertEqual(normalize_scene_relation("随便写的", first=True), "opening")
+        self.assertEqual(normalize_scene_relation("不同场景", first=True), "opening")
+        self.assertEqual(normalize_scene_relation("", first=False), "same_scene")
+        self.assertEqual(normalize_scene_relation("???", first=False), "same_scene")
+        self.assertEqual(normalize_scene_relation("不同场景", first=False), "same_scene")
+
+        self.assertEqual(normalize_scene_relation("time_jump", first=True), "time_jump")
+        self.assertEqual(normalize_scene_relation(" Time_Jump ", first=False), "time_jump")
+        self.assertEqual(normalize_scene_relation("opening", first=False), "opening")
+
+        pairs = (
+            ("开场", "opening"),
+            ("首段", "opening"),
+            ("无入缝", "opening"),
+            ("新场景", "new_scene"),
+            ("换场", "new_scene"),
+            ("时间跳", "time_jump"),
+            ("时间跳跃", "time_jump"),
+            ("换时间", "time_jump"),
+            ("地点跳", "place_jump"),
+            ("换地点", "place_jump"),
+            ("剧情段", "plot_group"),
+            ("剧情组", "plot_group"),
+            ("对白拆分", "dialogue_split"),
+            ("一句话被拆开", "dialogue_split"),
+            ("一镜到底", "oner"),
+            ("情绪落地", "emotion_landing"),
+            ("情绪收尾", "emotion_landing"),
+        )
+        for phrase, token in pairs:
+            self.assertEqual(normalize_scene_relation(phrase, first=False), token, phrase)
+            self.assertEqual(normalize_scene_relation(phrase, first=True), token, phrase)
+
+    def test_chinese_same_scene_ledger_passes_and_writes_enum_tokens(self):
+        units = _packed_units(4)
+        self.assertEqual(
+            [unit["id"] for unit in units],
+            ["封装单元 1/4", "封装单元 2/4", "封装单元 3/4", "封装单元 4/4"],
+        )
+        phrases = (
+            "同场景" + "\uff0c" + "连续",
+            "同场景" + "\uff0c" + "事件断开",
+            "同场景" + "\uff0c" + "连续",
+            "同场景" + "\uff0c" + "事件断开",
+        )
+        raw = []
+        for index, phrase in enumerate(phrases, 1):
+            shot_id = "封装单元 %s/4" % index
+            prev = "" if index == 1 else "封装单元 %s/4" % (index - 1)
+            lock = "none" if index == 1 else "2"
+            raw.append(_entry(shot_id, prev, lock, scene_relation=phrase))
+        written = apply_submit_params(raw, units)
+        self.assertEqual([item["scene_relation"] for item in written], ["same_scene"] * 4)
+        self.assertEqual(written[0]["d_lock"], "none")
+        self.assertEqual([item["d_lock"] for item in written[1:]], ["2", "2", "2"])
+        self.assertEqual([item["video_mode"] for item in written], ["text"] * 4)
+        for item in written:
+            self.assertIn(item["scene_relation"], SCENE_RELATIONS)
+
+        stored = []
+        for item, phrase in zip(written, phrases):
+            row = dict(item)
+            row["scene_relation"] = phrase
+            stored.append(row)
+        report = check_seam_ledger({"entries": stored}, units)
+        self.assertTrue(report["ok"], report["report"])
+        self.assertEqual([item["scene_relation"] for item in stored], list(phrases))
+
+        mixed = apply_submit_params([
+            _entry("封装单元 1/4", "", "none", scene_relation=""),
+            _entry("封装单元 2/4", "封装单元 1/4", "2", scene_relation="没写清"),
+            _entry("封装单元 3/4", "封装单元 2/4", "2", scene_relation="time_jump"),
+            _entry("封装单元 4/4", "封装单元 3/4", "2", scene_relation=phrases[1]),
+        ], units)
+        self.assertEqual(
+            [item["scene_relation"] for item in mixed],
+            ["opening", "same_scene", "time_jump", "same_scene"],
+        )
+        mixed_report = check_seam_ledger({"entries": mixed}, units)
+        self.assertTrue(mixed_report["ok"], mixed_report["report"])
+
+        flipped = apply_submit_params([
+            _entry("封装单元 2/4", "封装单元 1/4", "2", scene_relation=""),
+            _entry("封装单元 1/4", "", "none", scene_relation="看不懂"),
+        ], units[:2])
+        by_id = {item["shot_id"]: item["scene_relation"] for item in flipped}
+        self.assertEqual(by_id["封装单元 1/4"], "opening")
+        self.assertEqual(by_id["封装单元 2/4"], "same_scene")
+
+        shots = [_shot("S01", ["图1"]), _shot("S02", ["图1"])]
+        false_continue = apply_submit_params([
+            _entry("S01", "", "none"),
+            _entry("S02", "S01", "1", scene_relation="剧情段", action_continuous=False),
+        ], shots)
+        self.assertEqual(false_continue[1]["scene_relation"], "plot_group")
+        blocked = check_seam_ledger({"entries": false_continue}, shots)
+        self.assertFalse(blocked["ok"])
+        self.assertIn("并没有接上", blocked["report"])
+
+    def test_prompts_and_invalid_relation_error_list_the_closed_set(self):
+        root = Path(__file__).resolve().parents[1]
+        generator = (root / "Agents/skills/segment-splicing/generator.md").read_text(encoding="utf-8")
+        critic = (root / "Agents/skills/segment-splicing/critic.md").read_text(encoding="utf-8")
+        units = _packed_units(4)
+        state = {
+            "attempt": 0,
+            "units": units,
+            "source": "剧本",
+            "storyboard": "分镜",
+            "feed": "",
+        }
+        brief = generator_messages(state)[-1]["content"]
+        repair = generator_messages({
+            "attempt": 1,
+            "units": units,
+            "draft": "{}",
+            "critic_report": {"verdict": "revise", "issues": []},
+            "machine_report": {"errors": ["封装单元 1/4 的场景关系无效"]},
+        })[-1]["content"]
+        opened = generator_messages(dict(state, opening="任务：分镜衔接\n已有简报"))[-1]["content"]
+        message = invalid_scene_relation_error("封装单元 1/4")
+        for token in SCENE_RELATIONS:
+            self.assertIn(token, GENERATOR_SYSTEM)
+            self.assertIn(token, brief)
+            self.assertIn(token, repair)
+            self.assertIn(token, opened)
+            self.assertIn(token, generator)
+            self.assertIn(token, critic)
+            self.assertIn(token, message)
+        self.assertIn("只能是", message)
+
+        entries = apply_submit_params([
+            _entry("封装单元 1/4", "", "none"),
+            _entry("封装单元 2/4", "封装单元 1/4", "2"),
+            _entry("封装单元 3/4", "封装单元 2/4", "2"),
+            _entry("封装单元 4/4", "封装单元 3/4", "2"),
+        ], units)
+        with patch("end.seam_ledger.normalize_scene_relation", return_value="not-a-relation"):
+            blocked = check_seam_ledger({"entries": entries}, units)
+        self.assertFalse(blocked["ok"])
+        for unit in units:
+            self.assertIn(invalid_scene_relation_error(unit["id"]), blocked["errors"])
 
 
 if __name__ == "__main__":

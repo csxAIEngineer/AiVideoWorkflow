@@ -24,6 +24,9 @@ from Agents.worker import (
 )
 from Agents.workers.generator import run_generator
 from end.seam_ledger import (
+    DEFAULT_SCENE_RELATION,
+    FIRST_UNIT_SCENE_RELATION,
+    SCENE_RELATIONS,
     apply_submit_params,
     check_seam_ledger,
     normalize_entry_ids,
@@ -35,6 +38,17 @@ TASK = "seam"
 SKILL_FILE = "segment-splicing/generator.md"
 _CRITIC_SKILL = Path(__file__).resolve().parents[1] / "skills" / "segment-splicing" / "critic.md"
 
+_SCENE_RELATION_RULE = (
+    "scene_relation 必须恰好是这些英文之一：%s。"
+    "不要写中文。第一个封装单元没有入缝，这项空着或认不出时写 %s；"
+    "后面的单元空着或认不出时写 %s。已经是这些词就保持原词。"
+    % (
+        "、".join(SCENE_RELATIONS),
+        FIRST_UNIT_SCENE_RELATION,
+        DEFAULT_SCENE_RELATION,
+    )
+)
+
 GENERATOR_SYSTEM = "\n".join((
     "你是分镜衔接生成员。你只写已经封装好的单元之间的衔接账本，放在 seam_ledger。",
     "一条封装单元恰好一条。entries 的条数必须等于封装单元数。不要把多个单元收成更少的段。",
@@ -43,6 +57,7 @@ GENERATOR_SYSTEM = "\n".join((
     "怎么判 ①②③④，以技能原文为准。拿不准就按分流表，不要把 ① 当成唯一默认。剧情段默认 ②。",
     "第一个封装单元 d_lock 写 none。每个后面的单元恰好一条入缝。",
     "video_mode 只能是 text、first_frame、first_last_frame、reference。一次调用不能混用帧和参考图。",
+    _SCENE_RELATION_RULE,
     "① 的首帧来源写 previous_tail，这一发不要带参考图。② 不要带上一段尾巴，也不要写定格。",
     "五种写法是封装策略，不要在账本里再选一套 writing_mode。",
     "审查报告里如果夹了改写账，那份账作废。",
@@ -148,6 +163,7 @@ def _brief(state):
         "对象是已经封装好的单元，不是分镜镜头。一条封装单元恰好一条段缝。",
         "不要把 %s 个单元收成更少的段。" % len(ids),
         _id_line(state),
+        _SCENE_RELATION_RULE,
         "只写段缝。段内五维不要写进账本。",
         "剧本：\n%s" % str(state.get("source") or "").strip(),
         "分镜：\n%s" % str(state.get("storyboard") or "").strip(),
@@ -171,6 +187,17 @@ def _with_ids(text, state):
     return "%s\n\n%s" % (body, extra)
 
 
+def _with_scene_relation(text):
+    """Repair and opening briefs do not rebuild the task brief, so append the closed set."""
+    rule = _SCENE_RELATION_RULE
+    body = str(text or "").strip()
+    if rule in body:
+        return body
+    if not body:
+        return rule
+    return "%s\n\n%s" % (body, rule)
+
+
 def generator_messages(state):
     system = {"role": "system", "content": GENERATOR_SYSTEM}
     if int(state.get("attempt") or 0) >= 1:
@@ -181,11 +208,11 @@ def generator_messages(state):
             state.get("critic_report"),
             state.get("machine_report"),
         )
-        return [system, {"role": "user", "content": _with_ids(user, state)}]
+        return [system, {"role": "user", "content": _with_scene_relation(_with_ids(user, state))}]
     opening = str(state.get("opening") or "").strip()
     if opening:
-        return [system, {"role": "user", "content": _with_ids(opening, state)}]
-    return [system, {"role": "user", "content": _brief(state)}]
+        return [system, {"role": "user", "content": _with_scene_relation(_with_ids(opening, state))}]
+    return [system, {"role": "user", "content": _with_scene_relation(_brief(state))}]
 
 
 def critic_messages(state):

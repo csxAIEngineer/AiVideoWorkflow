@@ -6,6 +6,7 @@
 
 只看段缝判断是否说得通。下面这些是要打回的：
 
+- scene_relation 不是 opening、same_scene、new_scene、time_jump、place_jump、plot_group、dialogue_split、oner、emotion_landing 之一，或写成了中文。空着时第一单元是 opening，后面是 same_scene。不要要求改回中文
 - 假 ①：剧情多机位、换场、换时间的组，被标成动作连续。分流表这类默认是 ②，不是 ①
 - 缝的两侧没有换机位，或同机位又同景别
 - 用空镜躲开该有的冲突，或空镜没有具体画面

@@ -49,6 +49,14 @@
 
 后一段新出现的具名人物要有入画、声先入、空镜，或上一镜句尾一句交代。人走了要写出去向。
 
+## scene_relation
+
+每条 `scene_relation` 必须恰好是下面其中一个英文词，不要写中文：
+
+`opening`、`same_scene`、`new_scene`、`time_jump`、`place_jump`、`plot_group`、`dialogue_split`、`oner`、`emotion_landing`
+
+第一个封装单元没有入缝。这项空着或认不出时写 `opening`。后面的单元空着或认不出时写 `same_scene`。已经写了上表里的词就保持原词，不要改成默认值。
+
 ## 写法
 
 普通衔接、独立批量强连续、首帧增强、调度增强、视频延长强连续是提示词封装已经用过的写法，不是第二套 D 锁。账本不要再选 `writing_mode`。
