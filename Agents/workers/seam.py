@@ -38,7 +38,7 @@ _CRITIC_SKILL = Path(__file__).resolve().parents[1] / "skills" / "segment-splici
 GENERATOR_SYSTEM = "\n".join((
     "你是分镜衔接生成员。你只写已经封装好的单元之间的衔接账本，放在 seam_ledger。",
     "一条封装单元恰好一条。entries 的条数必须等于封装单元数。不要把多个单元收成更少的段。",
-    "shot_id 必须原样照抄封装单元 id。不要改成 1、2、3，也不要写成 S01。",
+    "shot_id 必须原样照抄封装单元 id。id 是「封装单元 N/M」，和标题【封装单元 N/M】同一形式，例如「封装单元 1/3」。旧稿标题若是投喂单元，id 就是「投喂单元 N/M」。不要写成「封装单元 1」，不要改成 1、2、3，也不要写成 S01。",
     "审查员只交报告，不会替你改账。机检核对条数、id、D 锁、景别、可截计划和官方 video_mode。",
     "怎么判 ①②③④，以技能原文为准。拿不准就按分流表，不要把 ① 当成唯一默认。剧情段默认 ②。",
     "第一个封装单元 d_lock 写 none。每个后面的单元恰好一条入缝。",
@@ -52,7 +52,7 @@ CRITIC_SYSTEM = "\n".join((
     "你是分镜衔接审查员。你只审查，只交报告。",
     "禁止改写账本，禁止输出 seam_ledger、entries、draft、rewrite、text。",
     "整段回复只能是一个 JSON 对象：",
-    '{"verdict":"accept 或 revise","issues":[{"target":"封装单元 2","severity":"blocking 或 note","detail":"一句话"}]}',
+    '{"verdict":"accept 或 revise","issues":[{"target":"封装单元 2/3","severity":"blocking 或 note","detail":"一句话"}]}',
     "没有要改的地方时 verdict 为 accept，issues 为空数组。",
     "detail 只指出哪一条缝错了，不写替换后的整条。",
     "评判标准只是衔接审查技能。机检会在你之后再跑。你只交报告。",
@@ -118,14 +118,36 @@ def _unit_brief(units):
     return rows
 
 
+def _official_ids(state):
+    ids = []
+    for unit in (state or {}).get("units") or []:
+        if not isinstance(unit, dict):
+            continue
+        unit_id = str(unit.get("id") or "").strip()
+        if unit_id:
+            ids.append(unit_id)
+    return ids
+
+
+def _id_line(state):
+    """The same sentence the machine check uses when an id does not match."""
+    ids = _official_ids(state)
+    if not ids:
+        return ""
+    return (
+        "要原样照抄这些 id：%s。不要写成「封装单元 1」，不要改成 1、2、3，也不要写成 S01。"
+        % "、".join(ids)
+    )
+
+
 def _brief(state):
-    units = state.get("units") or []
-    ids = [str(unit.get("id")) for unit in units if isinstance(unit, dict) and unit.get("id")]
+    units = (state or {}).get("units") or []
+    ids = _official_ids(state)
     parts = [
         "任务：分镜衔接",
         "对象是已经封装好的单元，不是分镜镜头。一条封装单元恰好一条段缝。",
-        "不要把 %s 个单元收成更少的段。shot_id 必须原样照抄下面的 id。" % len(ids),
-        "封装单元 id（按顺序）：%s" % json.dumps(ids, ensure_ascii=False),
+        "不要把 %s 个单元收成更少的段。" % len(ids),
+        _id_line(state),
         "只写段缝。段内五维不要写进账本。",
         "剧本：\n%s" % str(state.get("source") or "").strip(),
         "分镜：\n%s" % str(state.get("storyboard") or "").strip(),
@@ -134,7 +156,19 @@ def _brief(state):
     feed = str(state.get("feed") or "").strip()
     if feed:
         parts.append("封装稿：\n%s" % feed)
-    return "\n\n".join(parts)
+    return "\n\n".join(part for part in parts if part)
+
+
+def _with_ids(text, state):
+    extra = _id_line(state)
+    body = str(text or "").strip()
+    if not extra:
+        return body
+    if extra in body:
+        return body
+    if not body:
+        return extra
+    return "%s\n\n%s" % (body, extra)
 
 
 def generator_messages(state):
@@ -147,10 +181,10 @@ def generator_messages(state):
             state.get("critic_report"),
             state.get("machine_report"),
         )
-        return [system, {"role": "user", "content": user}]
+        return [system, {"role": "user", "content": _with_ids(user, state)}]
     opening = str(state.get("opening") or "").strip()
     if opening:
-        return [system, {"role": "user", "content": opening}]
+        return [system, {"role": "user", "content": _with_ids(opening, state)}]
     return [system, {"role": "user", "content": _brief(state)}]
 
 

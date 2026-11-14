@@ -1,6 +1,9 @@
 """Packed-unit seam ledger and the official H3 submit fields it writes.
 
 One ledger row per packed feed unit. The row id is that unit's id.
+The official id is ``封装单元 N/M``, the same form as the packing heading
+``【封装单元 N/M】``. An older stored row that still says ``封装单元 1`` is
+the same unit when the heading already has the total.
 End submits video_mode, end_image, first-frame source, and reference images
 from the unit records. D-lock is the judgment. Official parameters are mapped
 from it. Packing does not read this ledger.
@@ -8,7 +11,7 @@ from it. Packing does not read this ledger.
 
 import re
 
-from end.product_names import UNIT_NAME
+from end.product_names import UNIT_NAME, UNIT_TOKEN
 
 VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
 H3_MAX_REFERENCE_IMAGES = 9
@@ -146,15 +149,38 @@ def _frames(source, end_image=""):
     }
 
 
-_UNIT_ID = re.compile(r"(封装单元|投喂单元)\s*(\d+)")
+# Name, index, and the optional total. ``封装单元 1/3`` and ``投喂单元 2/4``.
+_UNIT_ID = re.compile(
+    r"(%s)\s*(\d+)(?:\s*[/／]\s*(\d+))?" % UNIT_TOKEN
+)
 _DURATION_LINE = re.compile(
     r"(?m)^(?:duration|duration_seconds)\s*[:=]\s*(\d+(?:\.\d+)?)"
 )
 _BARE_INDEX = re.compile(r"0*(\d+)$")
 
 
+def _format_unit_id(name, number, total=None):
+    if total:
+        return "%s %s/%s" % (name, int(number), int(total))
+    return "%s %s" % (name, int(number))
+
+
+def _parsed_unit_id(value):
+    """``(name, index, total or None)`` for an id string. Headings do not match."""
+    match = _UNIT_ID.fullmatch(_text(value))
+    if not match:
+        return None
+    total = int(match.group(3)) if match.group(3) else None
+    return (match.group(1), int(match.group(2)), total)
+
+
 def unit_id_from_text(text, index):
-    """Id packing already wrote on the unit heading. ``封装单元 1``."""
+    """Official id from the unit heading. ``封装单元 1/3``.
+
+    A heading that already says N/M keeps that total, including ``· 段K``.
+    A heading with only the index, and a block with no unit heading, stay
+    ``封装单元 1``. New packing always writes the N/M heading.
+    """
     heading = ""
     for line in str(text or "").splitlines():
         stripped = line.strip()
@@ -163,7 +189,8 @@ def unit_id_from_text(text, index):
             break
     match = _UNIT_ID.search(heading)
     if match:
-        return "%s %s" % (match.group(1), int(match.group(2)))
+        total = int(match.group(3)) if match.group(3) else None
+        return _format_unit_id(match.group(1), match.group(2), total)
     return "%s %s" % (UNIT_NAME, index)
 
 
@@ -192,11 +219,36 @@ def units_from_feed(feed):
     return rows
 
 
+def _stored_row(stored, by_id, unit_id):
+    """Stored submit fields for this official id.
+
+    An older row may still say ``封装单元 1`` while the heading says
+    ``封装单元 1/3``. That row is the same unit. Its video fields stay.
+    A different token, or two rows for the same index, is not guessed.
+    """
+    saved = by_id.get(unit_id)
+    if isinstance(saved, dict):
+        return saved
+    parsed = _parsed_unit_id(unit_id)
+    if parsed is None:
+        return None
+    found = []
+    for item in stored:
+        other = _parsed_unit_id(item.get("id"))
+        if other is not None and other[0] == parsed[0] and other[1] == parsed[1]:
+            found.append(item)
+    if len(found) == 1:
+        return found[0]
+    return None
+
+
 def packed_units(spec):
     """Packed feed units, with stills and any video fields already stored on them.
 
-    Storyboard shots are not units. A stored ``feed_units`` row is used only
-    when its id is one of the units in the current feed.
+    The id is the heading form ``封装单元 N/M``. A stored row whose id is that
+    unit without the total is read as the heading id. D-lock and the other
+    submit fields on that row are copied, not rewritten. Storyboard shot ids
+    are not units.
     """
     spec = spec or {}
     derived = units_from_feed(spec.get("feed") or "")
@@ -215,7 +267,7 @@ def packed_units(spec):
     rows = []
     for index, unit in enumerate(derived):
         row = dict(unit)
-        saved = by_id.get(row["id"])
+        saved = _stored_row(stored, by_id, row["id"])
         if saved is None and index < len(stored) and not by_id:
             saved = stored[index]
         images = []

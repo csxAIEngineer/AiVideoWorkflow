@@ -28,6 +28,7 @@ from Agents.workers.feed import (
 from Agents.workers.generator import select_nodes
 from AI.skills.registry import suite_files
 from end.gates import H3_STRUCTURE_MARK, _H3_SECTIONS, h3_structure_report
+from end.seam_ledger import packed_units
 from end.stage_runner import feed_duration_failures, group_shot_durations
 
 SHOTS = [6, 5, 5, 6, 6, 4, 6, 7, 5, 6]
@@ -623,6 +624,10 @@ class PackingPlanTest(unittest.TestCase):
         self.assertNotIn("duration: 15", result["feed"])
         self.assertIn("但习惯，不代表没事。", _unit_chunks(result["feed"])[0])
         self.assertIn("## 【封装单元 2/2】", result["feed"])
+        self.assertEqual(
+            [unit["id"] for unit in packed_units({"feed": result["feed"]})],
+            ["封装单元 1/2", "封装单元 2/2"],
+        )
         split_errors = feed_duration_failures(
             result["feed"],
             board,

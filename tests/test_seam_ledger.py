@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from Agents.workers.seam import compile_seam_graph, run_seam_loop
+from Agents.workers.seam import GENERATOR_SYSTEM, compile_seam_graph, generator_messages, run_seam_loop
 from end.render_loop import assemble_shot_media, choose_video_mode, run_local_pipeline
 from end.seam_ledger import (
     apply_submit_params,
@@ -16,6 +16,7 @@ from end.seam_ledger import (
     packed_units,
     seam_blocks_render,
     strip_seam,
+    unit_id_from_text,
     write_unit_fields,
 )
 from end.stage_runner import (
@@ -258,12 +259,12 @@ class SubmitAndPackingTest(unittest.TestCase):
             "## 【封装单元 2/2】\nduration: 5\nsubject_definitions:\n<Subject 1>: a door\ndetailed_description:\nThe door opens.\noverall_soundscape:\nroom\nnon_diegetic_music:\nN/A",
         ))
         units = [
-            {"id": "封装单元 1", "duration": 10, "images": ["图1"], "prompt": "one"},
-            {"id": "封装单元 2", "duration": 5, "images": ["图2"], "prompt": "two"},
+            {"id": "封装单元 1/2", "duration": 10, "images": ["图1"], "prompt": "one"},
+            {"id": "封装单元 2/2", "duration": 5, "images": ["图2"], "prompt": "two"},
         ]
         entries = apply_submit_params([
-            _entry("封装单元 1", "", "none"),
-            _entry("封装单元 2", "封装单元 1", "2"),
+            _entry("封装单元 1/2", "", "none"),
+            _entry("封装单元 2/2", "封装单元 1/2", "2"),
         ], units)
         stamped = write_unit_fields(units, entries)
         spec = {
@@ -334,7 +335,7 @@ class SubmitAndPackingTest(unittest.TestCase):
         }
         self.assertEqual(spec["shots"][1]["video_mode"], "first_frame")
         spec["feed"] = "## 【封装单元 1/1】\nduration: 5\n"
-        spec["feed_units"] = [{"id": "封装单元 1", "video_mode": "reference", "seam_d_lock": "none"}]
+        spec["feed_units"] = [{"id": "封装单元 1/1", "video_mode": "reference", "seam_d_lock": "none"}]
         cleared = project_into_spec(spec, {"storyboard": "## S01\n动作：停\n景别机位：中景\n时长：5\n资产：图1", "_storyboard_contract": True})
         self.assertNotIn("seam_ledger", cleared)
         self.assertNotIn("feed", cleared)
@@ -447,10 +448,10 @@ class UnitOrderTest(unittest.TestCase):
 
     def test_seam_matches_packed_unit_ids_and_count(self):
         units = packed_units({"feed": self._feed(2)})
-        self.assertEqual([unit["id"] for unit in units], ["封装单元 1", "封装单元 2"])
+        self.assertEqual([unit["id"] for unit in units], ["封装单元 1/2", "封装单元 2/2"])
         entries = apply_submit_params([
-            _entry("封装单元 1", "", "none"),
-            _entry("封装单元 2", "封装单元 1", "2"),
+            _entry("封装单元 1/2", "", "none"),
+            _entry("封装单元 2/2", "封装单元 1/2", "2"),
         ], units)
         report = check_seam_ledger({"entries": entries}, units)
         self.assertEqual(report["errors"], [], report["report"])
@@ -465,7 +466,7 @@ class UnitOrderTest(unittest.TestCase):
         self.assertEqual(numbered_report["errors"], [], numbered_report["report"])
         self.assertEqual(
             [item["shot_id"] for item in normalize_entry_ids(numbered, units)],
-            ["封装单元 1", "封装单元 2"],
+            ["封装单元 1/2", "封装单元 2/2"],
         )
 
     def test_shot_level_and_short_ledgers_fail_the_gate(self):
@@ -499,11 +500,181 @@ class UnitOrderTest(unittest.TestCase):
         spec["shots"][0]["video_mode"] = "reference"
         rewritten = _spec_patch("feed", {"feed": self._feed(1).replace("duration: 5", "duration: 6")}, spec)
         self.assertNotIn("seam_ledger", rewritten)
-        self.assertEqual(rewritten["feed_units"][0]["id"], "封装单元 1")
+        self.assertEqual(rewritten["feed_units"][0]["id"], "封装单元 1/1")
         self.assertNotIn("video_mode", rewritten["feed_units"][0])
         self.assertNotIn("seam_d_lock", rewritten["feed_units"][0])
         self.assertNotIn("video_mode", rewritten["shots"][0])
         self.assertIn("duration: 6", rewritten["feed"])
+
+    def _timed_feed(self, durations, token="封装单元", first_suffix=""):
+        total = len(durations)
+        blocks = []
+        for index, seconds in enumerate(durations, 1):
+            suffix = first_suffix if index == 1 else ""
+            blocks.append("\n".join((
+                "## 【%s %s/%s%s】" % (token, index, total, suffix),
+                "duration: %s" % seconds,
+                "subject_definitions:",
+                "<Subject 1>: a woman",
+                "detailed_description:",
+                "She stays.",
+                "overall_soundscape:",
+                "room",
+                "non_diegetic_music:",
+                "N/A",
+            )))
+        return "\n\n".join(blocks)
+
+    def test_packing_emits_fraction_ids_and_a_matching_ledger_passes(self):
+        feed = self._timed_feed((11, 14, 9), first_suffix=" · 段1")
+        self.assertEqual(unit_id_from_text(feed.split("\n\n", 1)[0], 1), "封装单元 1/3")
+        self.assertEqual(
+            unit_id_from_text("## 【封装单元 2／3】\nduration: 14\n", 2),
+            "封装单元 2/3",
+        )
+        self.assertEqual(unit_id_from_text("## 【封装单元 1】\n", 1), "封装单元 1")
+        units = packed_units({"feed": feed})
+        self.assertEqual(
+            [unit["id"] for unit in units],
+            ["封装单元 1/3", "封装单元 2/3", "封装单元 3/3"],
+        )
+        self.assertEqual([unit["duration"] for unit in units], [11.0, 14.0, 9.0])
+        entries = apply_submit_params([
+            _entry("封装单元 1/3", "", "none"),
+            _entry("封装单元 2/3", "封装单元 1/3", "2"),
+            _entry("封装单元 3/3", "封装单元 2/3", "2"),
+        ], units)
+        report = check_seam_ledger({"entries": entries}, units)
+        self.assertEqual(report["errors"], [], report["report"])
+        state = {
+            "attempt": 0,
+            "units": units,
+            "source": "剧本",
+            "storyboard": "## S01",
+            "feed": feed,
+        }
+        brief = generator_messages(state)[-1]["content"]
+        self.assertIn(
+            "要原样照抄这些 id：封装单元 1/3、封装单元 2/3、封装单元 3/3。",
+            brief,
+        )
+        self.assertIn("封装单元 N/M", GENERATOR_SYSTEM)
+        opened = generator_messages(dict(state, opening="任务：分镜衔接\n已有简报"))[-1]["content"]
+        self.assertIn(
+            "要原样照抄这些 id：封装单元 1/3、封装单元 2/3、封装单元 3/3。",
+            opened,
+        )
+
+    def test_short_stored_id_normalizes_without_rewriting_submit_fields(self):
+        feed = self._timed_feed((11, 14, 9))
+        stored = [
+            {
+                "id": "封装单元 1",
+                "video_mode": "reference",
+                "seam_d_lock": "none",
+                "first_frame_source": "none",
+                "images": ["图1"],
+                "video_images": ["图1"],
+            },
+            {
+                "id": "封装单元 2",
+                "video_mode": "first_frame",
+                "seam_d_lock": "2",
+                "first_frame_source": "previous_tail",
+                "end_image": "图尾",
+                "writing_mode": "普通衔接",
+            },
+            {
+                "id": "封装单元 3",
+                "video_mode": "reference",
+                "seam_d_lock": "2",
+                "first_frame_source": "none",
+            },
+        ]
+        units = packed_units({"feed": feed, "feed_units": stored})
+        self.assertEqual(
+            [unit["id"] for unit in units],
+            ["封装单元 1/3", "封装单元 2/3", "封装单元 3/3"],
+        )
+        self.assertEqual(units[0]["video_mode"], "reference")
+        self.assertEqual(units[0]["seam_d_lock"], "none")
+        self.assertEqual(units[0]["first_frame_source"], "none")
+        self.assertEqual(units[0]["images"], ["图1"])
+        self.assertEqual(units[0]["video_images"], ["图1"])
+        self.assertEqual(units[1]["video_mode"], "first_frame")
+        self.assertEqual(units[1]["seam_d_lock"], "2")
+        self.assertEqual(units[1]["first_frame_source"], "previous_tail")
+        self.assertEqual(units[1]["end_image"], "图尾")
+        self.assertEqual(units[1]["writing_mode"], "普通衔接")
+        self.assertEqual(units[2]["video_mode"], "reference")
+        self.assertEqual(units[2]["seam_d_lock"], "2")
+        entries = apply_submit_params([
+            _entry("封装单元 1/3", "", "none"),
+            _entry("封装单元 2/3", "封装单元 1/3", "2"),
+            _entry("封装单元 3/3", "封装单元 2/3", "2"),
+        ], units)
+        passed = check_seam_ledger({"entries": entries}, units)
+        self.assertEqual(passed["errors"], [], passed["report"])
+        short = apply_submit_params([
+            _entry("封装单元 1", "", "none"),
+            _entry("封装单元 2", "封装单元 1", "2"),
+            _entry("封装单元 3", "封装单元 2", "2"),
+        ], units)
+        blocked = check_seam_ledger({"entries": short}, units)
+        self.assertFalse(blocked["ok"])
+        self.assertIn("封装单元 1/3 没有段缝", blocked["errors"])
+        self.assertIn("封装单元 2/3 没有段缝", blocked["errors"])
+        self.assertIn("封装单元 3/3 没有段缝", blocked["errors"])
+        self.assertIn(
+            "段缝 封装单元 1 对不上封装单元。要原样照抄这些 id：封装单元 1/3、封装单元 2/3、封装单元 3/3。",
+            blocked["errors"],
+        )
+        self.assertIn(
+            "段缝 封装单元 2 对不上封装单元。要原样照抄这些 id：封装单元 1/3、封装单元 2/3、封装单元 3/3。",
+            blocked["errors"],
+        )
+
+    def test_legacy_feed_title_keeps_its_token_and_the_fraction(self):
+        feed = self._timed_feed((6, 7), token="投喂单元")
+        units = packed_units({
+            "feed": feed,
+            "feed_units": [
+                {
+                    "id": "投喂单元 1",
+                    "video_mode": "text",
+                    "seam_d_lock": "none",
+                    "first_frame_source": "none",
+                },
+                {
+                    "id": "投喂单元 2",
+                    "video_mode": "reference",
+                    "seam_d_lock": "2",
+                    "first_frame_source": "none",
+                },
+            ],
+        })
+        self.assertEqual([unit["id"] for unit in units], ["投喂单元 1/2", "投喂单元 2/2"])
+        self.assertEqual(units[0]["video_mode"], "text")
+        self.assertEqual(units[0]["seam_d_lock"], "none")
+        self.assertEqual(units[1]["video_mode"], "reference")
+        self.assertEqual(units[1]["seam_d_lock"], "2")
+        entries = apply_submit_params([
+            _entry("投喂单元 1/2", "", "none"),
+            _entry("投喂单元 2/2", "投喂单元 1/2", "2"),
+        ], units)
+        report = check_seam_ledger({"entries": entries}, units)
+        self.assertEqual(report["errors"], [], report["report"])
+        wrong_token = apply_submit_params([
+            _entry("封装单元 1/2", "", "none"),
+            _entry("封装单元 2/2", "封装单元 1/2", "2"),
+        ], units)
+        mismatched = check_seam_ledger({"entries": wrong_token}, units)
+        self.assertFalse(mismatched["ok"])
+        self.assertIn("投喂单元 1/2 没有段缝", mismatched["errors"])
+        self.assertIn(
+            "要原样照抄这些 id：投喂单元 1/2、投喂单元 2/2。",
+            mismatched["report"],
+        )
 
 
 if __name__ == "__main__":

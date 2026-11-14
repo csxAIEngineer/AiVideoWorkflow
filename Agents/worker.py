@@ -219,7 +219,7 @@ def revision_brief(stage, task_line, draft, critic_report, machine_report):
     if stage == "seam":
         sections.append(
             "按失败项改点名的那条段缝。不要把 ① 当成每条缝的默认。"
-            "条数必须等于封装单元数，shot_id 原样照抄封装单元 id，不要把多个单元收成更少的段。"
+            "条数必须等于封装单元数。shot_id 原样照抄封装单元 id，形式是封装单元 N/M（例如封装单元 1/3），不要写成封装单元 1，不要把多个单元收成更少的段。"
         )
     body = str(draft or "").strip()
     if body:

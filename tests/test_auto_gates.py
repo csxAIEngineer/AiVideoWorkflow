@@ -321,7 +321,7 @@ class AutoAdvanceTest(unittest.TestCase):
             calls.append(brief)
             if "任务：分镜衔接" in brief or "阶段：seam" in brief:
                 return {"seam_ledger": {"entries": [{
-                    "shot_id": "封装单元 1",
+                    "shot_id": "封装单元 1/1",
                     "d_lock": "none",
                     "reason": "开场",
                     "scene_relation": "opening",
