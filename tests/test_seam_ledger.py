@@ -14,6 +14,7 @@ from end.seam_ledger import (
     SCENE_RELATIONS,
     apply_submit_params,
     check_seam_ledger,
+    continues_from_previous,
     drop_packing,
     invalid_scene_relation_error,
     map_submit_params,
@@ -23,6 +24,7 @@ from end.seam_ledger import (
     seam_blocks_render,
     strip_seam,
     unit_id_from_text,
+    units_for_submit,
     write_unit_fields,
 )
 from end.stage_runner import (
@@ -108,32 +110,43 @@ class MachineCheckTest(unittest.TestCase):
         self.assertEqual(by_id["S03"]["images"], ["图2"])
         self.assertEqual(by_id["S03"]["end_image"], "")
         self.assertEqual(by_id["S03"]["first_frame_source"], "none")
-        self.assertEqual(by_id["S04"]["video_mode"], "text")
+        self.assertEqual(by_id["S04"]["video_mode"], "reference")
         self.assertEqual(by_id["S04"]["images"], [])
+        self.assertEqual(by_id["S04"]["end_image"], "")
+        for item in ledger["entries"]:
+            self.assertIn(item["video_mode"], ("first_frame", "reference"))
+            self.assertNotEqual(item["video_mode"], "text")
+            self.assertNotEqual(item["video_mode"], "first_last_frame")
 
     def test_mapping_choices(self):
         shot = _shot("S02", ["图1"])
         continued = map_submit_params(_entry("S02", "S01", "1", anchor_end=True, end_image="图9"), shot)
-        self.assertEqual(continued["video_mode"], "first_last_frame")
+        self.assertEqual(continued["video_mode"], "first_frame")
         self.assertEqual(continued["first_frame_source"], "previous_tail")
-        self.assertEqual(continued["end_image"], "图9")
+        self.assertEqual(continued["end_image"], "")
         self.assertEqual(continued["images"], [])
         redrawn = map_submit_params(
             _entry("S02", "S01", "1", redraw_still=True, designed_still="图缝", still_prompt="可截的中景"),
             shot,
         )
-        self.assertEqual(redrawn["first_frame_source"], "图缝")
+        self.assertEqual(redrawn["video_mode"], "first_frame")
+        self.assertEqual(redrawn["first_frame_source"], "previous_tail")
         self.assertEqual(redrawn["images"], [])
+        self.assertEqual(redrawn["end_image"], "")
         hard = map_submit_params(_entry("S03", "S02", "2"), _shot("S03", []))
-        self.assertEqual(hard["video_mode"], "text")
+        self.assertEqual(hard["video_mode"], "reference")
         self.assertEqual(hard["first_frame_source"], "none")
+        self.assertEqual(hard["images"], [])
+        self.assertEqual(hard["end_image"], "")
         opening = map_submit_params(
             _entry("S01", "", "none", lock_t0=True, designed_still="图0", still_prompt="锁住第一帧"),
             _shot("S01", ["图1"]),
+            first=True,
         )
-        self.assertEqual(opening["video_mode"], "first_frame")
-        self.assertEqual(opening["first_frame_source"], "图0")
-        self.assertEqual(opening["images"], [])
+        self.assertEqual(opening["video_mode"], "reference")
+        self.assertEqual(opening["first_frame_source"], "none")
+        self.assertEqual(opening["images"], ["图1"])
+        self.assertEqual(opening["end_image"], "")
 
     def test_false_continue_missing_camera_and_crop_fail(self):
         shots = [_shot("S01", ["图1"]), _shot("S02", ["图1"])]
@@ -776,7 +789,10 @@ class SceneRelationTest(unittest.TestCase):
         self.assertEqual([item["scene_relation"] for item in written], ["same_scene"] * 4)
         self.assertEqual(written[0]["d_lock"], "none")
         self.assertEqual([item["d_lock"] for item in written[1:]], ["2", "2", "2"])
-        self.assertEqual([item["video_mode"] for item in written], ["text"] * 4)
+        self.assertEqual([item["video_mode"] for item in written], ["reference"] * 4)
+        self.assertTrue(all(item["end_image"] == "" for item in written))
+        self.assertNotIn("text", [item["video_mode"] for item in written])
+        self.assertNotIn("first_last_frame", [item["video_mode"] for item in written])
         for item in written:
             self.assertIn(item["scene_relation"], SCENE_RELATIONS)
 
@@ -863,6 +879,160 @@ class SceneRelationTest(unittest.TestCase):
         self.assertFalse(blocked["ok"])
         for unit in units:
             self.assertIn(invalid_scene_relation_error(unit["id"]), blocked["errors"])
+
+
+def _h3_unit(index, total, seconds, body="She stays."):
+    return "\n".join((
+        "## 【封装单元 %s/%s】" % (index, total),
+        "duration: %s" % seconds,
+        "subject_definitions:",
+        "<Subject 1>: a woman",
+        "detailed_description:",
+        body,
+        "overall_soundscape:",
+        "room",
+        "non_diegetic_music:",
+        "N/A",
+    ))
+
+
+class OfficialModeTest(unittest.TestCase):
+    def test_only_first_frame_and_reference_are_ever_chosen(self):
+        self.assertFalse(continues_from_previous(_entry("S01", "", "none", action_continuous=True), first=True))
+        self.assertTrue(continues_from_previous(_entry("S02", "S01", "1")))
+        self.assertTrue(continues_from_previous(
+            _entry("S02", "S01", "2", scene_relation="dialogue_split", action_continuous=False),
+        ))
+        self.assertTrue(continues_from_previous(
+            _entry("S02", "S01", "2", scene_relation="oner", action_continuous=False),
+        ))
+        self.assertTrue(continues_from_previous(
+            _entry("S02", "S01", "2", plot_continuous=True, action_continuous=False),
+        ))
+        self.assertFalse(continues_from_previous(
+            _entry("S02", "S01", "2", scene_relation="same_scene", action_continuous=False, plot_continuous=False),
+        ))
+        self.assertFalse(continues_from_previous(_entry("S02", "S01", "2")))
+        self.assertFalse(continues_from_previous(_entry("S02", "S01", "3")))
+
+        for lock in ("none", "1", "2", "3", "4"):
+            chosen = map_submit_params(
+                _entry(
+                    "S02",
+                    "S01",
+                    lock,
+                    anchor_end=True,
+                    end_image="图9",
+                    video_mode="first_last_frame",
+                ),
+                _shot("S02", []),
+                first=(lock == "none"),
+            )
+            self.assertIn(chosen["video_mode"], ("first_frame", "reference"))
+            self.assertEqual(chosen["end_image"], "")
+            self.assertNotIn(chosen["video_mode"], ("text", "first_last_frame"))
+            if lock == "1":
+                self.assertEqual(chosen["video_mode"], "first_frame")
+                self.assertEqual(chosen["first_frame_source"], "previous_tail")
+                self.assertEqual(chosen["images"], [])
+            else:
+                self.assertEqual(chosen["video_mode"], "reference")
+                self.assertEqual(chosen["first_frame_source"], "none")
+
+        shots = [_shot("S01", ["图1"]), _shot("S02", ["图1"])]
+        dialogue = apply_submit_params([
+            _entry("S01", "", "none"),
+            _entry("S02", "S01", "2", scene_relation="dialogue_split", action_continuous=False),
+        ], shots)
+        self.assertEqual(dialogue[1]["video_mode"], "first_frame")
+        self.assertEqual(dialogue[1]["images"], [])
+        self.assertEqual(dialogue[1]["first_frame_source"], "previous_tail")
+        report = check_seam_ledger({"entries": dialogue}, shots)
+        self.assertEqual(report["errors"], [], report["report"])
+
+        rejected = [dict(item) for item in dialogue]
+        rejected[1]["video_mode"] = "text"
+        text_report = check_seam_ledger({"entries": rejected}, shots)
+        self.assertIn("first_frame 或 reference", text_report["report"])
+        rejected[1]["video_mode"] = "first_last_frame"
+        rejected[1]["end_image"] = "图9"
+        frame_report = check_seam_ledger({"entries": rejected}, shots)
+        self.assertIn("first_frame 或 reference", frame_report["report"])
+
+        opening = apply_submit_params([
+            _entry("S01", "", "none", action_continuous=True, plot_continuous=True),
+        ], [_shot("S01", ["图1"])])
+        self.assertEqual(opening[0]["video_mode"], "reference")
+        self.assertEqual(opening[0]["images"], ["图1"])
+        self.assertEqual(opening[0]["first_frame_source"], "none")
+
+    def test_empty_unit_images_still_reference_and_bind_storyboard_stills(self):
+        feed = "\n\n".join((_h3_unit(1, 2, 10), _h3_unit(2, 2, 6)))
+        assets = [
+            {"id": "图1", "title": "小君", "subject": "小君", "subject_kind": "character"},
+            {"id": "图2", "title": "药盒", "subject": "药盒", "subject_kind": "prop"},
+            {"id": "图3", "title": "小君房间", "subject": "房间", "subject_kind": "location"},
+        ]
+        board = [
+            _shot("S01", ["图1"], duration=5),
+            _shot("S02", ["图2"], duration=5),
+            _shot("S03", ["图3"], duration=6),
+        ]
+        spec = {"feed": feed, "assets": assets, "shots": board}
+        units = packed_units(spec)
+        self.assertEqual([unit["id"] for unit in units], ["封装单元 1/2", "封装单元 2/2"])
+        self.assertEqual(units[0]["images"], ["图1", "图2"])
+        self.assertEqual(units[1]["images"], ["图3"])
+        entries = apply_submit_params([
+            _entry(units[0]["id"], "", "none"),
+            _entry(units[1]["id"], units[0]["id"], "2"),
+        ], units)
+        self.assertEqual(entries[0]["video_mode"], "reference")
+        self.assertEqual(entries[0]["images"], ["图1", "图2"])
+        self.assertEqual(entries[0]["end_image"], "")
+        self.assertEqual(entries[1]["video_mode"], "reference")
+        self.assertEqual(entries[1]["images"], ["图3"])
+        self.assertNotIn(entries[0]["video_mode"], ("text", "first_last_frame"))
+        self.assertNotIn(entries[1]["video_mode"], ("text", "first_last_frame"))
+        spec["seam_ledger"] = {"entries": entries}
+        submitted = units_for_submit(spec)
+        self.assertEqual(submitted[0]["video_mode"], "reference")
+        self.assertEqual(submitted[0]["video_images"], ["图1", "图2"])
+        self.assertEqual(submitted[0]["images"], ["图1", "图2"])
+        self.assertEqual(submitted[1]["video_images"], ["图3"])
+        self.assertNotIn("end_image", submitted[0])
+        self.assertNotIn("end_image", submitted[1])
+
+        named = packed_units({
+            "feed": _h3_unit(1, 1, 5, body="小君 stays by the window."),
+            "assets": [{"id": "图2", "title": "小君", "subject": "小君", "subject_kind": "character"}],
+            "shots": [_shot("S01", [], duration=5)],
+        })
+        self.assertEqual(named[0]["images"], ["图2"])
+        named_entry = apply_submit_params([
+            _entry(named[0]["id"], "", "none"),
+        ], named)[0]
+        self.assertEqual(named_entry["video_mode"], "reference")
+        self.assertEqual(named_entry["images"], ["图2"])
+        self.assertNotEqual(named_entry["video_mode"], "text")
+
+        continuous = apply_submit_params([
+            _entry(units[0]["id"], "", "none", action_continuous=True),
+            _entry(units[1]["id"], units[0]["id"], "1"),
+        ], units)
+        self.assertEqual(continuous[0]["video_mode"], "reference")
+        self.assertEqual(continuous[0]["images"], ["图1", "图2"])
+        self.assertEqual(continuous[1]["video_mode"], "first_frame")
+        self.assertEqual(continuous[1]["first_frame_source"], "previous_tail")
+        self.assertEqual(continuous[1]["images"], [])
+        self.assertEqual(continuous[1]["end_image"], "")
+        spec["seam_ledger"] = {"entries": continuous}
+        submitted = units_for_submit(spec)
+        self.assertEqual(submitted[1]["video_mode"], "first_frame")
+        self.assertEqual(submitted[1]["video_images"], [])
+        self.assertEqual(submitted[1]["images"], [])
+        self.assertEqual(submitted[1]["first_frame_source"], "previous_tail")
+        self.assertEqual(submitted[1]["seam_d_lock"], "1")
 
 
 if __name__ == "__main__":

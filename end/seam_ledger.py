@@ -4,19 +4,27 @@ One ledger row per packed feed unit. The row id is that unit's id.
 The official id is ``封装单元 N/M``, the same form as the packing heading
 ``【封装单元 N/M】``. An older stored row that still says ``封装单元 1`` is
 the same unit when the heading already has the total.
-End submits video_mode, end_image, first-frame source, and reference images
-from the unit records. D-lock is the judgment. Official parameters are mapped
-from it. Packing does not read this ledger.
+End submits video_mode, first-frame source, and reference images from the
+unit records. D-lock stays on the ledger. Official H3 video generation uses
+only ``first_frame`` and ``reference``. Continuity chooses between them.
+Packing does not read this ledger.
 """
 
 import re
 
 from end.product_names import UNIT_NAME, UNIT_TOKEN
 
-VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
+# Official H3 submit modes. ``text`` and ``first_last_frame`` are not used.
+VIDEO_MODES = ("first_frame", "reference")
 H3_MAX_REFERENCE_IMAGES = 9
 D_LOCKS = ("none", "1", "2", "3", "4")
-FRAME_MODES = ("first_frame", "first_last_frame")
+FRAME_MODES = ("first_frame",)
+# Retired modes still drop reference stills if an older row carries them.
+_RETIRED_FRAME_MODES = ("text", "first_last_frame")
+# Plot still running across the cut. ``same_scene`` is not in this set:
+# 同场景，事件断开 uses that same token. A plot group, a new scene, a time
+# or place jump, and an emotion landing are cuts, not continuations.
+PLOT_CONTINUOUS_RELATIONS = ("dialogue_split", "oner")
 WRITING_MODES = (
     "普通衔接",
     "独立批量强连续",
@@ -228,7 +236,16 @@ def _empty_use(value):
     return _EMPTY_ALIAS.get(text, text)
 
 
-def _reference(ids):
+def _flag(value):
+    """True for a real continuity mark. Missing and the string false stay false."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 1
+    return _text(value).lower() in ("1", "true", "yes", "y", "是")
+
+
+def _listed_ids(ids):
     images = []
     for item in ids or []:
         text = _text(item)
@@ -236,29 +253,54 @@ def _reference(ids):
             images.append(text)
         if len(images) >= H3_MAX_REFERENCE_IMAGES:
             break
-    if images:
-        return {
-            "video_mode": "reference",
-            "images": images,
-            "end_image": "",
-            "first_frame_source": "none",
-        }
+    return images
+
+
+def _reference(ids):
+    """Reference mode even when no still is bound yet. Never falls back to text."""
     return {
-        "video_mode": "text",
-        "images": [],
+        "video_mode": "reference",
+        "images": _listed_ids(ids),
         "end_image": "",
         "first_frame_source": "none",
     }
 
 
-def _frames(source, end_image=""):
-    end_image = _text(end_image)
+def _first_frame():
+    """Previous tail only. No asset refs and no end frame in the same call."""
     return {
-        "video_mode": "first_last_frame" if end_image else "first_frame",
+        "video_mode": "first_frame",
         "images": [],
-        "end_image": end_image,
-        "first_frame_source": _text(source) or "none",
+        "end_image": "",
+        "first_frame_source": "previous_tail",
     }
+
+
+def continues_from_previous(entry, *, first=False):
+    """Whether this packed unit continues the previous unit's action or plot.
+
+    The first packed unit has no previous tail, so it is never continuous.
+
+    Action-continuous: ``action_continuous`` is true. The action, camera
+    direction, light, or prop state does not reset across the cut (同场景顺延,
+    连贯动作被拆开). That is the continuity ``segment-splicing.md`` treats as
+    the cut still being the same action.
+
+    Plot-continuous: ``plot_continuous`` is true, or ``scene_relation`` is
+    ``dialogue_split`` (一句话被拆开) or ``oner`` (一镜到底). ``same_scene``
+    alone is not plot-continuous, because 同场景，事件断开 stores that same
+    token. ``plot_group``, ``new_scene``, ``time_jump``, ``place_jump``, and
+    ``emotion_landing`` are cuts.
+
+    D-lock is recorded separately. It does not choose the video mode.
+    """
+    if first:
+        return False
+    entry = entry or {}
+    if _flag(entry.get("action_continuous")) or _flag(entry.get("plot_continuous")):
+        return True
+    relation = normalize_scene_relation(entry.get("scene_relation"), first=False)
+    return relation in PLOT_CONTINUOUS_RELATIONS
 
 
 # Name, index, and the optional total. ``封装单元 1/3`` and ``投喂单元 2/4``.
@@ -354,6 +396,187 @@ def _stored_row(stored, by_id, unit_id):
     return None
 
 
+_FIGURE_ID = re.compile(r"图\d+(?:_\d+)?")
+_ASSET_NAME_STOP = {
+    "角色",
+    "四格",
+    "九宫",
+    "宫格",
+    "场景",
+    "母版",
+    "设定",
+    "图板",
+    "纯图",
+    "道具",
+    "参考",
+    "素材",
+    "状态",
+    "锁定",
+}
+
+
+def _is_keyframe_asset(asset):
+    blob = "%s %s" % ((asset or {}).get("title") or "", (asset or {}).get("subject") or "")
+    return any(word in blob for word in ("关键帧", "首帧", "尾帧"))
+
+
+def _id_in_text(text, asset_id):
+    """True when ``asset_id`` is named, and not as the prefix of a longer id."""
+    if not asset_id or asset_id not in str(text or ""):
+        return False
+    return re.search(
+        r"(?<![\w\d_])%s(?![\w\d_])" % re.escape(asset_id),
+        str(text),
+    ) is not None
+
+
+def _name_tokens(asset):
+    raw = "%s %s" % ((asset or {}).get("title") or "", (asset or {}).get("subject") or "")
+    parts = re.split(r"[·•|/\\\s（）()【】\[\]、，,：:《》\"“”']+", raw)
+    found = []
+    for part in parts:
+        token = part.strip()
+        if len(token) >= 2 and token not in _ASSET_NAME_STOP and token not in found:
+            found.append(token)
+    return found
+
+
+def _name_in_text(text, asset):
+    raw = str(text or "")
+    for token in _name_tokens(asset):
+        if re.search(r"[\u4e00-\u9fff]", token):
+            if token in raw:
+                return True
+            continue
+        if re.search(r"(?<!\w)%s(?!\w)" % re.escape(token), raw, re.IGNORECASE):
+            return True
+    return False
+
+
+def _kind_rank(asset):
+    kind = str((asset or {}).get("subject_kind") or "")
+    title = "%s %s" % ((asset or {}).get("title") or "", (asset or {}).get("subject") or "")
+    if kind == "character" or any(word in title for word in ("角色", "女主", "男主")):
+        return 0
+    if kind in ("prop", "product") or "道具" in title:
+        return 1
+    if kind in ("location", "scene") or any(word in title for word in ("场景", "九宫", "母版")):
+        return 2
+    return 3
+
+
+def _prompt_reference_ids(prompt, assets):
+    """Asset ids named in one unit: figure tags, then character, product, and scene names.
+
+    ``images_for_feed_unit`` only matches a short alias list. A still titled
+    小君 is named here when the unit text says 小君, or when the text cites 图2.
+    """
+    text = str(prompt or "")
+    catalog = []
+    by_id = {}
+    for asset in assets or []:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = _text(asset.get("id"))
+        if not asset_id or asset_id in by_id or _is_keyframe_asset(asset):
+            continue
+        by_id[asset_id] = asset
+        catalog.append(asset_id)
+    found = []
+
+    def add(asset_id):
+        if asset_id and asset_id not in found and (not catalog or asset_id in by_id):
+            found.append(asset_id)
+
+    for asset_id in catalog:
+        if _id_in_text(text, asset_id):
+            add(asset_id)
+    for match in _FIGURE_ID.finditer(text):
+        add(match.group(0))
+    named = []
+    for index, asset_id in enumerate(catalog):
+        if asset_id in found:
+            continue
+        asset = by_id[asset_id]
+        if _name_in_text(text, asset):
+            named.append((_kind_rank(asset), index, asset_id))
+    named.sort()
+    for _rank, _index, asset_id in named:
+        add(asset_id)
+        if len(found) >= H3_MAX_REFERENCE_IMAGES:
+            break
+    return found[:H3_MAX_REFERENCE_IMAGES]
+
+
+def _board_rows(spec):
+    """Storyboard shots packed into feed units. Unit ids are not shots."""
+    rows = []
+    for shot in (spec or {}).get("shots") or []:
+        if not isinstance(shot, dict) or not _text(shot.get("id")):
+            continue
+        if _parsed_unit_id(shot.get("id")) is not None:
+            continue
+        rows.append(shot)
+    if any(_bound_images(shot) or shot.get("duration") not in (None, "") for shot in rows):
+        return rows
+    text = (spec or {}).get("storyboard") or ""
+    if not _text(text):
+        return rows
+    try:
+        from end.storyboard_contract import known_ids, project_shots
+    except ImportError:
+        return rows
+    projected, report = project_shots(text, known_ids((spec or {}).get("assets")))
+    if projected and not report:
+        return projected
+    return rows
+
+
+def _shot_slices(board, unit_count):
+    """Shots packed into each unit, using the same 15s groups as feed packing."""
+    empty = [[] for _ in range(unit_count)]
+    if not board or unit_count <= 0:
+        return empty
+    durations = []
+    usable = True
+    for shot in board:
+        try:
+            seconds = float(shot.get("duration"))
+        except (TypeError, ValueError):
+            usable = False
+            break
+        if seconds <= 0:
+            usable = False
+            break
+        durations.append(seconds)
+    if not usable:
+        if len(board) == unit_count:
+            return [[shot] for shot in board]
+        return empty
+    from end.stage_runner import group_shot_durations
+
+    groups = group_shot_durations(durations)
+    if len(groups) != unit_count:
+        if len(board) == unit_count:
+            return [[shot] for shot in board]
+        return empty
+    slices = []
+    cursor = 0
+    for group in groups:
+        count = len(group)
+        slices.append(board[cursor:cursor + count])
+        cursor += count
+    return slices
+
+
+def _images_of_shots(shots):
+    return _listed_ids(
+        item
+        for shot in shots or []
+        for item in _bound_images(shot)
+    )
+
+
 def packed_units(spec):
     """Packed feed units, with stills and any video fields already stored on them.
 
@@ -376,6 +599,7 @@ def packed_units(spec):
     except ImportError:
         images_for_feed_unit = None
     assets = spec.get("assets") or []
+    slices = _shot_slices(_board_rows(spec), len(derived))
     rows = []
     for index, unit in enumerate(derived):
         row = dict(unit)
@@ -387,7 +611,14 @@ def packed_units(spec):
             images = list(images_for_feed_unit(row.get("prompt") or "", assets) or [])
         if not images and isinstance(saved, dict):
             images = list(saved.get("images") or [])
-        row["images"] = images
+        # Alias match misses stills such as 小君/图2. Name the figure tags and
+        # asset titles in the unit, and if that is still empty use the
+        # storyboard shots packed into this unit.
+        if not images:
+            images = _prompt_reference_ids(row.get("prompt") or "", assets)
+        if not images and index < len(slices):
+            images = _images_of_shots(slices[index])
+        row["images"] = _listed_ids(images)
         if isinstance(saved, dict):
             for key in SHOT_VIDEO_FIELDS:
                 if key in saved and saved.get(key) not in (None, ""):
@@ -449,46 +680,32 @@ def units_for_submit(spec):
     return write_unit_fields(units, apply_submit_params(aligned, units))
 
 
-def map_submit_params(entry, shot=None):
-    """Official H3 fields for one inbound seam. D-lock decides. End does not."""
-    entry = entry or {}
-    lock = _lock(entry.get("d_lock"))
+def _reference_ids(entry, shot):
+    """Stills for reference mode. An empty unit list does not become text.
+
+    Prompt tags and storyboard bindings are already on the packed unit.
+    ``scene_images`` fills a unit that is still empty, such as an empty shot
+    that named its scene still on the ledger.
+    """
     bound = _bound_images(shot)
-    designed = _text(entry.get("designed_still"))
-    end_image = _text(entry.get("end_image"))
-    anchor = bool(entry.get("anchor_end")) and bool(end_image)
-    scene_images = [_text(item) for item in (entry.get("scene_images") or []) if _text(item)]
-    if lock in ("", "none"):
-        if entry.get("lock_t0") and designed:
-            return _frames(designed)
-        return _reference(bound)
-    if lock == "1":
-        if entry.get("redraw_still") and designed:
-            source = designed
-        else:
-            source = "previous_tail"
-        return _frames(source, end_image if anchor else "")
-    if lock == "2":
-        return _reference(bound)
-    if lock == "3":
-        return _reference(scene_images)
-    if lock == "4":
-        chosen = _text(entry.get("video_mode"))
-        if chosen == "text":
-            return _reference([])
-        if chosen in FRAME_MODES:
-            source = _text(entry.get("first_frame_source"))
-            if source in ("", "none"):
-                source = designed or "previous_tail"
-            end = end_image if chosen == "first_last_frame" and end_image else ""
-            return _frames(source, end)
-        if chosen == "reference":
-            listed = entry.get("images")
-            return _reference(listed if isinstance(listed, list) and listed else bound)
-        if entry.get("lock_t0") and designed:
-            return _frames(designed)
-        return _reference(bound)
-    return _reference(bound)
+    if bound:
+        return bound
+    return _listed_ids((entry or {}).get("scene_images"))
+
+
+def map_submit_params(entry, shot=None, *, first=False):
+    """Official H3 fields for one packed unit.
+
+    The first unit is always ``reference``. A later unit that is
+    action-continuous or plot-continuous with the previous unit is
+    ``first_frame`` from that unit's tail, with no asset refs and no end
+    frame. Every other unit is ``reference``. ``text`` and
+    ``first_last_frame`` are never chosen. D-lock is not the selector.
+    """
+    entry = entry or {}
+    if first or not continues_from_previous(entry, first=False):
+        return _reference(_reference_ids(entry, shot))
+    return _first_frame()
 
 
 def apply_submit_params(entries, shots):
@@ -523,7 +740,7 @@ def apply_submit_params(entries, shots):
         shot = by_id.get(row["shot_id"]) or {}
         row["bound_images"] = _bound_images(shot)
         row["empty_use"] = _empty_use(row.get("empty_use"))
-        official = map_submit_params(row, shot)
+        official = map_submit_params(row, shot, first=is_first)
         row.update(official)
         applied.append(row)
     return applied
@@ -609,17 +826,17 @@ def check_seam_ledger(ledger, units):
             errors.append("%s 的视频延长只能配 ①" % shot_id)
         mode = _text(entry.get("video_mode"))
         if mode not in VIDEO_MODES:
-            errors.append("%s 的 video_mode 必须是官方四种之一" % shot_id)
+            errors.append("%s 的 video_mode 只能是 first_frame 或 reference" % shot_id)
         elif mode in FRAME_MODES and list(entry.get("images") or []):
-            errors.append("%s 的首帧或首尾帧不能再带参考图" % shot_id)
-        official = map_submit_params(entry, shot)
+            errors.append("%s 的首帧不能再带参考图" % shot_id)
+        official = map_submit_params(entry, shot, first=(index == 0))
         if mode in VIDEO_MODES and (
             mode != official["video_mode"]
             or list(entry.get("images") or []) != official["images"]
             or _text(entry.get("end_image")) != official["end_image"]
             or _text(entry.get("first_frame_source") or "none") != official["first_frame_source"]
         ):
-            errors.append("%s 的提交参数和 D 锁不一致" % shot_id)
+            errors.append("%s 的提交参数和连续关系不一致" % shot_id)
         end_size = _size_class(entry.get("end_size"))
         start_size = _size_class(entry.get("start_size"))
         if _text(entry.get("end_size")) and not end_size:
@@ -655,8 +872,13 @@ def check_seam_ledger(ledger, units):
                 errors.append("%s 的 ② 不能写定格" % shot_id)
             if not entry.get("camera_change") or same_camera:
                 errors.append("%s 的 ② 必须换机位" % shot_id)
-            if _text(entry.get("end_image")) or _text(entry.get("first_frame_source")) not in ("", "none"):
-                errors.append("%s 的 ② 不能带上一段尾巴或结束帧" % shot_id)
+            if _text(entry.get("end_image")):
+                errors.append("%s 的 ② 不能带结束帧" % shot_id)
+            if (
+                not continues_from_previous(entry, first=(index == 0))
+                and _text(entry.get("first_frame_source")) not in ("", "none")
+            ):
+                errors.append("%s 的 ② 不能带上一段尾巴" % shot_id)
         if lock == "3":
             if _empty_use(entry.get("empty_use")) not in EMPTY_USES:
                 errors.append("%s 的空镜要标明情绪、音效桥或时空转场" % shot_id)
@@ -688,7 +910,11 @@ def check_seam_ledger(ledger, units):
 
 
 def write_unit_fields(units, entries):
-    """Stamp official submit fields onto packed feed units. Asset bindings stay."""
+    """Stamp official submit fields onto packed feed units.
+
+    Reference mode keeps the bound stills on ``images`` and ``video_images``.
+    A first-frame unit keeps neither, so the call does not also send asset refs.
+    """
     by_id = {}
     for entry in entries or []:
         if isinstance(entry, dict) and entry.get("shot_id"):
@@ -708,6 +934,11 @@ def write_unit_fields(units, entries):
         row["first_frame_source"] = entry.get("first_frame_source") or "none"
         row["seam_d_lock"] = entry.get("d_lock") or "none"
         row["video_images"] = list(entry.get("images") or [])
+        # A first-frame call cannot also carry asset refs.
+        if row["video_mode"] == "reference":
+            row["images"] = list(row["video_images"])
+        else:
+            row["images"] = []
         if _text(entry.get("writing_mode")):
             row["writing_mode"] = _text(entry.get("writing_mode"))
         if _text(entry.get("end_image")):
@@ -759,9 +990,9 @@ def drop_packing(spec):
 
 
 def render_images_for(shot):
-    """Images a render shot may send. Frame and text calls send none."""
+    """Images a render shot may send. Frame calls, and retired modes, send none."""
     mode = _text((shot or {}).get("video_mode"))
-    if mode in FRAME_MODES or mode == "text":
+    if mode in FRAME_MODES or mode in _RETIRED_FRAME_MODES:
         return []
     if mode == "reference" and isinstance((shot or {}).get("video_images"), list):
         return _bound_images({"images": shot.get("video_images")})
