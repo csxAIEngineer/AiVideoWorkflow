@@ -1067,6 +1067,12 @@ function onResumeClick() {
 
 function syncChoiceDisabled() {
   document.querySelectorAll("#thread button.choice, #thread select.style-select").forEach((control) => {
+    if (control.dataset.durationSend === "1") {
+      const row = control.closest(".duration-custom");
+      const input = row ? row.querySelector("input") : null;
+      control.disabled = !!sending || !durationAnswerText(input && input.value);
+      return;
+    }
     control.disabled = !!sending;
   });
 }
@@ -1189,6 +1195,119 @@ function styleChoices(message) {
   return list;
 }
 
+const DURATION_PRESETS = [
+  ["10秒", "10"],
+  ["30秒", "30"],
+  ["60秒", "60"],
+];
+
+function durationPresetValue(label) {
+  const name = String(label || "");
+  for (let index = 0; index < DURATION_PRESETS.length; index += 1) {
+    if (DURATION_PRESETS[index][0] === name) return DURATION_PRESETS[index][1];
+  }
+  return "";
+}
+
+function durationAnswerText(raw) {
+  const text = String(raw == null ? "" : raw).trim();
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return "";
+  const value = Number(text);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  return text;
+}
+
+function isDurationAsk(project) {
+  if (!project) return false;
+  const progress = project.progress || {};
+  const question = progress.question || project.question || null;
+  if (question && typeof question === "object" && (question.id || question.kind)) {
+    return question.id === "duration" || question.kind === "number";
+  }
+  const messages = project.messages || [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== "assistant") continue;
+    return message.choice_kind === "number";
+  }
+  return false;
+}
+
+function durationChoices() {
+  const list = document.createElement("div");
+  list.className = "choices duration-choices";
+  DURATION_PRESETS.forEach(function (item) {
+    const label = item[0];
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "choice";
+    button.dataset.durationPreset = item[1];
+    button.textContent = label;
+    if (sending) button.disabled = true;
+    button.addEventListener("click", function () {
+      const value = durationPresetValue(label);
+      if (!value || sending) return;
+      list.querySelectorAll("button.choice").forEach(function (node) {
+        node.disabled = true;
+      });
+      sendText(value);
+    });
+    list.append(button);
+  });
+  const other = document.createElement("button");
+  other.type = "button";
+  other.className = "choice choice-other";
+  other.dataset.durationOther = "1";
+  other.textContent = "其他（自己输入）";
+  if (sending) other.disabled = true;
+  const custom = document.createElement("div");
+  custom.className = "duration-custom";
+  const unit = document.createElement("span");
+  unit.className = "duration-unit";
+  unit.textContent = "单位：秒";
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "0";
+  input.step = "any";
+  input.inputMode = "decimal";
+  input.autocomplete = "off";
+  input.placeholder = "例如 45";
+  input.setAttribute("aria-label", "成片时长，单位：秒");
+  const confirm = document.createElement("button");
+  confirm.type = "button";
+  confirm.className = "choice duration-send";
+  confirm.dataset.durationSend = "1";
+  confirm.textContent = "发送";
+  function syncCustom() {
+    confirm.disabled = !!sending || !durationAnswerText(input.value);
+  }
+  function submitCustom() {
+    const value = durationAnswerText(input.value);
+    if (!value || sending) return;
+    list.querySelectorAll("button.choice").forEach(function (node) {
+      node.disabled = true;
+    });
+    sendText(value);
+  }
+  other.addEventListener("click", function () {
+    if (sending) return;
+    custom.classList.add("is-open");
+    syncCustom();
+    input.focus();
+  });
+  input.addEventListener("input", syncCustom);
+  input.addEventListener("keydown", function (event) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    submitCustom();
+  });
+  confirm.addEventListener("click", submitCustom);
+  syncCustom();
+  custom.append(unit, input, confirm);
+  list.append(other, custom);
+  return list;
+}
+
 function choiceList(messageOrOptions) {
   const message = Array.isArray(messageOrOptions) ? { options: messageOrOptions } : (messageOrOptions || {});
   const options = message.options || [];
@@ -1266,7 +1385,8 @@ function syncComposer() {
   if (materials) materials.classList.toggle("hidden", !showBrief);
   const materialFile = document.querySelector("#material-file");
   if (materialFile) materialFile.disabled = !showBrief || sending;
-  if (showOther) briefEl.placeholder = "写下你的方向";
+  if (showOther && isDurationAsk(current)) briefEl.placeholder = "或者直接写秒数";
+  else if (showOther) briefEl.placeholder = "写下你的方向";
   else if (showBrief) briefEl.placeholder = "文字决定要拍成什么样：时长、广告、感觉、情节和结尾。用户没写的部分，用读图补上身份和场景。";
   // The ready reply is painted while `sending` is still true, and a done project stops polling.
   if (current) syncControlButtons(current);
@@ -1704,10 +1824,13 @@ function paintTranscript(options, full) {
     retired.textContent = "出片前语义审查已停用，历史问题不再阻断生成；生成仍需技术校验及你的确认";
     pinActions.push(retired);
   }
-  if (current.can_reply && choice) pinActions.push(choiceList(choice));
+  const durationBox = current.can_reply && isDurationAsk(current) ? durationChoices() : null;
+  if (current.can_reply && choice && !isDurationAsk(current)) pinActions.push(choiceList(choice));
   const showProgress = current.status === "gate" || (current.progress || {}).phase === "lock_wait" || running;
-  if (!full) fillChatPin(showProgress ? progressPanel(current) : null, pinActions);
-  else {
+  if (!full) {
+    if (durationBox) pinActions.push(durationBox);
+    fillChatPin(showProgress ? progressPanel(current) : null, pinActions);
+  } else {
     pinActions.forEach((node) => wrap.append(node));
     if (running) {
       const note = document.createElement("p");
@@ -1716,6 +1839,7 @@ function paintTranscript(options, full) {
       wrap.append(note);
     }
     if (showProgress) wrap.append(progressPanel(current));
+    if (durationBox) wrap.append(durationBox);
   }
   if (current.status === "drilling" && !current.can_reply) {
     const thinking = document.createElement("p");
@@ -1821,6 +1945,7 @@ function paintTranscript(options, full) {
 }
 
 async function refreshList() {
+  if (window.__AIVIDEO_FIXTURE__ && window.__AIVIDEO_FIXTURE__.project) return;
   projects = await rpc("projects.list");
   if (current) {
     const fresh = projects.find((item) => item.id === current.id);
@@ -2279,6 +2404,12 @@ async function sendText(text) {
   const body = String(text || "").trim();
   if (!body || sending || !current || !current.can_reply) return;
   if (optionRejected(current, body)) return;
+  const fixture = window.__AIVIDEO_FIXTURE__;
+  if (fixture && fixture.capture) {
+    fixture.sent = fixture.sent || [];
+    fixture.sent.push(body);
+    return;
+  }
   if (chatHome(current)) {
     surface = "chat";
     surfaceLock = "";
@@ -4520,5 +4651,17 @@ if (chatToggle) {
   });
 }
 
+function mountDurationFixture() {
+  const fixture = window.__AIVIDEO_FIXTURE__;
+  if (!fixture || !fixture.project) return;
+  fixture.sent = fixture.sent || [];
+  current = fixture.project;
+  projects = [current];
+  renderHistory();
+  renderThread({ scroll: "top" });
+  syncComposer();
+}
+
 loadConfig();
 refreshList();
+mountDurationFixture();

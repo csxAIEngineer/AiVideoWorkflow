@@ -363,6 +363,47 @@ body {
 
 .choice-other { color: #5c5c66; }
 
+.duration-custom {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid #e3e3e8;
+  border-radius: 16px;
+  background: #fff;
+}
+
+.duration-custom.is-open { display: flex; }
+
+.duration-unit {
+  flex: none;
+  color: #5c5c66;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.duration-custom input {
+  flex: 1 1 72px;
+  width: 72px;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.4;
+  padding: 6px 0;
+}
+
+.duration-custom .choice {
+  width: auto;
+  flex: none;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 999px;
+}
+
 .seam-option {
   display: flex;
   gap: 8px;
@@ -2469,6 +2510,7 @@ html[data-theme="dark"] .composer.bare {
 html[data-theme="dark"] .new-chat,
 html[data-theme="dark"] .side-tabs button,
 html[data-theme="dark"] .choice,
+html[data-theme="dark"] .duration-custom,
 html[data-theme="dark"] .seam-option,
 html[data-theme="dark"] .style-select,
 html[data-theme="dark"] .style-note,
@@ -2583,6 +2625,7 @@ html[data-theme="dark"] .task-state,
 html[data-theme="dark"] .doc-brief,
 html[data-theme="dark"] .doc-material small,
 html[data-theme="dark"] .choice-other,
+html[data-theme="dark"] .duration-unit,
 html[data-theme="dark"] .style-card span,
 html[data-theme="dark"] .style-look,
 html[data-theme="dark"] .style-grade,
