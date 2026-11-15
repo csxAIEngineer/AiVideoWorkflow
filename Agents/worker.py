@@ -215,11 +215,15 @@ def revision_brief(stage, task_line, draft, critic_report, machine_report):
     if stage == "feed":
         sections.append(
             "时长不够就按分镜时长拆单元写回，禁止把超过 15 秒的跨度钳成 15，禁止缩短总时长或删对白。"
+            "对照当前骨架只改正文：保留已经填好的单元，补上还空着的字段。"
+            "不要另起 JSON，不要改字段名，不要丢掉单元标题、duration、画面风格锁定句或镜号。"
         )
     if stage == "seam":
         sections.append(
             "按失败项改点名的那条段缝。不要把 ① 当成每条缝的默认。"
             "条数必须等于封装单元数。shot_id 原样照抄封装单元 id，形式是封装单元 N/M（例如封装单元 1/3），不要写成封装单元 1，不要把多个单元收成更少的段。"
+            "保留已经填对的槽，补上骨架里还空着的槽，只改机检点名的问题，包括不在景别阶梯上的起镜景别和末镜景别。"
+            "不要丢掉单元行，不要改 shot_id，不要自造景别或 scene_relation。"
         )
     body = str(draft or "").strip()
     if body:

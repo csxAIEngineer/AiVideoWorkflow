@@ -229,6 +229,26 @@ def _size_class(value):
     return ""
 
 
+def normalize_shot_size(value):
+    """A 景别阶梯 term, or the original text when it is not one.
+
+    ``中景镜头`` is a ladder word plus a suffix. A made-up size is left as
+    written so the machine check still fails it. This does not pick a
+    different size.
+    """
+    text = _text(value)
+    if not text:
+        return ""
+    if text in SIZE_LADDER:
+        return text
+    for suffix in ("镜头", "景别"):
+        if text.endswith(suffix):
+            stem = text[: -len(suffix)].strip(" ：:")
+            if stem in SIZE_LADDER:
+                return stem
+    return text
+
+
 def _empty_use(value):
     text = _text(value)
     if text in EMPTY_USES:
@@ -743,6 +763,138 @@ def apply_submit_params(entries, shots):
         official = map_submit_params(row, shot, first=is_first)
         row.update(official)
         applied.append(row)
+    return applied
+
+
+# Slots the seam machine check reads. Every packed unit keeps these names
+# after a model write. Empty strings are not invented prose.
+SEAM_SLOT_KEYS = (
+    "shot_id",
+    "prev_id",
+    "d_lock",
+    "reason",
+    "scene_relation",
+    "action_continuous",
+    "plot_continuous",
+    "video_mode",
+    "first_frame_source",
+    "images",
+    "end_image",
+    "start_size",
+    "end_size",
+    "camera_from",
+    "camera_to",
+    "camera_change",
+    "tail_croppable",
+    "crop_plan",
+    "transition",
+    "enter_exit",
+    "empty_use",
+)
+_SEAM_FLAGS = ("action_continuous", "plot_continuous", "camera_change", "tail_croppable")
+_SEAM_TEXT = (
+    "reason",
+    "crop_plan",
+    "transition",
+    "enter_exit",
+    "camera_from",
+    "camera_to",
+    "empty_use",
+)
+
+
+def _align_seam_entries(entries, rows):
+    """One model dict per packed unit. A matching id wins, else order.
+
+    An entry that names unit 2 stays on unit 2. A single object with no id
+    fills unit 1. Units the model skipped stay None so the skeleton can
+    open their slots without copying another unit's prose.
+    """
+    items = [item for item in entries or [] if isinstance(item, dict)]
+    if items and len(items) == len(rows):
+        items = normalize_entry_ids(items, rows)
+    by_id = {}
+    for item in items:
+        shot_id = _text(item.get("shot_id"))
+        if shot_id and shot_id not in by_id:
+            by_id[shot_id] = item
+    ids = [str(unit.get("id")) for unit in rows]
+    matched = [None] * len(rows)
+    used = set()
+    if any(unit_id in by_id for unit_id in ids):
+        for index, unit_id in enumerate(ids):
+            item = by_id.get(unit_id)
+            if item is None:
+                continue
+            matched[index] = item
+            used.add(id(item))
+        leftovers = [item for item in items if id(item) not in used]
+        for index, item in enumerate(matched):
+            if item is None and leftovers:
+                matched[index] = leftovers.pop(0)
+        return matched
+    for index in range(len(rows)):
+        if index < len(items):
+            matched[index] = items[index]
+    return matched
+
+
+def fold_seam_entries(entries, units):
+    """One skeleton row per packed unit, with every required slot name.
+
+    ``shot_id``, ``prev_id``, ``scene_relation``, and the official submit
+    fields are program-owned. The first unit's ``d_lock`` is ``none``.
+    A later ``d_lock`` is kept only when it is 1–4. 景别 values that sit on
+    the ladder (or a ladder word plus 镜头/景别) are kept; any other size is
+    left so the machine check can still fail it. Reason text and other
+    prose are not invented.
+    """
+    rows = [unit for unit in units or [] if isinstance(unit, dict) and _text(unit.get("id"))]
+    if not rows:
+        return apply_submit_params(
+            [item for item in entries or [] if isinstance(item, dict)],
+            units,
+        )
+    aligned = _align_seam_entries(entries, rows)
+    built = []
+    for index, unit in enumerate(rows):
+        model = aligned[index] or {}
+        row = {}
+        for key in SEAM_SLOT_KEYS:
+            if key in model:
+                row[key] = model.get(key)
+        for key, value in model.items():
+            if key not in row:
+                row[key] = value
+        row["shot_id"] = str(unit.get("id"))
+        row["prev_id"] = "" if index == 0 else str(rows[index - 1].get("id"))
+        lock = _lock(row.get("d_lock"))
+        if index == 0 or lock not in ("1", "2", "3", "4"):
+            row["d_lock"] = "none" if index == 0 else ""
+        else:
+            row["d_lock"] = lock
+        row["start_size"] = normalize_shot_size(row.get("start_size"))
+        row["end_size"] = normalize_shot_size(row.get("end_size"))
+        for flag in _SEAM_FLAGS:
+            if flag not in model:
+                row[flag] = False
+            else:
+                row[flag] = _flag(model.get(flag))
+        for key in _SEAM_TEXT:
+            if key not in model or model.get(key) is None:
+                row[key] = ""
+            elif isinstance(model.get(key), str):
+                row[key] = model.get(key)
+            else:
+                row[key] = _text(model.get(key))
+        built.append(row)
+    applied = apply_submit_params(built, rows)
+    for row in applied:
+        for key in SEAM_SLOT_KEYS:
+            if key not in row:
+                row[key] = [] if key == "images" else ""
+        if not isinstance(row.get("images"), list):
+            row["images"] = _listed_ids(row.get("images"))
     return applied
 
 

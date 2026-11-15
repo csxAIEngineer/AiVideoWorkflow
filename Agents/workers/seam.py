@@ -27,9 +27,10 @@ from end.seam_ledger import (
     DEFAULT_SCENE_RELATION,
     FIRST_UNIT_SCENE_RELATION,
     SCENE_RELATIONS,
-    apply_submit_params,
+    SEAM_SLOT_KEYS,
+    SIZE_LADDER,
     check_seam_ledger,
-    normalize_entry_ids,
+    fold_seam_entries,
     write_unit_fields,
 )
 
@@ -60,6 +61,12 @@ GENERATOR_SYSTEM = "\n".join((
     "第一个封装单元没有上一段，video_mode 用 reference。后面的单元只有动作连续或剧情连续才用 first_frame，first_frame_source 写 previous_tail，这一发不要带参考图。其余用 reference，即使 images 是空的也不要改成 text。",
     "动作连续写 action_continuous。剧情连续是一句话被拆开、一镜到底，或 plot_continuous。同场景但事件已断开、剧情段、换场、时间跳、地点跳、空镜都不是连续。",
     "D 锁仍然记 ①②③④。video_mode 不按 D 锁编号选。",
+    "起镜景别 start_size 和末镜景别 end_size 只能是：%s。"
+    "不在景别阶梯上的词要改成阶梯里的词，不要自造景别。"
+    % "、".join(SIZE_LADDER),
+    "简报里的段缝骨架是程序写好的。只填或修改骨架里的槽。"
+    "不要另起包装，不要删行，不要改 shot_id，不要丢掉必填槽名。",
+    "保留已经填对的槽。修补时只补空槽，并只改机检点名的问题。",
     _SCENE_RELATION_RULE,
     "② 不要写定格，也不要把上一段尾巴当首帧。",
     "五种写法是封装策略，不要在账本里再选一套 writing_mode。",
@@ -201,6 +208,58 @@ def _with_scene_relation(text):
     return "%s\n\n%s" % (body, rule)
 
 
+def seam_skeleton_entries(state):
+    """The ledger rows the model is editing, folded onto the packed units."""
+    state = state or {}
+    units = state.get("units") or []
+    parsed = ledger_from_raw(state.get("draft") or "")
+    if not isinstance(parsed, dict) and isinstance(state.get("ledger"), dict):
+        parsed = state.get("ledger")
+    entries = []
+    if isinstance(parsed, dict):
+        entries = parsed.get("entries") or []
+    return fold_seam_entries(entries, units)
+
+
+def format_seam_skeleton(state):
+    """The exact skeleton, including slots that already have a value."""
+    units = [
+        unit for unit in (state or {}).get("units") or []
+        if isinstance(unit, dict) and str(unit.get("id") or "").strip()
+    ]
+    if not units:
+        return ""
+    entries = seam_skeleton_entries(state)
+    shown = []
+    for entry in entries:
+        row = {key: entry.get(key, "") for key in SEAM_SLOT_KEYS}
+        shown.append(row)
+    return "\n".join((
+        "当前段缝骨架如下。一条封装单元一行，顺序固定。",
+        "只填或修改这些槽里的值。不要另写一套包装，不要删行，不要改 shot_id，不要丢掉槽名。",
+        "shot_id、prev_id、scene_relation、video_mode、first_frame_source、images、end_image 由程序按连续关系写回。",
+        "scene_relation 只能是：%s。" % "、".join(SCENE_RELATIONS),
+        "起镜景别 start_size 和末镜景别 end_size 只能是：%s。" % "、".join(SIZE_LADDER),
+        "不在景别阶梯上的值必须改成其中之一，不要自造景别。",
+        "第一个单元 d_lock 是 none。后面的单元 d_lock 只能是 1、2、3、4。",
+        "video_mode 只能是 first_frame 或 reference。不要写 text，也不要写 first_last_frame。",
+        "保留已经填对的槽。修补时只补空槽，并只改机检点名的失败项。",
+        json.dumps({"seam_ledger": {"entries": shown}}, ensure_ascii=False, indent=2),
+    ))
+
+
+def _with_skeleton(text, state):
+    skeleton = format_seam_skeleton(state)
+    body = str(text or "").strip()
+    if not skeleton:
+        return body
+    if skeleton in body:
+        return body
+    if not body:
+        return skeleton
+    return "%s\n\n%s" % (body, skeleton)
+
+
 def generator_messages(state):
     system = {"role": "system", "content": GENERATOR_SYSTEM}
     if int(state.get("attempt") or 0) >= 1:
@@ -211,11 +270,14 @@ def generator_messages(state):
             state.get("critic_report"),
             state.get("machine_report"),
         )
-        return [system, {"role": "user", "content": _with_scene_relation(_with_ids(user, state))}]
-    opening = str(state.get("opening") or "").strip()
-    if opening:
-        return [system, {"role": "user", "content": _with_scene_relation(_with_ids(opening, state))}]
-    return [system, {"role": "user", "content": _with_scene_relation(_brief(state))}]
+        user = _with_scene_relation(_with_ids(user, state))
+    else:
+        opening = str(state.get("opening") or "").strip()
+        if opening:
+            user = _with_scene_relation(_with_ids(opening, state))
+        else:
+            user = _with_scene_relation(_brief(state))
+    return [system, {"role": "user", "content": _with_skeleton(user, state)}]
 
 
 def critic_messages(state):
@@ -273,8 +335,7 @@ def compile_seam_graph(complete, checker=None):
             ledger = state.get("ledger") or {}
         else:
             units = state.get("units") or []
-            aligned = normalize_entry_ids(parsed.get("entries") or [], units)
-            entries = apply_submit_params(aligned, units)
+            entries = fold_seam_entries(parsed.get("entries") or [], units)
             ledger = {"entries": entries}
             draft = json.dumps({"seam_ledger": ledger}, ensure_ascii=False)
             if previous.strip() and draft.strip() == previous.strip() and attempt > 1:

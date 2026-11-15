@@ -13,7 +13,12 @@ unit's heading, planned duration, and the four Ref2VA section lines. The model
 fills those bodies. ``summary`` and ``retention_analysis`` are not written.
 If the model still emits them, restore strips those sections before the gate.
 A JSON object or a merged ``detailed_description`` is unwrapped back into
-that scaffold before the gate runs.
+that scaffold before the gate runs. An informal ``feed`` string does not
+win over the official four fields: labels such as ``Subject`` /
+``Soundscape`` / ``Music`` are mapped onto the field names, and a single
+set of fields lands in the unit it belongs to. Every planned unit keeps
+the heading, duration, four field lines, style-lock sentence, and shot
+headings. Empty bodies stay empty.
 
 The episode style is not written by this generator. It is the script line
 ``画风``, or the project lock when that line is absent. The program writes
@@ -110,7 +115,11 @@ H3_OMITTED = (
 H3_FILL_ONLY = (
     (
         "简报里的 ## 【%s N/M】、duration 和四段字段名是锁定骨架。"
-        "只填各段正文，不要自己发明 Ref2VA 版式，也不要输出 JSON。"
+        "只填或修改各段正文，不要自己发明 Ref2VA 版式，也不要输出 JSON。"
+        "不要把四段写成 JSON 字段，不要另包一层。"
+        "不要改字段名，不要用 Subject、Soundscape、Music 代替这四行。"
+        "不要丢掉单元标题、duration、画面风格锁定句或镜号。"
+        "不要只写第一个单元。已经填好的单元保留，空着的槽只补正文。"
         "不要写 summary 或 retention_analysis。"
     )
     % UNIT_NAME
@@ -455,21 +464,274 @@ def _looks_like_feed(text):
     return mentions_unit(raw) or "subject_definitions" in raw or '"feed"' in raw
 
 
-def extract_feed(raw, previous=""):
+def _join_fold_source(*parts):
+    found = []
+    for part in parts:
+        for item in str(part or "").split("+"):
+            if item and item not in found:
+                found.append(item)
+    return "+".join(found)
+
+
+def _has_official_field_line(text):
+    for line in str(text or "").splitlines():
+        field = _H3_FIELD_LINE.match(line.strip())
+        if field and field.group(1) in H3_SECTIONS:
+            return True
+    return False
+
+
+# Informal labels the director used instead of the four Ref2VA field names.
+# ``画面风格：`` is the program lock, not one of these labels.
+_INFORMAL_FIELD = (
+    (
+        "subject_definitions",
+        re.compile(
+            r"^[ \t]*(?:subjects?|主体)(?:[ \t]*\d+)?[ \t]*[:：][ \t]*(.*)$",
+            re.I,
+        ),
+    ),
+    (
+        "overall_soundscape",
+        re.compile(
+            r"^[ \t]*(?:soundscape|overall[ _-]?soundscape|环境音)[ \t]*[:：][ \t]*(.*)$",
+            re.I,
+        ),
+    ),
+    (
+        "non_diegetic_music",
+        re.compile(
+            r"^[ \t]*(?:music|non[-_ ]?diegetic(?:[ _-]?music)?|配乐)[ \t]*[:：][ \t]*(.*)$",
+            re.I,
+        ),
+    ),
+    (
+        "detailed_description",
+        re.compile(
+            r"^[ \t]*(?:detailed[ _-]?description|description|画面描述)[ \t]*[:：][ \t]*(.*)$",
+            re.I,
+        ),
+    ),
+)
+
+
+def _informal_field(line):
+    if _STYLE_SLOT.match(str(line or "").strip()):
+        return None
+    for name, pattern in _INFORMAL_FIELD:
+        found = pattern.match(line)
+        if found:
+            return name, found
+    return None
+
+
+def _has_informal_label(text):
+    for line in str(text or "").splitlines():
+        if _informal_field(line):
+            return True
+    return False
+
+
+def _string_field(data, keys):
+    if not isinstance(data, dict):
+        return ""
+    for key in keys:
+        candidate = data.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
+def _units_from_informal(text):
+    """Map ``Subject`` / ``Soundscape`` / ``Music`` lines onto the four fields.
+
+    Unit headings and shot lines stay. This does not invent a body for a
+    label the model did not write.
+    """
+    raw = str(text or "").strip()
+    if not raw or not _has_informal_label(raw):
+        return None
+    blocks = _split_blocks(raw) or [raw]
+    units = []
+    for block in blocks:
+        sections = {name: [] for name in H3_SECTIONS}
+        current = None
+        duration = ""
+        loose = []
+        for line in block.splitlines():
+            if UNIT_HEAD_ANY.match(line) or _LOOSE_UNIT_LINE.match(line):
+                continue
+            if current is None:
+                duration_line = _UNIT_DURATION_LINE.match(line)
+                if duration_line:
+                    duration = duration_line.group(2).strip()
+                    continue
+            field = _H3_FIELD_LINE.match(line)
+            if field and field.group(1) in H3_SECTIONS:
+                current = field.group(1)
+                rest = field.group(2).strip()
+                if rest:
+                    sections[current].append(rest)
+                continue
+            if field and field.group(1) in H3_OMITTED:
+                current = None
+                continue
+            informal = _informal_field(line)
+            if informal:
+                name, found = informal
+                current = name
+                if name == "subject_definitions":
+                    sections[name].append(line.strip())
+                elif found.group(1).strip():
+                    sections[name].append(found.group(1).strip())
+                continue
+            if current in H3_SECTIONS:
+                sections[current].append(line)
+            else:
+                loose.append(line)
+        bodies = {name: "\n".join(sections[name]).strip() for name in H3_SECTIONS}
+        extra = "\n".join(loose).strip()
+        if extra:
+            if bodies["detailed_description"]:
+                bodies["detailed_description"] = extra + "\n" + bodies["detailed_description"]
+            else:
+                bodies["detailed_description"] = extra
+        units.append({"duration": duration, "sections": bodies})
+    kept = [
+        unit for unit in units
+        if unit.get("duration") or any(str(body or "").strip() for body in unit["sections"].values())
+    ]
+    return kept or None
+
+
+def _merge_official_into_units(units, official):
+    """Keep per-unit prose. Official JSON fills a field the unit left empty.
+
+    When both wrote the same field, the official body stays and the unit
+    prose follows it, so a feed string cannot drop the four fields.
+    """
+    merged = []
+    for unit in units or []:
+        sections = {
+            name: str((unit.get("sections") or {}).get(name) or "").strip()
+            for name in H3_SECTIONS
+        }
+        merged.append({
+            "duration": str(unit.get("duration") or "").strip(),
+            "sections": sections,
+        })
+    if not merged:
+        return merged
+    for name in H3_SECTIONS:
+        body = str((official or {}).get(name) or "").strip()
+        if not body or _looks_like_many_units(body):
+            continue
+        current = merged[0]["sections"].get(name) or ""
+        if not current:
+            merged[0]["sections"][name] = body
+        elif body not in current:
+            merged[0]["sections"][name] = body + "\n" + current
+    return merged
+
+
+def _payload_without_feed(data):
+    """Official fields only. A sibling ``feed`` string is not a section."""
+    return {
+        key: value
+        for key, value in data.items()
+        if key not in ("feed", "text", "markdown", "body", "content")
+    }
+
+
+def _compose_director_draft(data):
+    """Markdown for one director JSON object, and why it was folded.
+
+    A ``feed`` / ``text`` string is kept only when it already uses the
+    official field names. Otherwise official JSON fields and informal
+    labels are both mapped onto units. Raw JSON is not returned.
+    """
+    if not isinstance(data, dict):
+        return "", ""
+    feed = _string_field(data, ("feed", "text", "markdown", "body", "content"))
+    if feed and _json_document(feed):
+        nested = _load_feed_json(feed)
+        if isinstance(nested, dict):
+            return _compose_director_draft(nested)
+    official = _section_dict(data)
+    if feed and _has_official_field_line(feed):
+        return feed, ""
+    structured = _units_from_informal(feed) if feed else None
+    if not structured and feed and mentions_unit(feed):
+        structured = _units_from_unit_text(feed)
+    if structured and any(official.values()):
+        rendered = _render_h3_units(_merge_official_into_units(structured, official), None)
+        if rendered.strip():
+            source = "json_fields+informal_feed" if _has_informal_label(feed) else "json_fields"
+            return rendered.strip(), source
+    if structured and _has_informal_label(feed):
+        rendered = _render_h3_units(structured, None)
+        if rendered.strip():
+            return rendered.strip(), "informal_feed"
+    if any(official.values()):
+        units = _units_from_payload(_payload_without_feed(data))
+        if not units:
+            units = [_unit_from_sections(official)]
+        rendered = _render_h3_units(units, None)
+        if rendered.strip():
+            return rendered.strip(), "json_fields"
+    if feed and not _json_document(feed):
+        return feed, ""
+    return "", ""
+
+
+def _fold_director_text(text):
+    """Fold a director payload into markdown. Official markdown stays put."""
+    raw = str(text or "")
+    loaded = _load_feed_json(raw)
+    if isinstance(loaded, dict):
+        drafted, source = _compose_director_draft(loaded)
+        if drafted.strip():
+            return drafted.strip(), source
+        return raw, source
+    if isinstance(loaded, list):
+        drafted, source = _compose_director_draft({"segments": loaded})
+        if drafted.strip():
+            return drafted.strip(), source
+    if _has_informal_label(raw) and not _has_official_field_line(raw):
+        units = _units_from_informal(raw)
+        if units:
+            rendered = _render_h3_units(units, None)
+            if rendered.strip():
+                return rendered.strip(), "informal_feed"
+    return raw, ""
+
+
+def _extract_feed_source(raw, previous=""):
     data = extract_json_object(raw)
-    text = ""
     if isinstance(data, dict):
-        for key in ("feed", "text"):
-            candidate = data.get(key)
-            if isinstance(candidate, str) and candidate.strip():
-                text = candidate.strip()
-                break
-    if not text:
-        cleaned = strip_fence(raw)
-        if mentions_unit(cleaned) or "subject_definitions" in cleaned:
-            text = cleaned.strip()
-    if not text:
-        return str(previous or "")
+        text, source = _compose_director_draft(data)
+        if text.strip():
+            return text.strip(), source
+        return str(previous or ""), source
+    cleaned = strip_fence(raw)
+    if _json_document(cleaned):
+        loaded = _load_feed_json(cleaned)
+        if isinstance(loaded, (dict, list)):
+            payload = loaded if isinstance(loaded, dict) else {"segments": loaded}
+            text, source = _compose_director_draft(payload)
+            if text.strip():
+                return text.strip(), source
+        return str(previous or ""), ""
+    folded, source = _fold_director_text(cleaned)
+    if source and folded.strip():
+        return folded.strip(), source
+    if mentions_unit(cleaned) or _has_official_field_line(cleaned):
+        return cleaned.strip(), ""
+    return str(previous or ""), ""
+
+
+def extract_feed(raw, previous=""):
+    text, _source = _extract_feed_source(raw, previous)
     return text
 
 
@@ -571,7 +833,10 @@ def h3_packing_scaffold(groups, style=""):
         "H3 的 Ref2VA 骨架已经按%s写好。只填每个字段名下面的正文。" % UNIT_NAME,
         "不要改 ## 标题，不要改 duration，不要调换这四段的顺序。",
         "不要写 summary 或 retention_analysis。",
-        "不要输出 JSON，不要把多个单元写进同一个 detailed_description。",
+        "不要输出 JSON，不要把四个字段写成 JSON 键，也不要把多个单元写进同一个 detailed_description。",
+        "不要改字段名，不要用 Subject、Soundscape、Music 代替这四行。",
+        "不要只写第一个单元。空着的单元也留下这四个字段名、锁定句和镜号。",
+        "只填或修改字段名下面的正文。已经写好的正文保留，只补还空着的槽。",
         "镜号和切点已经按这一段里的分镜时长算好，不是模型写的。"
         "每一段从 [Shot 1] 起，第一镜不写时间。"
         "后面每一镜紧跟预先算好的 At MM:SS.mmm，只累加这一段里前面各镜的时长。"
@@ -626,7 +891,18 @@ def packing_plan_note(state):
                 lines.append("骨架（%s）：%s" % (ident, rendered))
         parts.append("\n".join(lines))
         if _h3_locked(state):
-            parts.append(h3_packing_scaffold(groups, agreed_style(state)))
+            draft = str(state.get("draft") or "").strip()
+            if draft:
+                folded = apply_packing_plan(draft, state).strip()
+                parts.append("\n".join((
+                    "当前骨架如下。只填或修改字段名下面的正文。",
+                    "不要另起 JSON，不要改字段名，不要丢掉单元标题、duration、画面风格锁定句或镜号。",
+                    "不要只写第一个单元。已经填好的单元保留，空着的槽只补正文。",
+                    "修补时只改机检点名的问题。",
+                    folded,
+                )))
+            else:
+                parts.append(h3_packing_scaffold(groups, agreed_style(state)))
     if spoken:
         spoken_lines = [
             "对白和旁白必须逐字出现，包括角色前缀和表演提示。"
@@ -659,12 +935,13 @@ _H3_FIELD_MARK = re.compile(
 )
 
 
-def correct_unit_durations(text, groups):
+def correct_unit_durations(text, groups, h3=None):
     """Write the planned heading and duration onto every unit.
 
     The sums are the 15s groups. A draft that used a shot length, or that
     closed early as one unit, is rewritten to this count. A span over 15s is
-    not clamped. This does not invent a different grouping.
+    not clamped. This does not invent a different grouping. When ``h3`` is
+    set, a rebuilt unit keeps the four field lines even if a body is empty.
     """
     planned_groups = [list(group) for group in groups or []]
     planned = [sum(group) for group in planned_groups]
@@ -673,7 +950,7 @@ def correct_unit_durations(text, groups):
         return raw
     heads = list(UNIT_HEAD_LINE.finditer(raw))
     if len(heads) != len(planned):
-        return _materialize_units(raw, planned_groups)
+        return _materialize_units(raw, planned_groups, h3=h3)
     runner = importlib.import_module("end.stage_runner")
     parts = [raw[: heads[0].start()]]
     total = len(planned)
@@ -788,17 +1065,20 @@ def _render_planned_unit(index, total, seconds, items, h3, runner):
     if h3:
         for name in H3_SECTIONS:
             body = rendered[name]
-            if not body:
-                continue
             lines.append("%s:" % name)
-            lines.append(body)
+            if body:
+                lines.append(body)
     elif rendered["detailed_description"]:
         lines.append(rendered["detailed_description"])
     return "\n".join(lines)
 
 
-def _materialize_units(raw, groups):
-    """Build one block per planned group. Durations are the group sums."""
+def _materialize_units(raw, groups, h3=None):
+    """Build one block per planned group. Durations are the group sums.
+
+    An H3 unit always gets the four field lines. An empty body stays empty
+    so the program does not invent section prose.
+    """
     if not groups:
         return raw
     if not UNIT_HEAD_LINE.search(raw) and _json_document(raw):
@@ -809,7 +1089,10 @@ def _materialize_units(raw, groups):
     heads = list(UNIT_HEAD_LINE.finditer(raw))
     prefix = raw[: heads[0].start()] if heads else ""
     buckets = _assign_source_units(_source_units(raw, heads), groups)
-    h3 = _draft_uses_h3(raw)
+    if h3 is None:
+        h3 = _draft_uses_h3(raw)
+    else:
+        h3 = bool(h3) or _draft_uses_h3(raw)
     blocks = []
     total = len(groups)
     for index, group in enumerate(groups):
@@ -1424,16 +1707,11 @@ def _render_h3_units(units, groups):
             if shown:
                 lines.append("duration: %s" % shown)
         sections = unit.get("sections") or {}
-        wrote = False
         for name in H3_SECTIONS:
             body = str(sections.get(name) or "").strip()
-            if not body:
-                continue
             lines.append("%s:" % name)
-            lines.append(body)
-            wrote = True
-        if not wrote and not unit.get("duration"):
-            continue
+            if body:
+                lines.append(body)
         blocks.append("\n".join(lines))
     if not blocks:
         return ""
@@ -1443,10 +1721,10 @@ def _render_h3_units(units, groups):
 def restore_h3_scaffold(text, state=None):
     """Turn a JSON blob or a merged description back into per-unit H3 markdown.
 
-    A draft that is already markdown, including a prose unit, keeps its four
-    sections. Empty section lines are not invented, so a missing field of those
-    four still fails H1. ``summary`` and ``retention_analysis`` are stripped
-    when the model still emits them. Spoken lines are not invented here.
+    A draft that is already markdown keeps prose that already sits in the
+    four sections. ``summary`` and ``retention_analysis`` are stripped when
+    the model still emits them. Spoken lines are not invented here. Missing
+    field lines are put back later, with empty bodies.
     """
     raw = str(text or "")
     if not raw.strip():
@@ -1832,6 +2110,53 @@ def inject_shot_skeleton(text, skeleton):
     return "".join(parts)
 
 
+def _rebuild_unit_fields(block):
+    """Put the four field lines back. Bodies that are already there stay.
+
+    A unit that already has every field name is left byte for byte, so a
+    second pass does not rewrap prose. Loose lines land in
+    ``detailed_description``. Nothing is invented for an empty field.
+    """
+    if all(_field_parts(block, name) is not None for name in H3_SECTIONS):
+        return block
+    parsed = _parse_one_block(block)
+    head = UNIT_HEAD_LINE.search(block)
+    lines = []
+    if head:
+        lines.append(head.group(0).strip())
+    duration = str(parsed.get("duration") or "").strip()
+    if duration:
+        lines.append("duration: %s" % duration)
+    for name in H3_SECTIONS:
+        body = str((parsed.get("sections") or {}).get(name) or "").strip()
+        lines.append("%s:" % name)
+        if body:
+            lines.append(body)
+    text = "\n".join(lines)
+    if str(block).endswith("\n\n"):
+        return text + "\n\n"
+    return text + "\n"
+
+
+def _ensure_h3_fields(text):
+    raw = str(text or "")
+    heads = list(UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        return raw
+    parts = [raw[: heads[0].start()]]
+    changed = False
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        block = raw[match.start():end]
+        rebuilt = _rebuild_unit_fields(block)
+        if rebuilt != block:
+            changed = True
+        parts.append(rebuilt)
+    if not changed:
+        return raw
+    return "".join(parts)
+
+
 def apply_packing_plan(text, state):
     """Unwrap an H3 blob, lock the planned units, then put spoken lines back.
 
@@ -1840,17 +2165,37 @@ def apply_packing_plan(text, state):
     The agreed style sentence is written into every H3 unit after that, including
     a repair that dropped it. The local shot skeleton is written after that,
     again on a repair, so ``[Shot N]`` and ``At MM:SS.mmm`` match the storyboard.
+    Director JSON is folded onto that skeleton first. ``last_fold_source``
+    records ``json_fields``, ``informal_feed``, and ``materialize`` when one
+    of those paths ran.
     """
     runner = importlib.import_module("end.stage_runner")
-    prepared = restore_h3_scaffold(text, state) if _h3_locked(state) else str(text or "")
-    corrected = correct_unit_durations(prepared, packing_groups(state))
+    h3 = _h3_locked(state)
+    source = ""
+    incoming = str(text or "")
+    if h3:
+        incoming, source = _fold_director_text(incoming)
+    prepared = restore_h3_scaffold(incoming, state) if h3 else incoming
+    groups = packing_groups(state)
+    heads_before = len(list(UNIT_HEAD_LINE.finditer(str(prepared or ""))))
+    corrected = correct_unit_durations(prepared, groups, h3=h3)
+    if groups and heads_before != len(groups):
+        source = _join_fold_source(source, "materialize")
+    if h3 and groups:
+        corrected = _ensure_h3_fields(corrected)
     spoken = runner.storyboard_spoken_lines(_storyboard_text(state))
     restored = restore_spoken_lines(corrected, spoken)
     placed = place_owned_spoken_lines(restored, state)
-    if not _h3_locked(state):
+    if not h3:
+        apply_packing_plan.last_fold_source = source
         return placed
     styled = inject_style_lock(placed, agreed_style(state))
-    return inject_shot_skeleton(styled, packing_shot_skeleton(state))
+    result = inject_shot_skeleton(styled, packing_shot_skeleton(state))
+    apply_packing_plan.last_fold_source = source
+    return result
+
+
+apply_packing_plan.last_fold_source = ""
 
 
 def generator_messages(state):
@@ -2152,6 +2497,7 @@ def write_feed_debug(
     extracted=None,
     planned_text=None,
     error="",
+    fold_source="",
 ):
     """Append one packing generate attempt to ``debug/feed-debug.jsonl``."""
     state = state or {}
@@ -2214,6 +2560,8 @@ def write_feed_debug(
         plan_snap["text_path"] = plan_body["text_path"]
         if "text" in plan_body:
             plan_snap["text"] = plan_body["text"]
+        if str(fold_source or "").strip():
+            plan_snap["fold_source"] = str(fold_source).strip()
         record["apply_packing_plan"] = plan_snap
     path = directory / "feed-debug.jsonl"
     line = json.dumps(record, ensure_ascii=False) + "\n"
@@ -2280,8 +2628,9 @@ def compile_feed_graph(complete, checker=None):
             }
         raw = produced.get("raw") or ""
         previous = str(state.get("draft") or "")
-        extracted = extract_feed(raw, previous)
+        extracted, extract_source = _extract_feed_source(raw, previous)
         planned_text = apply_packing_plan(extracted, state)
+        fold_source = _join_fold_source(extract_source, apply_packing_plan.last_fold_source)
         draft = _patch_voiceover(planned_text)
         _safe_feed_debug(
             state,
@@ -2290,6 +2639,7 @@ def compile_feed_graph(complete, checker=None):
             calls,
             extracted=extracted,
             planned_text=planned_text,
+            fold_source=fold_source,
         )
         note = ""
         if previous.strip() and draft.strip() == previous.strip() and attempt > 1:

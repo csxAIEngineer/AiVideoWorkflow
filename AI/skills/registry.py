@@ -480,15 +480,21 @@ _MERGE_SHAPE = {
         "每条 shot_id 必须原样照抄封装单元 id，形式是封装单元 N/M，例如封装单元 1/3。不要写成封装单元 1，不要改成 1、2、3，也不要写成 S01。",
         "第一条 d_lock 为 none。其后每条恰好是 1、2、3、4 之一。",
         "每条写 shot_id、prev_id、d_lock、reason、scene_relation、action_continuous、plot_continuous、end_size、start_size、camera_change、tail_croppable、crop_plan、transition、enter_exit。",
+        "简报里的 entries 骨架已经按封装单元排好。只填或修改这些槽的值，不要另起包装，不要删行，不要改 shot_id。",
+        "start_size 和 end_size 是起镜景别和末镜景别，只能用景别阶梯上的词。不在阶梯上的值要改成阶梯里的词。",
         "不要再写 writing_mode。五种写法是封装策略，不是第二套 D 锁。",
         "video_mode 只能是 first_frame 或 reference。第一个封装单元，以及动作和剧情都不连续的单元，用 reference。动作连续或剧情连续用 first_frame，first_frame_source 为 previous_tail，不带参考图，不带 end_image。不要写 text 或 first_last_frame。一次调用不能混用帧和参考图。不要把段内衔接写进 entries。",
     )),
 }
 _H3_FEED_CONTRACT = "\n".join((
     "模型是 H3。feed 只写四段英文正文。",
+    "feed 字符串必须是简报里的那份骨架，不要在 feed 里面再套一层 JSON，也不要把四个字段写成 JSON 键。",
     "不要写 summary 或 retention_analysis。",
     H3_SUBJECT_SOUND_RULE,
     "字段名必须单独成行并带冒号，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+    "不要改这四行的名字，不要用 Subject、Soundscape、Music 代替它们。",
+    "不要只交第一个单元。缺的单元留着标题、duration、四个字段名、锁定句和镜号，正文可以先空着。",
+    "只填或修改骨架里的正文。不要改单元标题、duration、字段名、画面风格锁定句或镜号。",
     "不要使用七段式栏名。四段正文一律英文。对白写成 <d>[Chinese] 原文</d>。画面内文字保留原语言。",
 ))
 _NODE_SHAPE = "\n".join((

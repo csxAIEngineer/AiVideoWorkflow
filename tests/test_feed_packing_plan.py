@@ -17,6 +17,7 @@ from Agents.workers.feed import (
     H3_SECTIONS,
     apply_packing_plan,
     correct_unit_durations,
+    extract_feed,
     generator_messages,
     h3_packing_scaffold,
     packing_groups,
@@ -501,8 +502,13 @@ class PackingPlanTest(unittest.TestCase):
             "storyboard": "时长：11\n",
             "shots": [{"duration": 11}],
         })
-        self.assertEqual(kept, prose)
-        self.assertIn(H3_STRUCTURE_MARK, h3_structure_report(kept))
+        self.assertIn("She waits in the doorway.", kept)
+        self.assertIn("[Shot 1]", kept)
+        for name in H3_SECTIONS:
+            self.assertIn("\n%s:" % name, kept)
+        subject = kept.split("subject_definitions:\n", 1)[1].split("detailed_description:", 1)[0]
+        self.assertFalse(subject.strip(), kept)
+        self.assertEqual(h3_structure_report(kept), "")
 
     def test_duration_and_spoken_lines_still_restore_on_a_markdown_draft(self):
         draft = _units(
@@ -522,7 +528,11 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn("<d>[Chinese] %s</d>" % LINE, fixed)
         self.assertIn(MISSING, _unit_chunks(fixed)[-1])
         self.assertIn("\ndetailed_description:\n", fixed)
-        self.assertNotIn("subject_definitions:", fixed)
+        for name in H3_SECTIONS:
+            self.assertIn("\n%s:" % name, fixed)
+        for chunk in _unit_chunks(fixed):
+            subject = chunk.split("subject_definitions:\n", 1)[1].split("detailed_description:", 1)[0]
+            self.assertFalse(subject.strip(), chunk)
 
     def test_duration_and_dialogue_failures_rerun_the_packing_writers(self):
         h3_state = {
@@ -649,3 +659,235 @@ class PackingPlanTest(unittest.TestCase):
         self.assertNotIn("sd-feed-engine/references/asset-mapping-and-rules.md", repair_nodes)
         self.assertNotIn("short-drama-director/references/segment-splicing.md", repair_nodes)
         self.assertEqual(repair.count("director"), 1)
+
+
+STYLE = "冷白窗光"
+LOCK = "画面风格：" + STYLE
+
+
+def _three_state():
+    shots = (8, 8, 8)
+    rows = []
+    for index, seconds in enumerate(shots, 1):
+        rows.append("## S%02d" % index)
+        rows.append("时长：%s" % seconds)
+    return {
+        "locks": {"model": "h3"},
+        "script": "画风：%s\n" % STYLE,
+        "storyboard": "\n".join(rows),
+        "shots": [{"id": "S%02d" % index, "duration": seconds} for index, seconds in enumerate(shots, 1)],
+    }
+
+
+def _official_markdown():
+    blocks = []
+    prose = (
+        ("<Subject 1>: a woman at the window.", "[Shot 1] She looks out."),
+        ("<Subject 1>: the same woman.", "[Shot 1] She turns."),
+        ("<Subject 1>: the same woman.", "[Shot 1] She leaves."),
+    )
+    for index, (subject, shot) in enumerate(prose, 1):
+        blocks.append("\n".join((
+            "## 【封装单元 %s/3】" % index,
+            "duration: 8",
+            "subject_definitions:",
+            LOCK,
+            subject,
+            "detailed_description:",
+            shot,
+            "overall_soundscape:",
+            "Room tone %s." % index,
+            "non_diegetic_music:",
+            "N/A",
+        )))
+    return "\n\n".join(blocks) + "\n"
+
+
+class SkeletonFoldTest(unittest.TestCase):
+    def test_official_fields_survive_an_informal_feed(self):
+        state = _three_state()
+        feed = "\n\n".join((
+            "\n".join((
+                "## 【封装单元 1/3】",
+                "duration: 8",
+                "Subject 1: a woman by the glass",
+                "[Shot 1] She looks out.",
+                "Soundscape: glass tick",
+                "Music: none",
+            )),
+            "\n".join((
+                "## 【封装单元 2/3】",
+                "duration: 8",
+                "Subject 1: a man at the door",
+                "[Shot 1] He waits.",
+                "Soundscape: hallway",
+                "Music: none",
+            )),
+            "\n".join((
+                "## 【封装单元 3/3】",
+                "duration: 8",
+                "Subject 1: the empty room",
+                "[Shot 1] The door shuts.",
+                "Soundscape: quiet",
+                "Music: none",
+            )),
+        ))
+        raw = json.dumps({
+            "subject_definitions": "官方主体甲",
+            "detailed_description": "官方画面甲",
+            "overall_soundscape": "官方环境甲",
+            "non_diegetic_music": "官方配乐甲",
+            "feed": feed,
+        }, ensure_ascii=False)
+        extracted = extract_feed(raw)
+        self.assertFalse(extracted.lstrip().startswith("{"), extracted)
+        self.assertNotIn('"subject_definitions"', extracted)
+        folded = apply_packing_plan(raw, state)
+        chunks = _unit_chunks(folded)
+        self.assertEqual(len(chunks), 3, folded)
+        self.assertIn("官方主体甲", chunks[0])
+        self.assertIn("官方画面甲", chunks[0])
+        self.assertIn("官方环境甲", chunks[0])
+        self.assertIn("官方配乐甲", chunks[0])
+        self.assertIn("a man at the door", chunks[1])
+        self.assertIn("The door shuts.", chunks[2])
+        for chunk in chunks:
+            self.assertTrue(chunk.startswith("## 【封装单元"))
+            for name in H3_SECTIONS:
+                self.assertIn("\n%s:" % name, chunk)
+            self.assertTrue(chunk.split("subject_definitions:\n", 1)[1].startswith(LOCK))
+        self.assertIn("json_fields", apply_packing_plan.last_fold_source)
+        self.assertIn("informal_feed", apply_packing_plan.last_fold_source)
+
+    def test_a_single_official_object_fills_unit_one_and_leaves_skeleton_slots(self):
+        state = _three_state()
+        raw = json.dumps({
+            "subject_definitions": "<Subject 1>: the woman in unit one.",
+            "detailed_description": "She wipes the glass in unit one.",
+            "overall_soundscape": "Soft room tone.",
+            "non_diegetic_music": "N/A",
+        }, ensure_ascii=False)
+        extracted = extract_feed(raw)
+        self.assertFalse(extracted.lstrip().startswith("{"))
+        self.assertIn("subject_definitions:", extracted)
+        folded = apply_packing_plan(raw, state)
+        chunks = _unit_chunks(folded)
+        self.assertEqual(len(chunks), 3, folded)
+        self.assertIn("the woman in unit one.", chunks[0])
+        self.assertIn("She wipes the glass in unit one.", chunks[0])
+        self.assertIn("[Shot 1]", chunks[0])
+        for chunk in chunks[1:]:
+            for name in H3_SECTIONS:
+                self.assertIn("\n%s:" % name, chunk)
+            self.assertTrue(chunk.split("subject_definitions:\n", 1)[1].startswith(LOCK))
+            self.assertIn("[Shot 1]", chunk)
+            self.assertNotIn("unit one", chunk)
+            self.assertNotIn("She wipes", chunk)
+            description = chunk.split("detailed_description:\n", 1)[1].split("overall_soundscape:", 1)[0]
+            self.assertEqual(description.strip(), "[Shot 1]")
+        self.assertIn("json_fields", apply_packing_plan.last_fold_source)
+        self.assertIn("materialize", apply_packing_plan.last_fold_source)
+
+    def test_an_official_markdown_feed_keeps_its_prose(self):
+        state = _three_state()
+        markdown = _official_markdown()
+        raw = json.dumps({
+            "feed": markdown,
+            "subject_definitions": "别用这段替换正文",
+            "detailed_description": "别用这段替换画面",
+            "overall_soundscape": "别用这段替换环境",
+            "non_diegetic_music": "别用这段替换配乐",
+        }, ensure_ascii=False)
+        extracted = extract_feed(raw)
+        self.assertIn("a woman at the window.", extracted)
+        self.assertNotIn("别用这段替换正文", extracted)
+        folded = apply_packing_plan(extracted, state)
+        self.assertIn("a woman at the window.", folded)
+        self.assertIn("She turns.", folded)
+        self.assertIn("She leaves.", folded)
+        self.assertNotIn("别用这段替换正文", folded)
+        self.assertNotIn("别用这段替换画面", folded)
+        self.assertEqual(apply_packing_plan(folded, state), folded)
+        self.assertEqual(apply_packing_plan.last_fold_source, "")
+
+    def test_a_materialized_unit_is_not_a_dialogue_shell(self):
+        state = _three_state()
+        draft = "\n".join((
+            "## 【封装单元 1/1】",
+            "duration: 8",
+            "<d>[Chinese] 别改了。</d>",
+        ))
+        folded = apply_packing_plan(draft, state)
+        chunks = _unit_chunks(folded)
+        self.assertEqual(len(chunks), 3, folded)
+        for chunk in chunks:
+            for name in H3_SECTIONS:
+                self.assertIn("\n%s:" % name, chunk)
+            self.assertTrue(chunk.split("subject_definitions:\n", 1)[1].startswith(LOCK))
+            self.assertIn("[Shot 1]", chunk)
+        self.assertIn("materialize", apply_packing_plan.last_fold_source)
+        description = chunks[2].split("detailed_description:\n", 1)[1].split("overall_soundscape:", 1)[0]
+        self.assertNotIn("别改了", description)
+        self.assertEqual(description.strip(), "[Shot 1]")
+
+    def test_the_brief_shows_the_filled_skeleton_on_repair(self):
+        state = _three_state()
+        state.update({
+            "attempt": 1,
+            "source": state["storyboard"],
+            "draft": _official_markdown(),
+            "critic_report": {},
+            "machine_report": {"errors": ["稿子不是 H3 结构"], "warnings": []},
+        })
+        brief = generator_messages(state)[-1]["content"]
+        self.assertIn("当前骨架如下", brief)
+        self.assertIn("不要只写第一个单元", brief)
+        self.assertIn("a woman at the window.", brief)
+        self.assertIn("She leaves.", brief)
+        self.assertIn(LOCK, brief)
+        self.assertIn("## 【封装单元 3/3】", brief)
+        self.assertIn("保留已经填好的单元", brief)
+        first = generator_messages(dict(state, attempt=0, draft=""))[-1]["content"]
+        self.assertIn("不要输出 JSON", first)
+        self.assertIn("subject_definitions:\n%s" % LOCK, first)
+        self.assertIn("[Shot 1]", first)
+
+    def test_the_debug_log_names_a_json_fold(self):
+        folder = Path(tempfile.mkdtemp())
+        state_bits = _three_state()
+
+        def complete(role, messages, return_meta=False):
+            if role == "critic":
+                body = ACCEPT
+            elif role == "director":
+                body = json.dumps({
+                    "subject_definitions": "<Subject 1>: a woman.",
+                    "detailed_description": "She waits.",
+                    "overall_soundscape": "Room tone.",
+                    "non_diegetic_music": "N/A",
+                }, ensure_ascii=False)
+            else:
+                body = json.dumps({"text": "节点"}, ensure_ascii=False)
+            if not return_meta:
+                return body
+            return {"text": body, "finish_reason": "stop", "response_status": "completed"}
+
+        result = run_feed_loop(
+            state_bits["storyboard"],
+            shots=state_bits["shots"],
+            script=state_bits["script"],
+            locks=state_bits["locks"],
+            max_attempts=1,
+            complete=complete,
+            checker=lambda text, _state: {
+                "ok": True,
+                "errors": [],
+                "warnings": [],
+                "fatal": "",
+                "needs_human": False,
+            },
+            project_folder=str(folder),
+        )
+        self.assertNotIn("{", result["feed"][:1])
+        record = json.loads((folder / "debug" / "feed-debug.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertIn("json_fields", record["apply_packing_plan"].get("fold_source", ""))
