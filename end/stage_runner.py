@@ -1368,10 +1368,19 @@ def check_stage(folder, stage, locks, title=""):
         spec_now = _load_spec(folder)
         extras = feed_duration_failures(text, _read(internal / "分镜.md"), spec_now.get("shots"))
         if str((locks or {}).get("model") or "h3").strip().lower() == "h3":
-            from Agents.workers.feed import agreed_style, style_lock_failures
+            from Agents.workers.feed import (
+                agreed_style,
+                shot_skeleton_failures,
+                style_lock_failures,
+            )
 
             script = _read(internal / "剧本.md") or str(spec_now.get("script") or "")
             extras.extend(style_lock_failures(text, agreed_style({"script": script, "locks": locks or {}})))
+            extras.extend(shot_skeleton_failures(text, {
+                "storyboard": _read(internal / "分镜.md"),
+                "shots": spec_now.get("shots") or [],
+                "source": str(spec_now.get("source") or ""),
+            }))
         if code != 0:
             if extras:
                 return False, (report or "").rstrip() + "\n" + "\n".join(extras)

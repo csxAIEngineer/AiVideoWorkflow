@@ -27,6 +27,15 @@ stored as-is: the planned headings and durations are materialized, and a
 storyboard spoken line is put back into the unit that owns that shot even
 when the model omitted the ``<d>`` tag. A duration or dialogue failure names
 the packing writers so the repair runs those nodes again.
+
+Shot count and cut times are not written by this generator. They are known
+from the accepted storyboard before packing. Each unit is renumbered locally:
+its first shot is ``[Shot 1]`` with no timestamp, and each later shot is
+``[Shot N] At MM:SS.mmm`` at the sum of the earlier shots in that unit only.
+The brief shows that skeleton. After every draft and every repair, the program
+writes those headings back. A unit whose shots, local numbers, or cut times
+disagree fails the feed gate. The repair tells the writer to restore the
+skeleton, not to invent a new cut.
 """
 
 import importlib
@@ -105,6 +114,11 @@ H3_FILL_ONLY = (
     + H3_SUBJECT_SOUND_RULE
     + "若简报里有锁定句，subject_definitions 的第一行只能是那一句。"
     "不要自己写画风，不要翻译，不要另写一种风格。"
+    "detailed_description 里的 [Shot N] 和 At 时间也是锁定骨架。"
+    "每一段从 [Shot 1] 重新编号，第一镜不写时间。"
+    "后面每一镜紧跟简报里的 At MM:SS.mmm，这是这一段前面各镜的时长和，不是全集时间。"
+    "不要增删、合并或调换镜头，不要改镜号，不要改这些时间码，也不要自己发明切点。"
+    "只在这些标题下写画面和对白。"
 )
 _H3_FIELD_NAMES = H3_SECTIONS + H3_OMITTED
 _H3_NAME_ALT = "|".join(_H3_FIELD_NAMES)
@@ -131,8 +145,9 @@ CRITIC_SYSTEM = "\n".join((
     '{"verdict":"accept 或 revise","issues":[{"target":"%s","severity":"blocking 或 note","detail":"一句话"}]}' % UNIT_NAME,
     "没有要改的地方时 verdict 为 accept，issues 为空数组。",
     "detail 只指出问题，不写替换后的单元。",
-    "评判标准只是机检技能：validate_prompt 的 H1–H12，加上时长不得缩短、画外音闭口必须紧跟画外音、画风锁。",
+    "评判标准只是机检技能：validate_prompt 的 H1–H12，加上时长不得缩短、画外音闭口必须紧跟画外音、画风锁、镜号锁。",
     "有锁定画风时，每一段 subject_definitions 的第一行必须是同一句。缺这句、写成别的句子、或多写一种风格，都是 blocking。只出现在房间或道具主体上不算。",
+    "镜号和切点已经按分镜算好。不从 [Shot 1] 起、首镜带时间、切点不是预算的 At 时间、或多了少了镜头，都是 blocking。不要要求另写切点。",
     "summary 和 retention_analysis 不是封装字段。缺了不算问题，不要要求补上。",
     "不要用写作技能审查。机检会在你之后再跑。单独的 WARN 不算失败。",
 ))
@@ -179,6 +194,8 @@ _STYLE_WRITERS = (
     "short-drama-director/references/h3-adapter.md",
     "short-drama-director/references/prompt-feeding-checklist.md",
 )
+# The repair names these packing writers and tells them to restore the skeleton.
+_SKELETON_WRITERS = _STYLE_WRITERS
 
 
 def _flat_style(text):
@@ -517,24 +534,28 @@ def _generator_system(state):
     return system
 
 
-def _section_lines(style):
+def _section_lines(style, shots=None):
     line = style_lock_line(style)
     rows = []
     for name in H3_SECTIONS:
         if name == "subject_definitions" and line:
             rows.append("subject_definitions:\n%s" % line)
+        elif name == "detailed_description" and shots:
+            rows.append("detailed_description:\n%s" % "\n".join(shot["heading"] for shot in shots))
         else:
             rows.append("%s:" % name)
     return "\n".join(rows)
 
 
 def h3_packing_scaffold(groups, style=""):
-    """Headings, planned durations, and the four section lines.
+    """Headings, planned durations, the shot skeleton, and the four section lines.
 
     The model fills the bodies. It does not invent another Ref2VA layout,
     and it does not write summary or retention_analysis. When ``style`` is
     the agreed episode style, the lock sentence is already the first line of
-    subject_definitions. The model does not write that sentence.
+    subject_definitions. The model does not write that sentence. The
+    ``[Shot N]`` lines and their ``At MM:SS.mmm`` cuts are already written.
+    The model does not add, drop, reorder, or retime them.
     """
     runner = importlib.import_module("end.stage_runner")
     groups = list(groups or [])
@@ -546,18 +567,22 @@ def h3_packing_scaffold(groups, style=""):
         "不要改 ## 标题，不要改 duration，不要调换这四段的顺序。",
         "不要写 summary 或 retention_analysis。",
         "不要输出 JSON，不要把多个单元写进同一个 detailed_description。",
+        "镜号和切点已经按这一段里的分镜时长算好，不是模型写的。"
+        "每一段从 [Shot 1] 起，第一镜不写时间。"
+        "后面每一镜紧跟预先算好的 At MM:SS.mmm，只累加这一段里前面各镜的时长。"
+        "不要增删、合并或调换镜头，不要改本地镜号，不要改这些时间码，也不要自己发明切点。"
+        "只在这些标题下补画面、对白和声音。",
         H3_SUBJECT_SOUND_RULE,
     ]
     rule = style_lock_rule(style)
     if rule:
         header.append(rule)
     blocks = ["\n".join(header)]
-    fields = _section_lines(style)
     for index, group in enumerate(groups, 1):
         blocks.append("\n".join((
             unit_heading(index, total),
             "duration: %s" % runner.format_seconds(sum(group)),
-            fields,
+            _section_lines(style, _unit_shots(group)),
         )))
     return "\n\n".join(blocks)
 
@@ -580,6 +605,7 @@ def packing_plan_note(state):
         ]
         cursor = 1
         count = len(groups)
+        skeleton = packing_shot_skeleton(state) if _h3_locked(state) else []
         for index, group in enumerate(groups, 1):
             start = cursor
             end = cursor + len(group) - 1
@@ -588,6 +614,11 @@ def packing_plan_note(state):
             formula = "+".join(runner.format_seconds(item) for item in group)
             shown = runner.format_seconds(sum(group))
             lines.append("【%s %s/%s】%s：%s=%s" % (UNIT_NAME, index, count, shots, formula, shown))
+            if index <= len(skeleton):
+                unit = skeleton[index - 1]
+                ident = "、".join(item["id"] for item in unit)
+                rendered = " / ".join(item["heading"] for item in unit)
+                lines.append("骨架（%s）：%s" % (ident, rendered))
         parts.append("\n".join(lines))
         if _h3_locked(state):
             parts.append(h3_packing_scaffold(groups, agreed_style(state)))
@@ -1060,12 +1091,14 @@ def _machine_text(machine_report):
 
 
 def packing_repair_targets(machine_report, h3=False):
-    """Skill paths a duration, dialogue, or style-lock failure sends back through.
+    """Skill paths a duration, dialogue, style-lock, or shot-skeleton failure reruns.
 
     Other failures name nothing here. ``select_nodes`` then leaves them on
     the director, which is what an unnamed H1 report already does.
     A style-lock failure names the packing writers so they put the locked
     sentence back. It does not ask them to compose a new style.
+    A shot-skeleton failure names those same writers so they restore the
+    precomputed local headings. It does not ask them to invent a cut.
     """
     errors = _machine_text(machine_report)
     found = []
@@ -1079,6 +1112,8 @@ def packing_repair_targets(machine_report, h3=False):
         found.extend(_DIALOGUE_WRITERS)
     if h3 and "画风锁" in errors:
         found.extend(_STYLE_WRITERS)
+    if h3 and "镜号锁" in errors:
+        found.extend(_SKELETON_WRITERS)
     ordered = []
     seen = set()
     for relative in found:
@@ -1426,13 +1461,380 @@ def restore_h3_scaffold(text, state=None):
     return runner.strip_omitted_h3_sections(rendered)
 
 
+def format_cut_timecode(seconds):
+    """``MM:SS.mmm`` from a second count. The unit timeline starts at 00:00.000."""
+    total_ms = int(round(float(seconds) * 1000.0))
+    if total_ms < 0:
+        total_ms = 0
+    minutes, remainder = divmod(total_ms, 60000)
+    secs, millis = divmod(remainder, 1000)
+    return "%02d:%02d.%03d" % (minutes, secs, millis)
+
+
+def _unit_shots(durations, ids=None):
+    """Local headings for one packed unit. Shot 1 has no cut time."""
+    shots = []
+    elapsed = 0.0
+    for index, raw in enumerate(durations or [], 1):
+        seconds = float(raw)
+        cut = None if index == 1 else format_cut_timecode(elapsed)
+        shot = {
+            "local": index,
+            "duration": seconds,
+            "cut": cut,
+            "heading": "[Shot 1]" if index == 1 else "[Shot %d] At %s" % (index, cut),
+        }
+        if ids is not None and index - 1 < len(ids):
+            shot["id"] = ids[index - 1]
+        shots.append(shot)
+        elapsed += seconds
+    return shots
+
+
+def _canonical_shot_id(raw, fallback_index):
+    match = re.search(r"(\d+)", str(raw or ""))
+    if match:
+        return "S%02d" % int(match.group(1))
+    return "S%02d" % int(fallback_index)
+
+
+def _storyboard_heading_ids(text):
+    found = []
+    for line in str(text or "").splitlines():
+        match = _BOARD_HEAD.match(line.strip())
+        if match:
+            found.append(_canonical_shot_id(match.group(1), len(found) + 1))
+    return found
+
+
+def _storyboard_duration_rows(text):
+    """One row per ``时长`` line, in the same order as ``storyboard_duration_list``."""
+    rows = []
+    current = ""
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        head = _BOARD_HEAD.match(stripped)
+        if head:
+            current = _canonical_shot_id(head.group(1), len(rows) + 1)
+            continue
+        duration = _BOARD_DURATION.match(stripped)
+        if not duration:
+            continue
+        shot_id = current or _canonical_shot_id("", len(rows) + 1)
+        current = ""
+        rows.append({"id": shot_id, "duration": float(duration.group(1))})
+    return rows
+
+
+def _packing_shot_rows(state):
+    """Positive shots in the same order ``packing_groups`` consumes.
+
+    Canvas durations win when any shot declares one, matching
+    ``shot_duration_list``. Ids come from the shot, otherwise the storyboard
+    heading in that same order.
+    """
+    state = state or {}
+    canvas = []
+    for shot in state.get("shots") or []:
+        if not isinstance(shot, dict) or shot.get("duration") in (None, ""):
+            continue
+        try:
+            seconds = float(shot.get("duration"))
+        except (TypeError, ValueError):
+            continue
+        if seconds <= 0:
+            continue
+        canvas.append((shot, seconds))
+    if canvas:
+        board_ids = _storyboard_heading_ids(_storyboard_text(state))
+        rows = []
+        board_at = 0
+        for index, (shot, seconds) in enumerate(canvas):
+            raw = shot.get("id") if shot.get("id") not in (None, "") else shot.get("shot_id")
+            if str(raw or "").strip():
+                shot_id = _canonical_shot_id(raw, index + 1)
+            elif board_at < len(board_ids):
+                shot_id = board_ids[board_at]
+                board_at += 1
+            else:
+                shot_id = "S%02d" % (index + 1)
+            rows.append({"id": shot_id, "duration": seconds})
+        return rows
+    return [row for row in _storyboard_duration_rows(_storyboard_text(state)) if row["duration"] > 0]
+
+
+def packing_shot_skeleton(state, limit=15):
+    """Local ``[Shot N]`` headings for each packed unit.
+
+    Numbers restart at 1 inside the unit. ``[Shot 1]`` has no cut. Each later
+    cut is the sum of the earlier shots in that unit, as ``MM:SS.mmm``.
+    A span over 15 seconds stays its own unit at its real length. It is not
+    clamped, and it is not given a cut time by shortening it.
+    """
+    rows = _packing_shot_rows(state)
+    if not rows:
+        return []
+    runner = importlib.import_module("end.stage_runner")
+    groups = runner.group_shot_durations([row["duration"] for row in rows], limit)
+    skeleton = []
+    cursor = 0
+    for group in groups:
+        ids = [rows[cursor + offset]["id"] for offset in range(len(group))]
+        cursor += len(group)
+        skeleton.append(_unit_shots(group, ids))
+    return skeleton
+
+
+def format_shot_skeleton(skeleton):
+    """One line per unit: storyboard ids, then the local headings the writer fills."""
+    lines = []
+    units = list(skeleton or [])
+    total = len(units)
+    for index, shots in enumerate(units, 1):
+        ident = "、".join(str(shot.get("id") or "") for shot in shots if shot.get("id"))
+        rendered = " / ".join(shot["heading"] for shot in shots)
+        if ident:
+            lines.append("【%s %s/%s】%s：%s" % (UNIT_NAME, index, total, ident, rendered))
+        else:
+            lines.append("【%s %s/%s】%s" % (UNIT_NAME, index, total, rendered))
+    return "\n".join(lines)
+
+
+_SHOT_HEADING_LINE = re.compile(r"^[ \t]*\[Shot\s+(\d+)\]([^\n]*)$")
+_CLOCK_PREFIX = re.compile(
+    r"^[ \t]{0,14}(?:At|在)[ \t]*\d{1,2}:\d{2}\.\d{3}(?:[ \t]*处)?[ \t]*[,，]?[ \t]*",
+    re.IGNORECASE,
+)
+_OFFICIAL_CUT = re.compile(r"^[ \t]+At[ \t]+(\d{2}:\d{2}\.\d{3})(?!\d)")
+_EARLY_CLOCK = re.compile(
+    r"^[^\n]{0,14}?(?:At|在)[ \t]*\d{1,2}:\d{2}",
+    re.IGNORECASE,
+)
+
+
+def _field_parts(block, name):
+    lines = str(block or "").splitlines(keepends=True)
+    header_at = None
+    inline = ""
+    for index, raw_line in enumerate(lines):
+        field = _H3_FIELD_LINE.match(raw_line.strip())
+        if field and field.group(1) == name:
+            header_at = index
+            inline = field.group(2).strip()
+            break
+    if header_at is None:
+        return None
+    body_end = header_at + 1
+    while body_end < len(lines):
+        field = _H3_FIELD_LINE.match(lines[body_end].strip())
+        if field and field.group(1) in _H3_FIELD_NAMES:
+            break
+        body_end += 1
+    return header_at, inline, lines[header_at + 1:body_end], body_end, lines
+
+
+def _detailed_description_text(block):
+    parsed = _field_parts(block, "detailed_description")
+    if parsed is None:
+        return None
+    _header, inline, body_lines, _end, _lines = parsed
+    parts = []
+    if inline:
+        parts.append(inline)
+    for raw in body_lines:
+        parts.append(raw.rstrip("\r\n"))
+    return "\n".join(parts)
+
+
+def _shot_headings(block):
+    body = _detailed_description_text(block)
+    if body is None:
+        return []
+    found = []
+    for line in body.splitlines():
+        match = _SHOT_HEADING_LINE.match(line)
+        if match:
+            found.append((int(match.group(1)), match.group(2)))
+    return found
+
+
+def shot_skeleton_failures(text, state=None):
+    """Fail a packed unit whose local shots disagree with the storyboard skeleton.
+
+    The skeleton is known before packing. ``[Shot 1]`` has no timestamp.
+    Each later heading is ``[Shot N] At MM:SS.mmm`` at the sum of the earlier
+    shots in that unit only. Episode-wide numbers, a missing or extra
+    ``[Shot N]``, a timestamp on the first shot, or any other cut time fails.
+    This does not invent a cut. H2 still checks each unit on its own; this
+    gate does not weaken that rule.
+    """
+    skeleton = packing_shot_skeleton(state)
+    if not skeleton:
+        return []
+    units = _style_units(text)
+    errors = []
+    if len(units) != len(skeleton):
+        errors.append(
+            "镜号锁：封装稿有 %s 段，分镜骨架是 %s 段。不要自己另分组，不要自己发明切点。"
+            % (len(units), len(skeleton))
+        )
+    total = max(len(units), len(skeleton))
+    for index, shots in enumerate(skeleton):
+        if index >= len(units):
+            break
+        block = units[index]
+        label = _unit_label(block, index + 1, total)
+        found = _shot_headings(block)
+        expected_numbers = [shot["local"] for shot in shots]
+        found_numbers = [number for number, _tail in found]
+        if found_numbers != expected_numbers:
+            shown = "、".join("[Shot %s]" % number for number in found_numbers) or "（没有 [Shot N]）"
+            want = "、".join(shot["heading"] for shot in shots)
+            errors.append(
+                "镜号锁：%s 的镜号是 %s，必须按这个本地骨架写：%s。"
+                "不要沿用全集镜号，不要增删、合并或调换镜头，不要自己发明切点。"
+                % (label, shown, want)
+            )
+            continue
+        for shot, (_number, tail) in zip(shots, found):
+            if shot["local"] == 1:
+                if _EARLY_CLOCK.search(tail or ""):
+                    errors.append(
+                        "镜号锁：%s 的 [Shot 1] 不能带时间戳（写了 At 也不行，包括 At 00:00.000）。"
+                        "首镜没有切点。" % label
+                    )
+                continue
+            match = _OFFICIAL_CUT.match(tail or "")
+            got = match.group(1) if match else ""
+            if got != shot["cut"]:
+                errors.append(
+                    "镜号锁：%s 的 [Shot %s] 切点必须是 At %s，紧跟在镜号后面。"
+                    "不要自己改切点，也不要漏掉时间码。"
+                    % (label, shot["local"], shot["cut"])
+                )
+    return errors
+
+
+def _strip_clock(tail, keep_comma):
+    match = _CLOCK_PREFIX.match(tail or "")
+    if not match:
+        return tail or ""
+    rest = tail[match.end():]
+    if keep_comma and rest.strip() and re.search(r"[,，]", match.group(0)):
+        if rest.startswith((" ", "\t")):
+            return "," + rest
+        return ", " + rest
+    return rest.lstrip(" \t")
+
+
+def _join_heading(heading, prose):
+    if not str(prose or "").strip():
+        return heading
+    if prose[0].isspace() or prose[0] in ",，":
+        return heading + prose
+    return heading + " " + prose
+
+
+def _rewrite_shot_lines(lines, shots):
+    """Renumber the headings already present. Append any heading that is missing.
+
+    Prose that followed a heading stays with that heading. Nothing new is
+    written after a heading the model did not already fill. Extra headings
+    past the skeleton are left for the gate to name.
+    """
+    lines = list(lines)
+    indexes = [index for index, line in enumerate(lines) if _SHOT_HEADING_LINE.match(line)]
+    paired = min(len(indexes), len(shots))
+    for slot in range(paired):
+        line_index = indexes[slot]
+        match = _SHOT_HEADING_LINE.match(lines[line_index])
+        indent = re.match(r"[ \t]*", lines[line_index]).group(0)
+        prose = _strip_clock(match.group(2) or "", shots[slot]["local"] != 1)
+        lines[line_index] = _join_heading(indent + shots[slot]["heading"], prose)
+    if paired >= len(shots):
+        return lines
+    missing = [shot["heading"] for shot in shots[paired:]]
+    if paired == 0 and any(line.strip() for line in lines):
+        lines.insert(0, shots[0]["heading"])
+        lines.extend(missing[1:])
+        return lines
+    if paired == 0:
+        return missing
+    lines.extend(missing)
+    return lines
+
+
+def _replace_description(parsed, shots):
+    header_at, inline, body_lines, body_end, lines = parsed
+    content = []
+    if inline:
+        content.append(inline)
+    for raw in body_lines:
+        content.append(raw.rstrip("\r\n"))
+    rewritten = _rewrite_shot_lines(content, shots)
+    new_lines = ["detailed_description:\n"]
+    for line in rewritten:
+        new_lines.append(line + "\n")
+    return "".join(lines[:header_at] + new_lines + lines[body_end:])
+
+
+def _insert_description(block, shots):
+    snippet = "\n".join(shot["heading"] for shot in shots)
+    trailing = "\n" if str(block).endswith("\n") else ""
+    placed = _insert_field(str(block).rstrip("\n"), "detailed_description", snippet)
+    if trailing and not placed.endswith("\n"):
+        placed += "\n"
+    return placed
+
+
+def _patch_unit_block(block, shots):
+    if not shots:
+        return block
+    parsed = _field_parts(block, "detailed_description")
+    if parsed is None:
+        if "subject_definitions" not in block and "overall_soundscape" not in block:
+            return block
+        return _insert_description(block, shots)
+    return _replace_description(parsed, shots)
+
+
+def inject_shot_skeleton(text, skeleton):
+    """Write the precomputed local headings back into each packed unit.
+
+    Existing shot prose stays on the heading it already followed, in order.
+    The first heading loses any timestamp. Later headings get the exact
+    ``At MM:SS.mmm``. A missing heading is inserted with no new scene text.
+    An extra heading is left in place so the gate can name it. This runs
+    after the model writes and again after a repair.
+    """
+    skeleton = [list(unit or []) for unit in (skeleton or [])]
+    raw = str(text or "")
+    if not skeleton or not any(skeleton):
+        return raw
+    heads = list(UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        if len(skeleton) == 1 and (
+            "subject_definitions" in raw or "detailed_description" in raw
+        ):
+            return _patch_unit_block(raw, skeleton[0])
+        return raw
+    if len(heads) != len(skeleton):
+        return raw
+    parts = [raw[: heads[0].start()]]
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        parts.append(_patch_unit_block(raw[match.start():end], skeleton[index]))
+    return "".join(parts)
+
+
 def apply_packing_plan(text, state):
     """Unwrap an H3 blob, lock the planned units, then put spoken lines back.
 
     Durations come from the groups. A missing storyboard line is written into
     the unit that owns that shot, even when the model never opened a ``<d>``.
     The agreed style sentence is written into every H3 unit after that, including
-    a repair that dropped it.
+    a repair that dropped it. The local shot skeleton is written after that,
+    again on a repair, so ``[Shot N]`` and ``At MM:SS.mmm`` match the storyboard.
     """
     runner = importlib.import_module("end.stage_runner")
     prepared = restore_h3_scaffold(text, state) if _h3_locked(state) else str(text or "")
@@ -1442,7 +1844,8 @@ def apply_packing_plan(text, state):
     placed = place_owned_spoken_lines(restored, state)
     if not _h3_locked(state):
         return placed
-    return inject_style_lock(placed, agreed_style(state))
+    styled = inject_style_lock(placed, agreed_style(state))
+    return inject_shot_skeleton(styled, packing_shot_skeleton(state))
 
 
 def generator_messages(state):
@@ -1498,6 +1901,16 @@ def generator_messages(state):
             "重跑这些节点时只把锁定句补回去：",
             *_STYLE_WRITERS,
         ))
+    if h3 and "镜号锁" in errors:
+        skeleton = packing_shot_skeleton(state)
+        user = user.rstrip() + "\n\n" + "\n".join((
+            "镜号锁没过。切点和镜号已经按分镜算好。不要自己发明切点，不要沿用全集镜号。",
+            "每一段从 [Shot 1] 起。第一镜不写时间。后面每一镜必须紧跟下面的 At MM:SS.mmm。",
+            "不要增删、合并或调换镜头，不要改这些时间码。把这个骨架原样补回去，只保留已有的画面和对白：",
+            format_shot_skeleton(skeleton) or "（这一段没有分镜骨架）",
+            "重跑这些节点时只恢复这个骨架：",
+            *_SKELETON_WRITERS,
+        ))
     return [system, {"role": "user", "content": user}]
 
 
@@ -1509,6 +1922,13 @@ def critic_messages(state):
             notes.append(
                 "对照锁定句审查。缺这句、第一行不是这句、或还有别的风格句，severity 写 blocking。"
                 "不要改稿，不要另写画风。\n%s" % rule
+            )
+        skeleton = packing_shot_skeleton(state)
+        if skeleton:
+            notes.append(
+                "对照这个镜号骨架审查。不从 [Shot 1] 起、首镜带时间、切点不是下面的 At 时间、"
+                "或多了少了镜头，severity 写 blocking。不要改稿，不要另写切点。\n%s"
+                % format_shot_skeleton(skeleton)
             )
     notes.append("待审%s：\n%s" % (DRAFT_NAME, str(state.get("draft") or "").strip()))
     return [

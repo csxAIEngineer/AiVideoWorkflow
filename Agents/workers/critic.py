@@ -110,6 +110,9 @@ def _feed_skill():
         "画风锁也是硬门。程序把剧本「画风」或项目已定画风写成每一段 subject_definitions 的第一行。"
         "缺这句、写成别的句子、或多写一种风格，都是 FAIL。只出现在房间或道具主体上不算通过。"
         "不要要求生成员另写一种画风。",
+        "镜号锁也是硬门。每一段的 [Shot N] 和切点由程序按该段分镜时长算好。"
+        "第一镜不写时间。后面的 At MM:SS.mmm 必须是这一段里前面各镜的时长和。"
+        "全集镜号、缺镜、多镜、或改过的切点都是 FAIL。不要要求生成员另写切点。",
         _source(runner.feed_duration_failures),
         _doc(runner.patch_h3_voiceover),
         _source(gates.check_feed),
@@ -118,6 +121,8 @@ def _feed_skill():
         _source(feed.style_lock_failures),
         _source(feed.agreed_style),
         _source(feed.style_lock_line),
+        _source(feed.shot_skeleton_failures),
+        _source(feed.packing_shot_skeleton),
     ))
 
 
