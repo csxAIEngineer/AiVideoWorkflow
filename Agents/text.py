@@ -1,13 +1,13 @@
 """Text calls for stage agents. Uses the product Responses client.
 
 The product model is ``deepseek-v4-flash-0731`` on the Token Plan Responses
-API. ``generate_text`` already sends ``enable_thinking: false`` and does not
-send ``reasoning.effort``. This module does not open its own HTTP client.
+API. ``invoke_text`` uses that client: ``enable_thinking: false`` and no
+``reasoning.effort``. This module does not open its own HTTP client.
 """
 
 import os
 
-from AI.qwen_api.graph import TEXT_MODEL, bind_trace_prompts, generate_text
+from AI.qwen_api.graph import TEXT_MODEL, bind_trace_prompts, invoke_text
 
 # Same budgets the asset write and the short drill use in the text graph.
 GENERATOR_TOKENS = 16000
@@ -57,9 +57,9 @@ def complete_node_job(params):
         kwargs = {"model": model}
         if timeout is not None:
             kwargs["timeout"] = timeout
-        text = complete_text(role, messages, **kwargs)
+        turned = complete_text(role, messages, return_meta=True, **kwargs)
         set_node(job_id, node_id, DONE)
-        return {"text": "" if text is None else str(text)}
+        return _job_payload(turned)
 
     return submit(
         [{"id": node_id, "name": _NODE_NAME.get(role, role)}],
@@ -68,8 +68,47 @@ def complete_node_job(params):
     )
 
 
-def complete_text(role, messages, *, model=None, client=None, timeout=None, trace_path=""):
-    """One generate or critique turn. ``role`` selects the output budget."""
+def _public_turn(turned):
+    """Stop metadata next to the body. Callers that only want text ignore this."""
+    turned = turned or {}
+    return {
+        "text": turned.get("output") or "",
+        "finish_reason": turned.get("finish_reason") or "",
+        "incomplete_reason": turned.get("incomplete_reason") or "",
+        "response_status": turned.get("status") or "",
+        "input_tokens": turned.get("input_tokens") or 0,
+        "output_tokens": turned.get("output_tokens") or 0,
+        "reasoning_tokens": turned.get("reasoning_tokens") or 0,
+        "response_error": turned.get("error") or "",
+    }
+
+
+def _job_payload(turned):
+    """Job result stays ``{"text": ...}`` when the completion did not return metadata."""
+    if isinstance(turned, dict) and "text" in turned:
+        text = turned.get("text")
+        payload = {"text": "" if text is None else str(text)}
+        for key in (
+            "finish_reason",
+            "incomplete_reason",
+            "response_status",
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "response_error",
+        ):
+            if key in turned:
+                payload[key] = turned[key]
+        return payload
+    return {"text": "" if turned is None else str(turned)}
+
+
+def complete_text(role, messages, *, model=None, client=None, timeout=None, trace_path="", return_meta=False):
+    """One generate or critique turn. ``role`` selects the output budget.
+
+    The default return is the text body. ``return_meta=True`` also returns
+    finish reason, token counts, and the response error from ``invoke_text``.
+    """
     tokens, default_timeout = _BUDGET.get(role, _BUDGET["generator"])
     kwargs = {
         "model": model or TEXT_MODEL,
@@ -78,7 +117,12 @@ def complete_text(role, messages, *, model=None, client=None, timeout=None, trac
         "client": client,
     }
     path = str(trace_path or "").strip()
-    if not path:
-        return generate_text(messages, **kwargs)
-    with bind_trace_prompts(path):
-        return generate_text(messages, **kwargs)
+    if path:
+        with bind_trace_prompts(path):
+            turned = invoke_text("generate", messages, **kwargs)
+    else:
+        turned = invoke_text("generate", messages, **kwargs)
+    payload = _public_turn(turned)
+    if return_meta:
+        return payload
+    return payload["text"]

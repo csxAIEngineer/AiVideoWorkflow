@@ -3677,16 +3677,17 @@ def _worker_complete(project, folder, write_model, prompts):
     """
     del folder, write_model
 
-    def complete(role, messages):
+    def complete(role, messages, return_meta=False):
         from end.ai_client import complete_node
 
         traced = prompts if role != "critic" and prompts else ""
-        return complete_node(
-            role,
-            messages,
-            model=project.get("model"),
-            trace_prompts=traced,
-        )
+        kwargs = {
+            "model": project.get("model"),
+            "trace_prompts": traced,
+        }
+        if return_meta:
+            kwargs["return_meta"] = True
+        return complete_node(role, messages, **kwargs)
 
     return complete
 
@@ -3846,6 +3847,8 @@ def _produce_with_worker(stage, project, folder, locks, write_model, opening, pr
         model=project.get("model"),
         complete=complete,
         checker=_feed_worker_checker(folder, locks, board, spec.get("shots") or []),
+        project_id=str(project.get("id") or ""),
+        project_folder=str(folder or ""),
     )
     if not str(outcome.get("draft") or "").strip() and outcome.get("generator_note") == "model_error":
         raise RuntimeError(outcome.get("error") or "这一步没有正文")

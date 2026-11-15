@@ -301,8 +301,15 @@ def missing_skill_state(state, error):
 
 
 def bound_complete(model, client, timeout):
-    def complete(role, messages):
-        return complete_text(role, messages, model=model, client=client, timeout=timeout)
+    def complete(role, messages, return_meta=False):
+        return complete_text(
+            role,
+            messages,
+            model=model,
+            client=client,
+            timeout=timeout,
+            return_meta=return_meta,
+        )
 
     return complete
 

@@ -296,8 +296,30 @@ def write(brief, skill_pack, debug_dir=None, model=None, template=None, trace_pr
     )
 
 
-def complete_node(role, messages, model=None, trace_prompts=""):
-    """One specialist, director, or critic turn. Not ``write`` and not a suite."""
+_COMPLETION_META = (
+    "finish_reason",
+    "incomplete_reason",
+    "response_status",
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "response_error",
+)
+
+
+def _completion_text(result):
+    if isinstance(result, dict) and "text" in result:
+        value = result.get("text")
+        return "" if value is None else str(value)
+    return str(result or "")
+
+
+def complete_node(role, messages, model=None, trace_prompts="", *, return_meta=False):
+    """One specialist, director, or critic turn. Not ``write`` and not a suite.
+
+    The default return is the text body. ``return_meta=True`` returns that
+    body plus whatever stop metadata the text job included.
+    """
     result = await_job(
         "text.complete",
         {
@@ -307,10 +329,15 @@ def complete_node(role, messages, model=None, trace_prompts=""):
             "trace_prompts": str(trace_prompts or ""),
         },
     )
-    if isinstance(result, dict) and "text" in result:
-        value = result.get("text")
-        return "" if value is None else str(value)
-    return str(result or "")
+    text = _completion_text(result)
+    if not return_meta:
+        return text
+    payload = {"text": text}
+    if isinstance(result, dict):
+        for key in _COMPLETION_META:
+            if key in result:
+                payload[key] = result[key]
+    return payload
 
 
 def ask_text(messages, model=None, timeout=45, max_output_tokens=400):
