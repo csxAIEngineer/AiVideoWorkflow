@@ -6,6 +6,8 @@ import struct
 import tempfile
 import threading
 import unittest
+import urllib.error
+import urllib.request
 import zlib
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from end.render_loop import (
     _ffmpeg_bin,
     _missing_subtitle_glyphs,
     _normalize_join_command,
+    _require_previous_tail,
     assemble_shot_media,
     blank_step,
     build_subtitle_ass,
@@ -1321,6 +1324,238 @@ class RenderLoopTest(unittest.TestCase):
                 brief="雨夜",
             )
         self.assertIn("没有锁定画幅", str(caught.exception))
+
+    def test_finished_clip_tail_is_the_next_first_frame(self):
+        project_id = "tailproj01"
+        spec = {
+            "title": "衔接",
+            "aspect_ratio": "9:16",
+            "assets": [{"id": "A1", "title": "闲置", "prompt": "一张桌子"}],
+            "shots": [
+                {"id": "S01", "duration": 4, "prompt": "海面慢慢亮起来", "images": [], "video_mode": "text"},
+                {
+                    "id": "S02",
+                    "duration": 4,
+                    "prompt": "接上一段",
+                    "images": [],
+                    "video_mode": "first_frame",
+                    "first_frame_source": "previous_tail",
+                },
+            ],
+            "feed_units": [
+                {"id": "S01", "video_mode": "text", "images": []},
+                {
+                    "id": "S02",
+                    "video_mode": "first_frame",
+                    "first_frame_source": "previous_tail",
+                    "images": [],
+                },
+            ],
+            "seam_ledger": {
+                "entries": [
+                    {"shot_id": "S01", "video_mode": "reference", "end_image": "", "first_frame_source": "none"},
+                    {
+                        "shot_id": "S02",
+                        "video_mode": "first_frame",
+                        "end_image": "",
+                        "first_frame_source": "previous_tail",
+                    },
+                ]
+            },
+        }
+
+        def fake_tail(_clip_path, dest):
+            dest = Path(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"\xff\xd8\xff\xd9")
+            return dest
+
+        os.environ["AIVIDEO_IMAGE_STORE"] = "cos"
+        os.environ["AIVIDEO_COS_BUCKET"] = "demo-1250000000"
+        os.environ["AIVIDEO_COS_DOMAIN"] = "https://demo-1250000000.cos.ap-guangzhou.myqcloud.com"
+        self.addCleanup(lambda: os.environ.pop("AIVIDEO_COS_BUCKET", None))
+        self.addCleanup(lambda: os.environ.pop("AIVIDEO_COS_DOMAIN", None))
+        tail_puts = []
+        real_open = urllib.request.urlopen
+
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            url = getattr(request, "full_url", "") or str(request)
+            if "myqcloud.com" not in url:
+                return real_open(request, timeout=timeout)
+            if "_tail.jpg" in url:
+                tail_puts.append(url)
+                if len(tail_puts) == 1:
+                    raise urllib.error.URLError(OSError(54, "Connection reset by peer"))
+            return _Response()
+
+        from unittest.mock import patch
+
+        def joiner(_clips, target):
+            Path(target).write_bytes(b"joined")
+            return target
+
+        def burner(_raw, _ass, target):
+            Path(target).write_bytes(b"burned")
+            return target
+
+        cr = FakeCR()
+        with patch("end.render_loop._tail_frame", fake_tail), patch(
+            "end.image_store.store.urllib.request.urlopen", fake_open
+        ), patch("end.image_store.store.time.sleep", lambda _seconds: None):
+            run_local_pipeline(
+                spec,
+                self.work,
+                project_id=project_id,
+                icreat=FakeICreat(),
+                cr=cr,
+                sleeper=_noop_sleep,
+                joiner=joiner,
+                burner=burner,
+            )
+        state = load_run_state(self.work)
+        self.assertEqual(state["steps"]["S01"]["end_image"], "S01_tail")
+        self.assertEqual(state["steps"]["S02"]["end_image"], "S02_tail")
+        hosted = state["steps"]["S01"]["end_image_url"]
+        self.assertIn("/S01_tail.jpg", hosted)
+        self.assertTrue((self.work / "outputs" / "images" / "S01_tail.jpg").is_file())
+        self.assertTrue((self.work / "outputs" / "images" / "S02_tail.jpg").is_file())
+        self.assertFalse((self.work / "outputs" / "images" / "S03_tail.jpg").exists())
+        s01_puts = [item for item in tail_puts if "S01_tail.jpg" in item]
+        s02_puts = [item for item in tail_puts if "S02_tail.jpg" in item]
+        self.assertEqual(s01_puts, [s01_puts[0], s01_puts[0]])
+        self.assertEqual(len(s02_puts), 1)
+        saved = json.loads((self.work / "spec.json").read_text(encoding="utf-8"))
+        units = {item["id"]: item for item in saved["feed_units"]}
+        entries = {item["shot_id"]: item for item in saved["seam_ledger"]["entries"]}
+        self.assertEqual(units["S01"]["end_image"], "S01_tail")
+        self.assertEqual(units["S02"]["end_image"], "S02_tail")
+        self.assertEqual(entries["S01"]["end_image"], "S01_tail")
+        self.assertEqual(entries["S02"]["end_image"], "S02_tail")
+        shots = {item["id"]: item for item in saved["shots"]}
+        self.assertEqual(shots["S02"]["video_mode"], "first_frame")
+        self.assertEqual(shots["S02"].get("end_image", ""), "")
+        self.assertEqual(shots["S01"].get("video_mode"), "text")
+        opened = cr.submits[1]
+        self.assertEqual([item["role"] for item in opened["images"]], ["first_frame"])
+        self.assertEqual(opened["images"][0]["url"], hosted)
+        self.assertNotIn("last_frame", [item["role"] for item in opened["images"]])
+        self.assertEqual(
+            choose_video_mode(
+                {"id": "S01", "images": ["U1"], "end_image": "S01_tail", "video_mode": "first_frame"},
+                user_image_ids=["U1"],
+            ),
+            "first_frame",
+        )
+        self.assertEqual(
+            choose_video_mode({"id": "S01", "images": ["U1"], "end_image": "S01_tail"}, user_image_ids=["U1"]),
+            "first_frame",
+        )
+
+    def test_publish_failure_after_extract_is_not_a_wait(self):
+        from unittest.mock import patch
+
+        from end.image_store import ImageStoreError
+
+        ctx = RenderContext(self.work, project_id="tailproj02", sleeper=_noop_sleep)
+        clip = self.work / "outputs" / "clips" / "S03.mp4"
+        clip.parent.mkdir(parents=True)
+        clip.write_bytes(b"mp4")
+
+        def fake_tail(_clip_path, dest):
+            dest = Path(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"\xff\xd8\xff\xd9")
+            return dest
+
+        def fail_publish(self, project_id, filename, payload):
+            raise ImageStoreError(
+                "COS 上传失败：HTTP None <urlopen error [Errno 54] Connection reset by peer>"
+            )
+
+        with patch("end.render_loop._tail_frame", fake_tail), patch(
+            "end.image_store.store.LocalImageStore.publish", fail_publish
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                _require_previous_tail(
+                    ctx,
+                    {"id": "S04", "video_mode": "first_frame", "first_frame_source": "previous_tail"},
+                    {"id": "S03", "video_mode": "reference"},
+                    clip,
+                    unit_index=2,
+                )
+        self.assertNotIn("要等上一段真实尾帧", str(raised.exception))
+        self.assertIn("上传", str(raised.exception))
+        self.assertIn("尾帧已抽出", str(raised.exception))
+        self.assertTrue((self.work / "outputs" / "images" / "S03_tail.jpg").is_file())
+        self.assertFalse((self.work / "outputs" / "images" / "S04_tail.jpg").exists())
+        self.assertEqual(load_run_state(self.work)["steps"]["S03"]["end_image"], "S03_tail")
+        later = self.work / "outputs" / "clips" / "S05.mp4"
+        later.write_bytes(b"mp4")
+        with patch("end.render_loop._tail_frame", lambda *_args, **_kwargs: None):
+            with self.assertRaises(RuntimeError) as missed:
+                _require_previous_tail(
+                    ctx,
+                    {"id": "S06", "video_mode": "first_frame", "first_frame_source": "previous_tail"},
+                    {"id": "S05", "video_mode": "reference"},
+                    later,
+                )
+        self.assertNotIn("要等上一段真实尾帧", str(missed.exception))
+        self.assertIn("抽帧", str(missed.exception))
+
+    def test_local_tail_is_republished_without_extracting_again(self):
+        from unittest.mock import patch
+
+        ctx = RenderContext(self.work, project_id="tailproj03", sleeper=_noop_sleep)
+        clip = self.work / "outputs" / "clips" / "S03.mp4"
+        clip.parent.mkdir(parents=True)
+        clip.write_bytes(b"mp4")
+        local = self.work / "outputs" / "images" / "S03_tail.jpg"
+        local.parent.mkdir(parents=True)
+        local.write_bytes(b"\xff\xd8already")
+        state = load_run_state(self.work)
+        state["steps"]["S03"] = blank_step("video")
+        state["steps"]["S03"]["status"] = "done"
+        state["steps"]["S03"]["end_image"] = "S03_tail"
+        save_run_state(self.work, state)
+
+        def forbid_extract(*_args, **_kwargs):
+            raise AssertionError("local tail should be uploaded again, not extracted")
+
+        with patch("end.render_loop._tail_frame", forbid_extract):
+            url = _require_previous_tail(
+                ctx,
+                {"id": "S04", "video_mode": "first_frame", "first_frame_source": "previous_tail"},
+                {"id": "S03"},
+                clip,
+            )
+        self.assertIn("/S03_tail.jpg", url)
+        self.assertEqual(load_run_state(self.work)["steps"]["S03"]["end_image_url"], url)
+        self.assertEqual(local.read_bytes(), b"\xff\xd8already")
+
+    def test_missing_previous_clip_still_waits_for_the_tail(self):
+        ctx = RenderContext(self.work, project_id="tailproj04", sleeper=_noop_sleep)
+        missing = self.work / "outputs" / "clips" / "S03.mp4"
+        with self.assertRaises(RuntimeError) as raised:
+            _require_previous_tail(
+                ctx,
+                {"id": "S04", "video_mode": "first_frame", "first_frame_source": "previous_tail"},
+                {"id": "S03"},
+                missing,
+            )
+        self.assertIn("镜头 S04 的首帧要等上一段真实尾帧", str(raised.exception))
+        self.assertFalse((self.work / "outputs" / "images" / "S03_tail.jpg").exists())
 
 
 def _png(width, height):

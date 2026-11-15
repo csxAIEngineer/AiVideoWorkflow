@@ -427,7 +427,7 @@ class ShotContractTest(unittest.TestCase):
         clip = folder / "outputs" / "clips" / "S01.mp4"
         clip.parent.mkdir(parents=True)
         clip.write_bytes(b"fake-mp4")
-        tail = folder / "outputs" / "images" / "S02_tail.jpg"
+        tail = folder / "outputs" / "images" / "S01_tail.jpg"
         tail.parent.mkdir(parents=True)
         tail.write_bytes(b"already-there")
         with patch("end.render_loop._tail_frame", _forbid), \
@@ -439,8 +439,8 @@ class ShotContractTest(unittest.TestCase):
         self.assertEqual(tail.read_bytes(), b"already-there")
         self.assertEqual(shot["reference"], [])
         self.assertEqual(shot["first_frame"], {
-            "id": "S02_tail",
-            "url": PUBLIC_BASE + "/media/projects/aabbcc000005/images/S02_tail.jpg",
+            "id": "S01_tail",
+            "url": PUBLIC_BASE + "/media/projects/aabbcc000005/images/S01_tail.jpg",
             "source": "previous_tail",
             "pending": False,
             "available": True,
@@ -457,7 +457,7 @@ class ShotContractTest(unittest.TestCase):
                 patch("end.image_store.store.LocalImageStore.publish", _forbid):
             cos_shot = self._view("aabbcc000005")["shots"][1]
         self.assertTrue(cos_shot["first_frame"]["url"].startswith(
-            "/media/projects/aabbcc000005/images/S02_tail.jpg?v="
+            "/media/projects/aabbcc000005/images/S01_tail.jpg?v="
         ))
         self.assertTrue(cos_shot["first_frame"]["available"])
         self.assertFalse(cos_shot["first_frame"]["pending"])

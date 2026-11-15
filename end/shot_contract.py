@@ -17,8 +17,11 @@ from end.render_loop import (
     _output_file,
     choose_video_mode,
     continuation_tail_name,
+    extracted_tail_id,
+    is_extracted_tail_id,
     load_run_state,
     output_paths,
+    tail_still_filename,
 )
 
 
@@ -290,12 +293,28 @@ def _first_frame_item(shot, mode, index, shots, steps, work_dir, project_id):
         return None
     source = str(shot.get("first_frame_source") or "").strip() or "none"
     if source == "previous_tail":
+        image_id = ""
+        stored_url = None
+        if index > 0:
+            previous = shots[index - 1] or {}
+            prev_id = str(previous.get("id") or "")
+            image_id = str(previous.get("end_image") or "").strip()
+            step = _video_step(steps, prev_id)
+            if not is_extracted_tail_id(image_id):
+                stored = str(step.get("end_image") or "").strip()
+                if is_extracted_tail_id(stored):
+                    image_id = stored
+            if not image_id and prev_id:
+                image_id = extracted_tail_id(prev_id)
+            stored_url = _http_media_url(step.get("end_image_url")) or None
+        if not image_id:
+            stem, _filename = continuation_tail_name(shot.get("id"))
+            image_id = stem + "_tail"
         url = None
         if index > 0 and _previous_ready(work_dir, shots, index):
-            url = _existing_tail_url(work_dir, project_id, shot.get("id"))
+            url = stored_url or _existing_tail_url(work_dir, project_id, image_id)
         pending = url is None
-        stem, _filename = continuation_tail_name(shot.get("id"))
-        return _ref_item(stem + "_tail", url, "previous_tail", pending=pending)
+        return _ref_item(image_id, url, "previous_tail", pending=pending)
     if source != "none":
         return _ref_item(source, _stored_image_url(steps, source), "designed_still", pending=False)
     return _ref_item("", None, "none", pending=False)
@@ -308,9 +327,9 @@ def _stored_image_url(steps, asset_id):
     return _http_media_url(step.get("public_url")) or None
 
 
-def _existing_tail_url(work_dir, project_id, shot_id):
+def _existing_tail_url(work_dir, project_id, image_or_shot_id):
     """Public URL for a tail file that is already on disk. Never creates one."""
-    _stem, filename = continuation_tail_name(shot_id)
+    filename = tail_still_filename(image_or_shot_id)
     path = Path(work_dir) / "outputs" / "images" / filename
     try:
         if not path.is_file() or path.stat().st_size <= 0:

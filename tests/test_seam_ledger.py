@@ -1034,6 +1034,31 @@ class OfficialModeTest(unittest.TestCase):
         self.assertEqual(submitted[1]["first_frame_source"], "previous_tail")
         self.assertEqual(submitted[1]["seam_d_lock"], "1")
 
+    def test_extracted_tail_stays_on_the_unit_and_is_not_a_designed_end_frame(self):
+        shots, ledger = _board()
+        stamped = {"entries": [dict(item) for item in ledger["entries"]]}
+        stamped["entries"][2]["end_image"] = "S03_tail"
+        report = check_seam_ledger(stamped, shots)
+        self.assertEqual(report["errors"], [], report["report"])
+        self.assertEqual(stamped["entries"][2]["video_mode"], "reference")
+        self.assertNotEqual(stamped["entries"][2]["video_mode"], "first_last_frame")
+        self.assertNotEqual(stamped["entries"][2]["video_mode"], "text")
+
+        designed = {"entries": [dict(item) for item in ledger["entries"]]}
+        designed["entries"][2]["end_image"] = "图9"
+        designed_report = check_seam_ledger(designed, shots)
+        self.assertIn("不能带结束帧", designed_report["report"])
+
+        units = [dict(item) for item in shots]
+        units[0]["end_image"] = "S01_tail"
+        units[2]["end_image"] = "图9"
+        written = write_unit_fields(units, ledger["entries"])
+        self.assertEqual(written[0]["end_image"], "S01_tail")
+        self.assertEqual(written[0]["video_mode"], "reference")
+        self.assertNotIn("end_image", written[2])
+        self.assertNotIn(written[0]["video_mode"], ("text", "first_last_frame"))
+        self.assertNotIn(written[1]["video_mode"], ("text", "first_last_frame"))
+
 
 if __name__ == "__main__":
     unittest.main()

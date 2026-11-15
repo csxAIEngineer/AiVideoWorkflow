@@ -1168,6 +1168,8 @@ def choose_video_mode(shot, user_image_ids=(), continues=False):
     Shots the seam stage never wrote still pick a mode from their own stills:
     one replaced still is a first frame, a still plus end_image is both
     frames, other stills are reference, and a pictureless shot is text.
+    An extracted tail id such as ``S03_tail`` is the finished clip's last
+    frame, so it does not select ``first_last_frame``.
     ``continues`` is ignored so a finished neighbour cannot change the mode.
     """
     del continues
@@ -1181,6 +1183,10 @@ def choose_video_mode(shot, user_image_ids=(), continues=False):
         raise RuntimeError("镜头 %s 写了首帧来源，但没有 video_mode" % ((shot or {}).get("id") or ""))
     images = list((shot or {}).get("images") or [])
     end_image = str((shot or {}).get("end_image") or "").strip()
+    # A finished clip's extracted tail lives on end_image. It is not a
+    # designed end frame, so it must not flip this shot to first_last_frame.
+    if is_extracted_tail_id(end_image):
+        end_image = ""
     user_ids = {str(item) for item in user_image_ids}
     if len(images) == 1 and images[0] in user_ids and not end_image:
         return "first_frame"
@@ -1334,11 +1340,10 @@ def _tail_frame(clip_path, dest):
 
 
 def continuation_tail_name(shot_id):
-    """File stem and name ``_continuation_tail_url`` writes for this shot.
+    """File stem and name for the tail of the unit that just finished.
 
-    The stem is the shot id with the same character rules as the extractor.
-    Read-only callers use this so a GET can find an existing tail without
-    extracting a frame or uploading it.
+    The stem is that unit's id, not the next unit's. Read-only callers use
+    this so a GET can find an existing tail without extracting or uploading.
     """
     stem = "".join(
         ch if ch.isalnum() or ch in "-_" else "_" for ch in str(shot_id or "tail")
@@ -1346,15 +1351,312 @@ def continuation_tail_name(shot_id):
     return stem, "%s_tail.jpg" % stem
 
 
+def extracted_tail_id(shot_id):
+    """Still id stored on the finished unit, such as ``S03_tail``."""
+    stem, _filename = continuation_tail_name(shot_id)
+    return "%s_tail" % stem
+
+
+def is_extracted_tail_id(image_id):
+    """True when this id is an extracted clip tail, not a designed end frame."""
+    text = str(image_id or "").strip()
+    if not text.endswith("_tail"):
+        return False
+    stem = text[: -len("_tail")]
+    if not stem:
+        return False
+    return extracted_tail_id(stem) == text
+
+
+def tail_still_filename(image_or_shot_id):
+    """``S03_tail.jpg`` for either the still id or the unit id ``S03``."""
+    text = str(image_or_shot_id or "").strip()
+    if is_extracted_tail_id(text):
+        return "%s.jpg" % text
+    _stem, filename = continuation_tail_name(text)
+    return filename
+
+
+def _clip_on_disk(path):
+    if not path:
+        return False
+    try:
+        path = Path(path)
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _still_on_disk(path):
+    return _clip_on_disk(path)
+
+
+def _tail_still_path(work_dir, image_id):
+    return Path(work_dir) / "outputs" / "images" / tail_still_filename(image_id)
+
+
+def _state_tail(ctx, shot_id):
+    """``(image_id, public_url)`` already stored for this finished unit."""
+    if ctx is None or not shot_id:
+        return "", ""
+    with ctx.lock:
+        state = ctx.load_locked()
+        step = (state.get("steps") or {}).get(shot_id) or {}
+    image_id = str(step.get("end_image") or "").strip()
+    if not is_extracted_tail_id(image_id):
+        return "", ""
+    return image_id, _http_media_url(step.get("end_image_url"))
+
+
+def _spec_tail(work_dir, shot_id, unit_index=None):
+    """Extracted tail id already written on a feed unit or ledger entry."""
+    spec = read_spec_file(work_dir)
+    if not isinstance(spec, dict) or not shot_id:
+        return ""
+    targets = {str(shot_id)}
+    targets.update(_packed_ids(spec, unit_index))
+    found = []
+    rows = spec.get("feed_units")
+    if isinstance(rows, list):
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            row_id = str(row.get("id") or "")
+            if row_id in targets or (unit_index is not None and index == unit_index and (not row_id or row_id in targets)):
+                found.append(str(row.get("end_image") or "").strip())
+    ledger = spec.get("seam_ledger")
+    entries = ledger.get("entries") if isinstance(ledger, dict) else None
+    if isinstance(entries, list):
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            entry_id = str(entry.get("shot_id") or "")
+            if entry_id in targets or (
+                unit_index is not None and index == unit_index and (not entry_id or entry_id in targets)
+            ):
+                found.append(str(entry.get("end_image") or "").strip())
+    for image_id in found:
+        if is_extracted_tail_id(image_id):
+            return image_id
+    return ""
+
+
+def _packed_ids(spec, unit_index):
+    if unit_index is None or not str((spec or {}).get("feed") or "").strip():
+        return []
+    try:
+        from end.seam_ledger import units_from_feed
+    except ImportError:
+        return []
+    derived = units_from_feed(spec.get("feed") or "")
+    if unit_index < 0 or unit_index >= len(derived):
+        return []
+    text = str((derived[unit_index] or {}).get("id") or "").strip()
+    return [text] if text else []
+
+
+def _remembered_tail(ctx, previous_shot, prev_id, unit_index=None):
+    """The previous unit's extracted tail id, plus a URL when publish already worked."""
+    image_id = ""
+    if isinstance(previous_shot, dict):
+        candidate = str(previous_shot.get("end_image") or "").strip()
+        if is_extracted_tail_id(candidate):
+            image_id = candidate
+    state_id, url = _state_tail(ctx, prev_id)
+    if not image_id and state_id:
+        image_id = state_id
+    if not image_id and ctx is not None:
+        image_id = _spec_tail(ctx.work_dir, prev_id, unit_index)
+    if not image_id:
+        image_id = extracted_tail_id(prev_id or "tail")
+    if state_id and state_id != image_id:
+        url = ""
+    return image_id, url
+
+
+def _publish_tail_still(ctx, image_id, path):
+    """Upload one extracted tail. Callers distinguish a missing clip from this failure."""
+    if not ctx or not ctx.project_id:
+        raise RuntimeError("尾帧已抽出，但没有项目编号，上传失败，可以重试")
+    path = Path(path)
+    payload = path.read_bytes() if path.is_file() else b""
+    if not payload:
+        raise RuntimeError("尾帧已抽出，但文件是空的，上传失败，可以重试")
+    filename = tail_still_filename(image_id)
+    return get_image_store().publish(ctx.project_id, filename, payload)
+
+
+def _stamp_tail_row(row, image_id, row_id, targets, index, unit_index):
+    if not isinstance(row, dict):
+        return False
+    if row_id in targets or (unit_index is not None and index == unit_index and (not row_id or row_id in targets)):
+        if str(row.get("end_image") or "") != image_id:
+            row["end_image"] = image_id
+            return True
+        return False
+    return False
+
+
+def _write_spec_tail(work_dir, shot_id, image_id, unit_index=None):
+    """Store the tail on the feed unit and the ledger entry.
+
+    Spec shots stay untouched. Their bytes are part of the submit source
+    hash, and rewriting them would block the next clip.
+    """
+    path = Path(work_dir) / "spec.json"
+    if not path.is_file() or not shot_id or not image_id:
+        return
+    try:
+        spec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(spec, dict):
+        return
+    targets = {str(shot_id)}
+    packed_ids = _packed_ids(spec, unit_index)
+    targets.update(packed_ids)
+    changed = False
+    rows = spec.get("feed_units")
+    if not isinstance(rows, list):
+        rows = []
+    matched = False
+    for index, row in enumerate(rows):
+        row_id = str((row or {}).get("id") or "") if isinstance(row, dict) else ""
+        if _stamp_tail_row(row, image_id, row_id, targets, index, unit_index):
+            changed = True
+            matched = True
+        elif isinstance(row, dict) and (
+            row_id in targets or (unit_index is not None and index == unit_index and (not row_id or row_id in targets))
+        ):
+            matched = True
+    if not matched and packed_ids:
+        rows.append({"id": packed_ids[0], "end_image": image_id})
+        spec["feed_units"] = rows
+        changed = True
+    elif changed:
+        spec["feed_units"] = rows
+    ledger = spec.get("seam_ledger")
+    entries = ledger.get("entries") if isinstance(ledger, dict) else None
+    if isinstance(entries, list):
+        for index, entry in enumerate(entries):
+            entry_id = str((entry or {}).get("shot_id") or "") if isinstance(entry, dict) else ""
+            if _stamp_tail_row(entry, image_id, entry_id, targets, index, unit_index):
+                changed = True
+    if not changed:
+        return
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _persist_extracted_tail(ctx, shot, image_id, url, unit_index=None):
+    """Remember the finished unit's tail where a resume can read it."""
+    if isinstance(shot, dict) and image_id:
+        shot["end_image"] = image_id
+    shot_id = str((shot or {}).get("id") or "")
+    if ctx is None or not shot_id or not image_id:
+        return
+    with ctx.lock:
+        state = ctx.load_locked()
+        step = state["steps"].get(shot_id)
+        if not isinstance(step, dict):
+            step = blank_step("video")
+            state["steps"][shot_id] = step
+        step["end_image"] = image_id
+        if url:
+            step["end_image_url"] = url
+        ctx.write_locked()
+        _write_spec_tail(ctx.work_dir, shot_id, image_id, unit_index)
+
+
+def _extract_tail_still(ctx, clip_path, image_id):
+    """Write the clip's last frame. None when ffmpeg cannot read the file."""
+    dest = _tail_still_path(ctx.work_dir, image_id)
+    if _still_on_disk(dest):
+        return dest
+    return _tail_frame(clip_path, dest)
+
+
+def _capture_finished_tail(ctx, shot, clip_path, unit_index=None):
+    """After a clip is on disk, extract its last frame and store it on that unit.
+
+    A publish failure leaves the local still and the end_image id. The next
+    previous_tail shot retries the upload instead of waiting for a clip.
+    """
+    if not _clip_on_disk(clip_path):
+        return ""
+    shot_id = str((shot or {}).get("id") or "")
+    if not shot_id:
+        return ""
+    image_id, url = _remembered_tail(ctx, shot, shot_id, unit_index)
+    if url:
+        _persist_extracted_tail(ctx, shot, image_id, url, unit_index)
+        return url
+    frame = _extract_tail_still(ctx, clip_path, image_id)
+    if frame is None:
+        ctx.note("镜头 %s 尾帧抽帧失败，可以重试" % shot_id)
+        return ""
+    _persist_extracted_tail(ctx, shot, image_id, "", unit_index)
+    try:
+        url = _publish_tail_still(ctx, image_id, frame)
+    except Exception as error:
+        ctx.note("镜头 %s 尾帧已抽出，上传失败，可以重试：%s" % (shot_id, error))
+        return ""
+    _persist_extracted_tail(ctx, shot, image_id, url, unit_index)
+    ctx.note("镜头 %s 尾帧已写入 %s" % (shot_id, image_id))
+    return url
+
+
+def _require_previous_tail(ctx, current, previous_shot, previous_clip, unit_index=None):
+    """Public URL of the previous unit's extracted tail.
+
+    The wait-for-tail error is only for a clip that is not finished or not
+    on disk. A clip that is already on disk raises a retryable 抽帧 or 上传
+    error instead.
+    """
+    current_id = str((current or {}).get("id") or "")
+    if not _clip_on_disk(previous_clip):
+        raise RuntimeError("镜头 %s 的首帧要等上一段真实尾帧" % current_id)
+    prev_id = str((previous_shot or {}).get("id") or "") or Path(previous_clip).stem
+    image_id, url = _remembered_tail(ctx, previous_shot, prev_id, unit_index)
+    if url:
+        _persist_extracted_tail(ctx, previous_shot, image_id, url, unit_index)
+        return url
+    local = _tail_still_path(ctx.work_dir, image_id)
+    if not _still_on_disk(local):
+        frame = _tail_frame(previous_clip, local)
+        if frame is None:
+            raise RuntimeError(
+                "镜头 %s 的上一段 %s 已经在盘上，但尾帧抽帧失败，可以重试" % (current_id, prev_id)
+            )
+    else:
+        frame = local
+    _persist_extracted_tail(ctx, previous_shot, image_id, "", unit_index)
+    try:
+        url = _publish_tail_still(ctx, image_id, frame)
+    except Exception as error:
+        raise RuntimeError(
+            "镜头 %s 的上一段 %s 尾帧已抽出，上传失败，可以重试：%s" % (current_id, prev_id, error)
+        )
+    _persist_extracted_tail(ctx, previous_shot, image_id, url, unit_index)
+    return url
+
+
 def _continuation_tail_url(ctx, previous_clip, shot_id):
-    """Publish the previous clip's last frame. Reference mode has nothing else to send."""
-    _stem, filename = continuation_tail_name(shot_id)
-    dest = Path(ctx.work_dir) / "outputs" / "images" / filename
-    frame = _tail_frame(previous_clip, dest)
-    if frame is None or not ctx.project_id:
+    """Publish ``shot_id``'s last frame. Empty when that still has no public URL.
+
+    ``shot_id`` is the unit that owns the clip. The returned string is only
+    a convenience for older callers. Submit uses ``_require_previous_tail``
+    so a failed upload is not reported as a missing clip.
+    """
+    if not _clip_on_disk(previous_clip):
+        return ""
+    image_id = extracted_tail_id(shot_id)
+    frame = _extract_tail_still(ctx, previous_clip, image_id)
+    if frame is None:
         return ""
     try:
-        return get_image_store().publish(ctx.project_id, frame.name, frame.read_bytes())
+        return _publish_tail_still(ctx, image_id, frame) or ""
     except Exception as error:
         ctx.note("尾帧没有公开地址：%s" % error)
         return ""
@@ -2846,11 +3148,24 @@ def run_local_pipeline(
                 for asset_id in asset_ids
                 if ctx.reload_step(asset_id, "image").get("local_override")
             ]
+            previous_shot = fresh_shots[shot_index - 1] if shot_index > 0 else None
             previous = clips[-1] if clips else None
+            if previous_shot is not None and not _clip_on_disk(previous):
+                candidate, _candidate_relative = output_paths(ctx.work_dir, previous_shot.get("id"), "video")
+                if _clip_on_disk(candidate):
+                    previous = candidate
             mode = choose_video_mode(current, user_image_ids=user_ids)
             source = str(current.get("first_frame_source") or "")
             use_tail = mode in ("first_frame", "first_last_frame") and source == "previous_tail"
-            tail_url = _continuation_tail_url(ctx, previous, shot_id) if use_tail and previous else ""
+            tail_url = ""
+            if use_tail:
+                tail_url = _require_previous_tail(
+                    ctx,
+                    current,
+                    previous_shot,
+                    previous,
+                    unit_index=shot_index - 1 if shot_index else None,
+                )
 
             def url_for(asset_id):
                 info = images.get(asset_id) or _saved_image(ctx, asset_id)
@@ -2919,6 +3234,7 @@ def run_local_pipeline(
         )
         clip_path, _relative = output_paths(ctx.work_dir, shot_id, "video")
         clips.append(clip_path)
+        _capture_finished_tail(ctx, shot, clip_path, unit_index=index - 1)
 
     joined = ctx.run_join(clips)
     if soundtrack_enabled(ctx.soundtrack):

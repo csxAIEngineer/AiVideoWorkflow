@@ -120,6 +120,18 @@ def _text(value):
     return str(value or "").strip()
 
 
+def _is_extracted_tail(image_id):
+    """True for a finished clip's real last frame, such as ``S03_tail``.
+
+    That still is not a designed end frame. Official submit params stay
+    ``first_frame`` or ``reference`` with an empty end frame. The render
+    loop writes the extracted id onto the unit after the clip is on disk.
+    """
+    from end.render_loop import is_extracted_tail_id
+
+    return is_extracted_tail_id(image_id)
+
+
 def _fold_scene_relation(value):
     """Strip, casefold, and read fullwidth punctuation as ASCII."""
     chars = []
@@ -982,10 +994,16 @@ def check_seam_ledger(ledger, units):
         elif mode in FRAME_MODES and list(entry.get("images") or []):
             errors.append("%s 的首帧不能再带参考图" % shot_id)
         official = map_submit_params(entry, shot, first=(index == 0))
+        stored_end = _text(entry.get("end_image"))
+        official_end = official["end_image"]
+        # The extracted tail is stored on the finished unit. It is not the
+        # designed end frame the official params leave empty.
+        if _is_extracted_tail(stored_end) and not official_end:
+            stored_end = ""
         if mode in VIDEO_MODES and (
             mode != official["video_mode"]
             or list(entry.get("images") or []) != official["images"]
-            or _text(entry.get("end_image")) != official["end_image"]
+            or stored_end != official_end
             or _text(entry.get("first_frame_source") or "none") != official["first_frame_source"]
         ):
             errors.append("%s 的提交参数和连续关系不一致" % shot_id)
@@ -1024,7 +1042,7 @@ def check_seam_ledger(ledger, units):
                 errors.append("%s 的 ② 不能写定格" % shot_id)
             if not entry.get("camera_change") or same_camera:
                 errors.append("%s 的 ② 必须换机位" % shot_id)
-            if _text(entry.get("end_image")):
+            if _text(entry.get("end_image")) and not _is_extracted_tail(entry.get("end_image")):
                 errors.append("%s 的 ② 不能带结束帧" % shot_id)
             if (
                 not continues_from_previous(entry, first=(index == 0))
@@ -1076,10 +1094,13 @@ def write_unit_fields(units, entries):
         if not isinstance(unit, dict):
             continue
         row = dict(unit)
+        kept_tail = _text(row.get("end_image"))
         entry = by_id.get(str(row.get("id") or ""))
         if entry is None:
             for key in SHOT_VIDEO_FIELDS:
                 row.pop(key, None)
+            if _is_extracted_tail(kept_tail):
+                row["end_image"] = kept_tail
             updated.append(row)
             continue
         row["video_mode"] = entry.get("video_mode") or ""
@@ -1093,8 +1114,13 @@ def write_unit_fields(units, entries):
             row["images"] = []
         if _text(entry.get("writing_mode")):
             row["writing_mode"] = _text(entry.get("writing_mode"))
-        if _text(entry.get("end_image")):
-            row["end_image"] = _text(entry.get("end_image"))
+        entry_end = _text(entry.get("end_image"))
+        if entry_end and not _is_extracted_tail(entry_end):
+            row["end_image"] = entry_end
+        elif _is_extracted_tail(kept_tail):
+            row["end_image"] = kept_tail
+        elif _is_extracted_tail(entry_end):
+            row["end_image"] = entry_end
         else:
             row.pop("end_image", None)
         if entry.get("redraw_still"):

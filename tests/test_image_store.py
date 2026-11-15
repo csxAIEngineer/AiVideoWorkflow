@@ -233,6 +233,61 @@ class ImageStoreTest(unittest.TestCase):
         self.assertTrue(again.endswith("/" + quote("图1_3.png")))
         self.assertEqual(len(calls), 2)
 
+    def test_cos_put_retries_a_connection_reset_then_succeeds(self):
+        store = CosImageStore(
+            bucket="demo-1250000000",
+            domain="https://demo-1250000000.cos.ap-guangzhou.myqcloud.com",
+            root=Path("."),
+        )
+        calls = []
+
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            calls.append(request.full_url)
+            if len(calls) == 1:
+                raise store_module.urllib.error.URLError(OSError(54, "Connection reset by peer"))
+            return _Response()
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open), patch(
+            "end.image_store.store.time.sleep", lambda _seconds: None
+        ):
+            url = store.publish("fffdd6d6b188", "S03_tail.jpg", b"\xff\xd8tail")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(url.endswith("/projects/fffdd6d6b188/images/S03_tail.jpg"))
+        self.assertEqual(calls[0], calls[1])
+
+    def test_cos_http_403_is_not_retried(self):
+        store = CosImageStore(
+            bucket="demo-1250000000",
+            domain="https://demo-1250000000.cos.ap-guangzhou.myqcloud.com",
+            root=Path("."),
+        )
+        calls = []
+
+        def fake_open(request, timeout=None):
+            calls.append(request.full_url)
+            raise store_module.urllib.error.HTTPError(request.full_url, 403, "Forbidden", None, None)
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open), patch(
+            "end.image_store.store.time.sleep", lambda _seconds: None
+        ):
+            with self.assertRaises(ImageStoreError) as raised:
+                store.publish("fffdd6d6b188", "S03_tail.jpg", b"\xff\xd8tail")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("403", str(raised.exception))
+        self.assertNotIn("要等上一段真实尾帧", str(raised.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

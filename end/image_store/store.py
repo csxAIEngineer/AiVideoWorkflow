@@ -226,7 +226,42 @@ def _content_type(filename):
     return "image/png"
 
 
+_COS_PUT_ATTEMPTS = 4
+# Short pauses between a reset, a timeout, or an HTTP-None urlopen error.
+_COS_PUT_BACKOFF = (0.4, 0.8, 1.6)
+
+
+def _cos_put_retryable(error):
+    """True for a connection reset, a timeout, a urlopen error, or HTTP None."""
+    lowered = str(error or "").lower()
+    if "http none" in lowered:
+        return True
+    needles = (
+        "connection reset",
+        "reset by peer",
+        "timed out",
+        "timeout",
+        "urlopen error",
+        "urlerror",
+    )
+    return any(token in lowered for token in needles)
+
+
 def _put_cos(domain, bucket, key, payload, content_type):
+    """PUT one object. A transient connection failure is tried a few times."""
+    last = None
+    for attempt in range(_COS_PUT_ATTEMPTS):
+        try:
+            return _put_cos_once(domain, bucket, key, payload, content_type)
+        except ImageStoreError as error:
+            last = error
+            if attempt + 1 >= _COS_PUT_ATTEMPTS or not _cos_put_retryable(error):
+                raise
+            time.sleep(_COS_PUT_BACKOFF[min(attempt, len(_COS_PUT_BACKOFF) - 1)])
+    raise last
+
+
+def _put_cos_once(domain, bucket, key, payload, content_type):
     digest = base64.b64encode(hashlib.md5(payload).digest()).decode("ascii")
     target = _http_object_url(domain, key)
     request = urllib.request.Request(target, data=payload, method="PUT")
