@@ -6,6 +6,7 @@ the node the critic or the machine check named.
 
 import json
 import unittest
+from pathlib import Path
 
 from Agents.workers import asset, feed, generator, script, storyboard
 from Agents.workers.asset import run_p2_asset_loop
@@ -26,6 +27,13 @@ def _semantic_pass(_draft, _state):
     return {"status": "passed", "issues": [], "reason": ""}
 
 
+def _module_source(module):
+    path = Path(module.__file__)
+    if path.name == "__init__.py":
+        return "\n".join(item.read_text(encoding="utf-8") for item in sorted(path.parent.glob("*.py")))
+    return path.read_text(encoding="utf-8")
+
+
 def _routing(stage):
     return "阶段：%s\n赛道：1\n来源：1\n动作档：none\n模型：h3\n素材形态：M1\n" % stage
 
@@ -37,8 +45,7 @@ class SharedLayoutTest(unittest.TestCase):
         self.assertIs(storyboard.run_generator, generator.run_generator)
         self.assertIs(feed.run_generator, generator.run_generator)
         for module in (asset, script, storyboard, feed):
-            with open(module.__file__, encoding="utf-8") as handle:
-                source = handle.read()
+            source = _module_source(module)
             self.assertNotIn("def run_generator", source)
             self.assertNotIn("def select_nodes", source)
             self.assertIn("run_generator(", source)

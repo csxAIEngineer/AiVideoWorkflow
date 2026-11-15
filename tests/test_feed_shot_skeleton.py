@@ -314,7 +314,8 @@ class ShotSkeletonPatchTest(unittest.TestCase):
         lines = [line for line in _description(fixed).splitlines() if line.strip()]
         self.assertEqual(lines[0], "[Shot 1] She enters the room.")
         self.assertEqual(lines[1], "[Shot 2] At 00:07.000")
-        self.assertEqual(shot_skeleton_failures(fixed, state), [])
+        errors = shot_skeleton_failures(fixed, state)
+        self.assertTrue(any("没有正文" in item and "[Shot 2]" in item for item in errors), errors)
 
     def test_an_extra_shot_stays_and_still_fails(self):
         state = _state(PAIR)

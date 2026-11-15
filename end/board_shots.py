@@ -520,16 +520,53 @@ def apply_storyboard_shots(spec):
     return updated
 
 
+def packing_membership(shots, limit=15):
+    """Which packed unit each storyboard shot belongs to.
+
+    Display only. Unit 1 is the first 15-second group, for example S01–S03.
+    This does not write packed text onto ``shot.prompt``.
+    """
+    from end.stage_runner import group_shot_durations
+
+    ids = []
+    durations = []
+    for index, shot in enumerate(shots or []):
+        if not isinstance(shot, dict):
+            continue
+        try:
+            seconds = float(shot.get("duration"))
+        except (TypeError, ValueError):
+            continue
+        if seconds <= 0:
+            continue
+        durations.append(seconds)
+        raw = str(shot.get("id") or "").strip()
+        ids.append(raw or ("S%02d" % (index + 1)))
+    found = []
+    cursor = 0
+    for group in group_shot_durations(durations, limit):
+        found.append(ids[cursor:cursor + len(group)])
+        cursor += len(group)
+    return found
+
+
 def apply_feed_binding(spec):
-    """Point each feed unit at the asset stills it actually names."""
+    """Point each feed unit at the asset stills it actually names.
+
+    Real storyboard rows keep their own prompts and 资产栏 images. Packed
+    unit text stays on ``feed``. A placeholder or empty canvas still receives
+    one shot per unit, because there is no storyboard row to keep.
+    """
     spec = dict(spec or {})
     assets = [item for item in (spec.get("assets") or []) if isinstance(item, dict)]
     feed, groups = bind_feed_document(spec.get("feed") or "", assets)
     if not groups:
         return spec
     spec["feed"] = feed
-    units = delivery_units(feed)
     current = [shot for shot in (spec.get("shots") or []) if isinstance(shot, dict)]
+    if current and not shots_are_placeholder(current):
+        return spec
+    units = delivery_units(feed)
     shots = []
     for index, ids in enumerate(groups):
         shot = dict(current[index]) if index < len(current) else {}

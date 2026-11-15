@@ -1,0 +1,80 @@
+## 【封装单元 1/4】
+duration: 13
+资产：图1，图4，图2，图6
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+<Subject 1> (图1) The young woman in the lamplit bedroom: age 20-25, female, soft rounded face, black medium-length hair falling to her shoulders with inward-curled ends, thin straight eyebrows, large round dark-brown eyes, small lips with a slightly fuller lower lip, wearing a white cotton short-sleeved top and light-blue cotton shorts, barefoot, sitting on the edge of the bed, scratching her forearm, pained frown. Voice: soft, gentle, slightly worried, female, moderate pitch, warm timbre, slow speaking rate.
+<Subject 2> The tiny red spiky monsters: each about the size of a fist, round red spiky ball bodies with short dark-red spikes, small round light-orange belly patch, two short three-toed feet with thin webbing, two short three-fingered arms with round pads, large round black eyes, wide W-shaped jagged mouths with tiny white teeth, three short dark-red spikes on top of the head, high-saturation red flat colors. Voice: squeaky, shrill, chaotic, tiny, high pitch, fast rate.
+<Subject 3> The tall guardian: age 25-30, male, square face, sharp jaw, thick black straight eyebrows, narrow determined phoenix eyes with dark-blue pupils and sharp white highlights, high straight nose, thin lips with a slightly upturned corner, healthy wheat-toned skin, short black hair under a tube-shaped white helmet with light-blue spiral lines and a vertical dark-blue stripe, wearing white-and-blue armor with a dark-blue diamond core on the chest, dark-blue shoulder pads, a white short cape with light-blue edging, holding a gel gun in his right hand, a blue ring spreading at his feet. Voice: firm, steady, heroic, warm, male, low pitch, clear timbre, measured pace.
+<Subject 4> The lamplit bedroom: night, warm yellow lamp on the bedside table on the right, window with half-closed curtain on the left wall, single bed with light-blue-gray quilt and white pillow, light-wood bedside table, white wardrobe, light-gray round rug, warm white walls, light wood floor.
+<Subject 5> The skin-surface micro-world: giant light-pink skin surface with fine diamond-shaped texture, raised red bumps, soft blue-white ambient light, floating tiny blue glowing particles, no real-world elements.
+<Subject 6> The white-blue gel tube: white matte plastic body with dark-blue printed text, silver crimped end with "202301", red "OTC" mark, hexagonal pattern with a figure, white screw cap at the bottom, standing upright, clean and unused.
+<Subject 7> The gel gun: white matte plastic body with dark-blue grip, short flared barrel with a round nozzle, semi-transparent light-blue gel reservoir on the side, silver trigger, dark-blue round button at the back, no text.
+<Subject 8> The blue gel net: semi-transparent light-blue, expanding in the air, tightening over the monsters.
+<Subject 9> The clean white background: pure white, empty, soft even lighting, no other objects.
+<Subject 10> The text overlay: The slogan "糠酸莫米松凝胶，平复肌肤小怪兽。" appears at the bottom of the frame in white bold text, followed by a smaller line "请按药品说明书使用，或遵医嘱。" at the lower right corner.
+detailed_description:
+[Shot 1]
+A tense ambient drone with a heartbeat pulse grows more anxious as the young woman scratches her forearm and red monsters pour out. The lamplight sways and cold moonlight streams in while the swarm spreads over her skin.
+A closer view shows the monsters scurrying up her shoulder and neck as she claws at them in vain. A wide shot catches her trembling with panic, the swarm spreading across her shoulders as the lamplight flickers and moonlight pours through the window.
+A close-up of her desperate face shows her looking around for help, the swarm continuing to spread. A wider shot shows her standing by the bed, the monsters crawling over her shoulders and neck, her hands flailing in distress.
+The room hums softly; fabric rustles; the swarm squeaks sharply; skin is scratched and nibbled; tiny feet thud; the lamp sways with a creak.
+<d>[Chinese] 女主（痛苦，自言自语）："怎么又痒了……"</d>
+<d>[Chinese] 女主（皱眉，用力抓挠，但无济于事）："走开！都走开！"</d>
+<d>[Chinese] 女主（痛苦难忍，寻找帮助）："怎么办……"</d>
+[Shot 2] At 00:04.000
+[Shot 3] At 00:09.000
+overall_soundscape:
+non_diegetic_music:
+
+## 【封装单元 2/4】
+duration: 14
+资产：图8，图4，图1，图3，图9，图2，图6
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+detailed_description:
+[Shot 1]
+A shimmering chime plays as the camera pans across the bedside table, revealing the white-blue gel tube standing upright in the warm lamplight. The young woman reaches out and picks it up, twisting open the cap, and a blinding white light floods the frame.
+As the light fades, the tall guardian stands before her, a blue ring spreading at his feet, holding his gel gun. The young woman steps back slightly, gazing up at him with awe.
+The scene shifts to the micro-world where a swarm of red monsters charges toward the guardian across a skin ridge. He plants his feet, raising his gun, bracing for the charge.
+The plastic cap twists with a click; a ringing hum and burst accompany the light; the blue ring rumbles low; monsters screech sharply; footsteps patter; the micro-space hums softly.
+<d>[Chinese] 芙美松卫士（坚定）："有我在，别怕。"</d>
+[Shot 2] At 00:03.000
+[Shot 3] At 00:06.000
+[Shot 4] At 00:10.000
+overall_soundscape:
+non_diegetic_music:
+
+## 【封装单元 3/4】
+duration: 12
+资产：图3，图9，图2，图6，图1
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+detailed_description:
+[Shot 1]
+A firm brass-and-percussion motif plays as the guardian stands on a skin ridge, raising his gel gun and aiming at the charging horde of red monsters. The swarm rushes toward him with sharp screeches, their red bodies vivid against the blue-white light.
+He pulls the trigger, and a burst of blue gel erupts from the nozzle, expanding into a huge semi-transparent blue net that descends over the entire horde. The monsters struggle inside the net, their squealing fading, as the net tightens, pressing them flat against the skin surface.
+A red bump gradually lightens from deep red to pale pink, the raised texture smoothing back to healthy skin. The monsters curl up motionless under the blue net. The scene cuts to the young woman sitting on the bed in the lamplight, her forearm smooth again, a relieved smile spreading.
+The trigger clicks; gel puffs; the net whooshes; it squelches as it tightens; the monsters' cries fade to near silence; the lamp hums softly.
+<d>[Chinese] 芙美松卫士（举起凝胶枪）："你们该安静了。"</d>
+[Shot 2] At 00:04.000
+[Shot 3] At 00:08.000
+overall_soundscape:
+non_diegetic_music:
+
+## 【封装单元 4/4】
+duration: 10
+资产：图1，图4，图8，A1
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+detailed_description:
+[Shot 1]
+A warm, calm piano with strings plays as the young woman sits on the edge of the bed in the warm lamplight, her left forearm smooth and healed, a relieved smile spreading as she runs her hand over the healed skin. The guardian stands beside the bed, lowering his gel gun, tucking it into his belt, and giving a small nod of approval.
+The camera cuts to a product still shot of the gel tube standing upright centered on a pure white background. The slogan fades in at the bottom of the frame in white bold text, while the young woman says in an off-screen voiceover: <d>[Chinese] 旁白（SLOGAN）："糠酸莫米松凝胶，平复肌肤小怪兽。"</d> while her lips remain completely closed. A small line "请按药品说明书使用，或遵医嘱。" appears at the lower right corner.
+The shot fades to black, ending the video. The product shot dims gradually, the white background darkening to full black, leaving the screen in silence.
+The lamp hums softly; fabric rustles; she breathes a sigh of relief; a light chime sounds once as the slogan appears, then the room falls silent.
+<d>[Chinese] 芙美松卫士（收枪，微笑点头）："平复了。"</d>
+[Shot 2] At 00:04.000
+[Shot 3] At 00:08.000
+overall_soundscape:
+non_diegetic_music:

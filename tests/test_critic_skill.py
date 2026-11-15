@@ -1,6 +1,7 @@
 """The critic's skill is the stage machine check, not the writing pack."""
 
 import unittest
+from pathlib import Path
 
 from Agents.workers.asset import critic_messages as asset_messages
 from Agents.workers.critic import critic_user, machine_check_skill
@@ -12,6 +13,13 @@ from Agents.workers.storyboard import critic_messages as storyboard_messages
 
 WRITING = "WRITING-PACK-SENTINEL-写作原文"
 REWRITE = "CRITIC-REWRITE-SENTINEL-不要采用"
+
+
+def _module_source(module):
+    path = Path(module.__file__)
+    if path.name == "__init__.py":
+        return "\n".join(item.read_text(encoding="utf-8") for item in sorted(path.parent.glob("*.py")))
+    return path.read_text(encoding="utf-8")
 
 
 def _user(messages):
@@ -27,7 +35,7 @@ class CriticSkillTest(unittest.TestCase):
         self.assertIs(storyboard.critic_user, critic_user)
         self.assertIs(feed.critic_user, critic_user)
         for module in (asset, script, storyboard, feed):
-            source = __import__("pathlib").Path(module.__file__).read_text(encoding="utf-8")
+            source = _module_source(module)
             self.assertIn("critic_user(", source)
             self.assertNotIn("skill_reference(", source)
             self.assertNotIn("def machine_check_skill", source)

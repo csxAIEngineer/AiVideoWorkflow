@@ -56,7 +56,7 @@ _LOCKED = (
     "end/repair_units.py",
     "end/script_review.py",
     "Agents/checks.py",
-    "Agents/workers/feed.py",
+    "Agents/workers/feed",
     "Agents/workers/asset.py",
     "Agents/workers/script.py",
     "AI/skills/registry.py",
@@ -199,9 +199,12 @@ class GlossaryLockTest(unittest.TestCase):
 
     def test_banned_stage_copy_stays_out_of_the_locked_files(self):
         for relative in _LOCKED:
-            text = (ROOT / relative).read_text(encoding="utf-8")
-            for banned in _BANNED:
-                self.assertNotIn(banned, text, "%s still contains %s" % (relative, banned))
+            path = ROOT / relative
+            files = sorted(path.rglob("*.py")) if path.is_dir() else [path]
+            for file in files:
+                text = file.read_text(encoding="utf-8")
+                for banned in _BANNED:
+                    self.assertNotIn(banned, text, "%s still contains %s" % (file.relative_to(ROOT), banned))
 
 
 if __name__ == "__main__":
