@@ -1,0 +1,60 @@
+## 【封装单元 1/4】
+duration: 13
+资产：图1，图4，图2，图6
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+<Subject 1> The young woman (20-25 years old) with a soft, round face, large dark-brown almond eyes, slender build, black medium-length hair falling to her shoulders with light bangs, wearing a white round-neck cotton short-sleeve top and light-blue cotton shorts, barefoot, sits on the edge of a bed. Her voice is soft, worried, gentle, with a slightly trembling tone at a moderate pace.
+<Subject 2> A red spiky ball-shaped tiny monster (fist-sized, no gender) covered in short red spines with darker red tips, a small round light-orange belly patch, two short feet with three toes, two short arms with three-fingered round pads, large round pitch-black eyes, a wide W-shaped jagged mouth with tiny white fangs, no nose, two dark-red cheek patches, three upright dark-red spines on its head. Its voice is squeaky, shrill, chaotic, tiny.
+<Subject 3> The bedroom at night: a single bed on the right side of the frame, a light-wood bedside table next to the bed, a window with half-drawn curtains showing a dark blue night sky on the left wall, a white wardrobe on the far wall, a light-gray round rug on the floor, warm yellow lamplight from a bedside lamp, soft dim atmosphere.
+<Subject 4> The skin surface micro-world: a vast light-pink skin surface with fine diamond grid texture, several raised red bumps of varying sizes, white flaky skin debris scattered, tiny floating blue light particles in the air, soft blue-white ambient light.
+detailed_description:
+[Shot 1] In the warm lamplight of the bedroom <Subject 3>, <Subject 1> sits on the edge of the bed, her body slightly turned toward the left side of the frame, her right hand scratching her left forearm vigorously. Her face shows a pained frown, her lips part slightly as she mutters in a low, distressed voice: <d>[Chinese] 女主（痛苦，自言自语）："怎么又痒了……"</d>. The camera holds a medium shot from a front-side angle at eye level, fixed. Her left forearm is extended forward, displaying multiple red wheals, the skin reddening more with each scratch.
+
+[Shot 2] At 00:04.000, the camera cuts to an extreme close-up from a top-down angle, fixed, hovering directly above the left forearm skin surface. One red bump on the skin surface is taut and shiny, suddenly splitting open with a small crack. From the crack, a tiny <Subject 2> pushes out, then rapidly divides like cell division: one becomes two, then four, then over a dozen small red monsters, all leaping and nibbling on the skin of <Subject 4>, making sharp squeaking sounds. <Subject 1> frowns, scratching forcefully but in vain, and cries out: <d>[Chinese] 女主（皱眉，用力抓挠，但无济于事）："走开！都走开！"</d>. The bumps on the skin are agitated, reddening further.
+
+[Shot 3] At 00:09.000, the camera cuts to a medium-close shot from a front-slightly-side angle, eye level, with slight handheld shake. <Subject 1> stands up anxiously beside the bed in <Subject 3>, her body leaning back, her hands scratching her shoulder and neck. Flocks of <Subject 2> monsters crawl up her arms, spreading to her shoulders and neck, jumping and nibbling, their squeaks dense and chaotic. Her face is twisted in pain, her eyes darting around as if seeking help, and she cries out desperately: <d>[Chinese] 女主（痛苦难忍，寻找帮助）："怎么办……"</d>. The warm lamplight sways with her movements, casting shifting shadows, while cold blue moonlight streams through the window.
+overall_soundscape:
+The soft hum of a bedside lamp, faint night breeze outside the window, the rustle of fabric as the woman moves, the continuous sharp squeaking of small monsters, the subtle sound of skin being nibbled and scratched, the quiet thud of tiny feet jumping on skin.
+non_diegetic_music:
+A low, tense ambient drone with a subtle heartbeat-like pulse, growing slightly more anxious during the monster outbreak, remaining subdued throughout.
+
+## 【封装单元 2/4】
+duration: 14
+资产：图8，图4，图1，图3，图9，图2，图6
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+detailed_description:
+[Shot 1]
+<d>[Chinese] 芙美松卫士（坚定）："有我在，别怕。"</d>
+[Shot 2] At 00:03.000
+[Shot 3] At 00:06.000
+[Shot 4] At 00:10.000
+overall_soundscape:
+non_diegetic_music:
+
+## 【封装单元 3/4】
+duration: 12
+资产：图3，图9，图2，图6，图1
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+detailed_description:
+[Shot 1]
+<d>[Chinese] 芙美松卫士（举起凝胶枪）："你们该安静了。"</d>
+[Shot 2] At 00:04.000
+[Shot 3] At 00:08.000
+overall_soundscape:
+non_diegetic_music:
+
+## 【封装单元 4/4】
+duration: 10
+资产：图1，图4，图8，A1
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+detailed_description:
+[Shot 1]
+<d>[Chinese] 芙美松卫士（收枪，微笑点头）："平复了。"</d>
+<d>[Chinese] 旁白（SLOGAN）："糠酸莫米松凝胶，平复肌肤小怪兽。"</d>
+[Shot 2] At 00:04.000
+[Shot 3] At 00:08.000
+overall_soundscape:
+non_diegetic_music:

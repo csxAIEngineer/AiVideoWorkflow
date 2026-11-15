@@ -92,20 +92,15 @@ class ScriptChainRunTest(unittest.TestCase):
             calls.append(brief)
             if "任务：赛道分流" in brief:
                 return {"text": "路线说明"}
-            return {
-                "title": "题",
-                "script": "正式剧本正文",
-                "internal": "圆桌意见",
-                "partials": [
-                    {"skill": "sd-script-engine/references/source-registration.md", "text": "第1步正文"},
-                    {"skill": "sd-script-engine/references/story-bible-and-ip.md", "text": "第2步正文"},
-                    {"skill": "sd-script-engine/references/roundtable-review.md", "text": "圆桌意见"},
-                ],
-            }
+            if "本节点原文" in brief and "各节点正文" not in brief:
+                if "source-registration.md" in brief:
+                    return {"text": "来源正文"}
+                return {"text": "节点正文"}
+            return {"title": "题", "script": "正式剧本正文", "internal": "圆桌意见"}
 
         return writer
 
-    def test_six_steps_land_then_stop_at_the_script_gate(self):
+    def test_script_nodes_land_then_stop_at_the_script_gate(self):
         folder = Path(tempfile.mkdtemp())
         calls = []
         with patch("end.stage_runner.check_stage", return_value=(True, "")):
@@ -116,14 +111,22 @@ class ScriptChainRunTest(unittest.TestCase):
                 self._writer(calls),
                 lambda *args, **kwargs: "pack",
             )
-        self.assertEqual(len(calls), 2)
         self.assertIn("任务：赛道分流", calls[0])
-        self.assertIn("任务：剧本", calls[1])
-        self.assertIn("独有的用户故事句子", calls[1])
-        self.assertIn("用户原文", calls[1])
         self.assertNotIn("用户原文", calls[0])
+        script_calls = [call for call in calls if "任务：剧本" in call]
+        self.assertGreater(len(script_calls), 1)
+        self.assertTrue(any("独有的用户故事句子" in call and "用户原文" in call for call in script_calls))
+        self.assertTrue(any("各节点正文" in call and "来源正文" in call for call in script_calls))
+        self.assertFalse(any(
+            "# 本节点原文 sd-script-engine/references/story-bible-and-ip.md" in call
+            for call in calls
+        ))
+        self.assertFalse(any(
+            "# 本节点原文 sd-script-engine/references/episode-planning.md" in call
+            for call in calls
+        ))
         self.assertEqual((folder / "_内部_" / "路线.md").read_text(encoding="utf-8").strip(), "路线说明")
-        self.assertEqual((folder / "_内部_" / "剧本链" / "02-IP与角色.md").read_text(encoding="utf-8").strip(), "第2步正文")
+        self.assertEqual((folder / "_内部_" / "剧本链" / "01-来源登记.md").read_text(encoding="utf-8").strip(), "来源正文")
         self.assertEqual((folder / "_内部_" / "剧本.md").read_text(encoding="utf-8").strip(), "正式剧本正文")
         self.assertEqual((folder / "_内部_" / "剧本过程.md").read_text(encoding="utf-8").strip(), "圆桌意见")
         self.assertEqual(outcome["progress"]["phase"], "gate_script")
@@ -170,12 +173,12 @@ class ScriptChainRunTest(unittest.TestCase):
                 self._writer(calls),
                 lambda *args, **kwargs: "pack",
             )
-        self.assertEqual(len(calls), 3)
-        self.assertIn("任务：剧本", calls[2])
-        self.assertIn("机检没过", calls[2])
-        self.assertIn("FAIL: 太短", calls[2])
-        self.assertNotIn("精修原文：1", calls[2])
-        self.assertIn("正式剧本正文", calls[2])
+        repairs = [call for call in calls if "机检没过" in call]
+        self.assertTrue(repairs)
+        self.assertIn("任务：剧本", repairs[-1])
+        self.assertIn("FAIL: 太短", repairs[-1])
+        self.assertNotIn("精修原文：1", repairs[-1])
+        self.assertIn("正式剧本正文", repairs[-1])
 
     def test_polish_reruns_the_script_with_the_revise_section(self):
         folder = Path(tempfile.mkdtemp())
@@ -239,7 +242,11 @@ class ScriptReplayTest(unittest.TestCase):
 
         def writer(brief, skill_pack, debug_dir=None, model=None, template=None, trace_prompts=None):
             calls.append(brief)
-            return {"title": "题", "script": "续写剧本", "internal": "续写圆桌"}
+            if "source-registration.md" in brief and "各节点正文" not in brief:
+                return {"text": "来源留下"}
+            if "各节点正文" in brief or "# 总控" in brief:
+                return {"title": "题", "script": "续写剧本", "internal": "续写圆桌"}
+            return {"text": "节点正文"}
 
         project = {
             "template": "short-drama-director",
@@ -256,11 +263,11 @@ class ScriptReplayTest(unittest.TestCase):
         }
         with patch("end.stage_runner.check_stage", return_value=(True, "")):
             execute(project, folder, {"duration_seconds": 60, "aspect": "16:9"}, writer, lambda *args, **kwargs: "pack")
-        self.assertEqual(len(calls), 1)
-        self.assertIn("任务：剧本", calls[0])
-        self.assertIn("角色留下", calls[0])
-        self.assertNotIn("独有的用户故事句子", calls[0])
-        self.assertNotIn("剧本步：1", calls[0])
+        self.assertGreater(len(calls), 1)
+        self.assertTrue(all("任务：剧本" in call for call in calls))
+        self.assertTrue(any("角色留下" in call for call in calls))
+        self.assertTrue(all("独有的用户故事句子" not in call for call in calls))
+        self.assertTrue(all("剧本步：1" not in call for call in calls))
         self.assertEqual((chain / "01-来源登记.md").read_text(encoding="utf-8").strip(), "来源留下")
 
     def test_replaying_the_table_waits_on_the_script_gate(self):
@@ -409,11 +416,9 @@ class RepairPromptTest(unittest.TestCase):
         def writer(brief, skill_pack, debug_dir=None, model=None, template=None, trace_prompts=None):
             if "任务：赛道分流" in brief:
                 return {"text": "路线"}
-            return {
-                "title": "题",
-                "script": "正式剧本正文",
-                "partials": [{"skill": "sd-script-engine/references/source-registration.md", "text": "来源登记"}],
-            }
+            if "source-registration.md" in brief and "各节点正文" not in brief:
+                return {"text": "来源登记"}
+            return {"title": "题", "script": "正式剧本正文"}
 
         project = {
             "template": "short-drama-director",

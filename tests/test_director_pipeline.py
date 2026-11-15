@@ -323,18 +323,18 @@ class DirectorDbTest(unittest.TestCase):
                 "lock_machine": True,
                 "pipeline": {
                     "only": "",
-                    "accepted": ["script", "asset", "storyboard"],
+                    "accepted": ["script", "asset", "storyboard", "seam"],
                     "current": "feed",
                     "action": "wait",
                     "passed": False,
-                    "report": "投喂稿是空的",
-                    "repair": "投喂稿是空的",
+                    "report": "封装稿是空的",
+                    "repair": "封装稿是空的",
                     "check": "",
                 },
                 "question": {
                     "id": "feed",
                     "kind": "single",
-                    "reply": "投喂机检没过。根据建议修改会按下面这些项改。\n投喂稿是空的",
+                    "reply": "投喂机检没过。根据建议修改会按下面这些项改。\n封装稿是空的",
                     "options": ["根据建议修改"],
                     "cards": [],
                 },
@@ -426,7 +426,7 @@ class DirectorDbTest(unittest.TestCase):
         locks["style_look"] = "自然光，写实肤色"
         locks["style"] = locks["style_look"]
         locks["seams"] = []
-        self.assertEqual(stages_for(locks, ""), ["script", "asset", "storyboard", "feed"])
+        self.assertEqual(stages_for(locks, ""), ["script", "asset", "storyboard", "feed", "seam"])
         self.assertEqual(next_pending(stages_for(locks, ""), []), "script")
         self.assertEqual(stages_for(locks, detect_only("只要打戏")), ["script", "asset", "storyboard"])
         self.assertNotIn("feed", stages_for(locks, detect_only("只要打戏")))
@@ -450,9 +450,10 @@ class DirectorDbTest(unittest.TestCase):
 
         with patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"):
             run_project("p-gate")
-            self.assertEqual(len(calls), 2)
             self.assertIn("任务：赛道分流", calls[0])
-            self.assertIn("任务：剧本", calls[1])
+            self.assertTrue(any("任务：剧本" in call for call in calls))
+            self.assertEqual(sum("各节点正文" in call for call in calls), 1)
+            script_n = len(calls)
             saved = read_project("p-gate")
             self.assertEqual(saved["status"], "gate")
             self.assertEqual(saved["progress"]["phase"], "gate_script")
@@ -460,10 +461,11 @@ class DirectorDbTest(unittest.TestCase):
             with patch("end.server.submit_agent_task"):
                 answer_gate(read_project("p-gate"), "继续")
             run_project("p-gate")
-            self.assertEqual(len(calls), 5)
-            self.assertIn("任务：资产锁定", calls[2])
-            self.assertIn("只写资产", calls[2])
-            self.assertIn("任务：建议修补", calls[3])
+            self.assertGreater(len(calls), script_n)
+            asset_calls = calls[script_n:]
+            self.assertIn("任务：资产锁定", asset_calls[0])
+            self.assertIn("只写资产", asset_calls[0])
+            self.assertTrue(any("任务：建议修补" in call for call in asset_calls))
             self.assertNotIn("任务：分镜", "\n".join(calls))
             saved = read_project("p-gate")
             self.assertEqual(saved["status"], "gate")
@@ -474,8 +476,9 @@ class DirectorDbTest(unittest.TestCase):
             self.assertNotIn("已按检查结果自动改了", saved["messages"][-1]["content"])
             self.assertEqual(saved["messages"][-1]["options"], ["根据建议修改"])
             self.assertNotEqual(saved["progress"]["question"]["id"], "asset_repair_choice")
+            held = len(calls)
             run_project("p-gate")
-            self.assertEqual(len(calls), 5)
+            self.assertEqual(len(calls), held)
 
     def test_failed_continue_rewrites_only_the_current_stage(self):
         locks = prepare_locks(_base_locks(), "时长：12秒")
@@ -1037,7 +1040,7 @@ class MachineAndMountTest(unittest.TestCase):
             "template": "short-drama-director",
             "model": "deepseek-v4-pro",
             "brief": "雨夜",
-            "progress": {"pipeline": {"action": "write", "current": "feed", "accepted": ["script", "asset", "storyboard"], "only": ""}},
+            "progress": {"pipeline": {"action": "write", "current": "feed", "accepted": ["script", "asset", "storyboard", "seam"], "only": ""}},
         }
 
         def writer(*_args, **_kwargs):
@@ -1081,7 +1084,7 @@ class MachineAndMountTest(unittest.TestCase):
                 "pipeline": {
                     "action": "write",
                     "current": "feed",
-                    "accepted": ["script", "asset", "storyboard"],
+                    "accepted": ["script", "asset", "storyboard", "seam"],
                     "only": "",
                 }
             },
@@ -1093,7 +1096,7 @@ class MachineAndMountTest(unittest.TestCase):
         kept = execute(project, folder, _base_locks(), writer, lambda *_a, **_k: "pack")
         stored = (internal / "feed.md").read_text(encoding="utf-8")
         self.assertIn("subject_definitions", stored)
-        self.assertNotEqual(kept["progress"]["pipeline"].get("report"), "投喂稿是空的")
+        self.assertNotEqual(kept["progress"]["pipeline"].get("report"), "封装稿是空的")
 
         empty_dir = Path(tempfile.mkdtemp())
         empty_internal = empty_dir / "_内部_"
@@ -1107,7 +1110,7 @@ class MachineAndMountTest(unittest.TestCase):
             lambda *_a, **_k: {},
             lambda *_a, **_k: "pack",
         )
-        self.assertEqual(empty["progress"]["pipeline"]["report"], "投喂稿是空的")
+        self.assertEqual(empty["progress"]["pipeline"]["report"], "封装稿是空的")
         self.assertTrue(empty["progress"]["pipeline"]["retry_write"])
         self.assertIn("再写一版", empty["message"]["content"])
         self.assertFalse((empty_internal / "feed.md").is_file())
@@ -1126,10 +1129,10 @@ class MachineAndMountTest(unittest.TestCase):
                 "pipeline": {
                     "action": "rewrite",
                     "current": "feed",
-                    "accepted": ["script", "asset", "storyboard"],
+                    "accepted": ["script", "asset", "storyboard", "seam"],
                     "passed": False,
-                    "report": "投喂稿是空的",
-                    "repair": "投喂稿是空的",
+                    "report": "封装稿是空的",
+                    "repair": "封装稿是空的",
                     "only": "",
                 }
             },
@@ -1304,12 +1307,14 @@ class MachineAndMountTest(unittest.TestCase):
         project = {
             "template": "short-drama-director",
             "model": "deepseek-v4-pro",
-            "progress": {"pipeline": {"action": "write", "current": "feed", "accepted": ["script", "asset", "storyboard"], "only": ""}},
+            "progress": {"pipeline": {"action": "write", "current": "feed", "accepted": ["script", "asset", "storyboard", "seam"], "only": ""}},
         }
         outcome = execute(project, folder, locks, feed_writer, lambda *args, **kwargs: "pack")
         self.assertFalse(outcome["progress"]["pipeline"]["passed"])
+        after_feed = len(calls)
+        self.assertEqual(sum("各节点正文" in call for call in calls), 3)
         execute({"template": "short-drama-director", "progress": outcome["progress"]}, folder, locks, feed_writer, lambda *args, **kwargs: "pack")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), after_feed)
         self.assertIn("根据建议修改会按下面这些项改", outcome["message"]["content"])
         self.assertNotIn("已按检查结果自动改了", outcome["message"]["content"])
 
@@ -1322,11 +1327,12 @@ class MachineAndMountTest(unittest.TestCase):
             "model": "deepseek-v4-pro",
             "progress": {"pipeline": {"action": "write", "current": "storyboard", "accepted": ["script", "asset"], "only": ""}},
         }
+        before_board = len(calls)
         stopped = execute(board, folder, locks, board_writer, lambda *args, **kwargs: "pack")
         self.assertFalse(stopped["progress"]["pipeline"]["passed"])
         self.assertEqual(stopped["progress"]["phase"], "gate_storyboard")
         self.assertFalse(any(path.name.endswith("-预演故事板.md") for path in folder.iterdir()))
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(sum("各节点正文" in call for call in calls[before_board:]), 1)
 
     def test_storyboard_repair_keeps_panels_and_asks_for_real_grids(self):
         rich = "\n".join((
@@ -1404,7 +1410,8 @@ class MachineAndMountTest(unittest.TestCase):
         }
         stopped = execute(project, folder, locks, writer, lambda *args, **kwargs: "pack")
         self.assertFalse(stopped["progress"]["pipeline"]["passed"])
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(sum("各节点正文" in call for call in calls), 1)
+        self.assertGreater(len(calls), 1)
         self.assertEqual(stopped["progress"]["pipeline"]["repairs"], 0)
         self.assertIn("缺镜号", stopped["progress"]["pipeline"]["report"])
         self.assertFalse((folder / "_内部_" / "previs.md").is_file())
@@ -1471,6 +1478,165 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertNotIn("H9 画外声缺闭口证据", again_report)
         self.assertEqual(again, 0)
 
+    def test_h3_lock_rejects_prose_units_without_calling_the_seedance_gate(self):
+        import importlib.util
+
+        from end.gates import GATE_CHECK, H3_STRUCTURE_MARK, VALIDATOR
+        from end.product_names import MISSING_UNITS
+        from end.repair_units import units_for
+
+        checks_spec = importlib.util.spec_from_file_location(
+            "feed_checks_for_h3_route",
+            ROOT / "Agents" / "checks.py",
+        )
+        checks = importlib.util.module_from_spec(checks_spec)
+        checks_spec.loader.exec_module(checks)
+
+        prose = "\n\n".join((
+            "\n".join((
+                "## 【封装单元 %s/5】" % index,
+                "duration: %s" % duration,
+                "A woman waits in the doorway and speaks. <d>[Chinese] 留下。</d>",
+            ))
+            for index, duration in ((1, 11), (2, 11), (3, 10), (4, 13), (5, 11))
+        )) + "\n"
+        self.assertNotIn("subject_definitions", prose)
+        self.assertTrue(feed_uses_h3(prose, "h3"))
+        self.assertFalse(feed_uses_h3(prose, "2.5"))
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(prose, encoding="utf-8")
+        with patch("end.gates.run_script") as run:
+            code, report = check_feed(path, "h3", "M1", "1")
+        run.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertIn(H3_STRUCTURE_MARK, report)
+        self.assertIn("subject_definitions", report)
+        self.assertNotIn(MISSING_UNITS, report)
+        self.assertNotIn("未找到封装单元", report)
+        self.assertNotIn("六道闸门", report)
+        for number in range(1, 6):
+            self.assertIn("[段%s]" % number, report)
+        units = units_for("feed", report, feed=prose)
+        self.assertEqual([unit["number"] for unit in units], [1, 2, 3, 4, 5])
+        self.assertTrue(all("不是 H3 结构" in unit["suggestion"] for unit in units))
+        checked = checks.check_feed_draft(prose, {"locks": {"model": "h3", "material_mode": "M1", "track": "1"}})
+        self.assertFalse(checked["ok"])
+        shown = "\n".join(checked["errors"])
+        self.assertIn(H3_STRUCTURE_MARK, shown)
+        self.assertNotIn("未找到封装单元", shown)
+
+        seedance_body = "\n".join((
+            "## 【封装单元 1/1】",
+            "【画幅风格】16:9 横屏",
+            "【场景资产】房间",
+            "【核心人物】甲",
+            "【站位声明】甲在门内。",
+            "【时间轴分镜】",
+            "00:00-00:04 [镜头1] 中景 · 平视 · 固定。甲站着。声音：无。台词：无。",
+        ))
+        path.write_text(seedance_body, encoding="utf-8")
+        with patch("end.gates.run_script") as run:
+            code, report = check_feed(path, "h3", "M1", "1")
+        run.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertIn(H3_STRUCTURE_MARK, report)
+        self.assertNotIn(MISSING_UNITS, report)
+        self.assertNotIn("六道闸门", report)
+        self.assertNotIn(str(GATE_CHECK), report)
+        self.assertNotIn(str(VALIDATOR), report)
+
+    def test_structured_h3_draft_still_uses_the_h3_checker(self):
+        from end.gates import GATE_CHECK, H3_STRUCTURE_MARK, VALIDATOR
+
+        body = "\n".join((
+            "## 【封装单元 1/1】",
+            "duration: 20",
+            "subject_definitions:",
+            "<Subject 1> is a woman standing indoors.",
+            "summary:",
+            "She waits by the door.",
+            "retention_analysis:",
+            "<Subject 1>: fully_preserved for the woman.",
+            "detailed_description:",
+            "[Shot 1] She stands inside. A narrator (S1) says in an off-screen voiceover: <d>[Chinese] 留下。</d>",
+            "overall_soundscape:",
+            "Room tone.",
+            "non_diegetic_music:",
+            "none.",
+        ))
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(body, encoding="utf-8")
+        seen = []
+        real_run = __import__("end.gates", fromlist=["run_script"]).run_script
+
+        def spy(script, args, timeout=90):
+            seen.append(Path(script).name)
+            return real_run(script, args, timeout)
+
+        with patch("end.gates.run_script", side_effect=spy):
+            code, report = check_feed(path, "h3", "M1", "1")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(seen, ["validate_prompt.py"])
+        self.assertNotIn("gate_check.py", seen)
+        self.assertIn("H9", report)
+        self.assertIn("声明时长", report)
+        self.assertNotIn(H3_STRUCTURE_MARK, report)
+        self.assertNotIn("未找到封装单元", report)
+        self.assertNotIn("六道闸门", report)
+        self.assertNotIn(str(GATE_CHECK), report)
+        self.assertIn("model=h3", report)
+        self.assertNotIn(str(VALIDATOR), report)
+        import importlib.util
+
+        checks_spec = importlib.util.spec_from_file_location(
+            "feed_checks_for_h3_duration",
+            ROOT / "Agents" / "checks.py",
+        )
+        checks = importlib.util.module_from_spec(checks_spec)
+        checks_spec.loader.exec_module(checks)
+        spoken = checks.check_feed_draft(body, {
+            "locks": {"model": "h3", "material_mode": "M1", "track": "1"},
+            "storyboard": "时长：20\n对白：甲：这句必须原样留下。",
+        })
+        self.assertFalse(spoken["ok"])
+        self.assertIn("对白被压缩", spoken["report"])
+        self.assertIn("H9", spoken["report"])
+
+    def test_non_h3_model_still_uses_the_seedance_gate(self):
+        from end.gates import H3_STRUCTURE_MARK
+        from end.product_names import MISSING_UNITS
+
+        prose = "\n".join((
+            "## 【封装单元 1/2】",
+            "A woman waits.",
+            "",
+            "## 【封装单元 2/2】",
+            "She leaves.",
+        ))
+        path = Path(tempfile.mkdtemp()) / "feed.md"
+        path.write_text(prose, encoding="utf-8")
+        for model in ("2.5", "2.0"):
+            code, report = check_feed(path, model, "M1", "1")
+            self.assertNotEqual(code, 0, model)
+            self.assertIn(MISSING_UNITS, report, model)
+            self.assertNotIn(H3_STRUCTURE_MARK, report, model)
+            self.assertNotIn("H9", report, model)
+        sheet = "\n".join((
+            "## 【封装单元 1/1】",
+            "【画幅风格】16:9 横屏",
+            "【场景资产】房间",
+            "【核心人物】甲",
+            "【站位声明】甲在门内。",
+            "【时间轴分镜】",
+            "00:00-00:04 [镜头1] 中景 · 平视 · 固定。甲站着。声音：无。台词：无。",
+        ))
+        path.write_text(sheet, encoding="utf-8")
+        code, report = check_feed(path, "2.5", "M1", "1")
+        self.assertIn("六道闸门", report)
+        self.assertIn("model=2.5", report)
+        self.assertNotIn(H3_STRUCTURE_MARK, report)
+        self.assertNotIn(MISSING_UNITS, report)
+
     def test_h3_segment_object_is_written_as_six_section_text(self):
         payload = {
             "model": "MiniMax H3",
@@ -1489,7 +1655,7 @@ class MachineAndMountTest(unittest.TestCase):
         }
         text = render_feed_text(payload)
         self.assertEqual(render_feed_text(str(payload)), text)
-        self.assertTrue(text.startswith("## 【投喂单元 1/1 · 段1】"))
+        self.assertTrue(text.startswith("## 【封装单元 1/1 · 段1】"))
         self.assertIn("\nsubject_definitions:\n", text)
         self.assertIn("duration: 15", text)
         self.assertTrue(feed_uses_h3(text, "h3"))
@@ -1520,7 +1686,7 @@ class MachineAndMountTest(unittest.TestCase):
         loose = render_feed_text(bare)
         self.assertIn("\nsubject_definitions:\n", loose)
         self.assertNotIn("[Shot 1] At", loose)
-        self.assertEqual(loose.count("## 【投喂单元"), 2)
+        self.assertEqual(loose.count("## 【封装单元"), 2)
         loose_path = Path(tempfile.mkdtemp()) / "feed.md"
         loose_path.write_text(loose, encoding="utf-8")
         _loose_code, loose_report = check_feed(loose_path, "h3", "M2", "1")
@@ -1759,11 +1925,17 @@ class MachineAndMountTest(unittest.TestCase):
         h3 = stage_instruction("feed", {"model": "h3"})
         self.assertNotIn("写七段", h3)
         self.assertIn("subject_definitions:", h3)
-        self.assertIn("六段正文一律英文", h3)
+        self.assertIn("四段正文一律英文", h3)
+        self.assertIn("不要写 summary 或 retention_analysis", h3)
+        from end.product_names import H3_SUBJECT_SOUND_RULE
+
+        self.assertIn(H3_SUBJECT_SOUND_RULE, h3)
+        self.assertNotIn("retention_analysis:", h3)
         self.assertIn("<d>[Chinese]", h3)
         seedance = stage_instruction("feed", {"model": "2.5"})
         self.assertIn("下面写七段", seedance)
         self.assertNotIn("<d>[Chinese]", seedance)
+        self.assertNotIn(H3_SUBJECT_SOUND_RULE, seedance)
 
         folder = Path(tempfile.mkdtemp())
         internal = folder / "_内部_"
@@ -1840,7 +2012,7 @@ class PageTest(unittest.TestCase):
     def test_page_stops_on_gates_and_renders_seam_and_style(self):
         app = (ROOT / "front" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "front" / "styles.css").read_text(encoding="utf-8")
-        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "离线看板"]', app)
+        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接", "离线看板"]', app)
         self.assertIn('kind === "multi"', app)
         self.assertIn('type = "checkbox"', app)
         self.assertIn('kind === "cards"', app)
@@ -1868,7 +2040,7 @@ class PageTest(unittest.TestCase):
         self.assertIn("active_role", app)
         self.assertIn("正在自动写资产…", app)
         self.assertIn("正在自动写分镜…", app)
-        self.assertIn("正在自动写投喂…", app)
+        self.assertIn("正在自动写提示词封装…", app)
         self.assertIn("正在机检…", app)
         self.assertIn("自动返修第 ", app)
         self.assertIn("继续才进入资产", app)

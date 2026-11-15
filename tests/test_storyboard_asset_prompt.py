@@ -7,6 +7,18 @@ from pathlib import Path
 
 from AI.skills.registry import json_shape, merge_prompt
 from end.stage_runner import _produce
+
+
+def setUpModule():
+    from tests.worker_model import install_worker_bridge
+
+    install_worker_bridge()
+
+
+def tearDownModule():
+    from tests.worker_model import uninstall_worker_bridge
+
+    uninstall_worker_bridge()
 from end.storyboard_contract import (
     ASSET_FIELD_EXAMPLE,
     ASSET_FIELD_RULES,

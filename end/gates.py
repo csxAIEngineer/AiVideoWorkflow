@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from end.product_names import UNIT_TOKEN
+
 ROOT = Path(__file__).resolve().parents[1]
 SUITE = ROOT / "AI" / "skills" / "manju-laoli-skill"
 ASSET_CHECK = SUITE / "short-drama-director" / "scripts" / "check_asset_blocks.py"
@@ -13,7 +15,7 @@ VALIDATOR = SUITE / "short-drama-director" / "scripts" / "validate_prompt.py"
 P45_CHECK = SUITE / "sd-storyboard-engine" / "scripts" / "check_p45.py"
 BOARD = SUITE / "short-drama-director" / "scripts" / "build_board_lite.py"
 
-_SEGMENT = re.compile(r"(?:投喂单元|段)\s*(\d+)")
+_SEGMENT = re.compile(r"(?:%s|段)\s*(\d+)" % UNIT_TOKEN)
 _VERIFY = ("已核验", "与资产图册一致")
 
 
@@ -52,20 +54,89 @@ def check_gate(path, model, mode):
 _H3_FEED = re.compile(
     r"(?m)^(?:\s*subject_definitions\s*(?:[:：]|$)|【\s*subject_definitions\s*】)"
 )
+_H3_SECTIONS = (
+    "subject_definitions",
+    "detailed_description",
+    "overall_soundscape",
+    "non_diegetic_music",
+)
+# Stable sentence the repair brief matches. Do not reuse the Seedance missing-unit line.
+H3_STRUCTURE_MARK = "稿子不是 H3 结构"
 
 
 def feed_uses_h3(text, model):
-    """H3 Ref2VA is six English sections. The seven-section gate cannot see those units."""
-    return (model or "h3") == "h3" and bool(_H3_FEED.search(str(text or "")))
+    """The model lock chooses this checker. Draft section markers do not.
+
+    H3 always stays on the H3 path, including a prose unit that already has
+    ``## 【封装单元 N/M】`` but no Ref2VA fields. ``text`` is unused so older
+    callers can still pass the draft.
+    """
+    del text
+    return (model or "h3") == "h3"
+
+
+def _ref2va_heading(text):
+    return bool(_H3_FEED.search(str(text or "")))
+
+
+def _h3_structure_line():
+    return (
+        "[-] FAIL: %s。模型已锁定 H3，封装稿必须写成 Ref2VA 四段式（%s）。"
+        "字段名单独成行并带冒号，顺序固定。不能用自由正文或七段式顶替。"
+        % (H3_STRUCTURE_MARK, "、".join(_H3_SECTIONS))
+    )
+
+
+def _h3_unit_structure_line(number):
+    return (
+        "[-] FAIL: [段%s] 这一段不是 H3 结构，缺 subject_definitions 及其余三段。"
+        "改成 Ref2VA 四段式（%s），不要补【画幅风格】或【时间轴分镜】。"
+        % (number, "、".join(_H3_SECTIONS))
+    )
+
+
+def h3_structure_report(text):
+    """FAIL text when an H3-locked draft is not Ref2VA. Empty when it can be checked.
+
+    A ``subject_definitions`` heading is enough to enter ``validate_prompt``,
+    which still reports a missing sibling section as H1. A unit with no such
+    heading is not H3 structure, even when the packing-unit title is already right.
+    """
+    from end.product_names import UNIT_CLAIM, UNIT_HEAD_ANY
+
+    raw = str(text or "")
+    heads = list(UNIT_HEAD_ANY.finditer(raw))
+    missing = []
+    if heads:
+        for index, head in enumerate(heads):
+            end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+            chunk = raw[head.start():end]
+            if _ref2va_heading(chunk):
+                continue
+            claim = UNIT_CLAIM.match(head.group(0))
+            number = int(claim.group(2)) if claim else index + 1
+            missing.append(number)
+        if not missing:
+            return ""
+    elif _ref2va_heading(raw):
+        return ""
+    lines = [_h3_structure_line()]
+    for number in missing:
+        lines.append(_h3_unit_structure_line(number))
+    return "\n".join(lines)
 
 
 def _prepare_h3_feed(path, text):
-    """A bare subject_definitions line is still an H3 feed. Give it a colon before checking."""
+    """A bare subject_definitions line is still an H3 feed. Give it a colon before checking.
+
+    ``summary`` and ``retention_analysis`` are removed here so a draft that still
+    has them is cleaned instead of failing only because those extra fields exist.
+    """
     if "subject_definitions" not in str(text or ""):
         return text
-    from end.stage_runner import normalize_h3_shot_cuts, render_feed_text
+    from end.stage_runner import normalize_h3_shot_cuts, render_feed_text, strip_omitted_h3_sections
 
-    rendered = normalize_h3_shot_cuts(render_feed_text(text))
+    rendered = strip_omitted_h3_sections(normalize_h3_shot_cuts(render_feed_text(text)))
     bare = bool(re.search(r"(?m)^[ \t]*subject_definitions[ \t]*$", str(text or "")))
     if rendered.strip() and rendered.strip() != str(text or "").strip():
         Path(path).write_text(rendered.strip() + "\n", encoding="utf-8")
@@ -94,10 +165,11 @@ def check_feed(path, model, mode, track):
         text = Path(path).read_text(encoding="utf-8")
     except OSError:
         text = ""
-    if (model or "h3") == "h3":
+    if feed_uses_h3(text, model):
         text = _prepare_h3_feed(path, text)
-    routed = feed_uses_h3(text, model)
-    if routed:
+        structure = h3_structure_report(text)
+        if structure:
+            return 1, structure
         from end.prompt_gate import feed_unit_mismatch
 
         mismatch = feed_unit_mismatch(text)

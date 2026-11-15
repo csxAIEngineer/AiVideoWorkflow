@@ -67,11 +67,11 @@ class AutoGateDecisionTest(unittest.TestCase):
         self.assertEqual(auto_gate_action(revise), "stop")
 
     def test_passed_auto_stages_advance(self):
-        for stage in ("recon", "asset", "storyboard", "feed"):
+        for stage in ("recon", "asset", "storyboard", "seam", "feed"):
             self.assertEqual(auto_gate_action(_gate(stage, True)), "advance", stage)
 
     def test_failed_auto_stages_repair_until_the_limit(self):
-        for stage in ("asset", "storyboard", "feed"):
+        for stage in ("asset", "storyboard", "seam", "feed"):
             self.assertEqual(auto_gate_action(_gate(stage, False, repairs=1)), "rewrite", stage)
             self.assertEqual(auto_gate_action(_gate(stage, False, repairs=REPAIR_LIMIT)), "stop", stage)
 
@@ -137,10 +137,10 @@ class AutoAdvanceTest(unittest.TestCase):
             calls.append(brief)
             if "任务：赛道分流" in brief:
                 return {"text": "路线"}
-            if "对标情报" in brief:
-                return {"intel": "来源：一条爆款。这不是事实。"}
             if "任务：剧本" in brief:
                 return {"title": "雨夜", "script": "她在雨里等车。"}
+            if "对标情报" in brief:
+                return {"intel": "来源：一条爆款。这不是事实。"}
             raise AssertionError(brief[:120])
 
         with patch("end.stage_runner.check_stage", return_value=(True, "")), patch(
@@ -193,6 +193,8 @@ class AutoAdvanceTest(unittest.TestCase):
 
         def writer(brief, skill_pack, debug_dir=None, model=None, template=None):
             calls.append(brief)
+            if "任务：分镜衔接" in brief or "阶段：seam" in brief:
+                return {"seam_ledger": {"entries": []}}
             if "任务：赛道分流" in brief:
                 return {"text": "路线"}
             if "任务：剧本" in brief:
@@ -209,9 +211,9 @@ class AutoAdvanceTest(unittest.TestCase):
                     "previs": "## 段 1\n第 1 格：人在门内。改过的分镜，身体朝门，视线看向门外。",
                 }
             if "任务：提示词封装" in brief:
-                return {"feed": "投喂正文"}
+                return {"feed": "## 【封装单元 1/1】\n投喂正文"}
             if "任务：建议修补" in brief and "阶段：feed" in brief:
-                return {"feed": "改过的投喂"}
+                return {"feed": "## 【封装单元 1/1】\n改过的投喂"}
             raise AssertionError(brief[:160])
 
         def check(folder, stage, locks, title=""):
@@ -317,9 +319,16 @@ class AutoAdvanceTest(unittest.TestCase):
 
         def writer(brief, skill_pack, debug_dir=None, model=None, template=None):
             calls.append(brief)
+            if "任务：分镜衔接" in brief or "阶段：seam" in brief:
+                return {"seam_ledger": {"entries": [{
+                    "shot_id": "封装单元 1/1",
+                    "d_lock": "none",
+                    "reason": "开场",
+                    "scene_relation": "opening",
+                }]}}
             if "任务：建议修补" in brief:
-                return {"feed": "改过的投喂"}
-            return {"feed": "投喂正文"}
+                return {"feed": "## 【封装单元 1/1】\n改过的投喂"}
+            return {"feed": "## 【封装单元 1/1】\n投喂正文"}
 
         def check(folder, stage, locks, title=""):
             return True, ""

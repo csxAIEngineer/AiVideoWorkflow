@@ -1,4 +1,6 @@
-"""Wan image generation. Text and reference images share wan2.7-image.
+"""Legacy Wan image client. Product stills use AI.minimax_api.image.
+
+Text and reference images share wan2.7-image.
 
 Token Plan does not list qwen-image-3.0. Async submit uses
 X-DashScope-Async: enable, then poll GET /api/v1/tasks/{task_id}.

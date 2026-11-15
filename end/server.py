@@ -27,6 +27,15 @@ from urllib.parse import parse_qs, unquote, urlparse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from end.product_names import (
+    DRAFT_NAME,
+    EMPTY_DRAFT,
+    MACHINE_BLOCKED,
+    MACHINE_GATE,
+    STAGE_NAME,
+    report_says_empty_draft,
+)
+
 from end.ai_client import (
     default_model,
     job_message,
@@ -48,16 +57,21 @@ from end.db import DATA, connect, delete_project, list_projects, project_dir, re
 from end.image_store import get_image_store
 from end.render_loop import (
     _ffmpeg_bin,
+    _unlink_render_output,
     gate_for,
     is_running,
     load_run_state,
+    lock_asset_still,
     mark_user_pause,
     note_local_image,
+    output_paths,
     project_lock,
     register_thread,
+    release_asset_for_generation,
     reset_current_step,
     resume_paused,
     run_local_pipeline,
+    save_run_state,
     should_resume_project,
     thread_alive,
 )
@@ -104,7 +118,7 @@ from end.stage_runner import (
     storyboard_has_draft,
 )
 from end.soundtrack import normalize_soundtrack, project_soundtrack, soundtrack_enabled
-from end.workflow_from_spec import _safe_id, collect_steps, task_plan
+from end.workflow_from_spec import _safe_id, task_plan
 from end.task_queue import Task, TaskQueue
 
 STATIC = ROOT / "front"
@@ -314,7 +328,7 @@ def remember(project, status, stage, progress=None):
 def load_tasks(project):
     """Fill the task list from the saved spec when older rows have none."""
     if project.get("status") == "done" and project.get("stage") == "工作流已生成，可以下载":
-        project["stage"] = "提示词已写好。出片改为千问生图 / MiniMax H3 出镜 / 本机拼接 / ffmpeg 烧字幕"
+        project["stage"] = "提示词已写好。出片改为 MiniMax 生图 / MiniMax H3 出镜 / 本机拼接 / ffmpeg 烧字幕"
         write_project(project)
     if project.get("tasks"):
         return
@@ -403,7 +417,11 @@ def public_view(project):
                 json.dumps(spec, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-        assets, shots = collect_steps(spec)
+        from end.shot_contract import annotate_shots
+        from end.workflow_from_spec import assemble_steps
+
+        assets, shots, sources = assemble_steps(spec)
+        shots = annotate_shots(shots, sources, folder, project["id"])
     debug_dir = folder / "debug"
     debug_files = [
         key for key, name in DEBUG_FILES.items() if (debug_dir / name).is_file()
@@ -485,6 +503,7 @@ _CALL_LABEL = {
     "asset": "资产锁定",
     "storyboard": "分镜",
     "feed": "提示词封装",
+    "seam": "分镜衔接",
     "recon": "对标",
     "qc": "独立质检",
     "board": "离线看板",
@@ -622,7 +641,7 @@ def _begin_writing(project):
             folder=folder,
             brief=project.get("brief") or "",
         )
-        label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
+        label = MACHINE_GATE if pipeline.get("action") == "finish" else "下一段"
         _enqueue_stage(project, pipeline, label)
         return public_view(read_project(project["id"]) or project)
     pipeline = initial_pipeline(detect_only(project.get("brief") or ""))
@@ -1232,14 +1251,24 @@ def answer_gate(project, text):
         and body in ("补写分镜", "补全", ASSET_REVISE)
         and needs_human(str(pipeline.get("report") or ""))
     ):
-        pipeline["action"] = "write"
-        pipeline["passed"] = True
+        report = str(pipeline.get("report") or "")
+        named = bool(re.search(r"S\d+\s*缺", report))
         pipeline["retry_write"] = False
-        pipeline["repair"] = ""
-        pipeline["report"] = ""
         pipeline["repairs"] = 0
         pipeline["auto_retries"] = 0
         pipeline["machine_repairs"] = 0
+        pipeline.pop("worker_exhausted", None)
+        if named and body in ("补全", ASSET_REVISE):
+            pipeline["action"] = "rewrite"
+            pipeline["passed"] = False
+            pipeline["repair"] = report
+            pipeline["report"] = report
+            _enqueue_stage(project, pipeline, "补全分镜")
+            return public_view(read_project(project["id"]) or project)
+        pipeline["action"] = "write"
+        pipeline["passed"] = True
+        pipeline["repair"] = ""
+        pipeline["report"] = ""
         _enqueue_stage(project, pipeline, body if body in ("补写分镜", "补全") else "补写分镜")
         return public_view(read_project(project["id"]) or project)
     if body == ASSET_REVISE and (passed or not current):
@@ -1263,7 +1292,7 @@ def answer_gate(project, text):
         "文件不存在" in report_text
         or "资产稿是空的" in report_text
         or "资产提示词是空的" in report_text
-        or "投喂稿是空的" in report_text
+        or report_says_empty_draft(report_text)
         or "预演故事板是空的" in report_text
     ):
         # Missing assets.md cannot be figure-repaired; rewrite the whole stage.
@@ -1363,7 +1392,7 @@ def answer_gate(project, text):
     pipeline, _action = accept_pipeline(pipeline, locks, folder=folder, brief=brief)
     if pipeline.get("action") == "wait" and pipeline.get("current") == "script":
         return _repeat_gate(project, pipeline.get("report") or "剧本还不能进入下游")
-    label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
+    label = MACHINE_GATE if pipeline.get("action") == "finish" else "下一段"
     _enqueue_stage(project, pipeline, label)
     return public_view(read_project(project["id"]) or project)
 
@@ -1374,6 +1403,7 @@ _AUTO_LABEL = {
     "asset": "资产锁定",
     "storyboard": "分镜",
     "feed": "提示词封装",
+    "seam": "分镜衔接",
 }
 _AUTO_CHAIN_LIMIT = 24
 
@@ -1583,7 +1613,7 @@ def _follow_auto_gate(project, folder, locks, outcome):
     pipeline, step = accept_pipeline(pipeline, locks, folder=folder, brief=project.get("brief") or "")
     if step == "wait":
         return None
-    label = "投喂机检" if step == "finish" else _AUTO_LABEL.get(pipeline.get("current") or "", "下一段")
+    label = MACHINE_GATE if step == "finish" else _AUTO_LABEL.get(pipeline.get("current") or "", "下一段")
     return _mark_writing(project, pipeline, label)
 
 
@@ -1805,7 +1835,7 @@ WRITE_STAGES = (
     ("P1", "写剧本", 20),
     ("P2", "资产提示词", 36),
     ("P3", "分镜", 52),
-    ("P4", "投喂稿", 68),
+    ("P4", STAGE_NAME, 68),
 )
 
 
@@ -1845,7 +1875,7 @@ def _write_prompt_files(project_id, spec, brief):
     folder.mkdir(parents=True, exist_ok=True)
     feed = feed_text(spec)
     if not feed:
-        raise RuntimeError("投喂稿是空的")
+        raise RuntimeError(EMPTY_DRAFT)
     (folder / "feed.md").write_text(feed + "\n", encoding="utf-8")
     (folder / "project.md").write_text(project_markdown(spec, brief), encoding="utf-8")
     return folder / "feed.md", folder / "project.md"
@@ -2093,7 +2123,7 @@ def _run_project(project_id, debug_llm=False):
                 "机检",
                 progress={"percent": 82, "phase": "writing", "message": "机检", "debug_llm": debug},
             )
-            repair_brief = _stage_brief("", "P4", "投喂稿", _carried_text(spec))
+            repair_brief = _stage_brief("", "P4", DRAFT_NAME, _carried_text(spec))
             repair_brief += "\n\n机检报告，按它重修一次，画幅和模型不要改：\n" + (report or "")[-8000:]
             pack = load_skill_pack(template, repair_brief, stage="P4")
             spec = _merge_spec(
@@ -2112,7 +2142,7 @@ def _run_project(project_id, debug_llm=False):
             feed_path, markdown_path = _write_prompt_files(project_id, spec, brief)
             code, report = validate_feed(feed_path, aspect)
             if code != 0:
-                raise RuntimeError("投喂稿机检未通过：%s" % ((report or "")[-800:]))
+                raise RuntimeError("%s：%s" % (MACHINE_BLOCKED, (report or "")[-800:]))
         remember(
             read_project(project_id) or project,
             "writing",
@@ -2195,7 +2225,7 @@ def fail_project(project_id, error):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
     progress = None
-    if "投喂稿机检未通过" in str(error):
+    if MACHINE_BLOCKED in str(error) or "投喂稿机检未通过" in str(error):
         progress = {"phase": "error", "message": "机检未通过"}
     job = (project.get("progress") or {}).get("retouching") or {}
     if job:
@@ -2622,27 +2652,164 @@ def _png_bytes(data):
     return _ffmpeg_png_bytes(data, kind)
 
 
-def save_asset_image(project_id, asset_id, data):
-    """Store a replacement still and record this service's public URL.
+def _replace_mode(value):
+    """参考图 understands the upload and generates a still. 资产图 is the still."""
+    text = str(value or "").strip()
+    if text in ("", "asset", "资产图"):
+        return "asset"
+    if text in ("reference", "参考图"):
+        return "reference"
+    raise ValueError("替换方式只能是参考图或资产图")
 
-    local_override stays true so a later asset does not reuse the upload as a reference.
-    """
-    asset_id = str(asset_id or "")
-    if not asset_id or asset_id != Path(asset_id).name or not all(ch.isalnum() or ch in "-_" for ch in asset_id):
+
+def _reference_still_id(asset_id):
+    """Stable object id for a reference upload. It is not the asset file 图N.png."""
+    suffix = "_upload"
+    base = str(asset_id or "")
+    candidate = base + suffix
+    if len(candidate) <= 64:
+        return candidate
+    return base[: 64 - len(suffix)] + suffix
+
+
+def _asset_id_ok(asset_id):
+    text = str(asset_id or "")
+    if not text or text != Path(text).name:
+        return False
+    return all(ch.isalnum() or ch in "-_" for ch in text)
+
+
+def _reject_busy_replace(project_id, asset_id):
+    project = read_project(project_id)
+    if project is None:
+        raise KeyError("没有这个项目")
+    spec = load_spec(project_id) or {}
+    if _spec_asset(spec, asset_id) is None:
         raise ValueError("没有这个资产")
+    state = load_run_state(project_dir(project_id))
+    step = (state.get("steps") or {}).get(asset_id) or {}
+    if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
+        raise RuntimeError("这一步已经提交，完成前不能替换图片")
+    return project, spec, step
+
+
+def _attach_asset_reference(folder, asset_id, reference_id):
+    path = Path(folder) / "spec.json"
+    spec = {}
+    if path.is_file():
+        spec = json.loads(path.read_text(encoding="utf-8"))
+    assets = spec.get("assets") if isinstance(spec, dict) else None
+    if not isinstance(assets, list):
+        raise ValueError("还没有资产")
+    found = False
+    for item in assets:
+        if not isinstance(item, dict) or str(item.get("id") or "") != asset_id:
+            continue
+        found = True
+        refs = []
+        for ref in item.get("references") or []:
+            text = str(ref).strip()
+            if text and text != asset_id and text not in refs:
+                refs.append(text)
+        if reference_id not in refs:
+            refs.append(reference_id)
+        item["references"] = refs
+        break
+    if not found:
+        raise ValueError("没有这个资产")
+    path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+    return spec
+
+
+def _note_reference_reading(folder, project_id, reference_id, reading):
     with project_lock(project_id):
-        project = read_project(project_id)
-        if project is None:
-            raise KeyError("没有这个项目")
-        spec = load_spec(project_id) or {}
-        if _spec_asset(spec, asset_id) is None:
-            raise ValueError("没有这个资产")
-        state = load_run_state(project_dir(project_id))
-        step = (state.get("steps") or {}).get(asset_id) or {}
-        if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
-            raise RuntimeError("这一步已经提交，完成前不能替换图片")
-        public_url = get_image_store().save(project_id, asset_id, _png_bytes(data))
-        note_local_image(project_dir(project_id), project_id, asset_id, public_url)
+        state = load_run_state(folder)
+        step = (state.get("steps") or {}).get(reference_id)
+        if not step:
+            return None
+        step["reading"] = str(reading or "")
+        save_run_state(folder, state)
+        return step
+
+
+def _retire_asset_file(folder, asset_id, output_file):
+    """Archive the previous 资产图 so the card no longer shows that upload as 图N."""
+    targets = []
+    recorded = None
+    text = str(output_file or "").strip().lstrip("/")
+    if text and ".." not in Path(text).parts:
+        recorded = Path(folder) / "outputs" / text
+    canonical, _relative = output_paths(folder, asset_id, "image")
+    for path in (recorded, canonical):
+        if path is None or path in targets:
+            continue
+        targets.append(path)
+    for path in targets:
+        _unlink_render_output(path, folder, "reference-replace")
+
+
+def save_asset_image(project_id, asset_id, data, mode=None):
+    """Replace one still.
+
+    资产图 uploads the file and stores that public URL on the asset. The still
+    stays through a later invalidate. 参考图 stores the file as a reference,
+    reads it, and leaves the asset pending so the next image pass generates
+    a new still. The upload is not that still.
+    """
+    chosen = _replace_mode(mode)
+    asset_id = str(asset_id or "")
+    if not _asset_id_ok(asset_id):
+        raise ValueError("没有这个资产")
+    png = _png_bytes(data)
+    if chosen == "reference":
+        return _save_reference_image(project_id, asset_id, png)
+    return _save_direct_asset(project_id, asset_id, png)
+
+
+def _save_direct_asset(project_id, asset_id, png):
+    with project_lock(project_id):
+        project, _spec, _step = _reject_busy_replace(project_id, asset_id)
+        folder = project_dir(project_id)
+        public_url = get_image_store().save(project_id, asset_id, png)
+        note_local_image(folder, project_id, asset_id, public_url)
+        lock_asset_still(folder, project_id, asset_id)
+        return project
+
+
+def _save_reference_image(project_id, asset_id, png):
+    reference_id = _reference_still_id(asset_id)
+    folder = project_dir(project_id)
+    with project_lock(project_id):
+        project, _spec, step = _reject_busy_replace(project_id, asset_id)
+        was_asset = bool(step.get("asset_still"))
+        output_file = step.get("output_file") or ""
+        public_url = get_image_store().save(project_id, reference_id, png)
+        note_local_image(folder, project_id, reference_id, public_url)
+    image_path = folder / "outputs" / "images" / (reference_id + ".png")
+    from end.trace import begin_trace, finish_trace
+
+    prompts = begin_trace(folder, "vision", repair=False, brief="读图")
+    token = _bind_job(project_id)
+    try:
+        if prompts:
+            reading = read_upload(image_path, trace_prompts=prompts)
+        else:
+            reading = read_upload(image_path)
+    except Exception as error:
+        if prompts:
+            finish_trace(folder, {}, error=str(error))
+        raise
+    finally:
+        _JOB_PROJECT.reset(token)
+    if prompts:
+        finish_trace(folder, {"readings": [{"id": reference_id, "reading": reading}]})
+    with project_lock(project_id):
+        _reject_busy_replace(project_id, asset_id)
+        _note_reference_reading(folder, project_id, reference_id, reading)
+        _attach_asset_reference(folder, asset_id, reference_id)
+        release_asset_for_generation(folder, project_id, asset_id)
+        if was_asset:
+            _retire_asset_file(folder, asset_id, output_file)
         return project
 
 
@@ -3324,7 +3491,7 @@ def _continue_accepted_script(project):
     if pipeline.get("action") == "wait" and pipeline.get("current") == "script":
         raise RevisionError(409, "这一稿还不能进入下一段", "continue_not_queued", True, True, True, False)
     stage = "finish" if pipeline.get("action") == "finish" else str(pipeline.get("current") or "")
-    label = "投喂机检" if pipeline.get("action") == "finish" else "下一段"
+    label = MACHINE_GATE if pipeline.get("action") == "finish" else "下一段"
     remember(
         project,
         "writing",
@@ -3412,7 +3579,12 @@ def rpc_set_asset_image(params):
     if len(data) > MAX_ASSET_IMAGE_BYTES:
         raise RpcError(413, "图片太大")
     try:
-        save_asset_image(project_id, str(params.get("asset_id") or ""), data)
+        save_asset_image(
+            project_id,
+            str(params.get("asset_id") or ""),
+            data,
+            params.get("mode"),
+        )
     except KeyError as error:
         raise RpcError(404, str(error))
     except (ValueError, RuntimeError) as error:

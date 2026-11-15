@@ -19,6 +19,29 @@ from end.gates import (
 )
 from end.intake import enrich_brief, load_intake, writer_upload_block
 from end.locks import lock_brief
+from end.product_names import (
+    DRAFT_NAME,
+    EMPTY_DRAFT,
+    EMPTY_DRAFT_REPLY,
+    FEED_PASS,
+    GATE_UNIT_HEAD,
+    HEADING_RULE,
+    H3_SUBJECT_SOUND_RULE,
+    MACHINE_FAIL,
+    MACHINE_GATE,
+    STAGE_NAME,
+    STORYBOARD_PASS,
+    UNIT_HEAD_ANY,
+    UNIT_HEAD_LINE,
+    UNIT_NAME,
+    UNIT_RENUMBER,
+    UNIT_TOKEN,
+    has_unit_heading,
+    is_empty_draft,
+    mentions_unit,
+    report_says_empty_draft,
+    unit_heading,
+)
 from end.storyboard_contract import (
     STORYBOARD_INSTRUCTION,
     COMPLETE,
@@ -668,9 +691,11 @@ def assets_from_markdown(text, previous):
     return items
 
 
-_ORDER = ("script", "asset", "storyboard", "feed")
+_ORDER = ("script", "asset", "storyboard", "feed", "seam")
 _NAMED = (
     ("只要打戏", "combat"),
+    ("只要提示词封装", "feed"),
+    ("只要封装稿", "feed"),
     ("只要投喂稿", "feed"),
     ("只要投喂", "feed"),
     ("只要分镜", "storyboard"),
@@ -684,6 +709,7 @@ _STAGE_CODE = {
     "script": "P1",
     "asset": "P2",
     "storyboard": "P3",
+    "seam": "P3",
     "feed": "P4",
 }
 _GATE_PHASE = {
@@ -691,6 +717,7 @@ _GATE_PHASE = {
     "script": "gate_script",
     "asset": "gate_asset",
     "storyboard": "gate_storyboard",
+    "seam": "gate_seam",
     "feed": "gate_feed",
 }
 _GATE_LABEL = {
@@ -698,9 +725,10 @@ _GATE_LABEL = {
     "script": "剧本门",
     "asset": "资产门",
     "storyboard": "分镜门",
-    "feed": "投喂前",
+    "seam": "分镜衔接",
+    "feed": STAGE_NAME,
 }
-_PERCENT = {"recon": 18, "script": 30, "asset": 46, "storyboard": 62, "feed": 76, "qc": 88}
+_PERCENT = {"recon": 18, "script": 30, "asset": 46, "storyboard": 62, "feed": 69, "seam": 76, "qc": 88}
 _ENGINE = {
     "script": "sd-script-engine/",
     "asset": "sd-asset-engine/",
@@ -717,12 +745,14 @@ _DRAFT_FILE = {
     "script": "剧本.md",
     "asset": "assets.md",
     "storyboard": "分镜.md",
+    "seam": "分镜衔接.json",
     "feed": "feed.md",
 }
 _TASK_LINE = {
     "script": "任务：剧本",
     "asset": "任务：资产锁定",
     "storyboard": "任务：分镜",
+    "seam": "任务：分镜衔接",
     "feed": "任务：提示词封装",
 }
 _SCRIPT_CHAIN = {
@@ -745,22 +775,29 @@ _INSTRUCTION = {
         "有打斗时招式只来自已挂载的打戏原文。",
         STORYBOARD_INSTRUCTION,
     )),
+    "seam": "\n".join((
+        "只写分镜衔接账本，放在 seam_ledger。一条已锁定的封装单元恰好一条。",
+        "shot_id 必须原样照抄封装单元 id，形式是封装单元 N/M，例如封装单元 1/3。不要把多个单元收成更少的段，不要写成封装单元 1，不要改成 S01 或 1、2、3。",
+        "不要改封装稿，不要改分镜正文。",
+    )),
     "feed": "\n".join((
-        "只写投喂稿，放在 feed。feed 必须是字符串。",
-        "用 ## 【投喂单元 N/M】标题。每一段只写六段英文正文。",
+        "只写%s，放在 feed。feed 必须是字符串。" % DRAFT_NAME,
+        "%s。每一段只写四段英文正文。" % HEADING_RULE,
         "不要使用七段式栏名（【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】）。",
-        "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
-        "六段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
-        "每个投喂单元单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。",
+        "不要写 summary 或 retention_analysis。",
+        H3_SUBJECT_SOUND_RULE,
+        "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+        "四段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
+        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。" % UNIT_NAME,
         "每个 Subject 必须对应 assets.md 里已经有的图。没有关键帧资产就不要写 Picture。",
         "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
     )),
 }
 
 _FEED_SEEDANCE = "\n".join((
-    "只写投喂稿，放在 feed。feed 必须是字符串。",
-    "用 ## 【投喂单元 N/M】标题，下面写七段：【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】。",
-    "每个投喂单元单独计时，单段不超过该模型上限。",
+    "只写%s，放在 feed。feed 必须是字符串。" % DRAFT_NAME,
+    "%s，下面写七段：【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】。" % HEADING_RULE,
+    "每个%s单独计时，单段不超过该模型上限。" % UNIT_NAME,
     "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
 ))
 
@@ -795,12 +832,43 @@ def stages_for(locks, only):
     return stages
 
 
+def accepted_done(accepted):
+    """Stages that count as finished.
+
+    A seam accepted before packing is the old per-shot ledger. It does not
+    count. Packing can run with no ledger. After packing is accepted, seam
+    is still pending until it is accepted again.
+    """
+    seen_feed = False
+    done = set()
+    for name in accepted or []:
+        if name == "feed":
+            seen_feed = True
+        if name == "seam" and not seen_feed:
+            continue
+        done.add(name)
+    return done
+
+
 def next_pending(stages, accepted):
-    done = set(accepted or [])
+    """The next stage that is not accepted."""
+    done = accepted_done(accepted)
     for name in stages or []:
         if name not in done:
             return name
     return ""
+
+
+def _unaccept_later(pipeline, stage):
+    """Writing this stage drops every later acceptance, including an old seam."""
+    if stage not in _ORDER:
+        return
+    later = set(_ORDER[_ORDER.index(stage) + 1 :])
+    if not later:
+        return
+    pipeline["accepted"] = [
+        name for name in (pipeline.get("accepted") or []) if name not in later
+    ]
 
 
 def draft_has_combat(text):
@@ -842,7 +910,7 @@ def mount_header(stage, locks, carried, only):
 
 
 def stage_instruction(stage, locks=None):
-    """H3 feed is six English sections. Seedance keeps the seven-section sheet."""
+    """H3 feed is four English sections. Seedance keeps the seven-section sheet."""
     if stage != "feed":
         return _INSTRUCTION.get(stage, "")
     model = str((locks or {}).get("model") or "h3").lower()
@@ -895,14 +963,18 @@ def carried_text(folder, stage):
         script = _read(internal / "剧本.md")
         if script:
             chunks.append(script)
-    if stage in ("storyboard", "feed"):
+    if stage in ("storyboard", "feed", "seam"):
         assets = _read(internal / "assets.md")
         if assets:
             chunks.append(assets)
-    if stage == "feed":
+    if stage in ("feed", "seam"):
         board = _read(internal / "分镜.md")
         if board:
             chunks.append(board)
+    if stage == "seam":
+        feed = _read(internal / "feed.md")
+        if feed:
+            chunks.append(feed)
     return "\n\n".join(chunks)
 
 
@@ -936,6 +1008,13 @@ def store_stage(folder, stage, result):
                 result = dict(result)
                 result["previs"] = previs
                 _write_internal(folder, "previs.md", previs)
+        _drop_packing_files(folder)
+    elif stage == "seam":
+        payload = {
+            "seam_ledger": result.get("seam_ledger") if isinstance(result.get("seam_ledger"), dict) else {},
+            "feed_units": result.get("feed_units") if isinstance(result.get("feed_units"), list) else [],
+        }
+        _write_internal(folder, "分镜衔接.json", json.dumps(payload, ensure_ascii=False, indent=2))
     elif stage == "feed":
         from end.repair_rules.feed_unit_headers import recover_feed_units
 
@@ -944,7 +1023,22 @@ def store_stage(folder, stage, result):
         bound, _groups = bind_feed_document(draft, loaded.get("assets") or [])
         result["feed"] = bound or draft
         _write_internal(folder, "feed.md", result.get("feed") or "")
+        _drop_seam_file(folder)
     return result
+
+
+def _drop_seam_file(folder):
+    path = Path(folder) / "_内部_" / "分镜衔接.json"
+    if path.is_file():
+        path.unlink()
+
+
+def _drop_packing_files(folder):
+    folder = Path(folder)
+    _drop_seam_file(folder)
+    for path in (folder / "_内部_" / "feed.md", folder / "feed.md"):
+        if path.is_file():
+            path.unlink()
 
 
 SCRIPT_REVISE_OPTIONS = ("更贴我写的故事", "产品信息写清楚", "打斗再收着点", "其他")
@@ -980,17 +1074,16 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
     if passed and stage == "asset":
         return "资产门。机检已过。继续就进入分镜。", ["继续"]
     if passed and stage == "storyboard":
-        return "分镜门。继续之后才写投喂稿。", ["继续"]
+        return STORYBOARD_PASS, ["继续"]
     if passed and stage == "feed":
-        return "投喂前。闸门已过。继续就做投喂机检并交付。", ["继续"]
+        return FEED_PASS, ["继续"]
+    if passed and stage == "seam":
+        return "分镜衔接。账本已过。继续才出图出片。", ["继续"]
     tail = (report or "").strip()
     if len(tail) > 1200:
         tail = tail[-1200:]
-    if stage == "feed" and str(report or "").strip() == "投喂稿是空的":
-        return (
-            "投喂稿没写出来。根据建议修改会按分镜和资产再写一版。",
-            [ASSET_REVISE],
-        )
+    if stage == "feed" and is_empty_draft(report):
+        return EMPTY_DRAFT_REPLY, [ASSET_REVISE]
     if stage == "storyboard" and needs_human(report):
         if str(report or "").strip() == "分镜是空的" or not has_draft:
             reply = "分镜没写出来。预演稿不能当作分镜。"
@@ -1003,7 +1096,7 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
         return reply, options
     if stage in ("asset", "storyboard", "feed"):
         if stage == "feed":
-            reply = "投喂机检没过。根据建议修改会按下面这些项改。"
+            reply = MACHINE_FAIL
         else:
             reply = "机检没过。根据建议修改会按下面这些项改。"
         if tries:
@@ -1034,7 +1127,7 @@ def gate_result(stage, passed, report, pipeline, has_draft=False):
     label = _GATE_LABEL.get(stage, "停在门上")
     if not passed and str((pipeline or {}).get("check") or "") == "machine":
         phase = "gate_machine"
-        label = "投喂机检"
+        label = MACHINE_GATE
     stored = dict(pipeline or {})
     stored.update(
         {
@@ -1085,12 +1178,14 @@ def auto_gate_action(outcome):
     repairs = int(pipeline.get("repairs") or 0)
     needs_retry = bool(pipeline.get("retry_write")) and not passed
     if current == "script":
-        if needs_retry and retries < REPAIR_LIMIT - 1:
+        if needs_retry and not pipeline.get("worker_exhausted") and retries < REPAIR_LIMIT - 1:
             return "retry_write"
         return "stop"
-    if current not in ("recon", "asset", "storyboard", "feed"):
+    if current not in ("recon", "asset", "storyboard", "seam", "feed"):
         return "stop"
     if current == "storyboard" and not passed and needs_human(pipeline.get("report")):
+        return "stop"
+    if pipeline.get("worker_exhausted") and current in ("storyboard", "seam", "feed") and not passed:
         return "stop"
     if needs_retry:
         if retries >= REPAIR_LIMIT - 1:
@@ -1129,7 +1224,18 @@ def _spec_patch(stage, result, previous):
             if result.get("previs"):
                 merged["previs"] = coerce_previs(result.get("previs") or "")
             merged = apply_storyboard_shots(merged)
+        from end.seam_ledger import drop_packing
+
+        merged = drop_packing(merged)
+    elif stage == "seam":
+        if isinstance(result.get("seam_ledger"), dict):
+            merged["seam_ledger"] = result.get("seam_ledger")
+        if isinstance(result.get("feed_units"), list) and result.get("feed_units"):
+            merged["feed_units"] = result.get("feed_units")
     elif stage == "feed":
+        from end.seam_ledger import packed_units, strip_seam
+
+        merged = strip_seam(merged)
         if result.get("feed"):
             merged["feed"] = result.get("feed")
         if merged.get("storyboard_contract"):
@@ -1142,6 +1248,7 @@ def _spec_patch(stage, result, previous):
                 merged["shots"] = incoming
             merged = apply_storyboard_shots(merged)
             merged = apply_feed_binding(merged)
+        merged["feed_units"] = packed_units(merged)
     merged.pop("locks", None)
     return merged
 
@@ -1217,6 +1324,30 @@ def check_stage(folder, stage, locks, title=""):
         if hold:
             return False, hold
         return True, ""
+    if stage == "seam":
+        from end.seam_ledger import check_seam_ledger, packed_units
+
+        spec = _load_spec(folder)
+        feed_text = _read(internal / "feed.md") or spec.get("feed") or ""
+        spec = dict(spec)
+        if feed_text:
+            spec["feed"] = feed_text
+        units = packed_units(spec)
+        if not units:
+            return False, "还没有提示词封装，不能做分镜衔接"
+        path = internal / "分镜衔接.json"
+        text = _read(path)
+        if not text.strip():
+            return False, "分镜衔接是空的"
+        try:
+            saved = json.loads(text)
+        except json.JSONDecodeError:
+            return False, "分镜衔接不是账本"
+        body = saved.get("seam_ledger") if isinstance(saved, dict) else {}
+        produced = check_seam_ledger(body or {}, units)
+        if produced.get("ok"):
+            return True, ""
+        return False, produced.get("report") or "分镜衔接没过"
     if stage == "feed":
         from end.repair_rules.feed_unit_headers import recover_feed_units
 
@@ -1229,13 +1360,33 @@ def check_stage(folder, stage, locks, title=""):
             text = patch_h3_voiceover(text)
             _write_internal(folder, "feed.md", text)
         if not text.strip():
-            return False, "投喂稿是空的"
+            return False, EMPTY_DRAFT
         claim = unverified_claim(text, mode)
         if claim:
             return False, "没看见图，却写了%s" % claim
         code, report = check_feed(path, locks.get("model") or "h3", mode, locks.get("track") or "1")
+        spec_now = _load_spec(folder)
+        extras = feed_duration_failures(text, _read(internal / "分镜.md"), spec_now.get("shots"))
+        if str((locks or {}).get("model") or "h3").strip().lower() == "h3":
+            from Agents.workers.feed import (
+                agreed_style,
+                shot_skeleton_failures,
+                style_lock_failures,
+            )
+
+            script = _read(internal / "剧本.md") or str(spec_now.get("script") or "")
+            extras.extend(style_lock_failures(text, agreed_style({"script": script, "locks": locks or {}})))
+            extras.extend(shot_skeleton_failures(text, {
+                "storyboard": _read(internal / "分镜.md"),
+                "shots": spec_now.get("shots") or [],
+                "source": str(spec_now.get("source") or ""),
+            }))
         if code != 0:
+            if extras:
+                return False, (report or "").rstrip() + "\n" + "\n".join(extras)
             return False, report
+        if extras:
+            return False, "\n".join(extras)
         return True, ""
     return True, ""
 
@@ -1571,6 +1722,81 @@ _H3_SECTION_FIELDS = (
     "overall_soundscape",
     "non_diegetic_music",
 )
+# Packing no longer writes these. They stay recognizable so a leftover block
+# can be removed without pouring its body into the next section.
+_H3_OMITTED_FIELDS = ("summary", "retention_analysis")
+_H3_OMITTED_ALT = "|".join(_H3_SECTION_FIELDS)
+
+
+def _h3_field_header(line):
+    """A Ref2VA field line. Closing angle tags are marked ``close``."""
+    text = str(line or "").strip()
+    if not text:
+        return None
+    close = re.match(r"^</[ \t]*(%s)[ \t]*>[ \t]*$" % _H3_OMITTED_ALT, text)
+    if close:
+        return close.group(1), "close"
+    wrap = re.match(
+        r"^<[ \t]*(%s)[ \t]*>.*?</[ \t]*\1[ \t]*>[ \t]*$" % _H3_OMITTED_ALT,
+        text,
+    )
+    if wrap:
+        return wrap.group(1), "wrap"
+    opened = re.match(r"^<[ \t]*(%s)[ \t]*>" % _H3_OMITTED_ALT, text)
+    if opened:
+        return opened.group(1), "open"
+    bracket = re.match(r"^【[ \t]*(%s)[ \t]*】" % _H3_OMITTED_ALT, text)
+    if bracket:
+        return bracket.group(1), "head"
+    colon = re.match(r"^(%s)[ \t]*[:：]" % _H3_OMITTED_ALT, text)
+    if colon:
+        return colon.group(1), "head"
+    bare = re.match(r"^(%s)[ \t]*$" % _H3_OMITTED_ALT, text)
+    if bare:
+        return bare.group(1), "head"
+    return None
+
+
+_LOOSE_UNIT_HEAD = re.compile(r"^【[ \t]*%s[ \t]+\d+[ \t]*/[ \t]*\d+" % UNIT_TOKEN)
+
+
+def strip_omitted_h3_sections(text):
+    """Drop ``summary`` and ``retention_analysis`` blocks, including their bodies.
+
+    The other four sections stay in place. A line that merely mentions those
+    words is not a heading and is left alone. A unit heading ends a dropped
+    block so the next unit is not swallowed.
+    """
+    raw = str(text or "")
+    if not raw or not any(name in raw for name in _H3_OMITTED_FIELDS):
+        return raw
+    kept = []
+    omitting = False
+    for line in raw.splitlines(keepends=True):
+        core = line[:-2] if line.endswith("\r\n") else line[:-1] if line.endswith(("\n", "\r")) else line
+        header = _h3_field_header(core)
+        if header:
+            name, kind = header
+            if kind == "close":
+                if name in _H3_OMITTED_FIELDS or omitting:
+                    omitting = False
+                    continue
+                kept.append(line)
+                continue
+            if name in _H3_OMITTED_FIELDS:
+                omitting = kind != "wrap"
+                continue
+            omitting = False
+            kept.append(line)
+            continue
+        if UNIT_HEAD_ANY.match(core) or _LOOSE_UNIT_HEAD.match(core.strip()):
+            omitting = False
+            kept.append(line)
+            continue
+        if omitting:
+            continue
+        kept.append(line)
+    return "".join(kept)
 
 
 _FEED_FENCE = re.compile(
@@ -1696,7 +1922,7 @@ _SHOT_RANGE = re.compile(
 _LEADING_SHOT_CLOCK = re.compile(
     r"(?m)^([ \t]*)(?:At|在)\s+(\d{1,2}:\d{2}\.\d{3})\s+(\[Shot\s+(\d+)\])[ \t]*"
 )
-_UNIT_HEAD_LINE = re.compile(r"(?m)^##[^\n]*投喂单元[^\n]*$")
+_UNIT_HEAD_LINE = UNIT_HEAD_LINE
 _DURATION_LINE = re.compile(r"(?m)^(?:duration|duration_seconds)\s*[:=]")
 
 
@@ -1840,8 +2066,7 @@ def _renumber_feed_heads(text):
     out = text
     for number, match in reversed(list(enumerate(matches, 1))):
         line = match.group(0)
-        replaced = re.sub(
-            r"(投喂单元\s*)\d+\s*/\s*\d+",
+        replaced = UNIT_RENUMBER.sub(
             lambda found, index=number, count=total: "%s%s/%s" % (found.group(1), index, count),
             line,
             count=1,
@@ -1895,8 +2120,15 @@ def _settle_ready_units(raw):
 
 
 def _declared_h3_duration(seconds):
-    whole = int(math.ceil(float(seconds)))
-    return max(4, min(15, whole))
+    """Integer seconds H3 writes on ``duration``.
+
+    Four seconds is the shortest H3 render. A span over 15 seconds stays over
+    15. Callers split that unit. They do not clamp it to 15.
+    """
+    whole = int(math.ceil(float(seconds) - 1e-9))
+    if whole < 4:
+        return 4
+    return whole
 
 
 def _last_cut_seconds(block):
@@ -1914,15 +2146,24 @@ def _unit_without_tail(block):
     return block[: match.start()], block[match.start() :]
 
 
-def _fill_duration_block(block):
-    """Add duration from the last cut inside the unit. Leave shot sentences and the footer alone."""
+def _fill_duration_block(block, last_shot_seconds=0):
+    """Declare the unit span. The last cut is only the start of the last shot.
+
+    ``last_shot_seconds`` is that shot's length. Leaving it at 0 keeps a unit
+    that already ends on the last cut. Adding it stops the declaration from
+    dropping the last shot. An existing duration line is left alone so a short
+    declaration stays visible to the hard gate.
+    """
     body, tail = _unit_without_tail(block)
     if _DURATION_LINE.search(body):
         return block
     seconds = _last_cut_seconds(body)
+    extra = float(last_shot_seconds or 0)
     if seconds is None:
-        return block
-    shown = _declared_h3_duration(seconds)
+        if extra <= 0:
+            return block
+        seconds = 0
+    shown = _declared_h3_duration(float(seconds) + extra)
     unit = _UNIT_HEAD_LINE.search(body)
     line = "duration: %s" % shown
     if unit:
@@ -1934,16 +2175,176 @@ def _fill_duration_block(block):
     return filled + tail
 
 
-def _fill_missing_h3_duration(text):
+def _fill_missing_h3_duration(text, shot_durations=None):
+    raw = str(text or "")
+    durations = [float(item) for item in (shot_durations or [])]
+    heads = list(_UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        last = durations[-1] if len(durations) == 1 else 0
+        return _fill_duration_block(raw, last_shot_seconds=last)
+    parts = [raw[: heads[0].start()]]
+    cursor = 0
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        block = raw[match.start() : end]
+        count = len(_SHOT_HEAD.findall(block))
+        last = 0
+        if durations and count:
+            chunk = durations[cursor : cursor + count]
+            cursor += len(chunk)
+            if chunk:
+                last = chunk[-1]
+        parts.append(_fill_duration_block(block, last_shot_seconds=last))
+    return "".join(parts)
+
+
+def format_seconds(value):
+    number = float(value)
+    if abs(number - round(number)) < 1e-6:
+        return str(int(round(number)))
+    text = ("%.1f" % number).rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def group_shot_durations(durations, limit=15, locks=None):
+    """Pack consecutive shot lengths into H3 units.
+
+    Merging is allowed. A unit never keeps more than ``limit`` seconds by
+    shortening a shot. A shot longer than ``limit`` stays in its own unit at
+    its real length so the caller can split the shot instead of clamping.
+    D-lock marks are not available yet, so they do not split a unit.
+    """
+    del locks
+    groups = []
+    bucket = []
+    total = 0.0
+    for raw in durations or []:
+        try:
+            seconds = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if seconds <= 0:
+            continue
+        if seconds > limit:
+            if bucket:
+                groups.append(bucket)
+                bucket = []
+                total = 0.0
+            groups.append([seconds])
+            continue
+        if bucket and total + seconds > limit + 1e-6:
+            groups.append(bucket)
+            bucket = [seconds]
+            total = seconds
+        else:
+            bucket.append(seconds)
+            total += seconds
+    if bucket:
+        groups.append(bucket)
+    return groups
+
+
+def storyboard_duration_list(text):
+    found = []
+    for line in str(text or "").splitlines():
+        match = re.match(r"^时长\s*[:：]\s*(\d+(?:\.\d+)?)", line.strip())
+        if match:
+            found.append(float(match.group(1)))
+    return found
+
+
+def storyboard_spoken_lines(text):
+    found = []
+    for line in str(text or "").splitlines():
+        match = re.match(r"^(?:对白|旁白)\s*[:：]\s*(.+)$", line.strip())
+        if not match:
+            continue
+        spoken = match.group(1).strip()
+        if spoken:
+            found.append(spoken)
+    return found
+
+
+def _feed_units(text):
     raw = str(text or "")
     heads = list(_UNIT_HEAD_LINE.finditer(raw))
     if not heads:
-        return _fill_duration_block(raw)
-    parts = [raw[: heads[0].start()]]
+        return [raw] if raw.strip() else []
+    units = []
     for index, match in enumerate(heads):
         end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
-        parts.append(_fill_duration_block(raw[match.start() : end]))
-    return "".join(parts)
+        units.append(raw[match.start() : end])
+    return units
+
+
+def _unit_declared_seconds(block):
+    match = re.search(r"(?m)^(?:duration|duration_seconds)\s*[:=]\s*(\d+(?:\.\d+)?)", str(block or ""))
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def feed_duration_failures(feed, storyboard="", shots=None, limit=15):
+    """Hard failures when a packed feed is shorter than the storyboard.
+
+    Merging shots into one H3 unit is allowed. The sum of declared unit
+    durations must not fall below the storyboard total, spoken lines must
+    remain, and a storyboard span over ``limit`` must be split rather than
+    clamped. A feed that has not declared a duration yet is not failed here.
+    The H3 checker still owns missing-field warnings.
+    """
+    durations = []
+    for shot in shots or []:
+        if isinstance(shot, dict) and shot.get("duration") not in (None, ""):
+            try:
+                durations.append(float(shot.get("duration")))
+            except (TypeError, ValueError):
+                continue
+    if not durations:
+        durations = storyboard_duration_list(storyboard)
+    declared = []
+    if _UNIT_HEAD_LINE.search(str(feed or "")):
+        for block in _feed_units(feed):
+            seconds = _unit_declared_seconds(block)
+            if seconds is not None:
+                declared.append(seconds)
+    errors = []
+    board_total = sum(durations)
+    feed_total = sum(declared)
+    if durations and declared and feed_total + 0.05 < board_total:
+        groups = group_shot_durations(durations, limit)
+        rendered = "；".join(
+            "%s=%s" % (
+                "+".join(format_seconds(item) for item in group),
+                format_seconds(sum(group)),
+            )
+            for group in groups
+        )
+        errors.append(
+            "时长被压缩：分镜合计 %ss，封装声明 %ss（%s）。"
+            "可以合并镜头，但总时长不得短于分镜，情节和对白不得压缩。"
+            "单段故事板跨度超过 %ss 必须拆成下一单元，禁止钳到 %ss。"
+            "应按这些单元写回时长：%s。"
+            % (
+                format_seconds(board_total),
+                format_seconds(feed_total),
+                "+".join(format_seconds(item) for item in declared),
+                format_seconds(limit),
+                format_seconds(limit),
+                rendered,
+            )
+        )
+    for seconds in durations:
+        if seconds > limit + 0.05:
+            errors.append(
+                "单镜 %ss 超过 %ss，不能钳成 %ss，必须把这一镜拆开。"
+                % (format_seconds(seconds), format_seconds(limit), format_seconds(limit))
+            )
+    if _UNIT_HEAD_LINE.search(str(feed or "")):
+        for spoken in storyboard_spoken_lines(storyboard):
+            if spoken not in str(feed or ""):
+                errors.append("对白被压缩：%s缺少「%s」。不要为了压时长删对白或旁白。" % (DRAFT_NAME, spoken))
+    return errors
 
 
 def _flip_leading_shot_clocks(text):
@@ -2099,7 +2500,7 @@ def _shot_groups(pieces):
     return groups
 
 
-_UNIT_HEAD = re.compile(r"(?m)^## 【投喂单元")
+_UNIT_HEAD = GATE_UNIT_HEAD
 _TAIL_MARK = re.compile(r"^(?:---\s*|强制禁止项)")
 
 
@@ -2269,7 +2670,7 @@ def _coerce_h3_field_heads(text):
 def _normalize_loose_h3(text):
     """Turn bare H3 field names into line-oriented sections the checker can see."""
     raw = _coerce_h3_field_heads(str(text or ""))
-    ready = bool(re.search(r"(?m)^subject_definitions\s*[:：]", raw)) and "## 【投喂单元" in raw
+    ready = bool(re.search(r"(?m)^subject_definitions\s*[:：]", raw)) and has_unit_heading(raw)
     sections = {} if ready else _loose_h3_sections(raw)
     bare = len(re.findall(
         r"(?m)^(?:%s)\s*$" % "|".join(_H3_SECTION_FIELDS),
@@ -2284,7 +2685,7 @@ def _normalize_loose_h3(text):
     total = len(groups)
     blocks = []
     for index, (origin, shots) in enumerate(groups, 1):
-        lines = ["## 【投喂单元 %s/%s · 段%s】" % (index, total, index)]
+        lines = [unit_heading(index, total, index)]
         last = origin
         shot_text = []
         for number, seconds, chunk in shots:
@@ -2312,7 +2713,7 @@ def _looks_like_feed_text(text):
     raw = str(text or "")
     return (
         "subject_definitions" in raw
-        or "投喂单元" in raw
+        or mentions_unit(raw)
         or "【时间轴分镜】" in raw
     )
 
@@ -2427,7 +2828,7 @@ def render_feed_text(value):
         content = segment.get("content")
         if not isinstance(content, dict):
             content = segment
-        lines = ["## 【投喂单元 %s/%s · 段%s】" % (index, total, index)]
+        lines = [unit_heading(index, total, index)]
         start, span = _feed_span(segment.get("time_range") or "")
         if span:
             shown = int(span) if span == int(span) else span
@@ -2444,26 +2845,566 @@ def render_feed_text(value):
     return normalize_h3_shot_cuts("\n\n".join(blocks).strip())
 
 
+_LIPS_RE = re.compile(r"lips\s+(?:remain|stay)\s+(?:completely\s+)?closed", re.I)
+_LIPS_CLAUSE = " while his/her lips remain completely closed"
+_VO_CUE = re.compile(r"voice[- ]?over|画外音|旁白|内心独白", re.I)
+_OFFICIAL_VO = re.compile(
+    r"says\s+in\s+an\s+off[- ]screen\s+voiceover\s*:\s*<d>.*?</d>",
+    re.I | re.S,
+)
+_UNOFFICIAL_VO = re.compile(
+    r"(?P<head>[^\n]{0,180}?(?:voice[- ]?over|画外音|旁白|内心独白)[^\n<]{0,80}?)"
+    r"(?P<dialog><d>.*?</d>)",
+    re.I | re.S,
+)
+_NARRATE_LINE = re.compile(
+    r"(?P<head>[^\n]{0,80}?voice[- ]?over[^\n]{0,40}?narrates\s*:\s*)(?P<rest>[^\n]+)",
+    re.I,
+)
+
+
+_SHORT_SUBJECT = re.compile(r"<(?:s|S)\s*(\d+)\s*>")
+_D_BLOCK = re.compile(r"<d\b[^>]*>.*?</d>", re.I | re.S)
+_CJK_NAME = re.compile(r"[\u4e00-\u9fff]{2,8}")
+_EN_NAME = re.compile(r"\b[A-Z][a-zA-Z]{1,}(?:\s+[A-Z][a-zA-Z]+)*\b")
+_NAME_STOP = {
+    "subject", "picture", "video", "audio", "she", "he", "her", "his", "the",
+    "and", "with", "from", "this", "that", "woman", "man", "girl", "boy",
+    "standing", "indoors", "fully", "preserved", "room", "tone", "none",
+    "shot", "chinese", "english", "says", "voice", "voiceover", "off",
+    "screen", "while", "lips", "remain", "completely", "closed", "narrator",
+    "calm", "soft", "named", "reference", "character", "person", "female",
+    "male", "young", "old",
+}
+_FILLER_WORDS = {
+    "a", "an", "the", "calm", "soft", "quiet", "low", "male", "female",
+    "narrator", "narrates", "his", "her", "their", "off", "screen",
+    "off-screen", "and", "with", "says", "in", "to", "of",
+}
+_FILLER_CJK = {"一声", "低声", "轻声"}
+_SUBJECT_LEAD = re.compile(
+    r"(?:<Subject\s+\d+>\s*(?:\(\s*S\d+\s*\)\s*)?|\(\s*S\d+\s*\)\s*)$"
+)
+_OFFICIAL_LEAD = re.compile(
+    r"(?:<Subject\s+\d+>\s*(?:\(\s*S\d+\s*\)\s*)?)?"
+    r"says\s+in\s+an\s+off[- ]screen\s+voiceover\s*:\s*$",
+    re.I,
+)
+
+
+def _defined_numbers(definitions):
+    return list(dict.fromkeys(re.findall(r"<Subject\s+(\d+)>", definitions or "")))
+
+
+def _subject_names(definitions):
+    found = []
+    for line in str(definitions or "").splitlines():
+        match = re.search(r"<Subject\s+(\d+)>", line)
+        if not match:
+            continue
+        number = match.group(1)
+        plain = re.sub(r"<[^>\n]+>", " ", line)
+        for token in _CJK_NAME.findall(plain):
+            found.append((number, token))
+        for token in _EN_NAME.findall(plain):
+            if token.lower() not in _NAME_STOP:
+                found.append((number, token))
+    return found
+
+
+def _name_at(hint, name):
+    if re.search(r"[\u4e00-\u9fff]", name):
+        return hint.rfind(name)
+    matches = list(re.finditer(r"(?<![A-Za-z])%s(?![A-Za-z])" % re.escape(name), hint))
+    if not matches:
+        return -1
+    return matches[-1].start()
+
+
+def _match_subject(definitions, hint, defined):
+    """Pick a defined subject from a nearby tag, ``<sN>``, or definition name."""
+    defined_set = set(defined)
+    hint = hint or ""
+    best = None
+
+    def consider(position, priority, number):
+        nonlocal best
+        if number not in defined_set or position < 0:
+            return
+        rank = (position, priority)
+        if best is None or rank > best[0]:
+            best = (rank, number)
+
+    for match in re.finditer(r"<Subject\s+(\d+)>", hint):
+        consider(match.start(), 2, match.group(1))
+    for match in _SHORT_SUBJECT.finditer(hint):
+        consider(match.start(), 2, match.group(1))
+    for number, name in _subject_names(definitions):
+        consider(_name_at(hint, name), 3, number)
+    if best:
+        return best[1]
+    return defined[0]
+
+
+def _subject_voice(definitions, hint=""):
+    """Official speaker tag for a voiceover, or empty when none is defined."""
+    defined = _defined_numbers(definitions)
+    if not defined:
+        return ""
+    number = _match_subject(definitions, hint, defined)
+    return "<Subject %s> (S%s)" % (number, number)
+
+
+def _lips_follow(text, end):
+    return bool(_LIPS_RE.search(text[end : end + 90]))
+
+
+def _drop_orphan_lips(text):
+    """Remove a closed-lips clause that is not attached to a voiceover ``</d>``."""
+    pattern = re.compile(
+        r"[ \t]*while\s+(?:their|his/her|his|her)\s+lips\s+remain\s+completely\s+closed\.?[ \t]*$",
+        re.I | re.M,
+    )
+
+    def keep(match):
+        before = text[: match.start()]
+        if re.search(r"</d>\s*$", before):
+            return match.group(0)
+        return ""
+
+    return pattern.sub(keep, text)
+
+
+def _content_offset(core, name, line_start, line_len):
+    patterns = (
+        r"^[ \t]*(?:【[ \t]*)?%s(?:[ \t]*】)?[ \t]*[:：][ \t]*",
+        r"^[ \t]*【[ \t]*%s[ \t]*】[ \t]*",
+    )
+    for pattern in patterns:
+        matched = re.match(pattern % re.escape(name), core)
+        if matched and matched.end() < len(core):
+            return line_start + matched.end()
+    return line_start + line_len
+
+
+def _section_spans(unit):
+    """Body offsets for Ref2VA fields. The header line itself stays put."""
+    headers = []
+    offset = 0
+    for line in str(unit or "").splitlines(keepends=True):
+        newline = len(line) - len(line.rstrip("\r\n"))
+        core = line[: len(line) - newline]
+        found = _h3_field_header(core)
+        if found:
+            name, kind = found
+            if kind == "close":
+                headers.append((None, offset))
+            else:
+                headers.append((name, offset, _content_offset(core, name, offset, len(line))))
+        offset += len(line)
+    spans = {}
+    for index, item in enumerate(headers):
+        name = item[0]
+        if not name or name in spans:
+            continue
+        end = headers[index + 1][1] if index + 1 < len(headers) else len(unit)
+        content_start = item[2]
+        if content_start > end:
+            content_start = end
+        spans[name] = (content_start, end)
+    return spans
+
+
+def _normalize_short_subjects(unit):
+    """Rewrite ``<s1>`` / ``<s2>`` to ``<Subject 1>`` / ``<Subject 2>`` when defined.
+
+    The same number is kept. A short tag that is not in this unit's
+    subject_definitions, and is not already a ``<Subject N>`` there, stays
+    as written so the patch does not invent an undefined subject.
+    """
+    spans = _section_spans(unit)
+    if "subject_definitions" not in spans:
+        return unit
+    start, end = spans["subject_definitions"]
+    definitions = unit[start:end]
+    allowed = set(re.findall(r"<Subject\s+(\d+)>", definitions))
+    allowed.update(_SHORT_SUBJECT.findall(definitions))
+    if not allowed:
+        return unit
+
+    def repl(match):
+        number = match.group(1)
+        if number not in allowed:
+            return match.group(0)
+        return "<Subject %s>" % number
+
+    return _SHORT_SUBJECT.sub(repl, unit)
+
+
+def _eat_filler_backward(text, start):
+    cursor = start
+    while cursor > 0:
+        trimmed = cursor
+        while trimmed > 0 and text[trimmed - 1] in " \t":
+            trimmed -= 1
+        if trimmed == 0 or text[trimmed - 1] in ".。!！?？\n;；":
+            break
+        word = re.search(r"([A-Za-z]+(?:-[A-Za-z]+)?|[\u4e00-\u9fff]{1,4})$", text[:trimmed])
+        if not word:
+            break
+        token = word.group(1)
+        if token.lower() not in _FILLER_WORDS and token not in _FILLER_CJK:
+            break
+        cursor = word.start()
+    return cursor
+
+
+def _cue_start(before):
+    official = _OFFICIAL_LEAD.search(before)
+    if official:
+        return official.start()
+    cues = list(re.finditer(r"voice[- ]?over|画外音|旁白|内心独白", before, re.I))
+    if not cues:
+        return len(before)
+    start = _eat_filler_backward(before, cues[-1].start())
+    subject = _SUBJECT_LEAD.search(before[:start])
+    if subject:
+        return subject.start()
+    return start
+
+
+def _span_end(text, index):
+    match = re.match(
+        r"\s*while\s+(?:their|his/her|his|her)\s+lips\s+remain\s+completely\s+closed\.?",
+        text[index:],
+        re.I,
+    )
+    if not match:
+        return index
+    return index + match.end()
+
+
+def _merge_spans(spans):
+    merged = []
+    for start, end in sorted(spans):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            continue
+        merged.append((start, end))
+    return merged
+
+
+def _dialogue_key(tag):
+    inner = re.search(r"<d\b[^>]*>(.*?)</d>", tag, re.I | re.S)
+    body = (inner.group(1) if inner else "").strip()
+    body = re.sub(r"^\[[^\]\n]+\]\s*", "", body).strip()
+    return body.strip(" \"'“”")
+
+
+def _dialogue_present(tag, detailed):
+    if not detailed or not tag:
+        return False
+    if tag in detailed:
+        return True
+    key = _dialogue_key(tag)
+    return bool(key) and key in detailed
+
+
+def _drop_undefined_subjects(text, definitions):
+    defined = set(_defined_numbers(definitions))
+
+    def repl(match):
+        if match.group(1) in defined:
+            return match.group(0)
+        return ""
+
+    return re.sub(r"<Subject\s+(\d+)>", repl, text or "")
+
+
+def _prepare_move(clause, definitions):
+    cleaned = _drop_undefined_subjects(clause, definitions)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    return cleaned
+
+
+def _spoken_span(sound, start, end):
+    """Expand a dialogue match back over its voiceover lead-in, not the ambience."""
+    cue = _cue_start(sound[:start])
+    return cue, _span_end(sound, end)
+
+
+def _clauses_to_move(sound, detailed, definitions):
+    if not sound:
+        return []
+    moves = []
+    covered = []
+    for match in _D_BLOCK.finditer(sound):
+        tag = match.group(0)
+        if _dialogue_present(tag, detailed):
+            continue
+        start, end = _spoken_span(sound, match.start(), match.end())
+        prepared = _prepare_move(sound[start:end], definitions)
+        if not prepared:
+            continue
+        moves.append(prepared)
+        covered.append((start, end))
+    for match in _NARRATE_LINE.finditer(sound):
+        rest = (match.group("rest") or "").strip()
+        if not rest or rest.startswith("<d>"):
+            continue
+        key = rest.strip(" \"'“”")
+        if key and key in (detailed or ""):
+            continue
+        if any(start <= match.start() < end for start, end in covered):
+            continue
+        cue = re.search(r"voice[- ]?over|画外音|旁白|内心独白", match.group(0), re.I)
+        cue_at = match.start() + (cue.start() if cue else 0)
+        start = _eat_filler_backward(sound[:cue_at], cue_at)
+        subject = _SUBJECT_LEAD.search(sound[:start])
+        if subject:
+            start = subject.start()
+        prepared = _prepare_move(sound[start:match.end()], definitions)
+        if prepared:
+            moves.append(prepared)
+    return moves
+
+
+def _append_moves(body, moves):
+    extra = []
+    for item in moves:
+        text = str(item or "").strip()
+        if not text or text in (body or ""):
+            continue
+        extra.append(text)
+    if not extra:
+        return body
+    block = "\n".join(extra)
+    if not str(body or "").strip():
+        return block
+    if body.endswith("\n"):
+        return body + block
+    return body + "\n" + block
+
+
+def _finish_body(original, updated, at_end):
+    if updated == original:
+        return original
+    if updated and not updated.endswith("\n") and ((not at_end) or str(original or "").endswith("\n")):
+        return updated + "\n"
+    return updated
+
+
+def _splice(text, replacements):
+    updated = text
+    for start, end, new in sorted(replacements, key=lambda item: item[0], reverse=True):
+        updated = updated[:start] + new + updated[end:]
+    return updated
+
+
+def _with_lips(phrase, text, end):
+    """Closed lips on a voiceover that has no defined subject to name."""
+    if _LIPS_RE.search(phrase) or _lips_follow(text, end):
+        return phrase
+    return phrase + _LIPS_CLAUSE
+
+
+def _shot_prefix(head):
+    """Keep the shot sentence that sits in front of a voiceover cue on the same line."""
+    cue = re.search(r"voice[- ]?over|画外音|旁白|内心独白", head or "", re.I)
+    if not cue or cue.start() <= 0:
+        return ""
+    prefix = head[: _eat_filler_backward(head[: cue.start()], cue.start())].rstrip()
+    if not prefix:
+        return ""
+    return prefix + " "
+
+
+def _add_lips(match, text):
+    phrase = match.group(0)
+    if _LIPS_RE.search(phrase) or _lips_follow(text, match.end()):
+        return phrase
+    return phrase + _LIPS_CLAUSE
+
+
+def _rewrite_unofficial(text, definitions):
+    def rewrite(match):
+        head = match.group("head") or ""
+        dialog = match.group("dialog") or ""
+        tail = head.rstrip()
+        before = text[max(0, match.start() - 90) : match.start()]
+        hint = before + head + dialog
+        if re.search(r"says\s+in\s+an\s+off[- ]screen\s*$", before, re.I):
+            return match.group(0)
+        voice = _subject_voice(definitions, hint)
+        official = re.search(r"says\s+in\s+an\s+off[- ]screen\s+voiceover", head, re.I)
+        if official and re.search(r"<Subject\s+\d+>", before + match.group(0)):
+            return match.group(0)
+        if (not official) and re.search(r"\bsays\s*:\s*$", tail, re.I) and not _VO_CUE.search(tail[-48:]):
+            return match.group(0)
+        if not voice:
+            return _with_lips(match.group(0), text, match.end())
+        return _shot_prefix(head) + "%s says in an off-screen voiceover: %s" % (voice, dialog)
+
+    return _UNOFFICIAL_VO.sub(rewrite, text)
+
+
+def _rewrite_narration(text, definitions):
+    def narrate(match):
+        rest = (match.group("rest") or "").strip()
+        if rest.startswith("<d>") or _OFFICIAL_VO.search(match.group(0)):
+            return match.group(0)
+        hint = text[max(0, match.start() - 80) : match.start()] + (match.group(0) or "")
+        voice = _subject_voice(definitions, hint)
+        if not voice:
+            return _with_lips(match.group(0), text, match.end())
+        language = "Chinese" if re.search(r"[\u4e00-\u9fff]", rest) else "English"
+        spoken = rest.strip(" \"'“”")
+        return _shot_prefix(match.group("head") or "") + (
+            "%s says in an off-screen voiceover: <d>[%s] %s</d>"
+            % (voice, language, spoken)
+        )
+
+    return _NARRATE_LINE.sub(narrate, text)
+
+
+def _rewrite_detailed_vo(body, definitions):
+    """Official voiceover formula inside detailed_description only."""
+    if not body or not _VO_CUE.search(body):
+        return body
+    patched = _rewrite_narration(_rewrite_unofficial(body, definitions), definitions)
+    patched = _OFFICIAL_VO.sub(lambda match: _add_lips(match, patched), patched)
+    return _drop_orphan_lips(patched)
+
+
+def _clean_sound(text, original):
+    lines = []
+    for line in str(text or "").splitlines():
+        line = re.sub(r"[ \t]{2,}", " ", line).strip()
+        line = re.sub(r"\s+([,.;:。，、])", r"\1", line)
+        line = re.sub(r"^[,;:，、]+\s*", "", line)
+        line = line.strip(" \t-—")
+        if not line or re.fullmatch(r"[.。,，;；:：]+", line):
+            continue
+        lines.append(line)
+    ending = ""
+    if str(original or "").endswith("\r\n"):
+        ending = "\r\n"
+    elif str(original or "").endswith("\n"):
+        ending = "\n"
+    if not lines:
+        return ending
+    return "\n".join(lines) + ending
+
+
+def _strip_soundscape(sound, detailed):
+    """Drop dialogue that detailed_description already carries. Leave ambience."""
+    if not sound:
+        return sound
+    spans = []
+    for match in _D_BLOCK.finditer(sound):
+        if not _dialogue_present(match.group(0), detailed):
+            continue
+        spans.append(_spoken_span(sound, match.start(), match.end()))
+    for match in _NARRATE_LINE.finditer(sound):
+        rest = (match.group("rest") or "").strip()
+        if not rest or rest.startswith("<d>"):
+            continue
+        key = rest.strip(" \"'“”")
+        if not key or key not in (detailed or ""):
+            continue
+        cue = re.search(r"voice[- ]?over|画外音|旁白|内心独白", match.group(0), re.I)
+        cue_at = match.start() + (cue.start() if cue else 0)
+        start = _eat_filler_backward(sound[:cue_at], cue_at)
+        subject = _SUBJECT_LEAD.search(sound[:start])
+        if subject:
+            start = subject.start()
+        spans.append((start, match.end()))
+    keys = []
+    for match in _D_BLOCK.finditer(detailed or ""):
+        key = _dialogue_key(match.group(0))
+        if key and key not in keys:
+            keys.append(key)
+    if not spans and not any(key and key in sound for key in keys):
+        return sound
+    text = sound
+    for start, end in reversed(_merge_spans(spans)):
+        text = text[:start] + text[end:]
+    for key in sorted(keys, key=len, reverse=True):
+        if len(key) < 2:
+            continue
+        text = re.sub(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(key), "", text)
+    return _clean_sound(text, sound)
+
+
+def _patch_vo_unit(unit):
+    normalized = _normalize_short_subjects(unit)
+    spans = _section_spans(normalized)
+    if "detailed_description" not in spans:
+        if "overall_soundscape" in spans or not _VO_CUE.search(normalized):
+            return normalized
+        return _rewrite_detailed_vo(normalized, normalized)
+    d0, d1 = spans["detailed_description"]
+    detailed = normalized[d0:d1]
+    sound_span = spans.get("overall_soundscape")
+    if sound_span:
+        s0, s1 = sound_span
+        sound = normalized[s0:s1]
+    else:
+        s0 = s1 = None
+        sound = ""
+    definitions = ""
+    if "subject_definitions" in spans:
+        a, b = spans["subject_definitions"]
+        definitions = normalized[a:b]
+    moves = _clauses_to_move(sound, detailed, definitions) if sound else []
+    detailed_out = _rewrite_detailed_vo(_append_moves(detailed, moves), definitions)
+    detailed_out = _finish_body(detailed, detailed_out, d1 == len(normalized))
+    sound_out = sound
+    if sound:
+        sound_out = _strip_soundscape(sound, detailed_out)
+        sound_out = _finish_body(sound, sound_out, s1 == len(normalized))
+    if detailed_out == detailed and sound_out == sound:
+        return normalized
+    replacements = []
+    if detailed_out != detailed:
+        replacements.append((d0, d1, detailed_out))
+    if sound_span and sound_out != sound:
+        replacements.append((s0, s1, sound_out))
+    return _splice(normalized, replacements)
+
+
 def patch_h3_voiceover(text):
-    """H3 voiceover must carry the checker's closed-lips phrase."""
+    """Put official voiceover in detailed_description, never in overall_soundscape.
+
+    Unofficial voiceover in detailed_description becomes
+    ``<Subject N> (SN) says in an off-screen voiceover: <d>…</d>`` with closed
+    lips. N is a subject already defined in that unit. ``<s1>`` / ``<s2>`` in
+    the unit's subject_definitions are rewritten to ``<Subject 1>`` /
+    ``<Subject 2>`` with the same number. No undefined ``<Subject 1>`` is inserted.
+
+    overall_soundscape stays ambient. A ``<d>`` or spoken line already in
+    detailed_description is removed from the soundscape. A spoken line that
+    exists only in the soundscape is copied into detailed_description first
+    (as the official voiceover sentence when it is voiceover) and then removed.
+    Lips attach to that voiceover's ``</d>``. They are not appended at the end
+    of the feed, and they are not added to on-screen speech.
+    """
     raw = str(text or "")
     if "subject_definitions" not in raw:
         return raw
-    if not re.search(r"voiceover|画外音|旁白", raw, re.I):
+    hears_dialogue = bool(re.search(r"<d\b", raw, re.I))
+    if not (_VO_CUE.search(raw) or _SHORT_SUBJECT.search(raw) or ("overall_soundscape" in raw and hears_dialogue)):
         return raw
-    block = re.compile(r"(says in an off-screen voiceover:\s*<d>.*?</d>)", re.I | re.S)
-    lips = re.compile(r"lips\s+(?:remain|stay)\s+(?:completely\s+)?closed", re.I)
-
-    def _with_lips(match):
-        follow = raw[match.end():match.end() + 160]
-        if lips.search(match.group(0) + follow):
-            return match.group(0)
-        return match.group(0) + " while their lips remain completely closed"
-
-    patched = block.sub(_with_lips, raw)
-    if re.search(r"voiceover|画外音|旁白", patched, re.I) and not lips.search(patched):
-        return patched.rstrip() + "\nwhile their lips remain completely closed\n"
-    return patched
+    heads = list(_UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        return _patch_vo_unit(raw)
+    parts = [raw[: heads[0].start()]]
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        parts.append(_patch_vo_unit(raw[match.start() : end]))
+    return "".join(parts)
 
 
 def _repair_line(stage, repair):
@@ -2491,7 +3432,7 @@ def _repair_task(stage):
         target = "资产图块"
         locked = "剧本"
     elif stage == "feed":
-        target = "投喂稿"
+        target = DRAFT_NAME
         locked = "剧本、资产和分镜"
     else:
         target = "这一阶段正文"
@@ -2507,7 +3448,7 @@ _REPAIR_FIELD = {
     "storyboard": "改完的分镜放在 storyboard，预演放在 previs。",
     "asset": "改完的图块放在 image_prompts。",
     "script": "改完的剧本放在 script。",
-    "feed": "改完的投喂稿放在 feed。",
+    "feed": "改完的%s放在 feed。" % DRAFT_NAME,
     "recon": "改完的情报卡放在 intel。",
 }
 
@@ -2637,12 +3578,309 @@ def _script_brief(project, folder, locks, only, pipeline, step_id, previous):
     return "\n".join(line for line in lines if line is not None).strip()
 
 
+def _uses_worker(stage, pipeline):
+    """Script, storyboard, and feed writes go through the Agents loops.
+
+    A person's polish note stays on the existing script writer. A legacy
+    previs repair that is still about 六问 stays on the old storyboard path.
+    """
+    pipeline = pipeline or {}
+    if stage == "script":
+        return not str(pipeline.get("revise_note") or "").strip()
+    if stage == "feed":
+        return True
+    if stage == "storyboard":
+        return "缺六问" not in str(pipeline.get("repair") or "")
+    if stage == "seam":
+        return True
+    return False
+
+
+def _clear_draft_file(folder, name):
+    path = Path(folder) / "_内部_" / name
+    if not path.is_file():
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _stage_machine_report(passed, report, *, needs_human=False):
+    text = str(report or "").strip()
+    errors = [] if passed else [text or "机检没过"]
+    return {
+        "ok": bool(passed),
+        "fatal": "",
+        "exit_code": 0 if passed else 1,
+        "errors": errors,
+        "warnings": [],
+        "stats": {},
+        "blocks": 0,
+        "report": text,
+        "needs_human": bool(needs_human) and not passed,
+    }
+
+
+def _named_storyboard_gap(report):
+    return bool(re.search(r"S\d+\s*缺", str(report or "")))
+
+
+def _script_worker_checker(folder, locks):
+    def checker(draft, _state=None):
+        if str(draft or "").strip():
+            _write_internal(folder, "剧本.md", draft)
+        else:
+            _clear_draft_file(folder, "剧本.md")
+        passed, report = check_stage(folder, "script", locks, "")
+        return _stage_machine_report(passed, report)
+
+    return checker
+
+
+def _storyboard_worker_checker(folder, locks):
+    def checker(draft, _state=None):
+        if str(draft or "").strip():
+            _write_internal(folder, "分镜.md", draft)
+            write_marker(folder)
+        else:
+            _clear_draft_file(folder, "分镜.md")
+        passed, report = check_stage(folder, "storyboard", locks, "")
+        human = (not passed) and needs_human(report) and not _named_storyboard_gap(report)
+        return _stage_machine_report(passed, report, needs_human=human)
+
+    return checker
+
+
+def _feed_worker_checker(folder, locks, storyboard, shots):
+    del storyboard, shots
+
+    def checker(draft, _state=None):
+        text = str(draft or "")
+        if text.strip():
+            _write_internal(folder, "feed.md", text)
+        else:
+            _clear_draft_file(folder, "feed.md")
+        passed, report = check_stage(folder, "feed", locks, "")
+        return _stage_machine_report(passed, report)
+
+    return checker
+
+
+def _worker_complete(project, folder, write_model, prompts):
+    """One node is one Agents ``text.complete``. The critic only judges.
+
+    Handing a node to the stage writer starts the packing graph over.
+    specialist, director, and critic each ask Agents for one completion, so
+    this process does not call the model. LangGraph still runs the check
+    and the next collaborator.
+    """
+    del folder, write_model
+
+    def complete(role, messages, return_meta=False):
+        from end.ai_client import complete_node
+
+        traced = prompts if role != "critic" and prompts else ""
+        kwargs = {
+            "model": project.get("model"),
+            "trace_prompts": traced,
+        }
+        if return_meta:
+            kwargs["return_meta"] = True
+        return complete_node(role, messages, **kwargs)
+
+    return complete
+
+
+def _loaded_pack(load_pack, project, brief, stage):
+    """Load the stage skill. A task line does not skip this."""
+    pack = load_pack(project.get("template"), brief, _STAGE_CODE.get(stage, "P4"))
+    return str(pack or "")
+
+
+def _flush_script_context(folder, state):
+    """Write notes the semantic review will hash, before End reads that same context."""
+    state = state or {}
+    internal = str(state.get("internal") or "").strip()
+    if internal:
+        _write_internal(folder, "剧本过程.md", internal)
+    partials = state.get("partials") or []
+    if partials:
+        _save_script_partials(_chain_dir(folder), partials)
+
+
+def _script_semantic_reviewer(folder, brief):
+    """Second script critic. Same rubric as End, no second copy of the prompts."""
+
+    def reviewer(draft, state):
+        from end.script_review import review_script_text, script_review_context
+
+        _flush_script_context(folder, state)
+        text = str(draft or "")
+        return review_script_text(text, script_review_context(folder, brief, text))
+
+    return reviewer
+
+
+def _produce_with_worker(stage, project, folder, locks, write_model, opening, prompts=None, skill_pack=""):
+    """One Agents loop. Script retries stay inside that loop, including semantic review."""
+    from Agents.workers.feed import run_feed_loop
+    from Agents.workers.script import run_script_loop
+    from Agents.workers.seam import run_seam_loop
+    from Agents.workers.storyboard import run_storyboard_loop
+    from end.seam_ledger import check_seam_ledger
+
+    complete = _worker_complete(project, folder, write_model, prompts)
+    spec = _load_spec(folder)
+    if stage == "script":
+        outcome = run_script_loop(
+            str(project.get("brief") or ""),
+            locks=locks,
+            intake=load_intake(folder),
+            opening=opening,
+            prior_draft=_read(Path(folder) / "_内部_" / "剧本.md"),
+            skill_pack=skill_pack,
+            model=project.get("model"),
+            complete=complete,
+            checker=_script_worker_checker(folder, locks),
+            reviewer=_script_semantic_reviewer(folder, str(project.get("brief") or "")),
+        )
+        script = str(outcome.get("script") or outcome.get("draft") or "")
+        if not script.strip() and outcome.get("generator_note") == "model_error":
+            raise RuntimeError(outcome.get("error") or "这一步没有正文")
+        title = str(outcome.get("title") or "").strip()
+        internal = str(outcome.get("internal") or "").strip()
+        partials = outcome.get("partials") or []
+        chain = _chain_dir(folder)
+        _save_script_partials(chain, partials)
+        if script.strip():
+            _write_internal(folder, "剧本.md", script)
+            (chain / "05-正式剧本.md").write_text(script if script.endswith("\n") else script + "\n", encoding="utf-8")
+        if internal:
+            _write_internal(folder, "剧本过程.md", internal)
+        from end.trace import finish_trace
+
+        finish_trace(folder, {"script": script, "title": title, "internal": internal, "partials": partials})
+        payload = {
+            "title": title,
+            "script": script,
+            "internal": internal,
+            "partials": partials,
+            "_worker_loop": True,
+            "_worker_passed": bool(outcome.get("passed")),
+            "_worker_attempts": int(outcome.get("attempts") or 0),
+        }
+        semantic = outcome.get("semantic_report") or {}
+        machine = outcome.get("machine_report") or {}
+        if semantic.get("status") and machine.get("ok"):
+            payload["_semantic_report"] = semantic
+        return payload
+    if stage == "storyboard":
+        outcome = run_storyboard_loop(
+            _read(Path(folder) / "_内部_" / "剧本.md"),
+            locks=locks,
+            intake=load_intake(folder),
+            known_ids=known_ids(spec.get("assets")),
+            assets=spec.get("assets") or [],
+            shots=spec.get("shots") or [],
+            hold=read_hold(folder) or str(spec.get("storyboard_hold") or ""),
+            opening=opening,
+            prior_draft=_read(Path(folder) / "_内部_" / "分镜.md"),
+            skill_pack=skill_pack,
+            model=project.get("model"),
+            complete=complete,
+            checker=_storyboard_worker_checker(folder, locks),
+        )
+        if not str(outcome.get("draft") or "").strip() and outcome.get("generator_note") == "model_error":
+            raise RuntimeError(outcome.get("error") or "这一步没有正文")
+        payload = {
+            "storyboard": outcome.get("storyboard") or outcome.get("draft") or "",
+            "_storyboard_contract": bool(str(outcome.get("draft") or "").strip()),
+            "_worker_loop": True,
+            "_worker_passed": bool(outcome.get("passed")),
+            "_worker_attempts": int(outcome.get("attempts") or 0),
+        }
+        if outcome.get("supplied_shots"):
+            payload["shots"] = outcome.get("supplied_shots")
+        return payload
+    if stage == "seam":
+        from end.seam_ledger import packed_units
+
+        board = _read(Path(folder) / "_内部_" / "分镜.md")
+        feed = _read(Path(folder) / "_内部_" / "feed.md") or spec.get("feed") or ""
+        viewed = dict(spec)
+        if feed:
+            viewed["feed"] = feed
+        units = packed_units(viewed)
+        if not units:
+            raise RuntimeError("还没有提示词封装，不能做分镜衔接")
+        outcome = run_seam_loop(
+            _read(Path(folder) / "_内部_" / "剧本.md"),
+            board,
+            units=units,
+            feed=feed,
+            opening=opening,
+            prior_draft=_read(Path(folder) / "_内部_" / "分镜衔接.json"),
+            model=project.get("model"),
+            complete=complete,
+            checker=check_seam_ledger,
+        )
+        if not (outcome.get("seam_ledger") or {}).get("entries") and outcome.get("generator_note") == "model_error":
+            raise RuntimeError(outcome.get("error") or "这一步没有账本")
+        return {
+            "seam_ledger": outcome.get("seam_ledger") or {},
+            "feed_units": outcome.get("feed_units") or [],
+            "_worker_loop": True,
+            "_worker_passed": bool(outcome.get("passed")),
+            "_worker_attempts": int(outcome.get("attempts") or 0),
+        }
+    board = _read(Path(folder) / "_内部_" / "分镜.md")
+    script = _read(Path(folder) / "_内部_" / "剧本.md") or str(spec.get("script") or "")
+    outcome = run_feed_loop(
+        board,
+        locks=locks,
+        shots=spec.get("shots") or [],
+        script=script,
+        opening=opening,
+        prior_draft=_read(Path(folder) / "_内部_" / "feed.md"),
+        skill_pack=skill_pack,
+        model=project.get("model"),
+        complete=complete,
+        checker=_feed_worker_checker(folder, locks, board, spec.get("shots") or []),
+        project_id=str(project.get("id") or ""),
+        project_folder=str(folder or ""),
+    )
+    if not str(outcome.get("draft") or "").strip() and outcome.get("generator_note") == "model_error":
+        raise RuntimeError(outcome.get("error") or "这一步没有正文")
+    return {
+        "feed": outcome.get("feed") or outcome.get("draft") or "",
+        "_worker_loop": True,
+        "_worker_passed": bool(outcome.get("passed")),
+        "_worker_attempts": int(outcome.get("attempts") or 0),
+    }
+
+
 def _produce_script(project, folder, locks, only, write_model, load_pack, pipeline):
     from end.trace import begin_trace, finish_trace
 
-    del load_pack
     pipeline = pipeline or {}
     revise = str(pipeline.get("revise_note") or "").strip()
+    if _uses_worker("script", pipeline):
+        fresh = not (
+            pipeline.get("repair")
+            or pipeline.get("script_from")
+            or str(pipeline.get("action") or "") == "rewrite"
+        )
+        if fresh:
+            chain = _chain_dir(folder)
+            for child in chain.glob("*.md"):
+                child.unlink()
+        brief = _script_suite_brief(project, folder, locks, only, pipeline)
+        prompts = begin_trace(folder, "script", bool(pipeline.get("repair")), brief, label="剧本")
+        pack = _loaded_pack(load_pack, project, brief, "script")
+        return _produce_with_worker(
+            "script", project, folder, locks, write_model, brief, prompts, skill_pack=pack
+        )
     repair = str(pipeline.get("repair") or "").strip()
     rewriting = str(pipeline.get("action") or "") == "rewrite"
     continuing = bool(str(pipeline.get("script_from") or "").strip())
@@ -2761,14 +3999,15 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
     debug = bool((project.get("progress") or {}).get("debug_llm"))
     debug_dir = Path(folder) / "debug" if debug or (project.get("progress") or {}).get("debug_stop") else None
     feed_file = _read(Path(folder) / "_内部_" / "feed.md")
-    empty_feed_report = stage == "feed" and not feed_file.strip() and "投喂稿是空的" in repair and "FAIL" not in repair
+    empty_feed_report = stage == "feed" and not feed_file.strip() and report_says_empty_draft(repair) and "FAIL" not in repair
     if empty_feed_report:
         repair = ""
         repair_choices = {}
     asset_catalog = ""
     if stage == "storyboard":
         asset_catalog = locked_asset_catalog(_load_spec(folder).get("assets"))
-    if (repair or repair_choices) and stage in ("asset", "storyboard", "feed"):
+    use_worker = _uses_worker(stage, pipeline)
+    if (repair or repair_choices) and stage in ("asset", "storyboard", "feed") and not use_worker:
         return _repair_with_graph(
             folder,
             stage,
@@ -2817,10 +4056,14 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
             )
             if part
         )
-    pack = "" if task_line else load_pack(project.get("template"), brief, _STAGE_CODE.get(stage, "P4"))
+    pack = _loaded_pack(load_pack, project, brief, stage)
     from end.trace import begin_trace
 
     prompts = begin_trace(folder, stage, repair=bool(repair), brief=brief)
+    if use_worker:
+        return _produce_with_worker(
+            stage, project, folder, locks, write_model, brief, prompts, skill_pack=pack
+        )
     result = _write_model(
         write_model,
         brief,
@@ -3116,11 +4359,17 @@ def execute(project, folder, locks, write_model, load_pack):
     stages = stages_for(locks, only)
     accepted = list(pipeline.get("accepted") or [])
     pending = next_pending(stages, accepted)
-    requested = pipeline.get("current") or pending
-    current = requested if requested == pending else pending
+    requested = str(pipeline.get("current") or "")
+    if action == "rewrite" and requested:
+        current = requested
+    else:
+        requested = requested or pending
+        current = requested if requested == pending else pending
+    if current and action in ("write", "rewrite"):
+        _unaccept_later(pipeline, current)
     if not current:
         return _done(project, folder, locks, pipeline, write_model)
-    if current in accepted and pipeline.get("action") != "rewrite":
+    if current in accepted_done(accepted) and pipeline.get("action") != "rewrite":
         pipeline = dict(pipeline)
         pipeline["action"] = "finish"
         return _done(project, folder, locks, pipeline, write_model)
@@ -3136,12 +4385,13 @@ def execute(project, folder, locks, write_model, load_pack):
     passed = False
     report = ""
     checked = False
+    worker_semantic = None
     spec = _load_spec(folder)
     attempts = 0
-    if action == "rewrite" and current in ("asset", "storyboard", "feed"):
+    if action == "rewrite" and current in ("asset", "storyboard", "seam", "feed"):
         attempts = int(pipeline.get("repairs") or 0)
     while True:
-        if attempts >= REPAIR_LIMIT and current in ("asset", "storyboard", "feed"):
+        if attempts >= REPAIR_LIMIT and current in ("asset", "storyboard", "seam", "feed"):
             passed = bool(pipeline.get("passed"))
             report = str(pipeline.get("report") or "")
             break
@@ -3163,6 +4413,9 @@ def execute(project, folder, locks, write_model, load_pack):
         except RuntimeError as error:
             finish_trace(folder, {}, error=str(error))
             has_draft = _has_saved_draft(folder, current)
+            if _uses_worker(current, pipeline):
+                pipeline["worker_loop"] = True
+                pipeline["worker_exhausted"] = True
             if has_draft:
                 status = dict(pipeline)
                 if checked:
@@ -3239,6 +4492,17 @@ def execute(project, folder, locks, write_model, load_pack):
                 raise RuntimeError(
                     "资产提示词是空的（图块可能被写成了对象而不是 #### 图N 正文）"
                 )
+        worker_loop = bool(isinstance(result, dict) and result.pop("_worker_loop", False))
+        worker_passed = bool(isinstance(result, dict) and result.pop("_worker_passed", False))
+        worker_attempts = int(result.pop("_worker_attempts", 0)) if isinstance(result, dict) else 0
+        if isinstance(result, dict) and "_semantic_report" in result:
+            worker_semantic = result.pop("_semantic_report")
+        if worker_loop:
+            pipeline["worker_loop"] = True
+            if not worker_passed:
+                pipeline["worker_exhausted"] = True
+            if worker_attempts:
+                pipeline["repairs"] = worker_attempts
         if current == "storyboard":
             previous_board = _read(Path(folder) / "_内部_" / "分镜.md")
             legacy_previs = "缺六问" in str(pipeline.get("repair") or "")
@@ -3276,10 +4540,14 @@ def execute(project, folder, locks, write_model, load_pack):
             note_hold(folder, spec.get("storyboard_hold") or "")
         passed, report = check_stage(folder, current, locks, spec.get("title") or "")
         checked = True
+        if passed:
+            pipeline.pop("worker_exhausted", None)
         if healed_feed:
             pipeline["rule_repairs"] = int(pipeline.get("rule_repairs") or 0) + 1
         else:
             attempts += 1
+            if worker_attempts:
+                attempts = worker_attempts
             pipeline["repairs"] = attempts
         pipeline["repair"] = "" if passed else (report or "")
         if current == "script" and not passed and not pipeline["repair"]:
@@ -3293,7 +4561,7 @@ def execute(project, folder, locks, write_model, load_pack):
             )
         ):
             pipeline["retry_write"] = True
-        if current == "feed" and not passed and str(report or "").strip() == "投喂稿是空的":
+        if current == "feed" and not passed and is_empty_draft(report):
             pipeline["retry_write"] = True
         if current == "storyboard" and not passed and needs_human(report):
             pipeline["repairs"] = 0
@@ -3301,7 +4569,7 @@ def execute(project, folder, locks, write_model, load_pack):
             pipeline["machine_repairs"] = 0
             if str(report or "").strip() == "分镜是空的" and shots_are_placeholder(spec.get("shots")):
                 spec["shots"] = []
-        if passed or current in ("asset", "storyboard", "feed") or attempts >= REPAIR_LIMIT:
+        if worker_loop or passed or current in ("asset", "storyboard", "seam", "feed") or attempts >= REPAIR_LIMIT:
             break
     if passed:
         pipeline.pop("repair_round", None)
@@ -3322,6 +4590,7 @@ def execute(project, folder, locks, write_model, load_pack):
             locks,
             project.get("brief") or "",
             outcome,
+            prepared=worker_semantic,
         )
     outcome["spec"] = spec
     outcome["used_stage"] = current

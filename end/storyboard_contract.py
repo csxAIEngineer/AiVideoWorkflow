@@ -103,6 +103,53 @@ def _assets(text, known):
     return parts
 
 
+_ASSET_LINE = re.compile(r"^[ \t]*资产[ \t]*[:：][ \t]*(.*)$")
+
+
+def parse_asset_line(line):
+    """Ids on one ``资产：`` line, in the order written. ``None`` when it is not that line."""
+    match = _ASSET_LINE.match(str(line or "").strip())
+    if not match:
+        return None
+    found = []
+    for part in re.split(r"[、,，\s]+", match.group(1).strip()):
+        if part and part not in found:
+            found.append(part)
+    return found
+
+
+def format_asset_line(ids):
+    """``资产：图1，图4``. An empty list is an empty string, not a blank field."""
+    cleaned = []
+    for item in ids or []:
+        text = str(item or "").strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    if not cleaned:
+        return ""
+    return "资产：" + "，".join(cleaned)
+
+
+def asset_ids_from_text(text):
+    """Ids from the first ``资产：`` line in a shot or a packed unit. ``None`` when absent."""
+    for line in str(text or "").splitlines():
+        parsed = parse_asset_line(line)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def storyboard_asset_ids(text):
+    """``{shot_id: [ids]}`` copied from each 资产栏. Titles are not matched to ids."""
+    found = {}
+    for block in _blocks(text):
+        if "资产" not in block["fields"]:
+            found.setdefault(block["id"], [])
+            continue
+        found[block["id"]] = parse_asset_line("资产：" + block["fields"]["资产"]) or []
+    return found
+
+
 def _prompt(fields):
     chunks = [fields.get("动作") or "", fields.get("景别机位") or ""]
     for label in ("站位", "朝向", "光线"):
@@ -241,7 +288,9 @@ def known_ids(assets):
 
 def project_into_spec(spec, result):
     """Project a new storyboard. Do not copy previs and do not keep a placeholder shot."""
-    spec = dict(spec or {})
+    from end.seam_ledger import drop_packing
+
+    spec = drop_packing(dict(spec or {}))
     result = result or {}
     text = str(result.get("storyboard") or "").strip()
     if text:

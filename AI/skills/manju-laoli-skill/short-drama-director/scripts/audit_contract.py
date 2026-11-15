@@ -262,7 +262,7 @@ def audit_markdown(text, mode="auto", director=None, delivery=None):
     _h3_feed_body = (
         "subject_definitions" in text
         and "detailed_description" in text
-        and "投喂单元" in text
+        and ("封装单元" in text or "投喂单元" in text)
     )
     if "【时间轴分镜】" in text and "【站位声明】" in text:
         passed.append("CT5-P4F P4 七段式投喂提示词主体在位")
@@ -398,7 +398,7 @@ def main():
 
     # ★审计补丁P1：CLI 自动识别「投喂单元」，否则一份纯投喂稿会被按项目交付包核销、
     #   一次误报 9 项（情绪锚点表/人物锚卡/调度/故事板/台账），与 validate_prompt 口径不一致。
-    _h3_feed = "subject_definitions" in txt and "投喂单元" in txt
+    _h3_feed = "subject_definitions" in txt and ("封装单元" in txt or "投喂单元" in txt)
     if args.delivery is None and not re.search(
             r"资产提示词|角色四格板|场景母版|九宫格提示词", txt) and (
             txt.count("【画幅风格】") >= 2 or _h3_feed):

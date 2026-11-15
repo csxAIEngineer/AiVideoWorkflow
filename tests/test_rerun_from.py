@@ -186,7 +186,7 @@ class RerunProjectTest(unittest.TestCase):
         saved = json.loads((folder / "spec.json").read_text(encoding="utf-8"))
         _assets, shots = collect_steps(saved)
         self.assertIn("新画幅", shots[0]["prompt"])
-        self.assertIn("投喂单元", shots[0]["prompt"])
+        self.assertIn("封装单元", shots[0]["prompt"])
         self.assertIn("第二镜原文", shots[1]["prompt"])
         self.assertNotIn("新画幅", shots[1]["prompt"])
 

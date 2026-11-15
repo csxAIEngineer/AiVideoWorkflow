@@ -1,4 +1,4 @@
-"""Local render: Qwen stills, Wan clips, ffmpeg join, optional Qwen narration, then write 字幕.ass."""
+"""Local render: MiniMax stills, video clips, ffmpeg join, optional Qwen narration, then write 字幕.ass."""
 
 import base64
 import json
@@ -7,6 +7,7 @@ import re
 import shutil
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -15,7 +16,7 @@ from pathlib import Path
 
 from end.soundtrack import lay_soundtrack, normalize_soundtrack, soundtrack_enabled
 from end.workflow_from_spec import collect_steps, ordered_assets
-from end.image_store import get_image_store
+from end.image_store import get_image_store, valid_image_filename
 
 ASPECT_RATIOS = ("16:9", "9:16", "1:1", "4:3", "3:4", "21:9")
 
@@ -44,7 +45,7 @@ def _probe_media_url(url):
 MAX_ATTEMPTS = 5
 IMAGE_POLL_SEC = 4
 VIDEO_POLL_SEC = 10
-# wan2.7-image rejects a reference still smaller than 240 on either side.
+# Reference stills stay at least 240px on each side before an edit submit.
 MIN_REFERENCE_SIDE = 240
 FACE_LOCK = "参考图是同一身份的定妆，必须锁定同一张脸和外形，不要换脸。\n"
 TRANSIENT_HTTP = {429, 502, 503, 504}
@@ -174,6 +175,7 @@ def blank_step(kind):
         "output_file": "",
         "public_url": "",
         "local_override": False,
+        "asset_still": False,
         "error": "",
     }
 
@@ -263,8 +265,20 @@ def _unlink_render_output(path, folder=None, reason="retire-output"):
             pass
 
 
+def asset_still_locked(step, kind="image"):
+    """True when this image step is a user-supplied final still.
+
+    资产图 sets the flag. Invalidate and a later image pass must leave the
+    file and public URL alone. 参考图 does not set it.
+    """
+    return str(kind or "image") == "image" and bool((step or {}).get("asset_still"))
+
+
 def invalidate_steps(work_dir, project_id, steps):
-    """Mark the listed steps pending and delete their outputs. Every other step stays done."""
+    """Mark the listed steps pending and delete their outputs. Every other step stays done.
+
+    An asset_still image is kept: file, public URL, and local_override stay.
+    """
     folder = Path(work_dir)
     lock = project_lock(project_id or str(folder))
     with lock:
@@ -274,6 +288,8 @@ def invalidate_steps(work_dir, project_id, steps):
         for step_id, kind in steps:
             kind = str(kind or "image")
             step = stored.get(step_id) or {}
+            if asset_still_locked(step, kind):
+                continue
             previous = _output_file(folder, step.get("output_file"))
             canonical, _relative = output_paths(folder, step_id, kind)
             pending_paths.extend((previous, canonical))
@@ -300,6 +316,8 @@ def invalidate_steps(work_dir, project_id, steps):
             _unlink_render_output(path)
         for step_id, kind in steps:
             kind = str(kind or "image")
+            if asset_still_locked(stored.get(step_id), kind):
+                continue
             step = dict(stored.get(step_id) or blank_step(kind))
             step["kind"] = kind
             step["status"] = "pending"
@@ -311,6 +329,7 @@ def invalidate_steps(work_dir, project_id, steps):
             step["output_file"] = ""
             step["public_url"] = ""
             step["local_override"] = False
+            step["asset_still"] = False
             step["error"] = ""
             step.pop("video_mode", None)
             step.pop("video_platform", None)
@@ -434,6 +453,44 @@ def note_local_image(work_dir, project_id, asset_id, public_url=None):
         step["public_url"] = hosted
         step["local_override"] = True
         step["error"] = ""
+        steps[asset_id] = step
+        save_run_state(work_dir, state)
+        return step
+
+
+def lock_asset_still(work_dir, project_id, asset_id):
+    """Mark a replaced still so invalidate and image generation leave it in place."""
+    with project_lock(project_id or str(Path(work_dir))):
+        state = load_run_state(work_dir)
+        step = (state.get("steps") or {}).get(asset_id)
+        if not step:
+            return None
+        step["asset_still"] = True
+        save_run_state(work_dir, state)
+        return step
+
+
+def release_asset_for_generation(work_dir, project_id, asset_id):
+    """Clear a final-still lock so the next image pass can generate this asset."""
+    with project_lock(project_id or str(Path(work_dir))):
+        state = load_run_state(work_dir)
+        steps = state.setdefault("steps", {})
+        step = dict(steps.get(asset_id) or blank_step("image"))
+        if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
+            return step
+        step["kind"] = "image"
+        step["status"] = "pending"
+        step["remote_task_id"] = ""
+        step["poll_url"] = ""
+        step["idempotency_key"] = ""
+        step["output_file"] = ""
+        step["public_url"] = ""
+        step["local_override"] = False
+        step["asset_still"] = False
+        step["error"] = ""
+        step["epoch"] = int(step.get("epoch") or 0) + 1
+        step.pop("video_mode", None)
+        step.pop("video_platform", None)
         steps[asset_id] = step
         save_run_state(work_dir, state)
         return step
@@ -1019,15 +1076,22 @@ VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
 VIDEO_MODEL = "MiniMax/MiniMax-H3"
 VIDEO_MODE_MODELS = {mode: VIDEO_MODEL for mode in VIDEO_MODES}
 FRAME_OPENING = "从这张首帧的可见内容开始，主体、材质和构图保持一致，只做本镜写的光影和轻微运镜。"
-NO_ONSCREEN_CAPTION = "全程无字幕、无对白文字叠加。"
-# Six-section H3 copy is English. Keep this lock in English so it is not
-# another Chinese string outside <d>.
+# Official Wan 3.0 负向清单. The three phrases are written three times.
+# Spoken lines inside <d> stay; this lock does not drop dialogue.
+NO_ONSCREEN_CAPTION = (
+    "负向清单：不要字幕，不要水印，不要复杂文字。"
+    "不要字幕，不要水印，不要复杂文字。"
+    "不要字幕，不要水印，不要复杂文字。"
+)
+# Six-section H3 copy is English. This sentence stays as an extra reminder.
+# Wan submits still get the official Chinese 负向清单 after it.
 H3_NO_ONSCREEN_CAPTION = (
     "The frame shows the scene and the performers. "
     "No readable on-screen subtitles, captions, or overlaid dialogue text. "
     "Lines inside <d> are spoken audio only and must not be painted into the frame "
     "as Chinese caption glyphs, bottom white text, or any other burned-in dialogue."
 )
+_MINIMAX_MODEL_NAMES = frozenset(("minimax-h3", "MiniMax/MiniMax-H3"))
 
 
 def image_size(path):
@@ -1105,57 +1169,87 @@ def aspect_for_image(path):
 
 
 def choose_video_mode(shot, user_image_ids=(), continues=False):
-    """Pick text, first frame, first-and-last, or reference for one shot.
+    """Return the mode End will submit.
 
-    An explicit video_mode wins. Otherwise a single user still with no end
-    frame opens on that still. A start image plus end_image uses both frames.
-    Other pictured shots, and later shots that continue the previous clip,
-    stay on reference. A pictureless opening shot is text-to-video.
+    A written video_mode is the mode. A previous clip does not choose it.
+    Shots the seam stage never wrote still pick a mode from their own stills:
+    one replaced still is a first frame, a still plus end_image is both
+    frames, other stills are reference, and a pictureless shot is text.
+    An extracted tail id such as ``S03_tail`` is the finished clip's last
+    frame, so it does not select ``first_last_frame``.
+    ``continues`` is ignored so a finished neighbour cannot change the mode.
     """
+    del continues
     explicit = str((shot or {}).get("video_mode") or "").strip()
     if explicit:
         if explicit not in VIDEO_MODES:
             raise RuntimeError("未知的 video_mode：%s" % explicit)
         return explicit
+    source = str((shot or {}).get("first_frame_source") or "").strip()
+    if source and source != "none":
+        raise RuntimeError("镜头 %s 写了首帧来源，但没有 video_mode" % ((shot or {}).get("id") or ""))
     images = list((shot or {}).get("images") or [])
     end_image = str((shot or {}).get("end_image") or "").strip()
+    # A finished clip's extracted tail lives on end_image. It is not a
+    # designed end frame, so it must not flip this shot to first_last_frame.
+    if is_extracted_tail_id(end_image):
+        end_image = ""
     user_ids = {str(item) for item in user_image_ids}
     if len(images) == 1 and images[0] in user_ids and not end_image:
         return "first_frame"
     if images and end_image:
         return "first_last_frame"
-    if images or continues:
+    if images:
         return "reference"
     return "text"
 
 
+def _resolve_first_frame(shot, url_for, tail_url):
+    """First frame from the written source. Reference stills are not sent along."""
+    shot_id = (shot or {}).get("id") or ""
+    source = str((shot or {}).get("first_frame_source") or "").strip()
+    if source == "previous_tail":
+        if not tail_url:
+            raise RuntimeError("镜头 %s 的首帧要等上一段真实尾帧" % shot_id)
+        return tail_url, None
+    if source and source != "none":
+        url, path = url_for(source)
+        if not url:
+            raise RuntimeError("镜头 %s 缺少首帧 %s" % (shot_id, source))
+        return url, path
+    images = list((shot or {}).get("images") or [])
+    if not images:
+        raise RuntimeError("首帧模式需要一张起始图")
+    url, path = url_for(images[0])
+    if not url:
+        raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, images[0]))
+    return url, path
+
+
 def assemble_shot_media(shot, mode, url_for, tail_url=None):
-    """Roles and aspect for one H3 request. The previous clip's mp4 is never sent."""
+    """Roles and aspect for one H3 request. The previous clip's mp4 is never sent.
+
+    Reference mode sends only this shot's stills. The previous clip's tail is
+    a first_frame, and only when the seam ledger said previous_tail.
+    """
     images = list((shot or {}).get("images") or [])
     shot_id = (shot or {}).get("id") or ""
     if mode == "text":
         return "", []
-    if mode == "first_frame":
-        if not images:
-            raise RuntimeError("首帧模式需要一张起始图")
-        url, path = url_for(images[0])
-        if not url:
-            raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, images[0]))
-        return aspect_for_image(path), [{"role": "first_frame", "url": url}]
-    if mode == "first_last_frame":
+    if mode in ("first_frame", "first_last_frame"):
+        start_url, start_path = _resolve_first_frame(shot, url_for, tail_url)
+        media = [{"role": "first_frame", "url": start_url}]
+        aspect = aspect_for_image(start_path) if start_path else ""
+        if mode == "first_frame":
+            return aspect, media
         end_id = str((shot or {}).get("end_image") or "").strip()
-        if not images or not end_id:
-            raise RuntimeError("首尾帧模式需要起始图和结束帧")
-        start_url, start_path = url_for(images[0])
+        if not end_id:
+            raise RuntimeError("首尾帧模式需要结束帧")
         end_url, _end_path = url_for(end_id)
-        if not start_url:
-            raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, images[0]))
         if not end_url:
             raise RuntimeError("镜头 %s 缺少结束帧 %s" % (shot_id, end_id))
-        return aspect_for_image(start_path), [
-            {"role": "first_frame", "url": start_url},
-            {"role": "last_frame", "url": end_url},
-        ]
+        media.append({"role": "last_frame", "url": end_url})
+        return aspect, media
     if mode != "reference":
         raise RuntimeError("未知的 video_mode：%s" % mode)
     images = images[:H3_MAX_REFERENCE_IMAGES]
@@ -1165,38 +1259,97 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
         if not url:
             raise RuntimeError("镜头 %s 缺少参考图 %s" % (shot_id, asset_id))
         media.append({"role": "reference_image", "url": url})
-    if tail_url and len(media) < H3_MAX_REFERENCE_IMAGES:
-        media.append({"role": "reference_image", "url": tail_url})
     if not media:
         raise RuntimeError("参考模式没有可用的参考图")
     return "", media
 
 
-def _caption_lock(text):
-    """Executor-side ban. H3 units stay English; short prompts and Seedance stay Chinese."""
+def _h3_shaped(text):
+    """Packed unit body: both H3 section names are present."""
     raw = str(text or "")
-    if "subject_definitions" in raw and "detailed_description" in raw:
-        return H3_NO_ONSCREEN_CAPTION
-    return NO_ONSCREEN_CAPTION
+    return "subject_definitions" in raw and "detailed_description" in raw
+
+
+def _clearly_minimax_h3_only():
+    """True when preview and generate both name MiniMax-H3 and neither is Wan.
+
+    The official Chinese 负向清单 is required on Wan. An H3-shaped body may
+    keep only the English reminder when every current submit route is MiniMax.
+    A catalog that cannot be read is treated as Wan, which is the shipped route.
+    """
+    try:
+        from AI.qwen_api.video_catalog import describe_profile, resolve_model_id
+    except Exception:
+        return False
+    rows = []
+    try:
+        for profile in ("preview", "generate"):
+            _name, _params, route = describe_profile(profile)
+            token = str((route or {}).get("model") or "").strip()
+            try:
+                model_id = str(resolve_model_id(token) or "").strip()
+            except Exception:
+                model_id = token
+            rows.append((token, model_id))
+    except Exception:
+        return False
+    if not rows:
+        return False
+
+    def is_wan(token, model_id):
+        blob = "%s %s" % (token, model_id)
+        return "wan3" in blob.lower()
+
+    def is_minimax(token, model_id):
+        return token in _MINIMAX_MODEL_NAMES or model_id in _MINIMAX_MODEL_NAMES
+
+    if any(is_wan(token, model_id) for token, model_id in rows):
+        return False
+    return all(is_minimax(token, model_id) for token, model_id in rows)
+
+
+def _append_lock(body, lock):
+    """Append ``lock`` once. An exact copy already in the text is left alone."""
+    text = str(body or "").strip()
+    if not lock or lock in text:
+        return text
+    if not text:
+        return lock
+    return text + "\n" + lock
 
 
 def _with_caption_lock(text):
+    """Put caption locks at the end of a full H3 or Seedance unit.
+
+    Wan-bound H3 bodies keep the English reminder, then the official Chinese
+    负向清单. Spoken lines inside ``<d>`` are not removed.
+    """
     body = str(text or "").strip()
-    lock = _caption_lock(body)
-    if lock in body:
-        return body
-    if not body:
-        return lock
-    return body + "\n" + lock
+    h3 = _h3_shaped(body)
+    need_chinese = (not h3) or not _clearly_minimax_h3_only()
+    if h3 and H3_NO_ONSCREEN_CAPTION not in body:
+        if need_chinese and body.endswith(NO_ONSCREEN_CAPTION):
+            head = body[: -len(NO_ONSCREEN_CAPTION)].rstrip()
+            english = H3_NO_ONSCREEN_CAPTION
+            if head:
+                body = head + "\n" + english + "\n" + NO_ONSCREEN_CAPTION
+            else:
+                body = english + "\n" + NO_ONSCREEN_CAPTION
+        else:
+            body = _append_lock(body, H3_NO_ONSCREEN_CAPTION)
+    if need_chinese:
+        body = _append_lock(body, NO_ONSCREEN_CAPTION)
+    return body
 
 
 def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack="off", template=None):
     """Prompt sent with the clip. Vehicle lines come only from the active template's skills.
 
     Music or narration is mixed after the join, so those shots keep only room tone.
-    A full H3 or Seedance unit is sent as written, plus a lock that ``<d>`` audio
-    must not be painted as on-screen captions. Burned 字幕.ass is a later ffmpeg step
-    and still reads only shot dialogue and narration.
+    A full H3 or Seedance unit is sent as written. The official Chinese 负向清单
+    is last, which is where the Wan 3.0 formula places it. ``<d>`` stays spoken
+    audio and is not dropped. Burned 字幕.ass is a later ffmpeg step and still
+    reads only shot dialogue and narration.
     """
     from end.ai_client import template_render
     from end.prompt_gate import is_full_delivery
@@ -1206,13 +1359,11 @@ def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack=
         return _with_caption_lock(base)
     render = template_render(template)
     if mode in ("first_frame", "first_last_frame"):
-        parts = [base, FRAME_OPENING, NO_ONSCREEN_CAPTION]
+        parts = [base, FRAME_OPENING]
     else:
         parts = [base]
         if render["video_lock"]:
             parts.append(render["video_lock"])
-        if NO_ONSCREEN_CAPTION not in "\n".join(parts):
-            parts.append(NO_ONSCREEN_CAPTION)
         if index > 0 and render["video_next"]:
             parts.append(render["video_next"])
         if has_tail and render["video_tail"]:
@@ -1232,7 +1383,7 @@ def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack=
             parts.append("本镜无对白。保留环境声和音效，不要凭空说话。")
     if "non_diegetic_music" not in base:
         parts.append("non_diegetic_music: N/A")
-    return "\n".join(parts)
+    return _append_lock("\n".join(parts), NO_ONSCREEN_CAPTION)
 
 
 def _tail_frame(clip_path, dest):
@@ -1254,15 +1405,324 @@ def _tail_frame(clip_path, dest):
     return dest
 
 
+def continuation_tail_name(shot_id):
+    """File stem and name for the tail of the unit that just finished.
+
+    The stem is that unit's id, not the next unit's. Read-only callers use
+    this so a GET can find an existing tail without extracting or uploading.
+    """
+    stem = "".join(
+        ch if ch.isalnum() or ch in "-_" else "_" for ch in str(shot_id or "tail")
+    )[:40] or "tail"
+    return stem, "%s_tail.jpg" % stem
+
+
+def extracted_tail_id(shot_id):
+    """Still id stored on the finished unit, such as ``S03_tail``."""
+    stem, _filename = continuation_tail_name(shot_id)
+    return "%s_tail" % stem
+
+
+def is_extracted_tail_id(image_id):
+    """True when this id is an extracted clip tail, not a designed end frame."""
+    text = str(image_id or "").strip()
+    if not text.endswith("_tail"):
+        return False
+    stem = text[: -len("_tail")]
+    if not stem:
+        return False
+    return extracted_tail_id(stem) == text
+
+
+def tail_still_filename(image_or_shot_id):
+    """``S03_tail.jpg`` for either the still id or the unit id ``S03``."""
+    text = str(image_or_shot_id or "").strip()
+    if is_extracted_tail_id(text):
+        return "%s.jpg" % text
+    _stem, filename = continuation_tail_name(text)
+    return filename
+
+
+def _clip_on_disk(path):
+    if not path:
+        return False
+    try:
+        path = Path(path)
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _still_on_disk(path):
+    return _clip_on_disk(path)
+
+
+def _tail_still_path(work_dir, image_id):
+    return Path(work_dir) / "outputs" / "images" / tail_still_filename(image_id)
+
+
+def _state_tail(ctx, shot_id):
+    """``(image_id, public_url)`` already stored for this finished unit."""
+    if ctx is None or not shot_id:
+        return "", ""
+    with ctx.lock:
+        state = ctx.load_locked()
+        step = (state.get("steps") or {}).get(shot_id) or {}
+    image_id = str(step.get("end_image") or "").strip()
+    if not is_extracted_tail_id(image_id):
+        return "", ""
+    return image_id, _http_media_url(step.get("end_image_url"))
+
+
+def _spec_tail(work_dir, shot_id, unit_index=None):
+    """Extracted tail id already written on a feed unit or ledger entry."""
+    spec = read_spec_file(work_dir)
+    if not isinstance(spec, dict) or not shot_id:
+        return ""
+    targets = {str(shot_id)}
+    targets.update(_packed_ids(spec, unit_index))
+    found = []
+    rows = spec.get("feed_units")
+    if isinstance(rows, list):
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            row_id = str(row.get("id") or "")
+            if row_id in targets or (unit_index is not None and index == unit_index and (not row_id or row_id in targets)):
+                found.append(str(row.get("end_image") or "").strip())
+    ledger = spec.get("seam_ledger")
+    entries = ledger.get("entries") if isinstance(ledger, dict) else None
+    if isinstance(entries, list):
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            entry_id = str(entry.get("shot_id") or "")
+            if entry_id in targets or (
+                unit_index is not None and index == unit_index and (not entry_id or entry_id in targets)
+            ):
+                found.append(str(entry.get("end_image") or "").strip())
+    for image_id in found:
+        if is_extracted_tail_id(image_id):
+            return image_id
+    return ""
+
+
+def _packed_ids(spec, unit_index):
+    if unit_index is None or not str((spec or {}).get("feed") or "").strip():
+        return []
+    try:
+        from end.seam_ledger import units_from_feed
+    except ImportError:
+        return []
+    derived = units_from_feed(spec.get("feed") or "")
+    if unit_index < 0 or unit_index >= len(derived):
+        return []
+    text = str((derived[unit_index] or {}).get("id") or "").strip()
+    return [text] if text else []
+
+
+def _remembered_tail(ctx, previous_shot, prev_id, unit_index=None):
+    """The previous unit's extracted tail id, plus a URL when publish already worked."""
+    image_id = ""
+    if isinstance(previous_shot, dict):
+        candidate = str(previous_shot.get("end_image") or "").strip()
+        if is_extracted_tail_id(candidate):
+            image_id = candidate
+    state_id, url = _state_tail(ctx, prev_id)
+    if not image_id and state_id:
+        image_id = state_id
+    if not image_id and ctx is not None:
+        image_id = _spec_tail(ctx.work_dir, prev_id, unit_index)
+    if not image_id:
+        image_id = extracted_tail_id(prev_id or "tail")
+    if state_id and state_id != image_id:
+        url = ""
+    return image_id, url
+
+
+def _publish_tail_still(ctx, image_id, path):
+    """Upload one extracted tail. Callers distinguish a missing clip from this failure."""
+    if not ctx or not ctx.project_id:
+        raise RuntimeError("尾帧已抽出，但没有项目编号，上传失败，可以重试")
+    path = Path(path)
+    payload = path.read_bytes() if path.is_file() else b""
+    if not payload:
+        raise RuntimeError("尾帧已抽出，但文件是空的，上传失败，可以重试")
+    filename = tail_still_filename(image_id)
+    return get_image_store().publish(ctx.project_id, filename, payload)
+
+
+def _stamp_tail_row(row, image_id, row_id, targets, index, unit_index):
+    if not isinstance(row, dict):
+        return False
+    if row_id in targets or (unit_index is not None and index == unit_index and (not row_id or row_id in targets)):
+        if str(row.get("end_image") or "") != image_id:
+            row["end_image"] = image_id
+            return True
+        return False
+    return False
+
+
+def _write_spec_tail(work_dir, shot_id, image_id, unit_index=None):
+    """Store the tail on the feed unit and the ledger entry.
+
+    Spec shots stay untouched. Their bytes are part of the submit source
+    hash, and rewriting them would block the next clip.
+    """
+    path = Path(work_dir) / "spec.json"
+    if not path.is_file() or not shot_id or not image_id:
+        return
+    try:
+        spec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(spec, dict):
+        return
+    targets = {str(shot_id)}
+    packed_ids = _packed_ids(spec, unit_index)
+    targets.update(packed_ids)
+    changed = False
+    rows = spec.get("feed_units")
+    if not isinstance(rows, list):
+        rows = []
+    matched = False
+    for index, row in enumerate(rows):
+        row_id = str((row or {}).get("id") or "") if isinstance(row, dict) else ""
+        if _stamp_tail_row(row, image_id, row_id, targets, index, unit_index):
+            changed = True
+            matched = True
+        elif isinstance(row, dict) and (
+            row_id in targets or (unit_index is not None and index == unit_index and (not row_id or row_id in targets))
+        ):
+            matched = True
+    if not matched and packed_ids:
+        rows.append({"id": packed_ids[0], "end_image": image_id})
+        spec["feed_units"] = rows
+        changed = True
+    elif changed:
+        spec["feed_units"] = rows
+    ledger = spec.get("seam_ledger")
+    entries = ledger.get("entries") if isinstance(ledger, dict) else None
+    if isinstance(entries, list):
+        for index, entry in enumerate(entries):
+            entry_id = str((entry or {}).get("shot_id") or "") if isinstance(entry, dict) else ""
+            if _stamp_tail_row(entry, image_id, entry_id, targets, index, unit_index):
+                changed = True
+    if not changed:
+        return
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(spec, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _persist_extracted_tail(ctx, shot, image_id, url, unit_index=None):
+    """Remember the finished unit's tail where a resume can read it."""
+    if isinstance(shot, dict) and image_id:
+        shot["end_image"] = image_id
+    shot_id = str((shot or {}).get("id") or "")
+    if ctx is None or not shot_id or not image_id:
+        return
+    with ctx.lock:
+        state = ctx.load_locked()
+        step = state["steps"].get(shot_id)
+        if not isinstance(step, dict):
+            step = blank_step("video")
+            state["steps"][shot_id] = step
+        step["end_image"] = image_id
+        if url:
+            step["end_image_url"] = url
+        ctx.write_locked()
+        _write_spec_tail(ctx.work_dir, shot_id, image_id, unit_index)
+
+
+def _extract_tail_still(ctx, clip_path, image_id):
+    """Write the clip's last frame. None when ffmpeg cannot read the file."""
+    dest = _tail_still_path(ctx.work_dir, image_id)
+    if _still_on_disk(dest):
+        return dest
+    return _tail_frame(clip_path, dest)
+
+
+def _capture_finished_tail(ctx, shot, clip_path, unit_index=None):
+    """After a clip is on disk, extract its last frame and store it on that unit.
+
+    A publish failure leaves the local still and the end_image id. The next
+    previous_tail shot retries the upload instead of waiting for a clip.
+    """
+    if not _clip_on_disk(clip_path):
+        return ""
+    shot_id = str((shot or {}).get("id") or "")
+    if not shot_id:
+        return ""
+    image_id, url = _remembered_tail(ctx, shot, shot_id, unit_index)
+    if url:
+        _persist_extracted_tail(ctx, shot, image_id, url, unit_index)
+        return url
+    frame = _extract_tail_still(ctx, clip_path, image_id)
+    if frame is None:
+        ctx.note("镜头 %s 尾帧抽帧失败，可以重试" % shot_id)
+        return ""
+    _persist_extracted_tail(ctx, shot, image_id, "", unit_index)
+    try:
+        url = _publish_tail_still(ctx, image_id, frame)
+    except Exception as error:
+        ctx.note("镜头 %s 尾帧已抽出，上传失败，可以重试：%s" % (shot_id, error))
+        return ""
+    _persist_extracted_tail(ctx, shot, image_id, url, unit_index)
+    ctx.note("镜头 %s 尾帧已写入 %s" % (shot_id, image_id))
+    return url
+
+
+def _require_previous_tail(ctx, current, previous_shot, previous_clip, unit_index=None):
+    """Public URL of the previous unit's extracted tail.
+
+    The wait-for-tail error is only for a clip that is not finished or not
+    on disk. A clip that is already on disk raises a retryable 抽帧 or 上传
+    error instead.
+    """
+    current_id = str((current or {}).get("id") or "")
+    if not _clip_on_disk(previous_clip):
+        raise RuntimeError("镜头 %s 的首帧要等上一段真实尾帧" % current_id)
+    prev_id = str((previous_shot or {}).get("id") or "") or Path(previous_clip).stem
+    image_id, url = _remembered_tail(ctx, previous_shot, prev_id, unit_index)
+    if url:
+        _persist_extracted_tail(ctx, previous_shot, image_id, url, unit_index)
+        return url
+    local = _tail_still_path(ctx.work_dir, image_id)
+    if not _still_on_disk(local):
+        frame = _tail_frame(previous_clip, local)
+        if frame is None:
+            raise RuntimeError(
+                "镜头 %s 的上一段 %s 已经在盘上，但尾帧抽帧失败，可以重试" % (current_id, prev_id)
+            )
+    else:
+        frame = local
+    _persist_extracted_tail(ctx, previous_shot, image_id, "", unit_index)
+    try:
+        url = _publish_tail_still(ctx, image_id, frame)
+    except Exception as error:
+        raise RuntimeError(
+            "镜头 %s 的上一段 %s 尾帧已抽出，上传失败，可以重试：%s" % (current_id, prev_id, error)
+        )
+    _persist_extracted_tail(ctx, previous_shot, image_id, url, unit_index)
+    return url
+
+
 def _continuation_tail_url(ctx, previous_clip, shot_id):
-    """Publish the previous clip's last frame. Reference mode has nothing else to send."""
-    stem = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(shot_id or "tail"))[:40] or "tail"
-    dest = Path(ctx.work_dir) / "outputs" / "images" / ("%s_tail.jpg" % stem)
-    frame = _tail_frame(previous_clip, dest)
-    if frame is None or not ctx.project_id:
+    """Publish ``shot_id``'s last frame. Empty when that still has no public URL.
+
+    ``shot_id`` is the unit that owns the clip. The returned string is only
+    a convenience for older callers. Submit uses ``_require_previous_tail``
+    so a failed upload is not reported as a missing clip.
+    """
+    if not _clip_on_disk(previous_clip):
+        return ""
+    image_id = extracted_tail_id(shot_id)
+    frame = _extract_tail_still(ctx, previous_clip, image_id)
+    if frame is None:
         return ""
     try:
-        return get_image_store().publish(ctx.project_id, frame.name, frame.read_bytes())
+        return _publish_tail_still(ctx, image_id, frame) or ""
     except Exception as error:
         ctx.note("尾帧没有公开地址：%s" % error)
         return ""
@@ -1457,6 +1917,10 @@ class RenderContext(object):
             if reset_during_submit:
                 return dict(step)
             step["remote_task_id"] = remote_id
+            if kind == "image":
+                source_url = str(getattr(task, "url", "") or "").strip()
+                if source_url.startswith("http://") or source_url.startswith("https://"):
+                    step["source_url"] = source_url
             if poll_url:
                 step["poll_url"] = poll_url
             platform = str(getattr(task, "platform", "") or "").strip()
@@ -1472,6 +1936,16 @@ class RenderContext(object):
         with self.lock:
             step = (self.load_locked().get("steps") or {}).get(step_id) or blank_step(kind)
             attempts = self._attempts(step)
+        # A still request is not idempotent. Only a refused 429 is safe to send again.
+        if kind == "image" and getattr(error, "status", None) != 429:
+            with self.lock:
+                state = self.load_locked()
+                step = state["steps"].get(step_id) or blank_step(kind)
+                state["steps"][step_id] = step
+                step["idempotency_key"] = ""
+                self.write_locked()
+            self.pause_for_failure(step_id, kind, str(error))
+            return
         if is_transient(error):
             self.emit(
                 "重新连接：%s，第 %s/%s 次" % (label, attempts, MAX_ATTEMPTS),
@@ -1559,6 +2033,12 @@ class RenderContext(object):
                     "未验收的下载不能记成完成",
                     {"ok": False, "status": "failed", "owner": "feed", "reason": "未验收的下载不能记成完成"},
                 )
+            if step.get("asset_still") and kind == "image":
+                generated = False
+                if step.get("public_url"):
+                    public_url = step.get("public_url")
+                if step.get("output_file"):
+                    relative = step.get("output_file")
             state["steps"][step_id] = step
             step["kind"] = kind
             step["status"] = "done"
@@ -1568,6 +2048,7 @@ class RenderContext(object):
                 step["public_url"] = public_url
             if generated:
                 step["local_override"] = False
+                step["asset_still"] = False
             self.write_locked()
             return dict(step)
 
@@ -1610,6 +2091,19 @@ class RenderContext(object):
                 self.pause_for_failure(step_id, kind, "内容安全拒绝了这一镜的文字提交，不再自动重试")
                 seen = None
                 continue
+            if asset_still_locked(step, kind):
+                kept = str(step.get("output_file") or relative)
+                fresh = self.mark_done(step_id, kind, kept, step.get("public_url") or "")
+                self.done_steps += 1
+                self.emit(
+                    "%s 已完成：%s" % (label, step_id),
+                    phase,
+                    step_id,
+                    "done",
+                    current=index,
+                    total=group_total,
+                )
+                return fresh
             if _should_skip(step, path):
                 fresh = self.mark_done(step_id, kind, relative, step.get("public_url") or "")
                 self.done_steps += 1
@@ -2102,9 +2596,9 @@ def _reference_publish_name(source_name):
     if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
         suffix = ".png"
     candidate = "%s_ref%s" % (source.stem or "still", suffix)
-    if re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.(?:png|jpe?g|webp)$", candidate, re.IGNORECASE):
+    if valid_image_filename(candidate):
         return candidate
-    if re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.(?:png|jpe?g|webp)$", source.name, re.IGNORECASE):
+    if valid_image_filename(source.name):
         return source.name
     return ""
 
@@ -2172,7 +2666,7 @@ def _ffmpeg_cover_still(source, dest, width, height):
 
 
 def ensure_reference_min_side(work_dir, project_id, asset_id, public_url="", source=None):
-    """Enlarge a reference still that wan2.7-image would reject.
+    """Enlarge a reference still below the 240px floor.
 
     Returns (url, output_file). output_file is relative to outputs/ and empty
     when this file is already large enough or not a readable image. The url is
@@ -2279,7 +2773,7 @@ def image_input_urls(ctx, asset):
     neither: no image is sent.
 
     A reference file under 240×240 is enlarged and republished first, so
-    wan2.7-image and its retries do not receive the tiny URL.
+    the edit request does not receive the tiny URL.
     """
     asset = asset or {}
     refs = [str(ref).strip() for ref in (asset.get("references") or []) if str(ref).strip()]
@@ -2408,6 +2902,72 @@ class LayoutAudio(object):
         return self._layout().compose(prompt, dest)
 
 
+class _RememberedStill(object):
+    def __init__(self, task_id, url):
+        self.id = task_id
+        self.status = "SUCCEEDED"
+        self.url = url
+        self.error = ""
+        self.revised_prompt = ""
+
+
+def _remembered_still(task_id, url):
+    return _RememberedStill(task_id, url)
+
+
+def _png_still_bytes(data):
+    """Keep png. jpeg and webp become png, matching the replace-image upload path."""
+    if not data:
+        raise RuntimeError("生图没有图片数据")
+    if data.startswith(b"\x89PNG"):
+        return data
+    if data.startswith(b"\xff\xd8\xff"):
+        suffix = ".jpg"
+    elif len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        suffix = ".webp"
+    else:
+        return data
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise RuntimeError("本机没有 ffmpeg，不能把生图结果转成 png")
+    folder = Path(tempfile.mkdtemp(prefix="aivideo-still-"))
+    source = folder / ("source" + suffix)
+    temporary = folder / "out.png"
+    try:
+        source.write_bytes(data)
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-i", str(source), str(temporary)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if proc.returncode != 0 or not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise RuntimeError("ffmpeg 转 png 失败：%s" % ((proc.stdout or "")[-300:]))
+        return temporary.read_bytes()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _publish_generated_still(ctx, asset_id, path, provider_url):
+    """Download already wrote the file. Publish those bytes and do not keep the 24h URL."""
+    path = Path(path)
+    payload = path.read_bytes()
+    png = _png_still_bytes(payload)
+    if png != payload:
+        temporary = path.with_name(path.name + ".part")
+        temporary.write_bytes(png)
+        temporary.replace(path)
+    if not ctx.project_id:
+        return provider_url
+    filename = "%s.png" % asset_id
+    if not valid_image_filename(filename):
+        filename = path.name
+    hosted = get_image_store().publish(ctx.project_id, filename, png)
+    if hosted and hosted != provider_url:
+        _append_render_log(ctx.work_dir, "生图已写入图片库 %s" % hosted)
+    return hosted
+
+
 def run_local_pipeline(
     spec,
     work_dir,
@@ -2434,6 +2994,11 @@ def run_local_pipeline(
     images_only stops after the stills. Video, join, soundtrack, and subtitles are left for a later run.
     """
     assets, shots = collect_steps(spec)
+    from end.seam_ledger import seam_blocks_render
+
+    blocked = seam_blocks_render(spec, shots)
+    if blocked:
+        raise RuntimeError(blocked)
     aspect = aspect or resolve_aspect(spec, brief)
     if not images_only and not aspect:
         raise RuntimeError("没有锁定画幅，不能默认竖屏")
@@ -2515,7 +3080,7 @@ def run_local_pipeline(
     if images_only:
         ctx.emit("Debug：开始生图", "images", assets[0]["id"], "running")
     else:
-        steps = "千问生图 / MiniMax H3 出镜 / 本机拼接"
+        steps = "MiniMax 生图 / MiniMax H3 出镜 / 本机拼接"
         if soundtrack_enabled(mode):
             steps += " / 千问旁白"
         steps += " / 字幕另存"
@@ -2553,13 +3118,34 @@ def run_local_pipeline(
                 size=size,
             )
 
-        def poll(task_id):
-            return icreat.query_status(task_id)
+        def poll(task_id, asset_id=asset["id"]):
+            try:
+                current = icreat.query_status(task_id)
+            except (OSError, RuntimeError):
+                saved = str(ctx.reload_step(asset_id, "image").get("source_url") or "")
+                if not saved:
+                    raise
+                return _remembered_still(task_id, saved)
+            if str(getattr(current, "status", "") or "").upper() == "SUCCEEDED" and not getattr(current, "url", ""):
+                saved = str(ctx.reload_step(asset_id, "image").get("source_url") or "")
+                if saved:
+                    current.url = saved
+            return current
 
-        def download(task, path):
-            result = icreat.get_result(getattr(task, "id", "") or "")
-            icreat.download_image(result.url, path)
-            return result.url
+        def download(task, path, asset_id=asset["id"]):
+            url = str(getattr(task, "url", "") or "")
+            revised = str(getattr(task, "revised_prompt", "") or "")
+            if not url:
+                result = icreat.get_result(getattr(task, "id", "") or "")
+                url = str(getattr(result, "url", "") or "")
+                if not revised:
+                    revised = str(getattr(result, "revised_prompt", "") or "")
+            if not url:
+                raise RuntimeError("生图没有返回图片地址")
+            icreat.download_image(url, path)
+            if revised:
+                _append_render_log(ctx.work_dir, "生图提示词已增强：%s" % revised[:500])
+            return _publish_generated_still(ctx, asset_id, path, url)
 
         fresh = ctx.run_remote(
             asset["id"],
@@ -2628,11 +3214,24 @@ def run_local_pipeline(
                 for asset_id in asset_ids
                 if ctx.reload_step(asset_id, "image").get("local_override")
             ]
+            previous_shot = fresh_shots[shot_index - 1] if shot_index > 0 else None
             previous = clips[-1] if clips else None
-            tail_url = _continuation_tail_url(ctx, previous, shot_id) if previous else ""
-            # An empty reference list pauses the shot. Continue only when the tail frame has a URL.
-            continues = bool(tail_url)
-            mode = choose_video_mode(current, user_image_ids=user_ids, continues=continues)
+            if previous_shot is not None and not _clip_on_disk(previous):
+                candidate, _candidate_relative = output_paths(ctx.work_dir, previous_shot.get("id"), "video")
+                if _clip_on_disk(candidate):
+                    previous = candidate
+            mode = choose_video_mode(current, user_image_ids=user_ids)
+            source = str(current.get("first_frame_source") or "")
+            use_tail = mode in ("first_frame", "first_last_frame") and source == "previous_tail"
+            tail_url = ""
+            if use_tail:
+                tail_url = _require_previous_tail(
+                    ctx,
+                    current,
+                    previous_shot,
+                    previous,
+                    unit_index=shot_index - 1 if shot_index else None,
+                )
 
             def url_for(asset_id):
                 info = images.get(asset_id) or _saved_image(ctx, asset_id)
@@ -2701,6 +3300,7 @@ def run_local_pipeline(
         )
         clip_path, _relative = output_paths(ctx.work_dir, shot_id, "video")
         clips.append(clip_path)
+        _capture_finished_tail(ctx, shot, clip_path, unit_index=index - 1)
 
     joined = ctx.run_join(clips)
     if soundtrack_enabled(ctx.soundtrack):

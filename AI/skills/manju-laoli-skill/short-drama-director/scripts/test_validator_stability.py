@@ -27,7 +27,7 @@ class StabilityTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / 'sample.md'
 
     def unit(self, start=1, dialogue='', tail=''):
-        return ('## 【投喂单元】\n```text\n【画幅风格】\n【场景资产】\n'
+        return ('## 【封装单元】\n```text\n【画幅风格】\n【场景资产】\n'
                 '【核心人物】\n【站位声明】\n【时间轴分镜】\n'
                 f'00:00-00:02 [镜头{start}] 台词：{dialogue} {tail}\n```\n')
 
@@ -102,7 +102,7 @@ class StabilityTests(unittest.TestCase):
 
     def test_h3_feed_is_not_a_full_project(self):
         text = "\n".join((
-            "## 【投喂单元 1/1】",
+            "## 【封装单元 1/1】",
             "subject_definitions:",
             "<Subject 1> is a woman.",
             "detailed_description:",
@@ -141,7 +141,7 @@ class StabilityTests(unittest.TestCase):
             "non_diegetic_music:",
             "none.",
         ))
-        _, titled, _ = validator.validate_h3("## 【投喂单元 1/1】\n" + body)
+        _, titled, _ = validator.validate_h3("## 【封装单元 1/1】\n" + body)
         self.assertFalse(any("H4" in item and "中文" in item for item in titled))
         _, hashed, _ = validator.validate_h3(body + "\n#门在墙上\n")
         self.assertTrue(any("H4" in item and "中文" in item for item in hashed))

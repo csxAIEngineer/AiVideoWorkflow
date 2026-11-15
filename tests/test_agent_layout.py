@@ -125,7 +125,8 @@ class LayoutTest(unittest.TestCase):
         self.assertIn("雨夜车站", model.calls[0]["messages"][-1]["content"])
         self.assertNotIn("# 总控 short-drama-director/SKILL.md", model.calls[0]["messages"][0]["content"])
         self.assertIn("你是汇总节点", model.calls[-1]["messages"][0]["content"])
-        self.assertIn("# 总控 short-drama-director/SKILL.md", model.calls[-1]["messages"][0]["content"])
+        self.assertNotIn("# 总控 short-drama-director/SKILL.md", model.calls[-1]["messages"][0]["content"])
+        self.assertNotIn("预算铁律", model.calls[-1]["messages"][0]["content"])
         traced = AgentLayout(model=ScriptedModel([ASK]))
         state = traced.graph.invoke(
             {

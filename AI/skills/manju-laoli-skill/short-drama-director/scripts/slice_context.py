@@ -36,8 +36,6 @@ STAGE_FILES = {
         "sd-script-engine/references/six-stage-pipeline.md",
         "sd-script-engine/references/dialogue-naturalization.md",
         "short-drama-director/references/dialogue-doctor-7d.md",
-        "sd-script-engine/references/story-bible-and-ip.md",
-        "sd-script-engine/references/episode-planning.md",
     ],
     "P2": [
         "sd-asset-engine/SKILL.md",

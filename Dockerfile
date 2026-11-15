@@ -15,11 +15,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Three processes share this image: front is static, end serves it, AI is the model process.
+# Front is static, End serves it, Agents is the JSON-RPC process. AI stays on disk as its backend.
 COPY AI/__init__.py AI/script.py AI/api.py AI/server.py AI/vision.py ./AI/
 COPY AI/agent ./AI/agent
 COPY AI/qwen_api ./AI/qwen_api
 COPY AI/skills ./AI/skills
+COPY Agents ./Agents
 COPY end ./end
 COPY front ./front
 COPY deploy/entrypoint.sh /entrypoint.sh

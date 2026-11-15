@@ -127,8 +127,42 @@ def _image_prompt(item, blocks):
     return prompt
 
 
-def collect_steps(spec):
-    """Assets and shots that actually become nodes, in run order."""
+def _feed_shot_images(unit, known, template, board_images=None):
+    """Images collect_steps binds for one packed unit, and why.
+
+    ``board_images`` is the storyboard 资产栏 of the shots this unit covers.
+    A ``资产：`` line on the unit is that same list. Prompt aliases do not
+    replace it. When the shots cannot be placed, an empty line stays empty,
+    and a unit with no line copies the storyboard shot at the same index.
+    This does not read or write run state.
+    """
+    if board_images is not None:
+        names = [
+            name
+            for name in board_images
+            if name in known or _is_upload_id(name)
+        ]
+        return names[:MAX_SHOT_REFERENCES], "storyboard_assets"
+    from end.seam_ledger import cap_reference_ids
+    from end.storyboard_contract import asset_ids_from_text
+
+    listed = asset_ids_from_text(unit)
+    if listed is not None:
+        names = [
+            name
+            for name in listed
+            if name in known or _is_upload_id(name)
+        ]
+        return cap_reference_ids(names, "资产"), "storyboard_assets"
+    return list((template or {}).get("images") or []), "storyboard_index_fallback"
+
+
+def assemble_steps(spec):
+    """Assets, shots, and how each shot's images were chosen.
+
+    The shot dicts match ``collect_steps``. Image-source rows are for the
+    read-only project view and are not part of the render contract.
+    """
     from end.prompt_gate import delivery_units
 
     spec = spec or {}
@@ -166,8 +200,16 @@ def collect_steps(spec):
                 cleaned.append(ref)
         if cleaned:
             item["references"] = cleaned
+    from end.seam_ledger import designed_still_assets
+
+    for extra in designed_still_assets(spec):
+        if extra["id"] in known:
+            continue
+        assets.append(extra)
+        known.add(extra["id"])
 
     shots = []
+    sources = []
     for index, item in enumerate(spec.get("shots") or []):
         if item.get("images") is None:
             images = [assets[0]["id"]] if assets else []
@@ -196,28 +238,44 @@ def collect_steps(spec):
         video_mode = str(item.get("video_mode") or "").strip()
         if video_mode:
             shot["video_mode"] = video_mode
+        source = str(item.get("first_frame_source") or "").strip()
+        if source:
+            shot["first_frame_source"] = source
         shots.append(shot)
+        sources.append({"value": "storyboard", "index": None})
     # Clip files are keyed by id (clips/S01.mp4). Duplicate ids must not become
     # duplicate concat inputs, or each segment plays back-to-back several times.
     before_ids = [shot["id"] for shot in shots]
-    shots = _first_shots_by_id(shots)
+    ordered = _first_shots_by_id(shots)
+    source_by_shot = {id(shot): source for shot, source in zip(shots, sources)}
+    shots = ordered
+    sources = [source_by_shot[id(shot)] for shot in ordered]
     if units:
         # H3: one API call per feed unit. Never pad missing units with storyboard
         # Chinese rows — that is what made MiniMax ignore the Ref2VA contract.
         templates = shots
-        rebuilt = []
-        from end.board_shots import images_for_feed_unit
+        from end.seam_ledger import unit_storyboard_images, units_for_submit
 
-        asset_rows = spec.get("assets") or []
+        packed = units_for_submit(spec)
+        unions = unit_storyboard_images(spec, len(units))
+        rebuilt = []
+        sources = []
         for index, unit in enumerate(units):
             template = templates[index] if index < len(templates) else (
                 templates[-1] if templates else {}
             )
-            matched = [
-                name
-                for name in images_for_feed_unit(unit, asset_rows)
-                if name in known or _is_upload_id(name)
-            ]
+            if index < len(templates):
+                template_index = index
+            elif templates:
+                template_index = len(templates) - 1
+            else:
+                template_index = index
+            board_images = unions[index] if unions is not None and index < len(unions) else None
+            images, image_kind = _feed_shot_images(unit, known, template, board_images)
+            source = {"value": image_kind, "index": None}
+            if image_kind == "storyboard_index_fallback":
+                source["index"] = template_index
+            sources.append(source)
             feed_duration = _duration_from_feed(unit)
             # region agent log
             try:
@@ -255,13 +313,40 @@ def collect_steps(spec):
                     "prompt": unit,
                     "dialogue": str((template or {}).get("dialogue") or ""),
                     "narration": str((template or {}).get("narration") or ""),
-                    "images": matched or list((template or {}).get("images") or []),
+                    "images": images,
                 }
             )
-            for key in ("end_image", "video_mode"):
-                if (template or {}).get(key):
-                    rebuilt[-1][key] = template[key]
+            chosen = packed[index] if index < len(packed) else None
+            mode = str((chosen or {}).get("video_mode") or "").strip()
+            if mode:
+                rebuilt[-1]["video_mode"] = mode
+                source = str(chosen.get("first_frame_source") or "").strip()
+                if source:
+                    rebuilt[-1]["first_frame_source"] = source
+                if chosen.get("end_image"):
+                    rebuilt[-1]["end_image"] = chosen["end_image"]
+                else:
+                    rebuilt[-1].pop("end_image", None)
+                if chosen.get("seam_d_lock"):
+                    rebuilt[-1]["seam_d_lock"] = chosen["seam_d_lock"]
+                if mode in ("first_frame", "first_last_frame"):
+                    rebuilt[-1]["images"] = []
+                elif mode == "reference":
+                    listed = chosen.get("video_images")
+                    if not isinstance(listed, list):
+                        listed = chosen.get("images") or []
+                    rebuilt[-1]["images"] = [
+                        name
+                        for name in listed
+                        if name in known or _is_upload_id(name)
+                    ][:MAX_SHOT_REFERENCES]
         shots = rebuilt
+    return assets, shots, sources
+
+
+def collect_steps(spec):
+    """Assets and shots that actually become nodes, in run order."""
+    assets, shots, _sources = assemble_steps(spec)
     return assets, shots
 
 
@@ -287,7 +372,7 @@ def ordered_assets(assets):
 
 
 def task_plan(spec, soundtrack="off"):
-    """Local render rows: Qwen stills, Wan clips, ffmpeg join, optional narration, then write 字幕.ass."""
+    """Local render rows: MiniMax stills, video clips, ffmpeg join, optional narration, then write 字幕.ass."""
     assets, shots = collect_steps(spec)
     if not assets or not shots:
         return []
@@ -301,7 +386,7 @@ def task_plan(spec, soundtrack="off"):
                 "title": asset["title"],
                 "duration": None,
                 "state": "pending",
-                "detail": "千问生图",
+                "detail": "MiniMax 生图",
             }
         )
     for shot in shots:

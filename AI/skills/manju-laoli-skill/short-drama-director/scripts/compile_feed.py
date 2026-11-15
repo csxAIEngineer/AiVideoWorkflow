@@ -133,7 +133,7 @@ def compile_project_to_feed(state):
         ban_extra = ""
 
         out_lines.extend([
-            f"## 【投喂单元 {idx}/{total_segs} · {sid}】",
+            f"## 【封装单元 {idx}/{total_segs} · {sid}】",
             "```text",
             f"【画幅风格】{aspect} 横屏，{era}，{style_card}，{seg_type}（aspect_ratio={aspect}）",
             f"【场景资产】{scn_tag}",

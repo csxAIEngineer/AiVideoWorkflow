@@ -9,6 +9,13 @@ import time
 from pathlib import Path
 
 from end.locks import locked_aspect
+from end.product_names import (
+    STAGE_NAME,
+    UNIT_CLAIM,
+    UNIT_HEAD_ANY,
+    UNIT_NAME,
+    unit_heading,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITE = ROOT / "AI" / "skills" / "manju-laoli-skill"
@@ -16,8 +23,8 @@ VALIDATOR = SUITE / "short-drama-director" / "scripts" / "validate_prompt.py"
 BOARD = SUITE / "short-drama-director" / "scripts" / "build_board_lite.py"
 
 
-_UNIT_HEAD = re.compile(r"(?m)^#{1,6}[^\n]*投喂单元[^\n]*$")
-_UNIT_CLAIM = re.compile(r"(?m)^(#{1,6}[^\n]*投喂单元\s*)(\d+)\s*/\s*(\d+)([^\n]*)$")
+_UNIT_HEAD = UNIT_HEAD_ANY
+_UNIT_CLAIM = UNIT_CLAIM
 _SUBJECT = re.compile(r"(?m)^subject_definitions\s*[:：]")
 
 
@@ -51,7 +58,7 @@ def delivery_units(feed):
 
 
 def feed_unit_claim(feed):
-    """``(actual_units, max_claimed_total)`` from ``## 投喂单元 N/M`` heads."""
+    """``(actual_units, max_claimed_total)`` from packing-unit ``N/M`` heads."""
     units = delivery_units(feed)
     claimed = 0
     for match in _UNIT_CLAIM.finditer(str(feed or "")):
@@ -64,10 +71,10 @@ def feed_unit_mismatch(feed):
     actual, claimed = feed_unit_claim(feed)
     if claimed > actual >= 1:
         return (
-            "[-] FAIL: 投喂单元标题写成 */%s，但正文只有 %s 个单元——"
+            "[-] FAIL: %s标题写成 */%s，但正文只有 %s 个单元——"
             "缺的段不要用分镜短句顶替；请补全六个字段的 H3 单元，"
             "或把标题改成 %s/%s 后再出片"
-            % (claimed, actual, actual, actual)
+            % (UNIT_NAME, claimed, actual, actual, actual)
         )
     return ""
 
@@ -87,9 +94,9 @@ def align_feed_unit_headers(feed):
             if match:
                 lines[0] = "%s%s/%s%s" % (match.group(1), index, total, match.group(4))
             else:
-                lines[0] = "## 【投喂单元 %s/%s】" % (index, total)
+                lines[0] = unit_heading(index, total)
         else:
-            lines.insert(0, "## 【投喂单元 %s/%s】" % (index, total))
+            lines.insert(0, unit_heading(index, total))
         blocks.append("\n".join(lines).strip())
     out = "\n\n".join(blocks)
     if raw.endswith("\n"):
@@ -142,7 +149,7 @@ def project_markdown(spec, brief=""):
             "## P3 · 分镜",
             str(spec.get("storyboard") or ""),
             "",
-            "## P4 · 投喂提示词",
+            "## P4 · %s" % STAGE_NAME,
             "### 段1",
             "```text",
             feed_text(spec),

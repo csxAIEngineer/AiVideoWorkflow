@@ -4,6 +4,8 @@ import importlib.util
 import re
 from pathlib import Path
 
+from end.product_names import DRAFT_NAME, H3_SUBJECT_SOUND_RULE, HEADING_RULE, UNIT_NAME
+
 SKILLS = Path(__file__).resolve().parent
 SUITE = SKILLS / "manju-laoli-skill"
 HOST = SKILLS / "short-drama-director" / "host"
@@ -396,10 +398,10 @@ LOCK_FILES = (
     "sd-decision-engine/references/emotion-anchor-table.md",
     "sd-decision-engine/references/forbidden-zone-whitelist.md",
 )
+# Story bible and episode planning stay in the skill pack. The script
+# generator does not dispatch them.
 SCRIPT_FILES = (
     "sd-script-engine/references/source-registration.md",
-    "sd-script-engine/references/story-bible-and-ip.md",
-    "sd-script-engine/references/episode-planning.md",
     "sd-script-engine/references/six-stage-pipeline.md",
     "sd-script-engine/references/dialogue-naturalization.md",
     "short-drama-director/references/dialogue-doctor-7d.md",
@@ -458,23 +460,42 @@ _MERGE_SHAPE = {
     "feed": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
         _MARKDOWN_FIELDS,
-        "投喂稿放在 feed（字符串）。不要写 segments 对象，不要写接口 JSON。",
-        "每个投喂单元单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。",
+        "%s放在 feed（字符串）。不要写 segments 对象，不要写接口 JSON。" % DRAFT_NAME,
+        "%s。" % HEADING_RULE,
+        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。" % UNIT_NAME,
         "这一阶段用不到的字段不要写。",
     )),
     "qc": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-        "质检意见放在 text。不要改写剧本、资产、分镜或投喂稿。",
+        "质检意见放在 text。不要改写剧本、资产、分镜或%s。" % DRAFT_NAME,
     )),
     "board": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
         "看板说明放在 text。不要写 HTML。",
     )),
+    "seam": "\n".join((
+        "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
+        "分镜衔接放在 seam_ledger。对象是已经封装好的单元，不是分镜镜头。",
+        "seam_ledger.entries 的条数必须等于封装单元数，顺序与封装单元相同。不要把多个单元收成更少的段。",
+        "每条 shot_id 必须原样照抄封装单元 id，形式是封装单元 N/M，例如封装单元 1/3。不要写成封装单元 1，不要改成 1、2、3，也不要写成 S01。",
+        "第一条 d_lock 为 none。其后每条恰好是 1、2、3、4 之一。",
+        "每条写 shot_id、prev_id、d_lock、reason、scene_relation、action_continuous、plot_continuous、end_size、start_size、camera_change、tail_croppable、crop_plan、transition、enter_exit。",
+        "简报里的 entries 骨架已经按封装单元排好。只填或修改这些槽的值，不要另起包装，不要删行，不要改 shot_id。",
+        "start_size 和 end_size 是起镜景别和末镜景别，只能用景别阶梯上的词。不在阶梯上的值要改成阶梯里的词。",
+        "不要再写 writing_mode。五种写法是封装策略，不是第二套 D 锁。",
+        "video_mode 只能是 first_frame 或 reference。第一个封装单元，以及动作和剧情都不连续的单元，用 reference。动作连续或剧情连续用 first_frame，first_frame_source 为 previous_tail，不带参考图，不带 end_image。不要写 text 或 first_last_frame。一次调用不能混用帧和参考图。不要把段内衔接写进 entries。",
+    )),
 }
 _H3_FEED_CONTRACT = "\n".join((
-    "模型是 H3。feed 只写六段英文正文。",
-    "字段名必须单独成行并带冒号，顺序固定：subject_definitions:、summary:、retention_analysis:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
-    "不要使用七段式栏名。六段正文一律英文。对白写成 <d>[Chinese] 原文</d>。画面内文字保留原语言。",
+    "模型是 H3。feed 只写四段英文正文。",
+    "feed 字符串必须是简报里的那份骨架，不要在 feed 里面再套一层 JSON，也不要把四个字段写成 JSON 键。",
+    "不要写 summary 或 retention_analysis。",
+    H3_SUBJECT_SOUND_RULE,
+    "字段名必须单独成行并带冒号，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
+    "不要改这四行的名字，不要用 Subject、Soundscape、Music 代替它们。",
+    "不要只交第一个单元。缺的单元留着标题、duration、四个字段名、锁定句和镜号，正文可以先空着。",
+    "只填或修改骨架里的正文。不要改单元标题、duration、字段名、画面风格锁定句或镜号。",
+    "不要使用七段式栏名。四段正文一律英文。对白写成 <d>[Chinese] 原文</d>。画面内文字保留原语言。",
 ))
 _NODE_SHAPE = "\n".join((
     "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
@@ -550,11 +571,12 @@ def _director_body_lines():
 
 
 def director_for_merge():
-    """Verbatim director chapters the merge node applies.
+    """Verbatim director chapters. The merge node does not receive this text.
 
-    The stage originals already sit on the specialist nodes. The merge keeps
-    the lock rules, the budget law, and the industrial laws. Index tables that
-    only say which file to open are left out.
+    Specialists already hold the stage originals. The merge node only gets the
+    short instruction in ``merge_prompt``. This excerpt stays available for
+    measurement: lock rules, the budget law, and the industrial laws, without
+    the index tables that only say which file to open.
     """
     global _MERGE_DIRECTOR
     if _MERGE_DIRECTOR:
@@ -634,7 +656,8 @@ def suite_prompt_chars(task, brief):
     skill = sum(len(suite_original(relative)) for relative in files)
     brief_chars = len(str(brief or ""))
     full_director = len(director_text())
-    merge_director = len(director_for_merge())
+    # The merge node no longer carries the director skill.
+    merge_director = 0
     unpacked = skill + brief_chars * (len(files) + 1) + full_director
     packed = skill + brief_chars * (len(cohorts) + 1) + merge_director
     return {
@@ -680,18 +703,16 @@ def cohort_prompt(relatives, repair=False):
 
 
 def skill_node_prompt(relative, repair=False):
-    """Exactly one original. The director stays on the merge node."""
+    """Exactly one original. The merge node does not receive this original."""
     return cohort_prompt([relative], repair=repair)
 
 
 def merge_prompt(task, brief=""):
-    """Director chapters plus the task's output shape. No specialist originals."""
+    """Short merge instruction plus the task's JSON shape. No skill originals."""
     shape = _MERGE_SHAPE.get(task) or _MERGE_SHAPE["script"]
     if task == "feed" and parse_route(brief, "P4").get("model") == "h3":
         shape = shape + "\n" + _H3_FEED_CONTRACT
     return "\n\n".join((
-        "# 总控 %s" % _DIRECTOR_FILE,
-        director_for_merge(),
         "你是汇总节点。各节点已经读过本阶段原文。只根据各节点正文和简报交出这一任务的结果。不要再展开其他原文。",
         shape,
     ))

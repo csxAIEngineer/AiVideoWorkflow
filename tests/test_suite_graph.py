@@ -95,7 +95,24 @@ class SuiteGraphTest(unittest.TestCase):
     def test_script_graph_returns_one_script_and_every_partial(self):
         files = suite_files("script", "任务：剧本")
         cohorts = pack_cohorts(files)
-        self.assertEqual(len(files), 7)
+        self.assertEqual(files, [
+            "sd-script-engine/references/source-registration.md",
+            "sd-script-engine/references/six-stage-pipeline.md",
+            "sd-script-engine/references/dialogue-naturalization.md",
+            "short-drama-director/references/dialogue-doctor-7d.md",
+            "sd-script-engine/references/roundtable-review.md",
+        ])
+        self.assertNotIn("sd-script-engine/references/story-bible-and-ip.md", files)
+        self.assertNotIn("sd-script-engine/references/episode-planning.md", files)
+        from AI.skills.registry import _slice_module
+
+        routed = _slice_module().resolve_files("P1")
+        self.assertNotIn("sd-script-engine/references/story-bible-and-ip.md", routed)
+        self.assertNotIn("sd-script-engine/references/episode-planning.md", routed)
+        self.assertIn("sd-script-engine/references/six-stage-pipeline.md", routed)
+        pack = Path(__file__).resolve().parents[1] / "AI" / "skills" / "manju-laoli-skill"
+        self.assertTrue((pack / "sd-script-engine/references/story-bible-and-ip.md").is_file())
+        self.assertTrue((pack / "sd-script-engine/references/episode-planning.md").is_file())
         self.assertLessEqual(len(cohorts), len(files))
 
         class ScriptModel(_Model):
@@ -126,6 +143,12 @@ class SuiteGraphTest(unittest.TestCase):
         for relative in files:
             self.assertIn(relative, result["seen"])
             self.assertEqual(result["seen"].count("# 本节点原文 %s" % relative), 0)
+        self.assertNotIn("story-bible-and-ip.md", result["seen"])
+        self.assertNotIn("episode-planning.md", result["seen"])
+        graph = compile_suite_graph(files, "script", model, "write")
+        names = set(graph.nodes)
+        self.assertIn("merge", names)
+        self.assertEqual(sum(1 for name in names if str(name).startswith("skill-")), len(cohorts))
 
     def test_the_first_task_marker_wins_and_the_header_selects_files(self):
         self.assertEqual(suite_task_for("任务：剧本\n用户原文\n任务：分镜"), "script")
@@ -172,7 +195,13 @@ class SuiteGraphTest(unittest.TestCase):
         self.assertEqual(pack_cohorts(files)[0], [adapter])
         prompt = merge_prompt("feed", brief)
         self.assertIn("<d>[Chinese]", prompt)
-        self.assertIn("六段英文正文", prompt)
+        self.assertIn("四段英文正文", prompt)
+        self.assertIn("不要写 summary 或 retention_analysis", prompt)
+        from end.product_names import H3_SUBJECT_SOUND_RULE
+
+        self.assertIn(H3_SUBJECT_SOUND_RULE, prompt)
+        self.assertNotIn("summary:", prompt)
+        self.assertNotIn("retention_analysis:", prompt)
         seedance = "\n".join(("阶段：P4", "模型：2.5", "任务：提示词封装"))
         self.assertNotIn("<d>[Chinese]", merge_prompt("feed", seedance))
 
@@ -213,8 +242,12 @@ class SuiteGraphTest(unittest.TestCase):
         self.assertIn("分级处置", excerpt)
         self.assertIn("只适用于 P0", excerpt)
         prompt = merge_prompt("storyboard")
-        self.assertIn("# 总控 short-drama-director/SKILL.md", prompt)
+        self.assertNotIn("# 总控 short-drama-director/SKILL.md", prompt)
+        self.assertNotIn(excerpt[:80], prompt)
+        self.assertNotIn("预算铁律", prompt)
         self.assertIn("你是汇总节点", prompt)
+        self.assertIn("不要写 previs", prompt)
+        self.assertLess(len(prompt), 4000)
         self.assertLess(len(prompt), len(full))
 
     def test_packing_cuts_prompt_copies_without_dropping_originals(self):

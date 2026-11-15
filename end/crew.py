@@ -1,11 +1,14 @@
 """Who is working, derived from phase, stage, and pipeline. Not stored."""
 
+from end.product_names import MACHINE_GATE, STAGE_NAME
+
 CREW = (
     {"id": "script", "name": "编剧"},
     {"id": "asset", "name": "资产"},
     {"id": "storyboard", "name": "分镜"},
     {"id": "check", "name": "机检"},
-    {"id": "feed", "name": "投喂"},
+    {"id": "feed", "name": STAGE_NAME},
+    {"id": "seam", "name": "分镜衔接"},
 )
 
 _PHASE_ROLE = {
@@ -14,8 +17,10 @@ _PHASE_ROLE = {
     "gate_asset": "asset",
     "gate_storyboard": "storyboard",
     "gate_feed": "feed",
+    "gate_seam": "seam",
     "gate_machine": "check",
     "feed": "feed",
+    "seam": "seam",
     "qc": "check",
 }
 
@@ -25,6 +30,7 @@ _CURRENT_ROLE = {
     "asset": "asset",
     "storyboard": "storyboard",
     "feed": "feed",
+    "seam": "seam",
     "qc": "check",
 }
 
@@ -99,9 +105,9 @@ def _message_is_check(message):
     text = str(message or "").strip()
     if not text:
         return False
-    if text in ("机检", "投喂机检", "独立质检"):
+    if text in ("机检", MACHINE_GATE, "独立质检"):
         return True
-    if "投喂机检" in text:
+    if MACHINE_GATE in text:
         return True
     if text.startswith("机检") and "已过" not in text:
         return True
@@ -113,6 +119,8 @@ def _from_message(message):
     if "机检" in text or "质检" in text:
         if "已过" not in text:
             return "check"
+    if "分镜衔接" in text or "段缝" in text:
+        return "seam"
     if "投喂" in text or "封装" in text:
         return "feed"
     if "分镜" in text:

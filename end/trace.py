@@ -9,41 +9,48 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from end.product_names import STAGE_NAME, WRITE_LABEL
+
 _NAME = {
     "vision": "读图",
     "recon": "对标",
     "script": "剧本",
     "asset": "资产",
     "storyboard": "分镜",
-    "feed": "投喂",
+    "seam": "分镜衔接",
+    "feed": STAGE_NAME,
 }
 _WRITE_LABEL = {
     "recon": "写对标",
     "script": "写剧本",
     "asset": "写资产",
     "storyboard": "写分镜",
-    "feed": "写投喂稿",
+    "seam": "写分镜衔接",
+    "feed": WRITE_LABEL,
 }
 _FILES = {
     "recon": ("对标情报卡.md",),
     "script": ("剧本.md", "剧本过程.md"),
     "asset": ("assets.md",),
     "storyboard": ("分镜.md", "previs.md"),
+    "seam": ("分镜衔接.json",),
     "feed": ("feed.md",),
 }
 _AFTER = {
-    "vision": ("recon", "script", "asset", "storyboard", "feed"),
-    "recon": ("script", "asset", "storyboard", "feed"),
-    "script": ("asset", "storyboard", "feed"),
-    "asset": ("storyboard", "feed"),
-    "storyboard": ("feed",),
-    "feed": (),
+    "vision": ("recon", "script", "asset", "storyboard", "feed", "seam"),
+    "recon": ("script", "asset", "storyboard", "feed", "seam"),
+    "script": ("asset", "storyboard", "feed", "seam"),
+    "asset": ("storyboard", "feed", "seam"),
+    "storyboard": ("feed", "seam"),
+    "feed": ("seam",),
+    "seam": (),
 }
 _SPEC_KEYS = {
     "script": ("script", "internal"),
     "asset": ("image_prompts", "assets"),
     "storyboard": ("storyboard", "previs"),
-    "feed": ("feed", "shots"),
+    "seam": ("seam_ledger",),
+    "feed": ("feed", "shots", "feed_units"),
 }
 _ACTIVE = {}
 
@@ -172,6 +179,11 @@ def stage_output(stage, result):
         return {
             "storyboard": result.get("storyboard") or "",
             "previs": result.get("previs") or "",
+        }
+    if stage == "seam":
+        return {
+            "seam_ledger": result.get("seam_ledger") if isinstance(result.get("seam_ledger"), dict) else {},
+            "feed_units": result.get("feed_units") if isinstance(result.get("feed_units"), list) else [],
         }
     if stage == "feed":
         return {
@@ -395,6 +407,18 @@ def _restore_output(folder, stage, output):
             from end.board_shots import apply_storyboard_shots
 
             spec = apply_storyboard_shots(spec)
+        from end.seam_ledger import strip_seam
+
+        spec = strip_seam(spec)
+    elif stage == "seam":
+        spec["seam_ledger"] = output.get("seam_ledger") if isinstance(output.get("seam_ledger"), dict) else {}
+        incoming = output.get("feed_units") if isinstance(output.get("feed_units"), list) else []
+        if incoming:
+            spec["feed_units"] = incoming
+        _put_text(folder, "分镜衔接.json", json.dumps({
+            "seam_ledger": spec.get("seam_ledger") or {},
+            "feed_units": spec.get("feed_units") or [],
+        }, ensure_ascii=False, indent=2))
     elif stage == "feed":
         _put_text(folder, "feed.md", output.get("feed") or "")
         spec["feed"] = output.get("feed") or ""
@@ -417,6 +441,17 @@ def _clear_stage(folder, stage):
     spec = _load_spec(folder)
     for key in _SPEC_KEYS.get(stage, ()):
         spec.pop(key, None)
+    if stage in ("storyboard", "seam"):
+        from end.seam_ledger import strip_seam
+
+        kept = spec.get("storyboard")
+        previs = spec.get("previs")
+        spec = strip_seam(spec)
+        if stage == "seam":
+            if kept is not None:
+                spec["storyboard"] = kept
+            if previs is not None:
+                spec["previs"] = previs
     _save_spec(folder, spec)
 
 

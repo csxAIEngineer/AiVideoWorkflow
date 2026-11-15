@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import patch
 
 from end.image_store import CosImageStore, ImageStoreError, LocalImageStore, OssImageStore, get_image_store
@@ -168,6 +169,124 @@ class ImageStoreTest(unittest.TestCase):
             store.save("../etc", "U1", b"\x89PNG")
         with self.assertRaises(ImageStoreError):
             store.url("fffdd6d6b188", "../U1.png")
+        with self.assertRaises(ImageStoreError) as raised:
+            store.save("fffdd6d6b188", "图1/../U1", b"\x89PNG")
+        self.assertIn("图片编号无效", str(raised.exception))
+
+    def test_chinese_asset_id_is_saved_and_uploaded(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        local = LocalImageStore(base="http://127.0.0.1:8787", root=root)
+        payload = b"\x89PNG-still"
+        local_url = local.save("fffdd6d6b188", "图1", payload)
+        local_path = root / "fffdd6d6b188" / "outputs" / "images" / "图1.png"
+        self.assertEqual(local_path.read_bytes(), payload)
+        self.assertEqual(
+            local_url,
+            "http://127.0.0.1:8787/media/projects/fffdd6d6b188/images/" + quote("图1.png"),
+        )
+        self.assertEqual(quote("图1.png"), "%E5%9B%BE1.png")
+        self.assertTrue(local_url.isascii())
+
+        store = CosImageStore(
+            bucket="demo-1250000000",
+            domain="https://demo-1250000000.cos.ap-guangzhou.myqcloud.com",
+            root=root,
+        )
+        calls = []
+
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            calls.append((request, timeout))
+            return _Response()
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open):
+            url = store.save("fffdd6d6b188", "图1", payload)
+        cos_path = root / "fffdd6d6b188" / "outputs" / "images" / "图1.png"
+        self.assertEqual(cos_path.read_bytes(), payload)
+        self.assertEqual(
+            url,
+            "https://demo-1250000000.cos.ap-guangzhou.myqcloud.com/projects/fffdd6d6b188/images/%E5%9B%BE1.png",
+        )
+        self.assertEqual(len(calls), 1)
+        request, timeout = calls[0]
+        self.assertEqual(request.get_method(), "PUT")
+        self.assertEqual(request.full_url, url)
+        self.assertTrue(request.full_url.isascii())
+        self.assertEqual(request.data, payload)
+        self.assertEqual(request.get_header("Content-type"), "image/png")
+        self.assertFalse(request.has_header("Authorization"))
+        self.assertGreater(timeout, 0)
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open):
+            again = store.save("fffdd6d6b188", "图1_3", payload)
+        self.assertTrue(again.endswith("/" + quote("图1_3.png")))
+        self.assertEqual(len(calls), 2)
+
+    def test_cos_put_retries_a_connection_reset_then_succeeds(self):
+        store = CosImageStore(
+            bucket="demo-1250000000",
+            domain="https://demo-1250000000.cos.ap-guangzhou.myqcloud.com",
+            root=Path("."),
+        )
+        calls = []
+
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            calls.append(request.full_url)
+            if len(calls) == 1:
+                raise store_module.urllib.error.URLError(OSError(54, "Connection reset by peer"))
+            return _Response()
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open), patch(
+            "end.image_store.store.time.sleep", lambda _seconds: None
+        ):
+            url = store.publish("fffdd6d6b188", "S03_tail.jpg", b"\xff\xd8tail")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(url.endswith("/projects/fffdd6d6b188/images/S03_tail.jpg"))
+        self.assertEqual(calls[0], calls[1])
+
+    def test_cos_http_403_is_not_retried(self):
+        store = CosImageStore(
+            bucket="demo-1250000000",
+            domain="https://demo-1250000000.cos.ap-guangzhou.myqcloud.com",
+            root=Path("."),
+        )
+        calls = []
+
+        def fake_open(request, timeout=None):
+            calls.append(request.full_url)
+            raise store_module.urllib.error.HTTPError(request.full_url, 403, "Forbidden", None, None)
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open), patch(
+            "end.image_store.store.time.sleep", lambda _seconds: None
+        ):
+            with self.assertRaises(ImageStoreError) as raised:
+                store.publish("fffdd6d6b188", "S03_tail.jpg", b"\xff\xd8tail")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("403", str(raised.exception))
+        self.assertNotIn("要等上一段真实尾帧", str(raised.exception))
 
 
 if __name__ == "__main__":

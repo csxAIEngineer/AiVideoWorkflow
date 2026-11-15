@@ -267,7 +267,7 @@
             ★ 编号：C30 已用于「外挂指纹与跨阶段交接探针」，本码取 C32（编号不重排）。
 
 H 系列（--model h3 · MiniMax H3 格式支线 · h3-adapter.md）：
-  H1 字段集       Ref2VA 六段齐全且顺序正确；基础模式三字段齐全
+  H1 字段集       Ref2VA 四段齐全且顺序正确（不要求 summary / retention_analysis）；基础模式三字段齐全
   H2 镜号/切点    [Shot 1] 不得带时间戳；[Shot N] 切点 MM:SS.mmm 严格递增；切镜动词须用官方绑定短语（the camera/shot cuts to…）
   H3 时长         声明时长落在 4–15s；最后切点 ≤15s
   H4 语言         正文应为英文（2026-10-02 官方复核：base-en/ref-en "Write all six rewrite sections in English"）；
@@ -588,8 +588,10 @@ CAM_HEAVY_LIMITS = (
 )
 
 # ---- H 系列：MiniMax H3 格式支线（references/h3-adapter.md）----
-H3_SECTIONS = ["subject_definitions", "summary", "retention_analysis",
-               "detailed_description", "overall_soundscape", "non_diegetic_music"]
+H3_SECTIONS = ["subject_definitions", "detailed_description",
+               "overall_soundscape", "non_diegetic_music"]
+# 旧稿仍可能带这两段。缺了不报 H1；多了不因“多字段”失败。顺序只比四段。
+H3_OMITTED = ("summary", "retention_analysis")
 H3_FIELDS = ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"]
 H3_MARK_VIS = {"fully_preserved", "partially_preserved", "attribute_transfer", "weak_reference"}
 H3_MARK_AUD = {"fully_copy", "partially_copy", "reference", "weak_reference"}
@@ -630,7 +632,7 @@ H3_PARALLEL_PAT = re.compile(r"同框|同在画面|一同入画|同处一室")
 H3_DEIXIS_PAT = re.compile(r"(这只|那只|这个|那个|这双|那副)(手|脸|眼睛|脚|背影|身体)")
 
 
-_H3_NAMES = H3_SECTIONS + ["scene_description", "camera", "action", "dialogue", "audio"]
+_H3_NAMES = H3_SECTIONS + ["summary", "retention_analysis", "scene_description", "camera", "action", "dialogue", "audio"]
 H3_ALIAS = {
     "subject_definitions": "subject_definitions",
     "summary": "summary",
@@ -691,14 +693,15 @@ def validate_h3(text, mode="new"):
     order = _h3_order(text)
     is_ref = "subject_definitions" in sec
 
-    # H1 字段集
+    # H1 字段集。summary / retention_analysis 不再要求，出现也不单独判失败。
     if is_ref:
         missing = [s for s in H3_SECTIONS if s not in sec]
+        order_kept = [name for name in order if name not in H3_OMITTED]
         if missing:
-            issues.append(f"H1 Ref2VA 缺段 {missing}（六段式：subject_definitions/summary/retention_analysis/"
+            issues.append(f"H1 Ref2VA 缺段 {missing}（四段式：subject_definitions/"
                           "detailed_description/overall_soundscape/non_diegetic_music，顺序不可调换）")
-        elif order != H3_SECTIONS:
-            issues.append(f"H1 Ref2VA 段序错误：实际 {order}")
+        elif order_kept != H3_SECTIONS:
+            issues.append(f"H1 Ref2VA 段序错误：实际 {order_kept}")
     else:
         missing = [f for f in H3_FIELDS if f not in text]
         if missing:
@@ -773,7 +776,7 @@ def validate_h3(text, mode="new"):
                       "正文语言见下，2026-10-02 起一律英文）")
     _no_d = re.sub(r"<d>.*?</d>", "", text, flags=re.S)          # 台词/歌词保原语言，先摘除
     _no_d = re.sub(r"[\"“][^\"”\n]{0,60}[\"”]", "", _no_d)       # 双引号内画内文字保原语言，摘除
-    _no_d = re.sub(r"(?m)^[ \t]{0,3}#{1,6}(?:[ \t][^\n]*)?$", "", _no_d)  # ATX 标题（## 【投喂单元】）不算正文
+    _no_d = re.sub(r"(?m)^[ \t]{0,3}#{1,6}(?:[ \t][^\n]*)?$", "", _no_d)  # ATX 标题（## 【封装单元】）不算正文
     if is_ref and order:                                          # 仅审 H3 原生格式稿（七段式旧稿不套用）
         if H3_CJK.search(_no_d):
             warns.append("H4 正文出现中文——官方 base-en/ref-en 明文「Write all six rewrite sections in English」，"
@@ -4347,13 +4350,16 @@ def _self_test():
     iss, _, _ = validate_h3(h3_ok)
     if iss:
         print("FAIL self-test: 合规 H3 Ref2VA 样例不应报错", iss); ok = 0
-    # H1 缺段
-    iss, _, _ = validate_h3(h3_ok.replace("<Subject 1>（出现于 [Shot 1]、[Shot 2]）：fully_preserved - 长发低髆与炭灰长袍保留。\n", "")
-                               .replace("<Subject 2>（出现于 [Shot 1]、[Shot 2]）：fully_preserved - 深色短发与眉上细疤保留。\n", "")
-                               .replace("<Audio 1>：reference - 只取其音色引导念白，不复制原始信号。\n", "")
-                               .replace("retention_analysis:\n", ""))
+    # H1 缺段（summary / retention_analysis 不再算缺段；缺 overall_soundscape 仍报）
+    iss, _, _ = validate_h3(h3_ok.replace("overall_soundscape:\n雨打石板，风铃轻响两声。\n\n", ""))
     if not any("H1" in i for i in iss):
         print("FAIL self-test: Ref2VA 缺段应报 H1", iss); ok = 0
+    _four = ("subject_definitions:\n<Subject 1> is a woman.\n\n"
+             "detailed_description:\n[Shot 1] <Subject 1> stands inside.\n\n"
+             "overall_soundscape:\nRoom tone.\n\nnon_diegetic_music:\nnone.\n")
+    iss, _, _ = validate_h3(_four)
+    if any(i.startswith("H1") for i in iss):
+        print("FAIL self-test: 四段式缺 summary/retention_analysis 不应报 H1", iss); ok = 0
     # H2 首镜带时间戳
     iss, _, _ = validate_h3(h3_ok.replace("[Shot 1] 全景确立回廊。", "[Shot 1] 在 00:00.000 处，全景确立回廊。"))
     if not any("H2" in i for i in iss):
@@ -4442,7 +4448,7 @@ def _self_test():
         print("FAIL self-test: H3 中文正文应报 H4 WARN（官方要求六段正文英文）", warns); ok = 0
     # H4 标题中文不算正文；<d> 与引号画内文字仍不算。正文里的中文照报。
     _h4_title = (
-        "## 【投喂单元 1/1】\n"
+        "## 【封装单元 1/1】\n"
         "subject_definitions:\n<Subject 1> is a woman.\n\n"
         "summary:\nShe waits.\n\n"
         "retention_analysis:\n<Subject 1>: fully_preserved - stays.\n\n"
@@ -5480,7 +5486,7 @@ def _looks_like_feed(text):
         return True
     if re.search(r"(?m)^【\s*subject_definitions\s*】", text):
         return True
-    if re.search(r"(?m)^##\s*【投喂单元", text):
+    if re.search(r"(?m)^##\s*【(?:封装单元|投喂单元)", text):
         return True
     return False
 
@@ -5510,7 +5516,7 @@ def _segment_is_feed(body):
 
 
 SEG_HEAD_RE = re.compile(
-    r"^#{1,6}[^\n]{0,80}?(?:投喂单元|段)\s*([0-9]+)\s*(?:[/／]\s*([0-9]+))?[^\n]*$",
+    r"^#{1,6}[^\n]{0,80}?(?:封装单元|投喂单元|段)\s*([0-9]+)\s*(?:[/／]\s*([0-9]+))?[^\n]*$",
     re.M,
 )
 SEG_BRACKET_RE = re.compile(r"^[ \t]*【?[ \t]*段[ \t]*([0-9]+)[ \t]*(?:[/／][ \t]*([0-9]+))?[ \t]*】?[ \t]*$", re.M)
@@ -5519,7 +5525,7 @@ SEG_BRACKET_RE = re.compile(r"^[ \t]*【?[ \t]*段[ \t]*([0-9]+)[ \t]*(?:[/／][
 def _split_feed_segments(text):
     """按「段」标题切分多段投喂稿。返回 [(标签, 正文), ...]；不足 2 段返回 []。
 
-    只认「段 + 数字」或「投喂单元 N/M」标题（`### 段1/3`、`## 【投喂单元 1/4】`）。
+    只认「段 + 数字」或封装单元 N/M 标题（`### 段1/3`、`## 【封装单元 1/4】`）。旧稿的投喂单元标题同样切开。
     不认正文里出现的「段」字。H3 每一段是一次独立生成，不能把各段切点收成一条轴。
     """
     marks = [(m.start(), m.group(1)) for m in SEG_HEAD_RE.finditer(text)]
@@ -5563,7 +5569,7 @@ def finalize_checks(text, issues, warns, *, delivery=None, contract=False,
     _asset_pack = re.search(r"资产提示词|角色四格板|场景母版|九宫格提示词", text)
     _feed_units = text.count("【画幅风格】")
     # H3 六段式没有【画幅风格】。带 ## 且超过 1500 字时仍是投喂单元，不是整包项目。
-    _h3_feed = "subject_definitions" in text and "投喂单元" in text
+    _h3_feed = "subject_definitions" in text and ("封装单元" in text or "投喂单元" in text)
     _is_feed_unit = (not _asset_pack) and (_feed_units >= 2 or _h3_feed)
     project_doc = (bool(re.search(r"^#{1,3}\s+", text, re.M)) and len(text) > 1500
                    and not _is_feed_unit)
