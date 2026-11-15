@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import end.db as db
 from end.db import project_dir
-from end.render_loop import H3_NO_ONSCREEN_CAPTION, run_local_pipeline
+from end.render_loop import H3_NO_ONSCREEN_CAPTION, NO_ONSCREEN_CAPTION, run_local_pipeline
 from end.rerun import _rerun_writing
 from end.script_review import (
     GenerationBlocked,
@@ -288,7 +288,12 @@ class DeliveryReviewTest(unittest.TestCase):
         except Exception:
             pass
         self.assertTrue(videos.submits)
-        self.assertIn(H3_NO_ONSCREEN_CAPTION, videos.submits[0]["text"])
+        submitted = videos.submits[0]["text"]
+        self.assertIn(H3_NO_ONSCREEN_CAPTION, submitted)
+        self.assertTrue(submitted.endswith(NO_ONSCREEN_CAPTION))
+        for phrase in ("不要字幕", "不要水印", "不要复杂文字"):
+            self.assertEqual(submitted.count(phrase), 3)
+        self.assertIn("甲转身离开车站", submitted)
 
     def test_downstream_omissions_block_and_keep_the_script(self):
         self._confirm()

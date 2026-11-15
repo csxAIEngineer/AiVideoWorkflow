@@ -1,6 +1,7 @@
 """Feed units and 图 blocks are the strings image and video submit."""
 
 import unittest
+from unittest.mock import patch
 
 from tests.offline_guard import install, uninstall
 
@@ -14,7 +15,7 @@ def tearDownModule():
 
 from end.board_shots import apply_feed_binding, apply_storyboard_shots, shots_from_storyboard
 from end.prompt_gate import feed_text
-from end.render_loop import delivery_prompt, image_prompt, subtitle_cues
+from end.render_loop import NO_ONSCREEN_CAPTION, delivery_prompt, image_prompt, subtitle_cues
 from end.server import _merge_spec
 from end.workflow_from_spec import collect_steps
 
@@ -43,7 +44,19 @@ H3_CAPTION_LOCK = (
     "Lines inside <d> are spoken audio only and must not be painted into the frame "
     "as Chinese caption glyphs, bottom white text, or any other burned-in dialogue."
 )
-SEEDANCE_CAPTION_LOCK = "全程无字幕、无对白文字叠加。"
+SEEDANCE_CAPTION_LOCK = NO_ONSCREEN_CAPTION
+WAN_NEGATIVE = (
+    "负向清单：不要字幕，不要水印，不要复杂文字。"
+    "不要字幕，不要水印，不要复杂文字。"
+    "不要字幕，不要水印，不要复杂文字。"
+)
+
+
+def _assert_wan_negative(test, text):
+    test.assertEqual(NO_ONSCREEN_CAPTION, WAN_NEGATIVE)
+    test.assertTrue(text.endswith(WAN_NEGATIVE))
+    for phrase in ("不要字幕", "不要水印", "不要复杂文字"):
+        test.assertEqual(text.count(phrase), 3, phrase)
 
 
 def _spec():
@@ -70,8 +83,8 @@ class HandoffTest(unittest.TestCase):
         self.assertEqual(shots[0]["prompt"], UNIT.strip())
         self.assertEqual(shots[0]["duration"], 8)
         sent = delivery_prompt(shots[0], [], 0, False, "first_frame")
-        self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK)
-        self.assertNotIn("全程无字幕", sent)
+        self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK + "\n" + WAN_NEGATIVE)
+        _assert_wan_negative(self, sent)
         self.assertNotIn("本镜无对白", sent)
         self.assertNotIn("non_diegetic_music: N/A", sent)
         self.assertNotIn("从这张首帧", sent)
@@ -123,7 +136,8 @@ class HandoffTest(unittest.TestCase):
 
     def test_a_full_unit_keeps_its_body_and_bans_onscreen_captions(self):
         sent = delivery_prompt({"prompt": UNIT}, [], 1, True, "first_frame")
-        self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK)
+        self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK + "\n" + WAN_NEGATIVE)
+        _assert_wan_negative(self, sent)
         self.assertNotIn("从这张首帧", sent)
         self.assertNotIn("本镜无对白", sent)
 
@@ -131,6 +145,7 @@ class HandoffTest(unittest.TestCase):
         seedance = "【画幅风格】竖屏\n【时间轴分镜】0-4秒 她回头。\n"
         sent = delivery_prompt({"prompt": seedance}, [], 0, False, "reference")
         self.assertEqual(sent, seedance.strip() + "\n" + SEEDANCE_CAPTION_LOCK)
+        _assert_wan_negative(self, sent)
         self.assertNotIn("本镜无对白", sent)
         self.assertNotIn("No readable on-screen subtitles", sent)
 
@@ -138,7 +153,8 @@ class HandoffTest(unittest.TestCase):
         spoken = [{"speaker": "她", "line": "这句不该写进画面。"}]
         for mode in ("reference", "first_frame", "first_last_frame"):
             sent = delivery_prompt({"prompt": UNIT}, spoken, 1, True, mode)
-            self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK)
+            self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK + "\n" + WAN_NEGATIVE)
+            _assert_wan_negative(self, sent)
             self.assertEqual(sent.count("<d>[Chinese] 等我。</d>"), 1)
             self.assertNotIn("这句不该写进画面", sent)
             self.assertNotIn("从这张首帧", sent)
@@ -146,7 +162,12 @@ class HandoffTest(unittest.TestCase):
             self.assertNotIn("non_diegetic_music: N/A", sent)
         again = delivery_prompt({"prompt": sent}, spoken, 0, False, "reference")
         self.assertEqual(again, sent)
-        already = UNIT.strip() + "\n" + H3_CAPTION_LOCK
+        english_only = UNIT.strip() + "\n" + H3_CAPTION_LOCK
+        self.assertEqual(
+            delivery_prompt({"prompt": english_only}, [], 0, False, "reference"),
+            english_only + "\n" + WAN_NEGATIVE,
+        )
+        already = english_only + "\n" + WAN_NEGATIVE
         self.assertEqual(delivery_prompt({"prompt": already}, [], 0, False, "reference"), already)
         seedance = "【画幅风格】竖屏\n【时间轴分镜】0-4秒 她回头。\n" + SEEDANCE_CAPTION_LOCK
         self.assertEqual(
@@ -175,6 +196,50 @@ class HandoffTest(unittest.TestCase):
             }
         ])
         self.assertEqual([cue["text"] for cue in voiced], ["夜色已经很深了"])
+
+    def test_minimax_only_h3_keeps_the_english_lock(self):
+        def describe(profile, env_path=None):
+            del env_path
+            return profile, {}, {"model": "minimax-h3"}
+
+        def resolve(token, env_path=None):
+            del token, env_path
+            return "MiniMax/MiniMax-H3"
+
+        with patch("AI.qwen_api.video_catalog.describe_profile", describe), patch(
+            "AI.qwen_api.video_catalog.resolve_model_id", resolve
+        ):
+            sent = delivery_prompt({"prompt": UNIT}, [], 0, False, "first_frame")
+            seedance = "【画幅风格】竖屏\n【时间轴分镜】0-4秒 她回头。\n"
+            chinese = delivery_prompt({"prompt": seedance}, [], 0, False, "reference")
+            short = delivery_prompt({"prompt": "她回头"}, [], 0, False, "reference")
+        self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK)
+        self.assertNotIn("负向清单", sent)
+        self.assertNotIn("从这张首帧", sent)
+        self.assertIn("<d>[Chinese] 等我。</d>", sent)
+        _assert_wan_negative(self, chinese)
+        self.assertTrue(short.endswith(WAN_NEGATIVE))
+        self.assertIn("本镜无对白", short)
+
+    def test_a_wan_route_still_appends_the_negative_list(self):
+        def describe(profile, env_path=None):
+            del env_path
+            model = "wan3.0-video" if profile == "generate" else "minimax-h3"
+            return profile, {}, {"model": model}
+
+        def resolve(token, env_path=None):
+            del env_path
+            if token == "wan3.0-video":
+                return "wan3.0-video"
+            return "MiniMax/MiniMax-H3"
+
+        with patch("AI.qwen_api.video_catalog.describe_profile", describe), patch(
+            "AI.qwen_api.video_catalog.resolve_model_id", resolve
+        ):
+            sent = delivery_prompt({"prompt": UNIT}, [], 0, False, "reference")
+        _assert_wan_negative(self, sent)
+        self.assertIn(H3_CAPTION_LOCK, sent)
+        self.assertEqual(sent.count("<d>[Chinese] 等我。</d>"), 1)
 
     def test_markdown_board_does_not_keep_the_placeholder_when_feed_exists(self):
         spec = apply_storyboard_shots({

@@ -1076,15 +1076,22 @@ VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
 VIDEO_MODEL = "MiniMax/MiniMax-H3"
 VIDEO_MODE_MODELS = {mode: VIDEO_MODEL for mode in VIDEO_MODES}
 FRAME_OPENING = "从这张首帧的可见内容开始，主体、材质和构图保持一致，只做本镜写的光影和轻微运镜。"
-NO_ONSCREEN_CAPTION = "全程无字幕、无对白文字叠加。"
-# Six-section H3 copy is English. Keep this lock in English so it is not
-# another Chinese string outside <d>.
+# Official Wan 3.0 负向清单. The three phrases are written three times.
+# Spoken lines inside <d> stay; this lock does not drop dialogue.
+NO_ONSCREEN_CAPTION = (
+    "负向清单：不要字幕，不要水印，不要复杂文字。"
+    "不要字幕，不要水印，不要复杂文字。"
+    "不要字幕，不要水印，不要复杂文字。"
+)
+# Six-section H3 copy is English. This sentence stays as an extra reminder.
+# Wan submits still get the official Chinese 负向清单 after it.
 H3_NO_ONSCREEN_CAPTION = (
     "The frame shows the scene and the performers. "
     "No readable on-screen subtitles, captions, or overlaid dialogue text. "
     "Lines inside <d> are spoken audio only and must not be painted into the frame "
     "as Chinese caption glyphs, bottom white text, or any other burned-in dialogue."
 )
+_MINIMAX_MODEL_NAMES = frozenset(("minimax-h3", "MiniMax/MiniMax-H3"))
 
 
 def image_size(path):
@@ -1257,31 +1264,92 @@ def assemble_shot_media(shot, mode, url_for, tail_url=None):
     return "", media
 
 
-def _caption_lock(text):
-    """Executor-side ban. H3 units stay English; short prompts and Seedance stay Chinese."""
+def _h3_shaped(text):
+    """Packed unit body: both H3 section names are present."""
     raw = str(text or "")
-    if "subject_definitions" in raw and "detailed_description" in raw:
-        return H3_NO_ONSCREEN_CAPTION
-    return NO_ONSCREEN_CAPTION
+    return "subject_definitions" in raw and "detailed_description" in raw
+
+
+def _clearly_minimax_h3_only():
+    """True when preview and generate both name MiniMax-H3 and neither is Wan.
+
+    The official Chinese 负向清单 is required on Wan. An H3-shaped body may
+    keep only the English reminder when every current submit route is MiniMax.
+    A catalog that cannot be read is treated as Wan, which is the shipped route.
+    """
+    try:
+        from AI.qwen_api.video_catalog import describe_profile, resolve_model_id
+    except Exception:
+        return False
+    rows = []
+    try:
+        for profile in ("preview", "generate"):
+            _name, _params, route = describe_profile(profile)
+            token = str((route or {}).get("model") or "").strip()
+            try:
+                model_id = str(resolve_model_id(token) or "").strip()
+            except Exception:
+                model_id = token
+            rows.append((token, model_id))
+    except Exception:
+        return False
+    if not rows:
+        return False
+
+    def is_wan(token, model_id):
+        blob = "%s %s" % (token, model_id)
+        return "wan3" in blob.lower()
+
+    def is_minimax(token, model_id):
+        return token in _MINIMAX_MODEL_NAMES or model_id in _MINIMAX_MODEL_NAMES
+
+    if any(is_wan(token, model_id) for token, model_id in rows):
+        return False
+    return all(is_minimax(token, model_id) for token, model_id in rows)
+
+
+def _append_lock(body, lock):
+    """Append ``lock`` once. An exact copy already in the text is left alone."""
+    text = str(body or "").strip()
+    if not lock or lock in text:
+        return text
+    if not text:
+        return lock
+    return text + "\n" + lock
 
 
 def _with_caption_lock(text):
+    """Put caption locks at the end of a full H3 or Seedance unit.
+
+    Wan-bound H3 bodies keep the English reminder, then the official Chinese
+    负向清单. Spoken lines inside ``<d>`` are not removed.
+    """
     body = str(text or "").strip()
-    lock = _caption_lock(body)
-    if lock in body:
-        return body
-    if not body:
-        return lock
-    return body + "\n" + lock
+    h3 = _h3_shaped(body)
+    need_chinese = (not h3) or not _clearly_minimax_h3_only()
+    if h3 and H3_NO_ONSCREEN_CAPTION not in body:
+        if need_chinese and body.endswith(NO_ONSCREEN_CAPTION):
+            head = body[: -len(NO_ONSCREEN_CAPTION)].rstrip()
+            english = H3_NO_ONSCREEN_CAPTION
+            if head:
+                body = head + "\n" + english + "\n" + NO_ONSCREEN_CAPTION
+            else:
+                body = english + "\n" + NO_ONSCREEN_CAPTION
+        else:
+            body = _append_lock(body, H3_NO_ONSCREEN_CAPTION)
+    if need_chinese:
+        body = _append_lock(body, NO_ONSCREEN_CAPTION)
+    return body
 
 
 def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack="off", template=None):
     """Prompt sent with the clip. Vehicle lines come only from the active template's skills.
 
     Music or narration is mixed after the join, so those shots keep only room tone.
-    A full H3 or Seedance unit is sent as written, plus a lock that ``<d>`` audio
-    must not be painted as on-screen captions. Burned 字幕.ass is a later ffmpeg step
-    and still reads only shot dialogue and narration.
+    A full H3 or Seedance unit is sent as written. The official Chinese 负向清单
+    is last, which is where the Wan 3.0 formula places it. ``<d>`` stays spoken
+    audio and is not dropped. Burned 字幕.ass is a later ffmpeg step and still
+    reads only shot dialogue and narration.
     """
     from end.ai_client import template_render
     from end.prompt_gate import is_full_delivery
@@ -1291,13 +1359,11 @@ def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack=
         return _with_caption_lock(base)
     render = template_render(template)
     if mode in ("first_frame", "first_last_frame"):
-        parts = [base, FRAME_OPENING, NO_ONSCREEN_CAPTION]
+        parts = [base, FRAME_OPENING]
     else:
         parts = [base]
         if render["video_lock"]:
             parts.append(render["video_lock"])
-        if NO_ONSCREEN_CAPTION not in "\n".join(parts):
-            parts.append(NO_ONSCREEN_CAPTION)
         if index > 0 and render["video_next"]:
             parts.append(render["video_next"])
         if has_tail and render["video_tail"]:
@@ -1317,7 +1383,7 @@ def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack=
             parts.append("本镜无对白。保留环境声和音效，不要凭空说话。")
     if "non_diegetic_music" not in base:
         parts.append("non_diegetic_music: N/A")
-    return "\n".join(parts)
+    return _append_lock("\n".join(parts), NO_ONSCREEN_CAPTION)
 
 
 def _tail_frame(clip_path, dest):
