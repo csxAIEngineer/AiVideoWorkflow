@@ -289,10 +289,10 @@ class ShotContractTest(unittest.TestCase):
         self.assertNotIn("feed", view)
         first, second = view["shots"]
         self.assertEqual(first["images"], raw[0]["images"])
-        self.assertEqual(first["images"], ["图1"])
+        self.assertEqual(first["images"], ["图9"])
         self.assertEqual(first["prompt"], raw[0]["prompt"])
         self.assertTrue(first["prompt"].startswith("## 【封装单元 3/5】"))
-        self.assertEqual(first["images_source"], {"value": "unit_match", "index": None})
+        self.assertEqual(first["images_source"], {"value": "storyboard_assets", "index": None})
         self.assertEqual(first["feed"]["heading"], "## 【封装单元 3/5】")
         self.assertEqual(first["feed"]["title"], "【封装单元 3/5】")
         self.assertEqual(first["feed"]["unit"], "3/5")
@@ -306,14 +306,11 @@ class ShotContractTest(unittest.TestCase):
         self.assertEqual(first["feed"]["overall_soundscape"], "rain on glass")
         self.assertEqual(first["feed"]["non_diegetic_music"], "N/A")
         self.assertEqual(first["video_mode_resolved"]["value"], "reference")
-        self.assertEqual(first["reference"][0]["id"], "图1")
+        self.assertEqual(first["reference"][0]["id"], "图9")
         self.assertEqual(first["reference"][0]["source"], "bound_image")
 
         self.assertEqual(second["images"], ["图9"])
-        self.assertEqual(second["images_source"], {
-            "value": "storyboard_index_fallback",
-            "index": 1,
-        })
+        self.assertEqual(second["images_source"], {"value": "storyboard_assets", "index": None})
         self.assertEqual(second["feed"]["unit"], "4/5")
         self.assertEqual(second["feed"]["index"], 4)
         self.assertEqual(second["video_mode_resolved"], {

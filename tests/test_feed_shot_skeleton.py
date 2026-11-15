@@ -476,5 +476,80 @@ class ShotSkeletonRepairTest(unittest.TestCase):
         self.assertIn("short-drama-director/references/h3-adapter.md", repair)
 
 
+class UnitAssetLineTest(unittest.TestCase):
+    def _state(self):
+        rows = (
+            ("S03", 7, ["图1", "图4"]),
+            ("S04", 5, ["图2", "图5", "图6"]),
+        )
+        lines = []
+        shots = []
+        for shot_id, seconds, images in rows:
+            lines.append("## %s" % shot_id)
+            lines.append("时长：%s" % seconds)
+            lines.append("资产：" + "，".join(images))
+            shots.append({"id": shot_id, "duration": seconds, "images": list(images)})
+        return {
+            "storyboard": "\n".join(lines),
+            "shots": shots,
+            "locks": {"model": "h3", "material_mode": "M1", "track": "1"},
+        }
+
+    def test_the_program_line_replaces_a_model_list(self):
+        state = self._state()
+        draft = _pair_feed("\n".join((
+            "[Shot 1] The man waits.",
+            "资产：图5",
+            "[Shot 2] At 00:01.000, she sits.",
+        )))
+        fixed = apply_packing_plan(draft, state)
+        self.assertIn("duration: 12\n资产：图1，图4，图2，图5，图6\n", fixed)
+        self.assertEqual(fixed.count("资产："), 1)
+        self.assertIn("The man waits.", fixed)
+        self.assertNotIn("资产：图5", fixed)
+        self.assertNotIn("资产：", _description(fixed))
+        self.assertEqual(shot_skeleton_failures(fixed, state), [])
+        self.assertEqual(apply_packing_plan(fixed, state), fixed)
+
+    def test_the_scaffold_already_carries_the_line(self):
+        state = self._state()
+        note = packing_plan_note(state)
+        self.assertIn("资产：图1，图4，图2，图5，图6", note)
+        self.assertIn("不要改这行", note)
+        self.assertIn("不要另写一份资产列表", note)
+
+    def test_an_invented_line_is_removed_when_the_storyboard_names_nothing(self):
+        state = _state(PAIR)
+        draft = _pair_feed("\n".join((
+            "[Shot 1] She enters.",
+            "资产：图7",
+            "[Shot 2] At 00:07.000, she sits.",
+        )))
+        fixed = apply_packing_plan(draft, state)
+        self.assertNotIn("资产：", fixed)
+        self.assertNotIn("图7", fixed)
+        self.assertIn("She enters.", fixed)
+        self.assertIn("[Shot 2] At 00:07.000", fixed)
+        self.assertEqual(apply_packing_plan(fixed, state), fixed)
+
+    def test_the_line_can_come_from_the_storyboard_text(self):
+        state = _state(PAIR)
+        state["storyboard"] = "\n".join((
+            "## S03",
+            "时长：7",
+            "资产：图1，图4",
+            "## S04",
+            "时长：5",
+            "资产：图2",
+        ))
+        fixed = apply_packing_plan(
+            _pair_feed("[Shot 1] She waits.\n[Shot 2] At 00:01.000, she sits."),
+            state,
+        )
+        self.assertIn("资产：图1，图4，图2", fixed)
+        self.assertEqual(fixed.count("资产："), 1)
+        self.assertEqual(apply_packing_plan(fixed, state), fixed)
+
+
 if __name__ == "__main__":
     unittest.main()

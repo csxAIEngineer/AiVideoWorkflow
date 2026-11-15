@@ -111,6 +111,10 @@ class ShotContractViewTest(unittest.TestCase):
             view_eval("view.imagesSourceText(shot)", {"value": "storyboard", "index": None}),
             "分镜模板",
         )
+        self.assertEqual(
+            view_eval("view.imagesSourceText(shot)", {"value": "storyboard_assets", "index": None}),
+            "分镜资产",
+        )
 
     def test_reference_note_is_a_prediction(self):
         shots = [{"id": "S02"}, {"id": "S03"}]

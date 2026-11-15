@@ -41,6 +41,11 @@ The brief shows that skeleton. After every draft and every repair, the program
 writes those headings back. A unit whose shots, local numbers, or cut times
 disagree fails the feed gate. The repair tells the writer to restore the
 skeleton, not to invent a new cut.
+
+Each packed unit's ``资产：`` line is also program-owned. It is the union of
+the storyboard 资产栏 of the shots that unit covers, written like a storyboard
+shot (``资产：图1，图4``). After every draft and every repair, the program
+writes that line back. The model does not invent or replace the list.
 """
 
 import importlib
@@ -131,6 +136,8 @@ H3_FILL_ONLY = (
     "后面每一镜紧跟简报里的 At MM:SS.mmm，这是这一段前面各镜的时长和，不是全集时间。"
     "不要增删、合并或调换镜头，不要改镜号，不要改这些时间码，也不要自己发明切点。"
     "只在这些标题下写画面和对白。"
+    "若这一段已经写了资产：，那一行由程序按分镜资产栏写成，格式与分镜相同。"
+    "不要改这行，不要另写一份资产列表，也不要靠角色名或英文单词补图号。"
 )
 _H3_FIELD_NAMES = H3_SECTIONS + H3_OMITTED
 _H3_NAME_ALT = "|".join(_H3_FIELD_NAMES)
@@ -842,6 +849,8 @@ def h3_packing_scaffold(groups, style=""):
         "后面每一镜紧跟预先算好的 At MM:SS.mmm，只累加这一段里前面各镜的时长。"
         "不要增删、合并或调换镜头，不要改本地镜号，不要改这些时间码，也不要自己发明切点。"
         "只在这些标题下补画面、对白和声音。",
+        "若这一段已经写了资产：，那一行是程序按分镜资产栏写的，格式与分镜相同。"
+        "不要改这行，不要另写一份资产列表，也不要靠角色名或英文单词补图号。",
         H3_SUBJECT_SOUND_RULE,
     ]
     rule = style_lock_rule(style)
@@ -896,13 +905,14 @@ def packing_plan_note(state):
                 folded = apply_packing_plan(draft, state).strip()
                 parts.append("\n".join((
                     "当前骨架如下。只填或修改字段名下面的正文。",
-                    "不要另起 JSON，不要改字段名，不要丢掉单元标题、duration、画面风格锁定句或镜号。",
+                    "不要另起 JSON，不要改字段名，不要丢掉单元标题、duration、画面风格锁定句、镜号或资产：。",
                     "不要只写第一个单元。已经填好的单元保留，空着的槽只补正文。",
                     "修补时只改机检点名的问题。",
                     folded,
                 )))
             else:
-                parts.append(h3_packing_scaffold(groups, agreed_style(state)))
+                scaffold = h3_packing_scaffold(groups, agreed_style(state))
+                parts.append(inject_unit_assets(scaffold, packing_unit_asset_lines(state)))
     if spoken:
         spoken_lines = [
             "对白和旁白必须逐字出现，包括角色前缀和表演提示。"
@@ -1868,6 +1878,30 @@ def packing_shot_skeleton(state, limit=15):
     return skeleton
 
 
+def packing_unit_asset_lines(state):
+    """One ``资产：`` line per packed unit, from the storyboard 资产栏.
+
+    Empty when those shots cannot be placed. A unit whose shots name nothing
+    is an empty string, so a model-written list can be removed.
+    """
+    from end.seam_ledger import unit_storyboard_images
+    from end.storyboard_contract import format_asset_line
+
+    groups = packing_groups(state)
+    if not groups:
+        return []
+    unions = unit_storyboard_images(
+        {
+            "shots": (state or {}).get("shots") or [],
+            "storyboard": _storyboard_text(state),
+        },
+        len(groups),
+    )
+    if unions is None:
+        return []
+    return [format_asset_line(ids) for ids in unions]
+
+
 def format_shot_skeleton(skeleton):
     """One line per unit: storyboard ids, then the local headings the writer fills."""
     lines = []
@@ -2110,6 +2144,56 @@ def inject_shot_skeleton(text, skeleton):
     return "".join(parts)
 
 
+_ASSET_LINE = re.compile(r"^[ \t]*资产[ \t]*[:：]")
+
+
+def _patch_asset_line(block, line):
+    """Drop every ``资产：`` line, then write the program line after duration."""
+    raw_lines = str(block or "").splitlines(keepends=True)
+    kept = [raw for raw in raw_lines if not _ASSET_LINE.match(raw.rstrip("\r\n"))]
+    line = str(line or "").strip()
+    if not line:
+        return "".join(kept)
+    insert_at = 0
+    for index, raw in enumerate(kept):
+        core = raw.strip()
+        if _UNIT_DURATION_LINE.match(core):
+            insert_at = index + 1
+            break
+        if UNIT_HEAD_LINE.match(core):
+            insert_at = index + 1
+    if insert_at > 0 and not kept[insert_at - 1].endswith(("\n", "\r")):
+        kept[insert_at - 1] = kept[insert_at - 1] + "\n"
+    kept.insert(insert_at, line + "\n")
+    return "".join(kept)
+
+
+def inject_unit_assets(text, lines):
+    """Write the program ``资产：`` line into each packed unit.
+
+    A line the model wrote is removed, including one inside a section body.
+    An empty program line removes a model line and does not invent ids.
+    """
+    planned = list(lines or [])
+    raw = str(text or "")
+    if not planned:
+        return raw
+    heads = list(UNIT_HEAD_LINE.finditer(raw))
+    if not heads:
+        if len(planned) == 1 and (
+            "subject_definitions" in raw or "detailed_description" in raw
+        ):
+            return _patch_asset_line(raw, planned[0])
+        return raw
+    if len(heads) != len(planned):
+        return raw
+    parts = [raw[: heads[0].start()]]
+    for index, match in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+        parts.append(_patch_asset_line(raw[match.start():end], planned[index]))
+    return "".join(parts)
+
+
 def _rebuild_unit_fields(block):
     """Put the four field lines back. Bodies that are already there stay.
 
@@ -2163,8 +2247,10 @@ def apply_packing_plan(text, state):
     Durations come from the groups. A missing storyboard line is written into
     the unit that owns that shot, even when the model never opened a ``<d>``.
     The agreed style sentence is written into every H3 unit after that, including
-    a repair that dropped it. The local shot skeleton is written after that,
+    a repair that dropped it.     The local shot skeleton is written after that,
     again on a repair, so ``[Shot N]`` and ``At MM:SS.mmm`` match the storyboard.
+    The ``资产：`` line is written last, from the storyboard 资产栏 of the shots
+    in that unit, so a model list does not replace it.
     Director JSON is folded onto that skeleton first. ``last_fold_source``
     records ``json_fields``, ``informal_feed``, and ``materialize`` when one
     of those paths ran.
@@ -2191,6 +2277,7 @@ def apply_packing_plan(text, state):
         return placed
     styled = inject_style_lock(placed, agreed_style(state))
     result = inject_shot_skeleton(styled, packing_shot_skeleton(state))
+    result = inject_unit_assets(result, packing_unit_asset_lines(state))
     apply_packing_plan.last_fold_source = source
     return result
 

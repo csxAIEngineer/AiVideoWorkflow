@@ -10,9 +10,12 @@ only ``first_frame`` and ``reference``. Continuity chooses between them.
 Packing does not read this ledger.
 """
 
+import logging
 import re
 
 from end.product_names import UNIT_NAME, UNIT_TOKEN
+
+_LOG = logging.getLogger(__name__)
 
 # Official H3 submit modes. ``text`` and ``first_last_frame`` are not used.
 VIDEO_MODES = ("first_frame", "reference")
@@ -288,6 +291,38 @@ def _listed_ids(ids):
     return images
 
 
+def reference_id_cap():
+    """Official still cap. Asset refs stop at ``MAX_SHOT_REFERENCES``; H3 itself allows 9."""
+    from end.workflow_from_spec import MAX_SHOT_REFERENCES
+
+    return min(int(MAX_SHOT_REFERENCES), int(H3_MAX_REFERENCE_IMAGES))
+
+
+def cap_reference_ids(ids, label=""):
+    """Keep storyboard order. Drop the tail past the official cap and say which ids went."""
+    limit = reference_id_cap()
+    found = []
+    overflow = []
+    for item in ids or []:
+        text = _text(item)
+        if not text or text in found or text in overflow:
+            continue
+        if len(found) >= limit:
+            overflow.append(text)
+        else:
+            found.append(text)
+    if overflow:
+        prefix = ("%s 的" % label) if label else ""
+        _LOG.warning(
+            "%s参考图超过提交上限 %s 张，按分镜顺序保留 %s，去掉 %s",
+            prefix,
+            limit,
+            "、".join(found),
+            "、".join(overflow),
+        )
+    return found
+
+
 def _reference(ids):
     """Reference mode even when no still is bound yet. Never falls back to text."""
     return {
@@ -428,118 +463,6 @@ def _stored_row(stored, by_id, unit_id):
     return None
 
 
-_FIGURE_ID = re.compile(r"图\d+(?:_\d+)?")
-_ASSET_NAME_STOP = {
-    "角色",
-    "四格",
-    "九宫",
-    "宫格",
-    "场景",
-    "母版",
-    "设定",
-    "图板",
-    "纯图",
-    "道具",
-    "参考",
-    "素材",
-    "状态",
-    "锁定",
-}
-
-
-def _is_keyframe_asset(asset):
-    blob = "%s %s" % ((asset or {}).get("title") or "", (asset or {}).get("subject") or "")
-    return any(word in blob for word in ("关键帧", "首帧", "尾帧"))
-
-
-def _id_in_text(text, asset_id):
-    """True when ``asset_id`` is named, and not as the prefix of a longer id."""
-    if not asset_id or asset_id not in str(text or ""):
-        return False
-    return re.search(
-        r"(?<![\w\d_])%s(?![\w\d_])" % re.escape(asset_id),
-        str(text),
-    ) is not None
-
-
-def _name_tokens(asset):
-    raw = "%s %s" % ((asset or {}).get("title") or "", (asset or {}).get("subject") or "")
-    parts = re.split(r"[·•|/\\\s（）()【】\[\]、，,：:《》\"“”']+", raw)
-    found = []
-    for part in parts:
-        token = part.strip()
-        if len(token) >= 2 and token not in _ASSET_NAME_STOP and token not in found:
-            found.append(token)
-    return found
-
-
-def _name_in_text(text, asset):
-    raw = str(text or "")
-    for token in _name_tokens(asset):
-        if re.search(r"[\u4e00-\u9fff]", token):
-            if token in raw:
-                return True
-            continue
-        if re.search(r"(?<!\w)%s(?!\w)" % re.escape(token), raw, re.IGNORECASE):
-            return True
-    return False
-
-
-def _kind_rank(asset):
-    kind = str((asset or {}).get("subject_kind") or "")
-    title = "%s %s" % ((asset or {}).get("title") or "", (asset or {}).get("subject") or "")
-    if kind == "character" or any(word in title for word in ("角色", "女主", "男主")):
-        return 0
-    if kind in ("prop", "product") or "道具" in title:
-        return 1
-    if kind in ("location", "scene") or any(word in title for word in ("场景", "九宫", "母版")):
-        return 2
-    return 3
-
-
-def _prompt_reference_ids(prompt, assets):
-    """Asset ids named in one unit: figure tags, then character, product, and scene names.
-
-    ``images_for_feed_unit`` only matches a short alias list. A still titled
-    小君 is named here when the unit text says 小君, or when the text cites 图2.
-    """
-    text = str(prompt or "")
-    catalog = []
-    by_id = {}
-    for asset in assets or []:
-        if not isinstance(asset, dict):
-            continue
-        asset_id = _text(asset.get("id"))
-        if not asset_id or asset_id in by_id or _is_keyframe_asset(asset):
-            continue
-        by_id[asset_id] = asset
-        catalog.append(asset_id)
-    found = []
-
-    def add(asset_id):
-        if asset_id and asset_id not in found and (not catalog or asset_id in by_id):
-            found.append(asset_id)
-
-    for asset_id in catalog:
-        if _id_in_text(text, asset_id):
-            add(asset_id)
-    for match in _FIGURE_ID.finditer(text):
-        add(match.group(0))
-    named = []
-    for index, asset_id in enumerate(catalog):
-        if asset_id in found:
-            continue
-        asset = by_id[asset_id]
-        if _name_in_text(text, asset):
-            named.append((_kind_rank(asset), index, asset_id))
-    named.sort()
-    for _rank, _index, asset_id in named:
-        add(asset_id)
-        if len(found) >= H3_MAX_REFERENCE_IMAGES:
-            break
-    return found[:H3_MAX_REFERENCE_IMAGES]
-
-
 def _board_rows(spec):
     """Storyboard shots packed into feed units. Unit ids are not shots."""
     rows = []
@@ -601,12 +524,48 @@ def _shot_slices(board, unit_count):
     return slices
 
 
-def _images_of_shots(shots):
-    return _listed_ids(
-        item
-        for shot in shots or []
-        for item in _bound_images(shot)
-    )
+def _ids_for_board_shot(shot, text_ids):
+    """Storyboard 资产栏 for one shot. A stored ``images`` list wins over the manuscript."""
+    if isinstance(shot, dict) and isinstance(shot.get("images"), list):
+        ordered = []
+        for item in shot.get("images") or []:
+            text = _text(item)
+            if text and text not in ordered:
+                ordered.append(text)
+        return ordered
+    return list((text_ids or {}).get(_text((shot or {}).get("id"))) or [])
+
+
+def _union_shot_images(shots, text_ids, label=""):
+    """Union of 资产栏, storyboard order, first appearance wins. No extra ids."""
+    ordered = []
+    for shot in shots or []:
+        for asset_id in _ids_for_board_shot(shot, text_ids):
+            if asset_id not in ordered:
+                ordered.append(asset_id)
+    return cap_reference_ids(ordered, label)
+
+
+def unit_storyboard_images(spec, unit_count):
+    """One id list per packed unit, or ``None`` when shots cannot be placed on those units.
+
+    The list is the storyboard 资产栏 of the shots that unit covers. Prompt
+    aliases are not consulted.
+    """
+    board = _board_rows(spec)
+    slices = _shot_slices(board, unit_count)
+    if not any(slices):
+        return None
+    from end.storyboard_contract import storyboard_asset_ids
+
+    text_ids = storyboard_asset_ids((spec or {}).get("storyboard") or "")
+    rows = []
+    for shots in slices:
+        label = "、".join(
+            _text(shot.get("id")) for shot in shots if isinstance(shot, dict) and _text(shot.get("id"))
+        )
+        rows.append(_union_shot_images(shots, text_ids, label))
+    return rows
 
 
 def packed_units(spec):
@@ -616,6 +575,11 @@ def packed_units(spec):
     unit without the total is read as the heading id. D-lock and the other
     submit fields on that row are copied, not rewritten. Storyboard shot ids
     are not units.
+
+    Reference stills are the storyboard 资产栏 of the shots this unit covers,
+    in storyboard order. A ``资产：`` line on the unit is that same list. Prompt
+    aliases do not replace it. A stored image list is used only when those
+    shots cannot be placed on the units.
     """
     spec = spec or {}
     derived = units_from_feed(spec.get("feed") or "")
@@ -626,30 +590,25 @@ def packed_units(spec):
     by_id = {str(item.get("id")): item for item in stored}
     if not derived:
         return [dict(item) for item in stored]
-    try:
-        from end.board_shots import images_for_feed_unit
-    except ImportError:
-        images_for_feed_unit = None
-    assets = spec.get("assets") or []
-    slices = _shot_slices(_board_rows(spec), len(derived))
+    unions = unit_storyboard_images(spec, len(derived))
+    from end.storyboard_contract import asset_ids_from_text
+
     rows = []
     for index, unit in enumerate(derived):
         row = dict(unit)
         saved = _stored_row(stored, by_id, row["id"])
         if saved is None and index < len(stored) and not by_id:
             saved = stored[index]
-        images = []
-        if images_for_feed_unit is not None:
-            images = list(images_for_feed_unit(row.get("prompt") or "", assets) or [])
-        if not images and isinstance(saved, dict):
-            images = list(saved.get("images") or [])
-        # Alias match misses stills such as 小君/图2. Name the figure tags and
-        # asset titles in the unit, and if that is still empty use the
-        # storyboard shots packed into this unit.
-        if not images:
-            images = _prompt_reference_ids(row.get("prompt") or "", assets)
-        if not images and index < len(slices):
-            images = _images_of_shots(slices[index])
+        if unions is not None and index < len(unions):
+            images = list(unions[index])
+        else:
+            listed = asset_ids_from_text(row.get("prompt") or "")
+            if listed is not None:
+                images = cap_reference_ids(listed, row["id"])
+            elif isinstance(saved, dict):
+                images = list(saved.get("images") or [])
+            else:
+                images = []
         row["images"] = _listed_ids(images)
         if isinstance(saved, dict):
             for key in SHOT_VIDEO_FIELDS:

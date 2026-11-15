@@ -1008,12 +1008,12 @@ class OfficialModeTest(unittest.TestCase):
             "assets": [{"id": "图2", "title": "小君", "subject": "小君", "subject_kind": "character"}],
             "shots": [_shot("S01", [], duration=5)],
         })
-        self.assertEqual(named[0]["images"], ["图2"])
+        self.assertEqual(named[0]["images"], [])
         named_entry = apply_submit_params([
             _entry(named[0]["id"], "", "none"),
         ], named)[0]
         self.assertEqual(named_entry["video_mode"], "reference")
-        self.assertEqual(named_entry["images"], ["图2"])
+        self.assertEqual(named_entry["images"], [])
         self.assertNotEqual(named_entry["video_mode"], "text")
 
         continuous = apply_submit_params([
@@ -1058,6 +1058,144 @@ class OfficialModeTest(unittest.TestCase):
         self.assertNotIn("end_image", written[2])
         self.assertNotIn(written[0]["video_mode"], ("text", "first_last_frame"))
         self.assertNotIn(written[1]["video_mode"], ("text", "first_last_frame"))
+
+
+# Storyboard 资产栏 for the five packed units of 「眼睛先下班」.
+_EYE_COLUMNS = (
+    ("S01", ["图1", "图4"]),
+    ("S02", ["图1", "图4"]),
+    ("S03", ["图1", "图4"]),
+    ("S04", ["图2", "图5", "图6"]),
+    ("S05", ["图1", "图4", "图5"]),
+    ("S06", ["图1", "图4", "图5", "图6"]),
+    ("S07", ["图3", "图9", "图4", "图5", "图6"]),
+    ("S08", ["图3", "图9", "图4", "图5"]),
+    ("S09", ["图3", "图9", "图4", "图5", "图6"]),
+    ("S10", ["图3", "图9"]),
+)
+_EYE_UNITS = (
+    ["图1", "图4"],
+    ["图1", "图4", "图2", "图5", "图6"],
+    ["图1", "图4", "图5", "图6"],
+    ["图3", "图9", "图4", "图5", "图6"],
+    ["图3", "图9", "图4", "图5", "图6"],
+)
+
+
+def _eye_feed():
+    blocks = []
+    for index, ids in enumerate(_EYE_UNITS, 1):
+        body = "She stays."
+        if index == 2:
+            body = "The man waits in the living room.\n资产：图5"
+        block = _h3_unit(index, 5, 10, body=body)
+        line = "资产：" + "，".join(ids)
+        block = block.replace("duration: 10\n", "duration: 10\n%s\n" % line, 1)
+        blocks.append(block)
+    return "\n\n".join(blocks)
+
+
+def _eye_spec():
+    assets = []
+    for number, title in (
+        (1, "女主"),
+        (2, "女主近景"),
+        (3, "女主侧脸"),
+        (4, "药盒"),
+        (5, "男主"),
+        (6, "男主手部"),
+        (7, "客厅母版"),
+        (8, "卧室母版"),
+        (9, "客厅九宫格"),
+    ):
+        assets.append({
+            "id": "图%s" % number,
+            "title": title,
+            "subject": title,
+            "prompt": title,
+        })
+    return {
+        "assets": assets,
+        "shots": [_shot(shot_id, images, duration=5) for shot_id, images in _EYE_COLUMNS],
+        "feed": _eye_feed(),
+    }
+
+
+class StoryboardAssetBindingTest(unittest.TestCase):
+    def test_man_alias_does_not_replace_the_storyboard_union(self):
+        spec = _eye_spec()
+        units = packed_units(spec)
+        self.assertEqual([unit["images"] for unit in units], [list(ids) for ids in _EYE_UNITS])
+        for unit in units:
+            self.assertNotIn("图7", unit["images"])
+            self.assertNotIn("图8", unit["images"])
+        self.assertIn("图9", units[3]["images"])
+        self.assertIn("图9", units[4]["images"])
+        self.assertIn("The man", units[1]["prompt"])
+        self.assertNotEqual(units[1]["images"], ["图5"])
+
+    def test_asset_line_binds_when_shots_are_not_placed(self):
+        feed = _h3_unit(1, 1, 5, body="The man waits in the living room.")
+        feed = feed.replace("duration: 5\n", "duration: 5\n资产：图1，图4\n", 1)
+        units = packed_units({
+            "feed": feed,
+            "assets": [
+                {"id": "图1", "title": "女主", "prompt": "女主"},
+                {"id": "图4", "title": "药盒", "prompt": "药盒"},
+                {"id": "图5", "title": "男主", "prompt": "男主"},
+                {"id": "图7", "title": "客厅母版", "prompt": "客厅"},
+                {"id": "图8", "title": "卧室母版", "prompt": "客厅"},
+            ],
+        })
+        self.assertEqual(units[0]["images"], ["图1", "图4"])
+
+    def test_overflow_keeps_storyboard_order_and_logs_the_drop(self):
+        ids = ["图%s" % number for number in range(1, 11)]
+        feed = _h3_unit(1, 1, 5)
+        with self.assertLogs("end.seam_ledger", level="WARNING") as caught:
+            units = packed_units({
+                "feed": feed,
+                "shots": [_shot("S01", ids, duration=5)],
+            })
+        self.assertEqual(units[0]["images"], ids[:8])
+        logged = "\n".join(caught.output)
+        self.assertIn("图9", logged)
+        self.assertIn("图10", logged)
+        self.assertIn("按分镜顺序", logged)
+
+    def test_first_frame_submit_omits_images_and_keeps_the_asset_line(self):
+        spec = _eye_spec()
+        units = packed_units(spec)
+        entries = apply_submit_params([
+            _entry(units[0]["id"], "", "none"),
+            _entry(units[1]["id"], units[0]["id"], "2"),
+            _entry(units[2]["id"], units[1]["id"], "2"),
+            _entry(units[3]["id"], units[2]["id"], "1"),
+            _entry(units[4]["id"], units[3]["id"], "2"),
+        ], units)
+        self.assertEqual(entries[3]["video_mode"], "first_frame")
+        self.assertEqual(entries[3]["first_frame_source"], "previous_tail")
+        self.assertEqual(entries[3]["images"], [])
+        self.assertEqual(entries[1]["images"], list(_EYE_UNITS[1]))
+        spec["seam_ledger"] = {"entries": entries}
+        submitted = units_for_submit(spec)
+        self.assertEqual(submitted[3]["video_mode"], "first_frame")
+        self.assertEqual(submitted[3]["first_frame_source"], "previous_tail")
+        self.assertEqual(submitted[3]["images"], [])
+        self.assertEqual(submitted[3]["video_images"], [])
+        self.assertNotIn("end_image", submitted[3])
+        self.assertIn("资产：图3，图9，图4，图5，图6", submitted[3]["prompt"])
+        self.assertEqual(submitted[1]["video_mode"], "reference")
+        self.assertEqual(submitted[1]["images"], list(_EYE_UNITS[1]))
+        self.assertEqual(submitted[1]["video_images"], list(_EYE_UNITS[1]))
+        _assets, built = collect_steps(spec)
+        self.assertEqual(built[1]["video_mode"], "reference")
+        self.assertEqual(built[1]["images"], list(_EYE_UNITS[1]))
+        self.assertEqual(built[3]["video_mode"], "first_frame")
+        self.assertEqual(built[3]["first_frame_source"], "previous_tail")
+        self.assertEqual(built[3]["images"], [])
+        self.assertNotIn("end_image", built[3])
+        self.assertIn("资产：图3，图9，图4，图5，图6", built[3]["prompt"])
 
 
 if __name__ == "__main__":

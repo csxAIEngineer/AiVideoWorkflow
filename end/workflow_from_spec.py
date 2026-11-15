@@ -127,21 +127,33 @@ def _image_prompt(item, blocks):
     return prompt
 
 
-def _feed_shot_images(unit, asset_rows, known, template):
+def _feed_shot_images(unit, known, template, board_images=None):
     """Images collect_steps binds for one packed unit, and why.
 
-    A non-empty ``images_for_feed_unit`` match wins. An empty match copies the
-    storyboard shot at the same index. This does not read or write run state.
+    ``board_images`` is the storyboard 资产栏 of the shots this unit covers.
+    A ``资产：`` line on the unit is that same list. Prompt aliases do not
+    replace it. When the shots cannot be placed, an empty line stays empty,
+    and a unit with no line copies the storyboard shot at the same index.
+    This does not read or write run state.
     """
-    from end.board_shots import images_for_feed_unit
+    if board_images is not None:
+        names = [
+            name
+            for name in board_images
+            if name in known or _is_upload_id(name)
+        ]
+        return names[:MAX_SHOT_REFERENCES], "storyboard_assets"
+    from end.seam_ledger import cap_reference_ids
+    from end.storyboard_contract import asset_ids_from_text
 
-    matched = [
-        name
-        for name in images_for_feed_unit(unit, asset_rows)
-        if name in known or _is_upload_id(name)
-    ]
-    if matched:
-        return list(matched), "unit_match"
+    listed = asset_ids_from_text(unit)
+    if listed is not None:
+        names = [
+            name
+            for name in listed
+            if name in known or _is_upload_id(name)
+        ]
+        return cap_reference_ids(names, "资产"), "storyboard_assets"
     return list((template or {}).get("images") or []), "storyboard_index_fallback"
 
 
@@ -242,11 +254,11 @@ def assemble_steps(spec):
         # H3: one API call per feed unit. Never pad missing units with storyboard
         # Chinese rows — that is what made MiniMax ignore the Ref2VA contract.
         templates = shots
-        from end.seam_ledger import units_for_submit
+        from end.seam_ledger import unit_storyboard_images, units_for_submit
 
         packed = units_for_submit(spec)
+        unions = unit_storyboard_images(spec, len(units))
         rebuilt = []
-        asset_rows = spec.get("assets") or []
         sources = []
         for index, unit in enumerate(units):
             template = templates[index] if index < len(templates) else (
@@ -258,7 +270,8 @@ def assemble_steps(spec):
                 template_index = len(templates) - 1
             else:
                 template_index = index
-            images, image_kind = _feed_shot_images(unit, asset_rows, known, template)
+            board_images = unions[index] if unions is not None and index < len(unions) else None
+            images, image_kind = _feed_shot_images(unit, known, template, board_images)
             source = {"value": image_kind, "index": None}
             if image_kind == "storyboard_index_fallback":
                 source["index"] = template_index

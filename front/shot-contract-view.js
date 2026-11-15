@@ -66,6 +66,7 @@
     if (!source || typeof source !== "object") return "空";
     const value = String(source.value || "");
     if (value === "unit_match") return "投喂单元匹配";
+    if (value === "storyboard_assets") return "分镜资产";
     if (value === "storyboard_index_fallback") {
       if (typeof source.index === "number" && isFinite(source.index)) {
         return "分镜序号兜底 · " + source.index;

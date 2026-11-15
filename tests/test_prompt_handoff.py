@@ -253,5 +253,5 @@ class HandoffTest(unittest.TestCase):
         self.assertEqual(again["feed"], bound["feed"])
         self.assertEqual(again["shots"][0]["images"], bound["shots"][0]["images"])
         _assets, shots = collect_steps(spec)
-        self.assertEqual(shots[0]["images"], ["图3", "图4", "图1", "图2"])
+        self.assertEqual(shots[0]["images"], ["A1"])
         self.assertIn("<Picture 1>", shots[0]["prompt"])
