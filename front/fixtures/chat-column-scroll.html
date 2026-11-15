@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>chat column scroll fixture</title>
+  <link rel="stylesheet" href="/styles.css?v=50" />
+</head>
+<body>
+  <main class="main workflow">
+    <header class="app-bar">
+      <button class="menu-toggle" type="button">菜单</button>
+      <button class="new-chat" type="button">新对话</button>
+      <div class="stage-bar">
+        <div class="stage-switch">
+          <button class="seg on" type="button">画布</button>
+          <button class="seg" type="button">预览</button>
+        </div>
+      </div>
+      <button class="theme-toggle" type="button">浅色</button>
+    </header>
+    <div class="work-body">
+      <div class="stage-center">
+        <div class="canvas-wrap"></div>
+      </div>
+      <div id="chat-column" class="chat-column">
+        <button id="chat-toggle" class="chat-toggle" type="button" aria-expanded="true">
+          <span class="chat-toggle-mark" aria-hidden="true">›</span>
+          <span class="chat-toggle-label">收起</span>
+        </button>
+        <div id="chat-pin" class="chat-pin">
+          <div id="chat-progress" class="chat-progress">
+            <section class="job">
+              <div class="job-head">
+                <b>任务进展</b>
+                <span class="job-elapsed">已用 7:27:17</span>
+              </div>
+              <ol class="job-steps">
+                <li class="done">立项锁定</li>
+                <li class="done">赛道分流</li>
+                <li class="done">剧本</li>
+                <li class="done">资产锁定</li>
+                <li class="done">分镜</li>
+                <li class="done">提示词封装</li>
+                <li class="failed">投喂机检</li>
+                <li>分镜衔接</li>
+                <li>离线看板</li>
+              </ol>
+              <div class="job-bar">
+                <div class="job-bar-fill failed" style="width: 62%"></div>
+                <span class="job-bar-label">62%</span>
+              </div>
+              <p class="job-message">已自动改了3次，还是没过。投喂机检没过。根据建议修改会按下面这些项改。</p>
+              <div class="machine-reasons">
+                <p class="machine-reasons-title">根据建议修改会按这些改</p>
+                <ul class="machine-reasons-list">
+                  <li>投喂稿和分镜对不上，封装单元缺了场景关系。</li>
+                  <li>图4 海露清眼液还没有可用的静帧。</li>
+                </ul>
+              </div>
+              <ul class="job-log">
+                <li><time>09:25:44</time><span>剧本修订</span></li>
+                <li><time>09:25:44</time><span>剧本候选</span></li>
+                <li><time>09:36:58</time><span>下一段</span></li>
+                <li><time>09:37:40</time><span>声轨确认</span></li>
+              </ul>
+              <p class="task-summary">已完成 0 / 13</p>
+              <ol class="task-list">
+                <li class="task task-pending"><b>图1 小君房间九宫格</b><span class="task-duration">生图</span><span class="task-state">等待中</span><span class="task-detail">MiniMax 生图</span></li>
+                <li class="task task-pending"><b>图2 小君</b><span class="task-duration">生图</span><span class="task-state">等待中</span><span class="task-detail">MiniMax 生图</span></li>
+                <li class="task task-pending"><b>图3 男主</b><span class="task-duration">生图</span><span class="task-state">等待中</span><span class="task-detail">MiniMax 生图</span></li>
+                <li class="task task-pending"><b>图4 海露清眼液（产品道具）</b><span class="task-duration">生图</span><span class="task-state">等待中</span><span class="task-detail">MiniMax 生图</span></li>
+                <li class="task task-pending"><b>图5 房内台灯（场景道具）</b><span class="task-duration">生图</span><span class="task-state">等待中</span><span class="task-detail">MiniMax 生图</span></li>
+                <li class="task task-pending"><b>图6 笔记本（场景道具）</b><span class="task-duration">生图</span><span class="task-state">等待中</span><span class="task-detail">MiniMax 生图</span></li>
+                <li class="task task-pending"><b>S01</b><span class="task-duration">12 秒</span><span class="task-state">等待中</span><span class="task-detail">MiniMax H3 出镜</span></li>
+                <li class="task task-pending"><b>S02</b><span class="task-duration">12 秒</span><span class="task-state">等待中</span><span class="task-detail">MiniMax H3 出镜</span></li>
+                <li class="task task-pending"><b>S03</b><span class="task-duration">12 秒</span><span class="task-state">等待中</span><span class="task-detail">MiniMax H3 出镜</span></li>
+                <li class="task task-pending"><b>S04</b><span class="task-duration">9 秒</span><span class="task-state">等待中</span><span class="task-detail">MiniMax H3 出镜</span></li>
+                <li class="task task-pending"><b>S05</b><span class="task-duration">7 秒</span><span class="task-state">等待中</span><span class="task-detail">MiniMax H3 出镜</span></li>
+                <li class="task task-pending"><b>join 按镜头顺序拼接</b><span class="task-duration">合计 52 秒</span><span class="task-state">等待中</span><span class="task-detail">本机拼接</span></li>
+                <li class="task task-pending"><b>subtitles 字幕文件</b><span class="task-duration">烧录字幕</span><span class="task-state">等待中</span><span class="task-detail">写出 字幕.ass</span></li>
+              </ol>
+            </section>
+          </div>
+          <div id="chat-actions" class="chat-actions">
+            <div class="choices">
+              <button id="revise" class="choice choice-rec" type="button">根据建议修改</button>
+            </div>
+          </div>
+        </div>
+        <section id="thread" class="thread">
+          <div class="wrap">
+            <div class="assistant-reply" data-msg="0"><div class="md"><p>已经离开本镜头</p></div></div>
+          </div>
+        </section>
+        <form id="composer" class="composer" action="#">
+          <div class="composer-main">
+            <textarea rows="1" placeholder="文字决定要拍成什么样"></textarea>
+            <div class="composer-actions">
+              <button class="settings-toggle" type="button">设置</button>
+              <button id="send" type="submit" aria-label="发送">↑</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </main>
+</body>
+</html>
