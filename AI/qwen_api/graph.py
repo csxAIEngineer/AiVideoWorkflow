@@ -14,7 +14,7 @@ from typing import Annotated, Any, List, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-TEXT_MODEL = "deepseek-v4-flash-0731"
+TEXT_MODEL = "qwen4-max"
 TEXT_HOST = "https://token-plan.maas.qianwenaiapi.com"
 INTENT_EFFORT = "low"
 WRITE_EFFORT = "low"
@@ -329,9 +329,9 @@ def _create(client, state, effort, tools=None, tool_choice=None):
     kwargs = {
         "model": state.get("model") or TEXT_MODEL,
         "input": state.get("messages") or [],
-        "extra_body": {"enable_thinking": False},
+        "extra_body": {"enable_thinking": True},
     }
-    # reasoning.effort low still returns reasoning tokens when enable_thinking is false.
+    # Thinking is on for qwen4-max. Do not pass reasoning.effort.
     del effort
     if state.get("max_output_tokens"):
         kwargs["max_output_tokens"] = int(state["max_output_tokens"])

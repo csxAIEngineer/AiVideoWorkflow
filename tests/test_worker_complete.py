@@ -82,7 +82,7 @@ def _write_model(*_args, **_kwargs):
 
 
 def _factory():
-    project = {"model": "deepseek-v4-flash-0731", "template": "short-drama-director", "progress": {}}
+    project = {"model": "qwen4-max", "template": "short-drama-director", "progress": {}}
     return production_worker_complete(project, Path("."), _write_model, "")
 
 
@@ -121,7 +121,7 @@ class WorkerNodeCompleteTest(unittest.TestCase):
             text = ask(
                 "director",
                 [{"role": "user", "content": "汇总"}],
-                model="deepseek-v4-flash-0731",
+                model="qwen4-max",
                 trace_prompts="/tmp/prompts.jsonl",
             )
         self.assertEqual(text, "一节点")

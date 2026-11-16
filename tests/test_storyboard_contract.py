@@ -119,7 +119,7 @@ class GateTest(unittest.TestCase):
         outcome = execute(
             {
                 "template": "short-drama-director",
-                "model": "deepseek-v4-flash-0731",
+                "model": "qwen4-max",
                 "brief": "发丝救援",
                 "progress": {
                     "pipeline": {
@@ -304,7 +304,7 @@ class QueueTest(unittest.TestCase):
         outcome = execute(
             {
                 "template": "short-drama-director",
-                "model": "deepseek-v4-flash-0731",
+                "model": "qwen4-max",
                 "brief": "冲突",
                 "progress": {
                     "pipeline": {

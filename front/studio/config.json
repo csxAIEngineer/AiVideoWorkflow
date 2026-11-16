@@ -2,7 +2,7 @@
   "provider": "qwen",
   "providers": {
     "qwen": {
-      "model": "deepseek-v4.1-flash"
+      "model": "qwen4-max"
     }
   },
   "roles": {

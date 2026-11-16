@@ -16,12 +16,12 @@ from AI.skills.registry import (
 
 JSON_SHAPE = json_shape()
 
-DEFAULT_MODEL = "deepseek-v4-flash-0731"
+DEFAULT_MODEL = "qwen4-max"
 TEXT_MODEL = DEFAULT_MODEL
 
 
 def model_choices():
-    return [{"id": DEFAULT_MODEL, "label": "DeepSeek V4 Flash", "group": "DeepSeek"}]
+    return [{"id": DEFAULT_MODEL, "label": "qwen4-max", "group": "Qwen"}]
 
 
 def normalize_model(model):

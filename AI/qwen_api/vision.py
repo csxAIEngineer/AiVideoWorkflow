@@ -3,7 +3,7 @@
 Token Plan does not list qwen3.8-omni-flash, and that id returns
 ``model_not_found`` on the production host. qwen4-max accepts an image
 and returns text. The call is a streaming compatible-mode chat completion
-with thinking turned off. Uploads here are png, jpeg, or webp stills, so
+with thinking turned on. Uploads here are png, jpeg, or webp stills, so
 the part is an ``image_url`` data URL. Each still is shrunk to a JPEG first.
 """
 
@@ -75,7 +75,7 @@ class QwenVisionReader(object):
                     ],
                 }
             ],
-            "enable_thinking": False,
+            "enable_thinking": True,
             "stream": True,
             "stream_options": {"include_usage": True},
         }

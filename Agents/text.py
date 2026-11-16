@@ -1,7 +1,7 @@
 """Text calls for stage agents. Uses the product Responses client.
 
-The product model is ``deepseek-v4-flash-0731`` on the Token Plan Responses
-API. ``invoke_text`` uses that client: ``enable_thinking: false`` and no
+The product model is ``qwen4-max`` on the Token Plan Responses
+API. ``invoke_text`` uses that client: ``enable_thinking: true`` and no
 ``reasoning.effort``. This module does not open its own HTTP client.
 """
 

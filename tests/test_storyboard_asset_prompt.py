@@ -63,7 +63,7 @@ def _brief(folder, draft=""):
     _produce(
         {
             "brief": "阿青丝发丝救援",
-            "model": "deepseek-v4-flash-0731",
+            "model": "qwen4-max",
             "template": "short-drama-director",
             "progress": {"pipeline": {"action": "write", "repair": ""}},
         },

@@ -98,7 +98,7 @@ class QwenVisionTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://workspace.example/compatible-mode/v1/chat/completions")
         self.assertEqual(captured["auth"], "Bearer test-key")
         self.assertEqual(body["model"], DEFAULT_QWEN_VISION_MODEL)
-        self.assertEqual(body["enable_thinking"], False)
+        self.assertEqual(body["enable_thinking"], True)
         self.assertNotIn("modalities", body)
         self.assertTrue(body["stream"])
         self.assertEqual(body["stream_options"], {"include_usage": True})
