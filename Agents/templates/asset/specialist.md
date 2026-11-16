@@ -17,7 +17,12 @@ description: Write this node's asset-board prompts for P2 image_prompts. Use for
 2. 按本节点职责写出对应的资产板。角色、场景、道具的画幅、格数和视图以本节点职责为准。成片画幅若已锁定，沿用该锁。角色、场景、道具、九宫格整板写 16:9。
    完成标准：图块正文可以出图；板式和画幅与本节点职责一致。
 
-3. 上传图只是参考，不是资产。要参考上传图时，把简报里已有的上传图 id 写进 references。读图是产品或道具时，挂到对应道具；读图是人物时，挂到对应角色。
+3. 每个出图提示都带上本技能的负向词。
+   完成标准：角色四格板含防第二张脸、防第五格、防砍头、防图上出字的词表；道具板含防第五格和禁手持的词表；所有板都含 fifth panel、extra panel、different face 或 second face、text、watermark。
+
+{{@negatives}}
+
+4. 上传图只是参考，不是资产。要参考上传图时，把简报里已有的上传图 id 写进 references。读图是产品或道具时，挂到对应道具；读图是人物时，挂到对应角色。
    完成标准：references 里的 id 都能在简报里找到；上传图 id 不出现在 depends_on。
    硬护栏：不要编造简报里没有的上传图 id。
 
@@ -25,7 +30,7 @@ description: Write this node's asset-board prompts for P2 image_prompts. Use for
 {{@repair}}
 {{/repair_text}}
 {{^repair_text}}
-4. 一次交出本节点负责的图块。
+5. 一次交出本节点负责的图块。
    完成标准：本节点该出的板都在 text 里，可交给汇总节点。
 {{/repair_text}}
 

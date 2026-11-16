@@ -31,6 +31,8 @@ description: Merge specialist packing notes into the program-owned 封装骨架 
 {{@h3-fields}}
 {{/h3}}
 
+{{@negatives}}
+
 {{#repair_text}}
 {{@director-repair}}
 {{/repair_text}}

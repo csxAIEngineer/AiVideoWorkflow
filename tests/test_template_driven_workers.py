@@ -268,6 +268,55 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn(DIALOGUE_MARK, system)
         self.assertLess(len(system), 8000)
 
+    def test_negatives_come_from_corresponding_skill_mds(self):
+        asset = specialist_messages(
+            "asset",
+            role="角色包装",
+            skill_path=PORTRAIT,
+            brief="写角色板。",
+        )[0]["content"]
+        self.assertIn("fifth panel", asset)
+        self.assertIn("different face", asset)
+        self.assertIn("headless figure", asset)
+        self.assertIn("human hand, person, silhouette", asset)
+        self.assertIn("character-portrait-templates.md", asset)
+
+        board = specialist_messages(
+            "storyboard",
+            role="分镜",
+            skill_path="sd-storyboard-engine/SKILL.md",
+            brief="写分镜。",
+        )[0]["content"]
+        self.assertIn("卡通、Q版、低幼", board)
+        self.assertIn("plot-deduction-grid.md", board)
+
+        feed = specialist_messages(
+            "feed",
+            role="封装",
+            skill_path="sd-feed-engine/SKILL.md",
+            brief="请填写封装骨架。",
+            h3=True,
+        )[0]["content"]
+        self.assertIn("禁字幕、禁水印（含 Logo）", feed)
+        self.assertIn("四段正文只写有什么", feed)
+        self.assertIn("h3-adapter.md", feed)
+
+        script = specialist_messages(
+            "script",
+            role="剧本",
+            skill_path="sd-script-engine/references/dialogue-naturalization.md",
+            brief="写剧本。",
+        )[0]["content"]
+        seam = specialist_messages(
+            "seam",
+            role="衔接",
+            skill_path="Agents/skills/segment-splicing/generator.md",
+            brief="填段缝。",
+        )[0]["content"]
+        self.assertNotIn("fifth panel", script)
+        self.assertNotIn("禁字幕、禁水印（含 Logo）", script)
+        self.assertNotIn("fifth panel", seam)
+
 
 class GeneratorSendPathTest(unittest.TestCase):
     def test_run_generator_sends_filled_templates(self):

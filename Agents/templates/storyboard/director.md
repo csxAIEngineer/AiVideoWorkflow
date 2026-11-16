@@ -13,6 +13,8 @@ description: Merge specialist shot notes into one storyboard string with locked 
 2. 收成一份完整分镜，放在 storyboard 字符串里。每一镜以「## S01」单独成行。不要写 previs，不要写段、格、六问、九宫格或预演完成标记。
    完成标准：storyboard 镜号连续，动作、景别机位、时长和资产栏齐全。
 
+{{@negatives}}
+
 {{#repair_text}}
 {{@director-repair}}
 {{/repair_text}}

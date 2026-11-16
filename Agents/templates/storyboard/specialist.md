@@ -21,11 +21,15 @@ description: Write this node's shots into a short-drama storyboard. Use for came
    完成标准：资产栏里的每一个 id 都能在资产清单里找到。
    硬护栏：不要编造简报和资产清单里没有的 id。
 
+4. 剧情分镜格出图时写上本技能的负向提示词。文字分镜先把画面和表演写清楚；若还要写负面约束，只写当前镜头最相关的一到两项。
+   完成标准：剧情格含卡通、Q版、水印、文字、镜头编号等词表；画面内不出现格号或参数说明。
+{{@negatives}}
+
 {{#repair_text}}
 {{@repair}}
 {{/repair_text}}
 {{^repair_text}}
-4. 一次交出本节点负责的分镜内容。
+5. 一次交出本节点负责的分镜内容。
    完成标准：这些镜头可以直接交给汇总节点拼接。
 {{/repair_text}}
 

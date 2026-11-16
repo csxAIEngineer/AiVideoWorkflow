@@ -13,6 +13,11 @@ description: Merge specialist asset-board notes into one image_prompts draft. Us
 2. 收成一份完整资产稿，放在 image_prompts 字符串里。已经通过的图块原样保留。不要写成封装稿。
    完成标准：image_prompts 覆盖清单里的资产；板式和画幅锁仍在。
 
+3. 汇总后的每条出图提示仍带本技能的负向词。
+   完成标准：角色板和道具板都还含对应词表，且都含 fifth panel、text、watermark。
+
+{{@negatives}}
+
 {{#repair_text}}
 {{@director-repair}}
 {{/repair_text}}
