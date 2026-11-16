@@ -38,6 +38,7 @@ from Agents.machine_check import (
 )
 from Agents.text import complete_text, resolved_model
 from Agents.worker import missing_skill_state, resolve_skill_pack
+from Agents.templates import critic_messages as render_critic
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
 
@@ -394,21 +395,15 @@ def generator_messages(state):
 
 
 def critic_messages(state):
-    sections = [
-        "阶段：P2 资产提示词审查。只交 JSON 报告，不要改稿。",
-        "剧本：\n%s" % str(state.get("script") or "").strip(),
-    ]
-    locks = format_locks(state.get("locks"))
-    if locks:
-        sections.append("锁：\n%s" % locks)
-    listed = format_asset_list(state.get("asset_list"))
-    if listed:
-        sections.append("资产清单：\n%s" % listed)
-    sections.append("待审稿：\n%s" % str(state.get("draft") or "").strip())
-    return [
-        {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": critic_user(TASK, *sections)},
-    ]
+    return render_critic(
+        TASK,
+        role=CRITIC_SYSTEM,
+        notes="阶段：P2 资产提示词审查。只交 JSON 报告。",
+        source=str(state.get("script") or "").strip(),
+        locks=format_locks(state.get("locks")),
+        asset_list=format_asset_list(state.get("asset_list")),
+        draft=str(state.get("draft") or "").strip(),
+    )
 
 
 def format_locks(locks):

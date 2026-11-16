@@ -5,11 +5,14 @@ Repair: only the nodes named by the critic or the machine check run again.
 The other nodes keep their previous text. The director assembles. It receives
 only the short merge instruction and the specialist notes, not the director
 skill, not any other skill original, and not a rewritten draft from the critic.
+Requests are filled from pre-designed task skills. Specialists receive a
+path pointer and a distilled node duty, not the raw skill original.
 """
 
 import json
 import re
-from pathlib import Path
+
+from Agents.templates import director_messages, specialist_messages
 
 _STAGE = {
     "script": "P1",
@@ -18,7 +21,6 @@ _STAGE = {
     "seam": "P3",
     "feed": "P4",
 }
-_AGENT_SKILLS = Path(__file__).resolve().parents[1] / "skills"
 _STAGE_LINE = re.compile(r"(?m)^阶段：(P[0-5])\s*$")
 
 
@@ -38,10 +40,10 @@ def run_generator(
     ``complete(role, messages)`` is the same callback the worker already uses.
     ``role`` is ``specialist`` or ``director``.
     """
-    from AI.skills.registry import merge_prompt, skill_node_prompt, suite_files
+    from AI.skills.registry import merge_prompt, suite_files
 
     chosen = list(files) if files is not None else list(
-        suite_files(task, _routing_context(task, brief))
+        suite_files(task, routing_context(task, brief))
     )
     if not chosen:
         raise RuntimeError("这个任务没有原文")
@@ -50,18 +52,25 @@ def run_generator(
     notes = dict(previous)
     repairing = bool(str(repair_text or "").strip()) and bool(previous)
     for relative in selected:
-        system = _specialist_system(role, _node_prompt(relative, repair=repairing))
-        raw = complete("specialist", [
-            {"role": "system", "content": system},
-            {"role": "user", "content": _specialist_user(brief, repair_text if repairing else "")},
-        ])
+        raw = complete("specialist", specialist_messages(
+            task,
+            role=role,
+            skill_path=relative,
+            brief=brief,
+            repair_text=repair_text if repairing else "",
+        ))
         notes[relative] = _node_text(raw)
     ordered = [{"skill": relative, "text": notes.get(relative) or ""} for relative in chosen]
-    raw = complete("director", [
-        {"role": "system", "content": _director_system(role, merge_prompt(task, _routing_context(task, brief)))},
-        {"role": "user", "content": _director_user(brief, ordered, repair_text if repairing else "")},
-    ])
+    raw = complete("director", director_messages(
+        task,
+        brief=brief,
+        partials=ordered,
+        repair_text=repair_text if repairing else "",
+        merge_instruction=merge_prompt(task, routing_context(task, brief)),
+    ))
     return {"raw": raw or "", "partials": ordered}
+
+
 
 
 def select_nodes(files, repair_text, previous):
@@ -85,6 +94,8 @@ def select_nodes(files, repair_text, previous):
     return hit
 
 
+
+
 def _notes(partials):
     found = {}
     for item in partials or []:
@@ -96,22 +107,9 @@ def _notes(partials):
     return found
 
 
-def _node_prompt(relative, repair=False):
-    """One original. Agent-layer skills live outside the 漫剧 pack."""
-    path = _AGENT_SKILLS / str(relative)
-    from AI.skills.registry import _NODE_SHAPE, skill_node_prompt
-
-    if path.is_file():
-        body = path.read_text(encoding="utf-8").strip()
-        return "\n\n".join((
-            "# 本节点原文 %s" % relative,
-            body,
-            _NODE_SHAPE,
-        ))
-    return skill_node_prompt(relative, repair=repair)
 
 
-def _routing_context(task, brief):
+def routing_context(task, brief):
     stage = _STAGE.get(task, "P4")
     text = str(brief or "")
     if _STAGE_LINE.search(text):
@@ -119,36 +117,6 @@ def _routing_context(task, brief):
     return "阶段：%s\n赛道：1\n来源：1\n动作档：none\n模型：h3\n素材形态：M1\n%s" % (stage, text)
 
 
-def _specialist_system(role, node_prompt):
-    return "%s\n\n%s" % (str(role or "").strip(), node_prompt)
-
-
-def _director_system(_role, merge):
-    """Only the short merge instruction. The stage role stays on specialists."""
-    return str(merge or "")
-
-
-def _specialist_user(brief, repair_text):
-    parts = [str(brief or "").strip()]
-    if str(repair_text or "").strip():
-        parts.append(
-            "只改点到本节点原文的失败项。不要重写其他节点负责的内容。\n%s" % str(repair_text).strip()
-        )
-    return "\n\n".join(part for part in parts if part)
-
-
-def _director_user(brief, partials, repair_text):
-    blocks = ["各节点正文："]
-    for item in partials:
-        blocks.append("## %s\n%s" % (item["skill"], item.get("text") or ""))
-    blocks.append("简报：\n%s" % str(brief or "").strip())
-    if str(repair_text or "").strip():
-        blocks.append(
-            "审查和机检只点了这些问题。没有点名的节点正文保持原样。"
-            "不要采用审查员夹带的整稿。\n%s" % str(repair_text).strip()
-        )
-    blocks.append("请汇总成这一阶段的一份稿。")
-    return "\n\n".join(blocks)
 
 
 def _node_text(raw):
@@ -162,6 +130,8 @@ def _node_text(raw):
             if isinstance(value, str) and value.strip():
                 return value.strip()
     return text
+
+
 
 
 def _json_object(raw):

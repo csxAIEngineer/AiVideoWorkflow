@@ -16,6 +16,7 @@ from Agents.worker import (
     revision_brief,
     run_compiled,
 )
+from Agents.templates import critic_messages as render_critic
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
 from end.product_names import DRAFT_NAME
@@ -147,11 +148,14 @@ def critic_messages(state):
                 "或多了少了镜头，severity 写 blocking。不要改稿，不要另写切点。\n%s"
                 % format_shot_skeleton(skeleton)
             )
-    notes.append("待审%s：\n%s" % (DRAFT_NAME, str(state.get("draft") or "").strip()))
-    return [
-        {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": critic_user(TASK, *notes)},
-    ]
+    return render_critic(
+        TASK,
+        role=CRITIC_SYSTEM,
+        notes="\n\n".join(notes),
+        draft=str(state.get("draft") or "").strip(),
+        style_lock=style_lock_line(agreed_style(state)) if _h3_locked(state) else "",
+        shot_skeleton=format_shot_skeleton(packing_shot_skeleton(state)) if _h3_locked(state) else "",
+    )
 
 
 def compile_feed_graph(complete, checker=None):

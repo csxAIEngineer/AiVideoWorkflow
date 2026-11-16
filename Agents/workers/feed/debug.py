@@ -241,9 +241,9 @@ def packing_debug_snapshot(text, state, *, materialize_units=None, prepared_head
 
 def _selected_repair_nodes(brief, state):
     from AI.skills.registry import suite_files
-    from Agents.workers.generator import _notes, _routing_context, select_nodes
+    from Agents.workers.generator import _notes, routing_context, select_nodes
 
-    chosen = list(suite_files(TASK, _routing_context(TASK, brief)))
+    chosen = list(suite_files(TASK, routing_context(TASK, brief)))
     return list(select_nodes(chosen, brief, _notes((state or {}).get("partials") or [])))
 
 
