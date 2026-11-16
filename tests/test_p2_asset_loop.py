@@ -509,7 +509,7 @@ class TextClientTest(unittest.TestCase):
         self.assertEqual(roles.count("director"), 1)
         self.assertEqual(seen[0]["model"], "qwen3.8-flash")
         self.assertEqual(result["status"], "pass")
-        self.assertEqual(result["model"], "qwen4-max")
+        self.assertEqual(result["model"], "qwen4-max-preview")
 
     def test_complete_text_sends_qwen4_max_with_thinking_and_no_reasoning_effort(self):
         class FakeResponses(object):
@@ -529,8 +529,8 @@ class TextClientTest(unittest.TestCase):
             client=fake,
         )
         self.assertEqual(text, "ok")
-        self.assertEqual(fake.calls[0]["model"], "qwen4-max")
-        self.assertEqual(fake.calls[0]["extra_body"], {"enable_thinking": True})
+        self.assertEqual(fake.calls[0]["model"], "qwen4-max-preview")
+        self.assertEqual(fake.calls[0]["extra_body"], {"enable_thinking": False})
         self.assertNotIn("reasoning", fake.calls[0])
         self.assertEqual(fake.calls[0]["max_output_tokens"], 4000)
 

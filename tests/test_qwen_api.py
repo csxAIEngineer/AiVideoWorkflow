@@ -185,7 +185,7 @@ class QwenClientTest(unittest.TestCase):
 
 
 class QwenTextTest(unittest.TestCase):
-    def test_generate_and_understand_use_qwen4_max_with_thinking(self):
+    def test_generate_and_understand_use_qwen4_max_preview_without_thinking(self):
         class Responses(object):
             def __init__(self):
                 self.calls = []
@@ -210,17 +210,17 @@ class QwenTextTest(unittest.TestCase):
         understood = understand_text([{"role": "user", "content": "问"}], timeout=3, client=client)
         self.assertEqual(written, "写好了")
         self.assertEqual(understood, '{"phase":"ask","reply":"问","options":[],"brief":""}')
-        self.assertEqual(client.calls[0]["model"], "qwen4-max")
+        self.assertEqual(client.calls[0]["model"], "qwen4-max-preview")
         self.assertNotIn("reasoning", client.calls[0])
-        self.assertEqual(client.calls[0]["extra_body"], {"enable_thinking": True})
+        self.assertEqual(client.calls[0]["extra_body"], {"enable_thinking": False})
         self.assertNotIn("tools", client.calls[0])
-        self.assertEqual(client.calls[1]["model"], "qwen4-max")
+        self.assertEqual(client.calls[1]["model"], "qwen4-max-preview")
         self.assertNotIn("reasoning", client.calls[1])
-        self.assertEqual(client.calls[1]["extra_body"], {"enable_thinking": True})
+        self.assertEqual(client.calls[1]["extra_body"], {"enable_thinking": False})
         self.assertEqual(client.calls[1]["tool_choice"], "required")
         self.assertEqual(client.calls[1]["tools"][0]["name"], "submit_intent")
 
-    def test_generate_enables_thinking_without_reasoning_effort(self):
+    def test_generate_disables_thinking_and_omits_reasoning_effort(self):
         class Responses(object):
             def __init__(self):
                 self.calls = []
@@ -239,7 +239,7 @@ class QwenTextTest(unittest.TestCase):
         )
         self.assertEqual(written, "续写")
         self.assertNotIn("reasoning", client.calls[0])
-        self.assertEqual(client.calls[0]["extra_body"], {"enable_thinking": True})
+        self.assertEqual(client.calls[0]["extra_body"], {"enable_thinking": False})
         self.assertEqual(client.calls[0]["max_output_tokens"], 32000)
 
     def test_prompt_debug_does_not_print_the_prompt(self):

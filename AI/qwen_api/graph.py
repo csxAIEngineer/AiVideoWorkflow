@@ -14,7 +14,7 @@ from typing import Annotated, Any, List, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-TEXT_MODEL = "qwen4-max"
+TEXT_MODEL = "qwen4-max-preview"
 TEXT_HOST = "https://token-plan.maas.qianwenaiapi.com"
 INTENT_EFFORT = "low"
 WRITE_EFFORT = "low"
@@ -329,9 +329,9 @@ def _create(client, state, effort, tools=None, tool_choice=None):
     kwargs = {
         "model": state.get("model") or TEXT_MODEL,
         "input": state.get("messages") or [],
-        "extra_body": {"enable_thinking": True},
+        "extra_body": {"enable_thinking": False},
     }
-    # Thinking is on for qwen4-max. Do not pass reasoning.effort.
+    # Thinking is off for qwen4-max-preview. Do not pass reasoning.effort.
     del effort
     if state.get("max_output_tokens"):
         kwargs["max_output_tokens"] = int(state["max_output_tokens"])

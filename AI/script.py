@@ -16,12 +16,12 @@ from AI.skills.registry import (
 
 JSON_SHAPE = json_shape()
 
-DEFAULT_MODEL = "qwen4-max"
+DEFAULT_MODEL = "qwen4-max-preview"
 TEXT_MODEL = DEFAULT_MODEL
 
 
 def model_choices():
-    return [{"id": DEFAULT_MODEL, "label": "qwen4-max", "group": "Qwen"}]
+    return [{"id": DEFAULT_MODEL, "label": "qwen4-max-preview", "group": "Qwen"}]
 
 
 def normalize_model(model):
