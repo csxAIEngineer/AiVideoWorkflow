@@ -9,7 +9,9 @@ import operator
 import os
 import threading
 import time
+from datetime import datetime
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Annotated, Any, List, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -21,6 +23,7 @@ WRITE_EFFORT = "low"
 _EFFORTS = ("low", "high", "max")
 INTENT_TOOL = "submit_intent"
 _TRACE_PROMPTS = contextvars.ContextVar("aivideo_trace_prompts", default="")
+_PROMPT_META = contextvars.ContextVar("aivideo_prompt_log_meta", default=None)
 _DEBUG_LOCK = threading.Lock()
 _BURST_SKILL = contextvars.ContextVar("aivideo_burst_skill", default="")
 _BURST_LOCK = threading.Lock()
@@ -285,6 +288,16 @@ def bind_trace_prompts(path):
         _TRACE_PROMPTS.reset(token)
 
 
+@contextmanager
+def bind_prompt_meta(meta):
+    """Attach role, model, and budget to the next prompt log line."""
+    token = _PROMPT_META.set(dict(meta or {}))
+    try:
+        yield
+    finally:
+        _PROMPT_META.reset(token)
+
+
 def prompt_text(messages):
     """The text actually sent. Image payloads stay out of the terminal."""
     parts = []
@@ -313,13 +326,30 @@ def prompt_text(messages):
 
 
 def log_prompt(messages):
+    """Write the entire prompt (full messages) when a trace file is bound.
+
+    This is only called after End has opened a trace file, which happens
+    when AIVIDEO_DEBUG_TRACE is on. The flattened ``prompt`` field stays
+    for replay; ``messages`` is the exact payload sent to the model.
+    """
     path = _TRACE_PROMPTS.get()
     if not path:
         return
-    body = prompt_text(messages)
+    record = {
+        "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "messages": list(messages or []),
+        "prompt": prompt_text(messages),
+    }
+    meta = _PROMPT_META.get() or {}
+    for key, value in meta.items():
+        if value is not None and value != "":
+            record[key] = value
+    line = json.dumps(record, ensure_ascii=False) + "\n"
     try:
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"prompt": body}, ensure_ascii=False) + "\n")
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with _DEBUG_LOCK:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line)
     except OSError:
         pass
 

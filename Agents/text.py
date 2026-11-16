@@ -7,7 +7,7 @@ API. ``invoke_text`` uses that client: ``enable_thinking: true`` and no
 
 import os
 
-from AI.qwen_api.graph import TEXT_MODEL, bind_trace_prompts, invoke_text
+from AI.qwen_api.graph import TEXT_MODEL, bind_prompt_meta, bind_trace_prompts, invoke_text
 
 # Same budgets the asset write and the short drill use in the text graph.
 GENERATOR_TOKENS = 16000
@@ -57,7 +57,13 @@ def complete_node_job(params):
         kwargs = {"model": model}
         if timeout is not None:
             kwargs["timeout"] = timeout
-        turned = complete_text(role, messages, return_meta=True, **kwargs)
+        turned = complete_text(
+            role,
+            messages,
+            return_meta=True,
+            trace_path=params.get("trace_prompts") or "",
+            **kwargs
+        )
         set_node(job_id, node_id, DONE)
         return _job_payload(turned)
 
@@ -117,11 +123,18 @@ def complete_text(role, messages, *, model=None, client=None, timeout=None, trac
         "client": client,
     }
     path = str(trace_path or "").strip()
-    if path:
-        with bind_trace_prompts(path):
+    meta = {
+        "role": role,
+        "model": kwargs["model"],
+        "max_output_tokens": kwargs["max_output_tokens"],
+        "timeout": kwargs["timeout"],
+    }
+    with bind_prompt_meta(meta):
+        if path:
+            with bind_trace_prompts(path):
+                turned = invoke_text("generate", messages, **kwargs)
+        else:
             turned = invoke_text("generate", messages, **kwargs)
-    else:
-        turned = invoke_text("generate", messages, **kwargs)
     payload = _public_turn(turned)
     if return_meta:
         return payload
