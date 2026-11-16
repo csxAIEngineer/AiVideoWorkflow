@@ -176,7 +176,7 @@ def run_p2_asset_loop(
     Production callers omit ``complete`` and ``checker``. Those two arguments
     exist so tests can substitute the model and, if needed, the gate. The
     default gate is the asset-block script. The default model call is
-    ``generate_text`` (``qwen4-max``).
+    ``generate_text`` (``qwen4-max-preview``).
 
     ``status`` is ``pass`` only when the script exits 0. ``fail`` carries the
     last critic report and machine report. ``stop_reason`` is

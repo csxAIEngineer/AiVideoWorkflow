@@ -600,7 +600,7 @@ class EndSkillPackTest(unittest.TestCase):
 
         project = {
             "template": "short-drama-director",
-            "model": "qwen4-max",
+            "model": "qwen4-max-preview",
             "brief": SCRIPT,
             "progress": {
                 "pipeline": {
@@ -646,7 +646,7 @@ class EndDispatchTest(unittest.TestCase):
 
         project = {
             "template": "short-drama-director",
-            "model": "qwen4-max",
+            "model": "qwen4-max-preview",
             "brief": SCRIPT,
             "title": "雨夜",
             "progress": {
