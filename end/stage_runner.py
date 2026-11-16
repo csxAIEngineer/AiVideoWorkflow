@@ -3680,7 +3680,7 @@ def _worker_complete(project, folder, write_model, prompts):
     def complete(role, messages, return_meta=False):
         from end.ai_client import complete_node
 
-        traced = prompts if role != "critic" and prompts else ""
+        traced = prompts or ""
         kwargs = {
             "model": project.get("model"),
             "trace_prompts": traced,
