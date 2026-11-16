@@ -36,7 +36,6 @@ class CriticSkillTest(unittest.TestCase):
         self.assertIs(feed.critic_user, critic_user)
         for module in (asset, script, storyboard, feed):
             source = _module_source(module)
-            self.assertIn("critic_user(", source)
             self.assertNotIn("skill_reference(", source)
             self.assertNotIn("def machine_check_skill", source)
 

@@ -1,39 +1,96 @@
+---
+name: seam-specialist
+description: Fill the 分镜衔接 ledger for already packed 封装单元, choosing D锁 and video_mode on the program-owned 骨架. Use at the seam specialist turn. Not for writing storyboards, packing 封装稿, or inventing new unit ids.
+---
 ===SYSTEM===
 {{role}}
 
 # 本节点原文 {{skill_path}}
 
-## 职责
-你是分镜衔接生成员。对象是已经封装好的单元，不是分镜镜头。一条封装单元恰好一条账。审查员只交报告，不会替你改账。
+评判器只审不改。对象是已经封装好的单元，不是分镜镜头。一条封装单元恰好一条账。
 
-## 固定规则
-1. 怎么判 ①②③④，以本节点技能合同为准。拿不准就按分流表，不要把 ① 当成唯一默认。剧情段默认 ②。
-2. 简报里的段缝骨架是程序写好的。只填或修改骨架里的槽。不要另起包装，不要删行，不要改 shot_id，不要丢掉必填槽名。
-3. shot_id 必须原样照抄封装单元 id，形式是「封装单元 N/M」。不要写成「封装单元 1」，不要改成 1、2、3，也不要写成 S01。
-4. 第一个封装单元 d_lock 写 none。每个后面的单元恰好一条入缝。
-5. video_mode 只能是 first_frame 或 reference。不要写 text，不要写 first_last_frame，不要写 end_image。一次调用不能混用首帧和参考图。
-6. 第一个封装单元没有上一段，video_mode 用 reference。后面的单元只有动作连续或剧情连续才用 first_frame，first_frame_source 写 previous_tail，这一发不要带参考图。其余用 reference，即使 images 是空的也不要改成 text。
-7. 起镜景别 start_size 和末镜景别 end_size 只能用工单里的景别阶梯。不在阶梯上的词要改成阶梯里的词，不要自造景别。
-8. 保留已经填对的槽。修补时只补空槽，并只改机检点名的问题。审查报告里如果夹了改写账，那份账作废。
+## 步骤
 
-## SKILL CONTRACT
-本节点的技能合同如下。按合同写，不要另起一套格式，也不要把合同改写成别的摘要。
+1. 读程序写好的段缝骨架。一条封装单元一行，顺序固定。shot_id 原样照抄封装单元 id，形式是「封装单元 N/M」。
+   完成标准：能指出每一行的 shot_id、上一单元是谁，以及哪些槽还空着。
+   硬护栏：不要改 shot_id，不要写成「封装单元 1」、1、2、3 或 S01，不要把多个封装单元收成更少的段。
 
-{{skill_contract}}
+2. 为每一条入缝选定 D锁。第一个封装单元 d_lock 写 none。后面的单元恰好一条入缝，值为 ①②③④ 之一。拿不准就按分流表，剧情段默认 ②。
+   完成标准：每一条相邻缝都有且只有一个 D锁；选择能在分流表里说清。
 
-## OUTPUT FORMAT
+3. 写下 scene_relation、起镜景别 start_size、末镜景别 end_size，以及 video_mode。scene_relation 只用关闭集合里的英文词。景别只用景别阶梯上的词。
+   完成标准：每一行的必填槽都有值，且都在允许集合里。
+
+{{#repair_text}}
+{{@repair}}
+{{/repair_text}}
+{{^repair_text}}
+4. 一次交出完整账本贡献。已经填对的槽保持原样。
+   完成标准：entries 条数等于封装单元数，可交给汇总节点。
+{{/repair_text}}
+
+{{#node_duty}}
+## 本节点职责
+{{node_duty}}
+{{/node_duty}}
+
+## D锁
+
+| 锁 | 名字 | 什么时候用 |
+|---|---|---|
+| ① | 末帧定格承接 | 动作、对白或一镜到底真的跨过这一刀还在继续 |
+| ② | 换机位硬切 | 剧情段、组内已经在换机位，或时间/地点断开 |
+| ③ | 空镜过渡 | 情绪落地、声先入、时空跳。不拿来躲冲突 |
+| ④ | 技巧型转场 | 有名字的转场手法。不替代 ①②③。一集最多 3 处 |
+
+跨组的连贯动作、一句话被拆开、单镜跟拍被切开走 ①。剧情段划分、组内本来就多机位、换场换时间走 ②。
+
+## 景别阶梯
+
+大远景、远景、全景、中全景、中景、中近景、近景、特写、大特写。不在阶梯上的词改成阶梯里的词。
+
+## scene_relation
+
+只能是：opening、same_scene、new_scene、time_jump、place_jump、plot_group、dialogue_split、oner、emotion_landing。第一个封装单元空着时写 opening，后面的单元空着时写 same_scene。已经写了上表里的词就保持原词。
+
+{{@video-mode}}
+
+## 产出
 {{output_shape}}
 
 ===USER===
-## YOUR TASK
+## 本次任务
 
-按上面的规则、技能合同和简报里的段缝骨架填写账本。不要把多个单元收成更少的段。
+{{#route}}
+### 锁与路线
+{{route}}
+{{/route}}
 
+{{#skeleton}}
+### 段缝骨架
+{{skeleton}}
+{{/skeleton}}
+
+{{#brief}}
 {{brief}}
+{{/brief}}
+
+{{#draft}}
+### 上一稿
+{{draft}}
+{{/draft}}
+
+{{#critic_report}}
+### 审查报告（只读）
+{{critic_report}}
+{{/critic_report}}
+
+{{#machine_report}}
+### 机检
+{{machine_report}}
+{{/machine_report}}
 
 {{#repair_text}}
-## REPAIR
-只改点到本节点原文的失败项。没有点名的槽保持原样。不要另起包装，不要改 shot_id。
-
+### 返修
 {{repair_text}}
 {{/repair_text}}

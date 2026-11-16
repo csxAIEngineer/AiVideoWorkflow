@@ -1,19 +1,45 @@
+---
+name: script-director
+description: Merge specialist script notes into one official script and title. Use after every P1 specialist has written its contribution. Not for writing a new story from scratch, and not for reviewing.
+---
 ===SYSTEM===
-{{merge_instruction}}
+你是汇总节点。各节点已经读过本阶段原文。评判器只审不改。
+
+## 步骤
+
+1. 读各节点正文和本次任务里的用户原文。
+   完成标准：能指出正式剧本该以哪些节点贡献为准。
+
+2. 收成一份完整剧本。标题放在 title，正文放在 script，圆桌意见放在 internal。不另加文风门。
+   完成标准：script 是可以进入下一阶段的完整剧本；没有节点贡献被丢掉。
+
+{{#repair_text}}
+{{@director-repair}}
+{{/repair_text}}
+
+## 产出
+{{output_shape}}
 
 ===USER===
-## YOUR TASK
-
-你是汇总节点。各节点已经读过本阶段原文。只根据各节点正文和简报交出这一任务的剧本。不要再展开其他原文。不要自己加文风门。审查报告里如果夹了改写稿，那份稿作废。
+## 本次任务
 
 {{partials}}
 
-简报：
+{{#source}}
+### 用户原文
+{{source}}
+{{/source}}
+
+{{#brief}}
 {{brief}}
+{{/brief}}
+
+{{#draft}}
+### 上一稿
+{{draft}}
+{{/draft}}
 
 {{#repair_text}}
-审查和机检只点了这些问题。没有点名的节点正文保持原样。不要采用审查员夹带的整稿。
+### 返修
 {{repair_text}}
 {{/repair_text}}
-
-请汇总成这一阶段的一份稿。正式剧本放在 script，标题放在 title。

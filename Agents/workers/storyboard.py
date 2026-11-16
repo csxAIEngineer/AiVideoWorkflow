@@ -131,10 +131,7 @@ def critic_messages(state):
     return render_critic(
         TASK,
         role=CRITIC_SYSTEM,
-        user_body=critic_user(
-            TASK,
-            "待审分镜：\n%s" % str(state.get("draft") or "").strip(),
-        ),
+        draft=str(state.get("draft") or "").strip(),
     )
 
 

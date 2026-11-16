@@ -2,8 +2,11 @@
 
 import re
 
-_COND = re.compile(r"\{\{#([A-Za-z][A-Za-z0-9_]*)\}\}(.*?)\{\{/\1\}\}", re.S)
-_SLOT = re.compile(r"\{\{(?!#)(?!/)([A-Za-z][A-Za-z0-9_]*)\}\}")
+_COND = re.compile(
+    r"\{\{(#|\^)([A-Za-z][A-Za-z0-9_]*)\}\}(.*?)\{\{/\2\}\}",
+    re.S,
+)
+_SLOT = re.compile(r"\{\{(?!#)(?!\^)(?!/)(?!@)([A-Za-z][A-Za-z0-9_]*)\}\}")
 _SECTION = re.compile(r"^===(SYSTEM|USER)===\s*$", re.M)
 
 
@@ -15,8 +18,30 @@ def truthy(value):
     return bool(str(value).strip())
 
 
+def apply_conditionals(template, slots=None):
+    """Resolve ``{{#slot}}`` / ``{{^slot}}`` blocks without inserting values."""
+    slots = dict(slots or {})
+    text = str(template or "")
+
+    def replace_cond(match):
+        kind, name, body = match.group(1), match.group(2), match.group(3)
+        present = truthy(slots.get(name))
+        if kind == "#":
+            return body if present else ""
+        return "" if present else body
+
+    previous = None
+    while previous != text:
+        previous = text
+        text = _COND.sub(replace_cond, text)
+    return text
+
+
 def fill(template, slots=None):
-    """Substitute ``{{slot}}`` and optional ``{{#slot}}...{{/slot}}`` blocks.
+    """Substitute ``{{slot}}`` and optional ``{{#slot}}`` / ``{{^slot}}`` blocks.
+
+    ``{{#slot}}...{{/slot}}`` is kept when the slot is truthy.
+    ``{{^slot}}...{{/slot}}`` is kept when the slot is falsy.
 
     Values are inserted literally and are not scanned again, so a payload
     that happens to contain ``{{name}}`` cannot rewrite another slot.
@@ -24,18 +49,7 @@ def fill(template, slots=None):
     False, empty collections, and blank strings.
     """
     slots = dict(slots or {})
-    text = str(template or "")
-
-    def replace_cond(match):
-        name, body = match.group(1), match.group(2)
-        if truthy(slots.get(name)):
-            return body
-        return ""
-
-    previous = None
-    while previous != text:
-        previous = text
-        text = _COND.sub(replace_cond, text)
+    text = apply_conditionals(template, slots)
 
     def replace_slot(match):
         value = slots.get(match.group(1), "")

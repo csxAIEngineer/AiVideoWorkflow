@@ -148,11 +148,13 @@ def critic_messages(state):
                 "或多了少了镜头，severity 写 blocking。不要改稿，不要另写切点。\n%s"
                 % format_shot_skeleton(skeleton)
             )
-    notes.append("待审%s：\n%s" % (DRAFT_NAME, str(state.get("draft") or "").strip()))
     return render_critic(
         TASK,
         role=CRITIC_SYSTEM,
-        user_body=critic_user(TASK, *notes),
+        notes="\n\n".join(notes),
+        draft=str(state.get("draft") or "").strip(),
+        style_lock=style_lock_line(agreed_style(state)) if _h3_locked(state) else "",
+        shot_skeleton=format_shot_skeleton(packing_shot_skeleton(state)) if _h3_locked(state) else "",
     )
 
 

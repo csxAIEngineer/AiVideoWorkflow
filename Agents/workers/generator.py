@@ -5,14 +5,14 @@ Repair: only the nodes named by the critic or the machine check run again.
 The other nodes keep their previous text. The director assembles. It receives
 only the short merge instruction and the specialist notes, not the director
 skill, not any other skill original, and not a rewritten draft from the critic.
-Requests are filled from pre-designed templates; specialists still receive
-that node's skill contract inside the template.
+Requests are filled from pre-designed task skills. Specialists receive a
+path pointer and a distilled node duty, not the raw skill original.
 """
 
 import json
 import re
 
-from Agents.templates import director_messages, skill_contract, specialist_messages
+from Agents.templates import director_messages, specialist_messages
 
 _STAGE = {
     "script": "P1",
@@ -58,7 +58,6 @@ def run_generator(
             skill_path=relative,
             brief=brief,
             repair_text=repair_text if repairing else "",
-            contract=skill_contract(relative, repair=repairing),
         ))
         notes[relative] = _node_text(raw)
     ordered = [{"skill": relative, "text": notes.get(relative) or ""} for relative in chosen]

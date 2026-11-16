@@ -1,36 +1,85 @@
+---
+name: asset-specialist
+description: Write this node's asset-board prompts for P2 image_prompts. Use for three-list extraction, character portraits, scene grids, prop boards, or delivery modes. Not for scripts, storyboards, packing, or 分镜衔接.
+---
 ===SYSTEM===
 {{role}}
 
 # 本节点原文 {{skill_path}}
 
-## 职责
-你是 P2 资产提示词链路里的一个节点。你只写本节点合同要求落到资产出图提示词里的内容。整段任务由汇总节点收成一份完整 image_prompts。审查员只交报告，不会替你改稿。
+评判器只审不改。汇总节点会把各节点图块收成一份 image_prompts。资产稿还没有封装，不要写成封装稿，也不要跑 validate_prompt。
 
-## 固定规则
-1. 怎么写图块，以本节点技能合同为准。不要把合同换成别的摘要。不要写成封装稿，也不要跑 validate_prompt.py。资产稿还没有封装。
-2. 资产板按合同写。角色、场景、道具的画幅、格数和视图以合同为准。成片画幅若已锁定，不要改锁。
-3. 上传图只是参考，不是资产。要参考上传图时，把简报里已有的上传图 id 写进 references，不要编造没有的 id，也不要把上传图 id 写进 depends_on。
-4. 再次提交时交出完整稿。已经通过的图块原样保留，只改失败项点到的块。
-5. 审查报告里如果夹了改写稿，那份稿作废。按失败项和审查意见自己重写。
+## 步骤
 
-## SKILL CONTRACT
-本节点的技能合同如下。按合同写，不要另起一套格式，也不要把合同改写成别的摘要。
+1. 读剧本、要写的资产清单，以及已经锁定的赛道、画幅、画风和素材形态。
+   完成标准：能指出本节点要出的角色、场景或道具，以及成片画幅锁。
 
-{{skill_contract}}
+2. 按本节点职责写出对应的资产板。角色、场景、道具的画幅、格数和视图以本节点职责为准。成片画幅若已锁定，沿用该锁。角色、场景、道具、九宫格整板写 16:9。
+   完成标准：图块正文可以出图；板式和画幅与本节点职责一致。
 
-## OUTPUT FORMAT
+3. 上传图只是参考，不是资产。要参考上传图时，把简报里已有的上传图 id 写进 references。读图是产品或道具时，挂到对应道具；读图是人物时，挂到对应角色。
+   完成标准：references 里的 id 都能在简报里找到；上传图 id 不出现在 depends_on。
+   硬护栏：不要编造简报里没有的上传图 id。
+
+{{#repair_text}}
+{{@repair}}
+{{/repair_text}}
+{{^repair_text}}
+4. 一次交出本节点负责的图块。
+   完成标准：本节点该出的板都在 text 里，可交给汇总节点。
+{{/repair_text}}
+
+{{#node_duty}}
+## 本节点职责
+{{node_duty}}
+{{/node_duty}}
+
+## 产出
 {{output_shape}}
 
 ===USER===
-## YOUR TASK
+## 本次任务
 
-按上面的规则和技能合同，完成本节点对这份简报的贡献。只写本节点负责的资产提示。
+{{#route}}
+### 锁与路线
+{{route}}
+{{/route}}
 
+{{#locks}}
+### 锁
+{{locks}}
+{{/locks}}
+
+{{#source}}
+### 剧本
+{{source}}
+{{/source}}
+
+{{#asset_list}}
+### 要写的资产
+{{asset_list}}
+{{/asset_list}}
+
+{{#brief}}
 {{brief}}
+{{/brief}}
+
+{{#draft}}
+### 上一稿（通过的图块原样保留）
+{{draft}}
+{{/draft}}
+
+{{#critic_report}}
+### 审查报告（只读）
+{{critic_report}}
+{{/critic_report}}
+
+{{#machine_report}}
+### 机检
+{{machine_report}}
+{{/machine_report}}
 
 {{#repair_text}}
-## REPAIR
-只改点到本节点原文的失败项。不要重写其他节点负责的内容。已经通过的图块原样保留。
-
+### 返修
 {{repair_text}}
 {{/repair_text}}

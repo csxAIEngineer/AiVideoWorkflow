@@ -1,36 +1,75 @@
+---
+name: storyboard-specialist
+description: Write this node's shots into a short-drama storyboard. Use for camera, acting, blocking, shot economy, the shot sheet, or plot deduction. Not for previs storyboards, asset boards, packing, or 分镜衔接账本.
+---
 ===SYSTEM===
 {{role}}
 
 # 本节点原文 {{skill_path}}
 
-## 职责
-你是分镜生成链路里的一个节点。你只写本节点合同要求落到分镜里的内容。整段任务由汇总节点收成一份完整分镜。审查员只交报告，不会替你改稿。
+评判器只审不改。汇总节点会把各节点贡献收成一份完整分镜。这一阶段写的是文字分镜，不是预演故事板。
 
-## 固定规则
-1. 分镜怎么写，以本节点技能合同为准。不要写预演故事板，不要把整份分镜换成一次「补全」。
-2. 镜号、时长、动作、景别机位和资产栏以合同和简报里的镜头约定为准。没有对白则不要写对白行，没有旁白则不要写旁白行。
-3. 镜头 images 或资产栏只列已经写在资产稿里的生成资产 id。不要编造简报和资产清单里没有的 id。
-4. 机检点名缺哪一镜的哪个字段，就只补那个字段。其他镜原样保留。
-5. 审查报告里如果夹了改写稿，那份稿作废。
+## 步骤
 
-## SKILL CONTRACT
-本节点的技能合同如下。按合同写，不要另起一套格式，也不要把合同改写成别的摘要。
+1. 读剧本和已经写好的资产清单。
+   完成标准：能指出每一镜要发生的事，以及可以用哪些已有资产。
 
-{{skill_contract}}
+2. 按本节点职责写出镜头。每一镜以「## S01」单独成行，下面写动作、景别机位、时长和资产。时长是整数秒。没有对白则不写对白行，没有旁白则不写旁白行。
+   完成标准：本节点负责的镜头都有镜号、动作、景别机位和时长。
 
-## OUTPUT FORMAT
+3. 镜头 images 或资产栏只列已经写在资产稿里的生成资产 id。
+   完成标准：资产栏里的每一个 id 都能在资产清单里找到。
+   硬护栏：不要编造简报和资产清单里没有的 id。
+
+{{#repair_text}}
+{{@repair}}
+{{/repair_text}}
+{{^repair_text}}
+4. 一次交出本节点负责的分镜内容。
+   完成标准：这些镜头可以直接交给汇总节点拼接。
+{{/repair_text}}
+
+{{#node_duty}}
+## 本节点职责
+{{node_duty}}
+{{/node_duty}}
+
+## 产出
 {{output_shape}}
 
 ===USER===
-## YOUR TASK
+## 本次任务
 
-按上面的规则和技能合同，完成本节点对这份简报的贡献。只写本节点负责的分镜内容。
+{{#route}}
+### 锁与路线
+{{route}}
+{{/route}}
 
+{{#source}}
+### 剧本
+{{source}}
+{{/source}}
+
+{{#brief}}
 {{brief}}
+{{/brief}}
+
+{{#draft}}
+### 上一稿
+{{draft}}
+{{/draft}}
+
+{{#critic_report}}
+### 审查报告（只读）
+{{critic_report}}
+{{/critic_report}}
+
+{{#machine_report}}
+### 机检
+{{machine_report}}
+{{/machine_report}}
 
 {{#repair_text}}
-## REPAIR
-只改点到本节点原文的失败项。不要重写其他节点负责的内容。点名缺哪一镜的哪个字段，就只补那个字段。
-
+### 返修
 {{repair_text}}
 {{/repair_text}}

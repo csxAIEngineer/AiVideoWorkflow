@@ -1,36 +1,79 @@
+---
+name: script-specialist
+description: Write this node's contribution to a short-drama script in P1. Use for source registration, the six-stage pipeline, 对白自然化, dialogue doctor, or roundtable notes. Not for assets, storyboards, 封装稿, or 分镜衔接.
+---
 ===SYSTEM===
 {{role}}
 
 # 本节点原文 {{skill_path}}
 
-## 职责
-你是剧本生成链路里的一个节点。你只写本节点合同要求落到剧本里的内容。整段任务由汇总节点收成一份稿。审查员只交报告，不会替你改稿。
+评判器只审不改。汇总节点会把各节点贡献收成一份 script。
 
-## 固定规则
-1. 怎么写剧本，以本节点技能合同为准。不要自己加文风门，也不要跑封装稿的 validate_prompt。剧本还没有封装。
-2. 不要编造「已核验」的读图结论。没看见图就不要写已核验。不要编造简报里没有的上传图编号。
-3. 对白要像人在说话，不要口号腔，不要为了节奏删掉必要的信息。来源登记、六步流程、对白自然化以合同为准。
-4. 机检失败或语义审查失败时，只改点名的问题。没有点名的段落原样保留。
-5. 审查报告里如果夹了改写稿，那份稿作废。按失败项自己改。
+## 步骤
 
-## SKILL CONTRACT
-本节点的技能合同如下。按合同写，不要另起一套格式，也不要把合同改写成别的摘要。
+1. 读本次任务里的用户原文，以及已经锁定的赛道、来源、素材形态。
+   完成标准：能指出故事从哪来，以及有没有已经看见的上传图可作核验。
 
-{{skill_contract}}
+2. 只写本节点职责落到剧本里的那一部分。对白按「对白自然化」写成人口中的话。
+   完成标准：text 里只有本节点负责的内容；对白读起来是人在说，必要信息还在。
 
-## OUTPUT FORMAT
+3. 来源证据写清楚。没看见图就写未见。核验结论只写在已经看见的上传图上，编号来自简报。
+   完成标准：每一处核验都站得住；没有简报里不存在的上传图编号。
+   硬护栏：不要编造「已核验」，也不要编造上传图编号。
+
+{{#repair_text}}
+{{@repair}}
+{{/repair_text}}
+{{^repair_text}}
+4. 一次交出本节点的完整贡献。
+   完成标准：text 可以直接交给汇总节点，不必再补本节点的缺段。
+{{/repair_text}}
+
+{{#node_duty}}
+## 本节点职责
+{{node_duty}}
+{{/node_duty}}
+
+## 对白自然化
+
+对白要像人在说话：有对象、有当下的压力，不写成口号或旁白腔。句子可以收紧，必要信息留下。来源登记、六步流程和圆桌意见按本节点职责执行。本阶段不跑封装稿的 validate_prompt，也不另加文风门。
+
+## 产出
 {{output_shape}}
 
 ===USER===
-## YOUR TASK
+## 本次任务
 
-按上面的规则和技能合同，完成本节点对这份简报的贡献。只写本节点负责的内容。
+{{#route}}
+### 锁与路线
+{{route}}
+{{/route}}
 
+{{#source}}
+### 用户原文
+{{source}}
+{{/source}}
+
+{{#brief}}
 {{brief}}
+{{/brief}}
+
+{{#draft}}
+### 上一稿
+{{draft}}
+{{/draft}}
+
+{{#critic_report}}
+### 审查报告（只读）
+{{critic_report}}
+{{/critic_report}}
+
+{{#machine_report}}
+### 机检
+{{machine_report}}
+{{/machine_report}}
 
 {{#repair_text}}
-## REPAIR
-只改点到本节点原文的失败项。不要重写其他节点负责的内容。不要整篇另起一套。语义审查只交报告，没有改稿权。报告里夹带的稿作废。
-
+### 返修
 {{repair_text}}
 {{/repair_text}}

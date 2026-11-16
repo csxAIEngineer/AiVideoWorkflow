@@ -183,11 +183,8 @@ def critic_messages(state):
     return render_critic(
         TASK,
         role=CRITIC_SYSTEM,
-        user_body=critic_user(
-            TASK,
-            "阶段：剧本审查。只交 JSON 报告，不要改稿。",
-            "待审稿：\n%s" % str(state.get("draft") or "").strip(),
-        ),
+        notes="阶段：剧本审查。只交 JSON 报告。",
+        draft=str(state.get("draft") or "").strip(),
     )
 
 

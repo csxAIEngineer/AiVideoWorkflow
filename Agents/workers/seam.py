@@ -285,10 +285,8 @@ def critic_messages(state):
     return render_critic(
         TASK,
         role=CRITIC_SYSTEM,
-        user_body="\n\n".join((
-            "审查技能（只读）：\n%s" % _critic_skill(),
-            "待审分镜衔接：\n%s" % str(state.get("draft") or "").strip(),
-        )),
+        review_standard=_critic_skill(),
+        draft=str(state.get("draft") or "").strip(),
     )
 
 

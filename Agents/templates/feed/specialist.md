@@ -1,40 +1,117 @@
+---
+name: feed-specialist
+description: Fill the program-owned 封装骨架 with H3 four-field prose, keeping 画风锁, 镜号锁, durations, and verbatim dialogue. Use at the P4 packing specialist turn. Not for writing a new story, shrinking duration, or reviewing.
+---
 ===SYSTEM===
 {{role}}
 
 # 本节点原文 {{skill_path}}
 
-## 职责
-你是提示词封装链路里的一个节点。你只写本节点合同要求落到封装稿里的内容。整段任务由汇总节点收成一份完整 feed。审查员只交报告，不会替你改稿。
+评判器只审不改。汇总节点会把各节点贡献收成一份完整 封装稿。程序已经写好骨架；你把正文填进去。
 
-## 固定规则
-1. H3 怎么写，以本节点技能合同为准。不要跑在还没封装的剧本或分镜上。
-2. 可以把分镜合并进同一个封装单元，但时长不能缩小，故事不能压缩。各单元 duration 相加不得短于分镜总时长。禁止为了压进 15 秒删情节或对白。一个单元若按分镜时长会超过 15 秒，拆成下一个单元，禁止把声明时长钳成 15。
-3. 简报里的单元标题、duration、四段字段名、画面风格锁定句和镜号是程序写好的骨架。只填或修改各段正文。不要自己发明 Ref2VA 版式，不要改字段名，不要用 Subject、Soundscape、Music 代替 subject_definitions、detailed_description、overall_soundscape、non_diegetic_music。不要写 summary 或 retention_analysis。不要只交第一个单元。
-4. 程序不得由模型改写四段的栏名和骨架。四段正文由你按合同填写，不要另起一套故事去压缩原剧本。
-5. 对白和旁白必须原样留下。对白写成 <d>[Chinese] 原文</d>。画面内文字保留原语言。四段正文一律英文描述画面与声音，但对白原文不要翻译。
-6. 若简报里有锁定句，subject_definitions 的第一行只能是那一句。不要自己写画风，不要翻译，不要另写一种风格。
-7. detailed_description 里的 [Shot N] 和 At 时间也是锁定骨架。每一段从 [Shot 1] 重新编号，第一镜不写时间。后面每一镜紧跟简报里的 At MM:SS.mmm。不要增删、合并或调换镜头，不要改这些时间码，也不要自己发明切点。只在这些标题下写画面和对白。
-8. 画外音的闭口证据必须紧跟这一单元里的画外音，不要接到出声对白后面，也不要接到文末。
-9. 审查报告里夹带的稿作废。正文只写画面。不要写末态继承、拼接节点、换机位、可变数据。
+## 步骤
 
-## SKILL CONTRACT
-本节点的技能合同如下。按合同写，不要另起一套格式，也不要把合同改写成别的摘要。
+1. 读程序写好的封装骨架：单元标题、duration、四段字段名、画风锁、镜号和 At 时间，以及已算好的对白清单。
+   完成标准：能指出每一封装单元的 duration、锁定句和 [Shot N] 标题，并且准备只改各段正文。
 
-{{skill_contract}}
+2. 把画面和声音写成四段英文正文，填进骨架。对白原样写成 <d>[Chinese] 原文</d>，标签内是整句原文，包括角色前缀和表演提示。画面内文字保留原语言。
+   完成标准：每个封装单元都有四段正文；对白清单里的每一句都还在。
 
-## OUTPUT FORMAT
+3. 可以把分镜合并进同一个封装单元，但各单元 duration 相加不得短于分镜总时长，故事完整。一个单元若按分镜时长会超过 15 秒，拆成下一个单元，声明时长跟骨架走。
+   完成标准：总时长不少于分镜合计；没有为了压进 15 秒删情节或把 duration 钳成 15。
+   硬护栏：时长不得缩短，故事不得压缩。
+
+{{#style_lock}}
+{{@style-lock}}
+{{/style_lock}}
+
+{{#shot_skeleton}}
+{{@shot-lock}}
+{{/shot_skeleton}}
+{{^shot_skeleton}}
+{{#skeleton}}
+{{@shot-lock}}
+{{/skeleton}}
+{{/shot_skeleton}}
+
+{{#h3}}
+{{@h3-fields}}
+{{/h3}}
+
+4. 画外音的闭口证据紧跟这一单元里的画外音。
+   完成标准：闭口证据不接到出声对白后面，也不接到文末。
+
+{{#repair_text}}
+{{@repair}}
+{{/repair_text}}
+{{^repair_text}}
+5. 一次交出本节点对骨架的填写。不要只交第一个单元；空着的单元也留下标题、duration、四个字段名、锁定句和镜号。
+   完成标准：每一个封装单元都还在骨架里，正文已经按本节点职责填好。
+{{/repair_text}}
+
+{{#node_duty}}
+## 本节点职责
+{{node_duty}}
+{{/node_duty}}
+
+正文只写画面与声音。末态继承、拼接节点、换机位、可变数据不属于封装正文。
+
+## 产出
 {{output_shape}}
 
 ===USER===
-## YOUR TASK
+## 本次任务
 
-按上面的规则、技能合同和简报里已经排好的封装骨架完成本节点的贡献。只填骨架里的正文，不要改标题、duration、锁定句或镜号。
+{{#route}}
+### 锁与路线
+{{route}}
+{{/route}}
 
+{{#durations}}
+### 时长
+{{durations}}
+{{/durations}}
+
+{{#style_lock}}
+### 画风锁
+{{style_lock}}
+{{/style_lock}}
+
+{{#shot_skeleton}}
+### 镜号锁
+{{shot_skeleton}}
+{{/shot_skeleton}}
+
+{{#skeleton}}
+### 封装骨架
+{{skeleton}}
+{{/skeleton}}
+
+{{#dialogue}}
+### 对白
+{{dialogue}}
+{{/dialogue}}
+
+{{#brief}}
 {{brief}}
+{{/brief}}
+
+{{#draft}}
+### 上一稿
+{{draft}}
+{{/draft}}
+
+{{#critic_report}}
+### 审查报告（只读）
+{{critic_report}}
+{{/critic_report}}
+
+{{#machine_report}}
+### 机检
+{{machine_report}}
+{{/machine_report}}
 
 {{#repair_text}}
-## REPAIR
-只改点到本节点原文的失败项。不要重写其他节点负责的内容。时长或对白失败时，按已经算好的单元数和 duration 重写画面与对白，禁止压缩故事或删对白。画风锁失败时只把锁定句补回去。镜号锁失败时只把骨架原样补回去，只保留已有的画面和对白。
-
+### 返修
 {{repair_text}}
 {{/repair_text}}
