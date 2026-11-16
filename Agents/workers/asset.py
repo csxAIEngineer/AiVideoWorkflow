@@ -38,6 +38,7 @@ from Agents.machine_check import (
 )
 from Agents.text import complete_text, resolved_model
 from Agents.worker import missing_skill_state, resolve_skill_pack
+from Agents.templates import critic_messages as render_critic
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
 
@@ -405,10 +406,11 @@ def critic_messages(state):
     if listed:
         sections.append("资产清单：\n%s" % listed)
     sections.append("待审稿：\n%s" % str(state.get("draft") or "").strip())
-    return [
-        {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": critic_user(TASK, *sections)},
-    ]
+    return render_critic(
+        TASK,
+        role=CRITIC_SYSTEM,
+        user_body=critic_user(TASK, *sections),
+    )
 
 
 def format_locks(locks):

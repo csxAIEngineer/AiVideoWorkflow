@@ -30,6 +30,7 @@ from Agents.worker import (
     run_compiled,
     strip_fence,
 )
+from Agents.templates import critic_messages as render_critic
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
 
@@ -179,14 +180,15 @@ def generator_messages(state):
 
 
 def critic_messages(state):
-    return [
-        {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": critic_user(
+    return render_critic(
+        TASK,
+        role=CRITIC_SYSTEM,
+        user_body=critic_user(
             TASK,
             "阶段：剧本审查。只交 JSON 报告，不要改稿。",
             "待审稿：\n%s" % str(state.get("draft") or "").strip(),
-        )},
-    ]
+        ),
+    )
 
 
 _REWRITE_KEYS = ("script", "draft", "rewrite", "rewritten", "text", "replacement", "revised", "content")

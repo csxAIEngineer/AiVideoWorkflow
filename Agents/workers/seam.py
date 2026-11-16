@@ -22,6 +22,7 @@ from Agents.worker import (
     revision_brief,
     run_compiled,
 )
+from Agents.templates import critic_messages as render_critic
 from Agents.workers.generator import run_generator
 from end.seam_ledger import (
     DEFAULT_SCENE_RELATION,
@@ -281,13 +282,14 @@ def generator_messages(state):
 
 
 def critic_messages(state):
-    return [
-        {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": "\n\n".join((
+    return render_critic(
+        TASK,
+        role=CRITIC_SYSTEM,
+        user_body="\n\n".join((
             "审查技能（只读）：\n%s" % _critic_skill(),
             "待审分镜衔接：\n%s" % str(state.get("draft") or "").strip(),
-        ))},
-    ]
+        )),
+    )
 
 
 def _blocking_critic(report):

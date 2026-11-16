@@ -16,6 +16,7 @@ from Agents.worker import (
     revision_brief,
     run_compiled,
 )
+from Agents.templates import critic_messages as render_critic
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import run_generator
 from end.product_names import DRAFT_NAME
@@ -148,10 +149,11 @@ def critic_messages(state):
                 % format_shot_skeleton(skeleton)
             )
     notes.append("待审%s：\n%s" % (DRAFT_NAME, str(state.get("draft") or "").strip()))
-    return [
-        {"role": "system", "content": CRITIC_SYSTEM},
-        {"role": "user", "content": critic_user(TASK, *notes)},
-    ]
+    return render_critic(
+        TASK,
+        role=CRITIC_SYSTEM,
+        user_body=critic_user(TASK, *notes),
+    )
 
 
 def compile_feed_graph(complete, checker=None):
