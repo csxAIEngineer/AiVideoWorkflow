@@ -729,6 +729,15 @@ _GATE_LABEL = {
     "feed": STAGE_NAME,
 }
 _PERCENT = {"recon": 18, "script": 30, "asset": 46, "storyboard": 62, "feed": 69, "seam": 76, "qc": 88}
+_WRITE_LABEL = {
+    "recon": "对标情报",
+    "script": "剧本",
+    "asset": "资产锁定",
+    "storyboard": "分镜",
+    "feed": "提示词封装",
+    "seam": "分镜衔接",
+    "qc": "独立质检",
+}
 _ENGINE = {
     "script": "sd-script-engine/",
     "asset": "sd-asset-engine/",
@@ -4308,6 +4317,36 @@ def _done(project, folder, locks, pipeline, write_model):
     return _finish(folder, locks, pipeline)
 
 
+def _announce_write_stage(project, current, pipeline=None):
+    """Persist the stage now being written so the dock leaves 赛道分流."""
+    current = str(current or "")
+    if not current or not isinstance(project, dict):
+        return project
+    pipeline = dict(pipeline or ((project.get("progress") or {}).get("pipeline") or {}))
+    pipeline["current"] = current
+    label = _WRITE_LABEL.get(current, current)
+    previous = dict(project.get("progress") or {})
+    progress = dict(previous)
+    progress["percent"] = _PERCENT.get(current, int(previous.get("percent") or 0))
+    progress["phase"] = "writing"
+    progress["message"] = label
+    progress["pipeline"] = pipeline
+    project = dict(project)
+    project["stage"] = label
+    project["progress"] = progress
+    if not project.get("id"):
+        return project
+    from end.render_loop import is_running
+
+    if not is_running(project["id"]):
+        return project
+    from end.db import read_project
+    from end.server import remember
+
+    remember(project, project.get("status") or "writing", label, progress=progress)
+    return read_project(project["id"]) or project
+
+
 def execute(project, folder, locks, write_model, load_pack):
     """Write the current stage, or finish. Stop at the gate. Do not continue into the next stage.
 
@@ -4380,6 +4419,9 @@ def execute(project, folder, locks, write_model, load_pack):
             _write_route(project, folder, locks, only, write_model)
         except RuntimeError as error:
             return _unfinished_write(current, pipeline, error)
+        pipeline = dict(pipeline)
+        pipeline["current"] = current
+        project = _announce_write_stage(project, current, pipeline)
     if action == "rewrite":
         pipeline["repair"] = pipeline.get("repair") or pipeline.get("report") or ""
     passed = False

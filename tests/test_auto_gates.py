@@ -124,7 +124,59 @@ class AutoAdvanceTest(unittest.TestCase):
         )
         save_locks(project_dir(project_id), locks)
 
+    def test_stage_moves_to_script_once_route_is_done(self):
+        """After 赛道分流 finishes, the stored stage must already be 剧本 before script writing starts."""
+        from end.stage_runner import execute
+
+        locks = _ready_locks()
+        self._writing(
+            "p-stage",
+            {"only": "", "accepted": [], "current": "", "action": "write", "passed": True},
+            locks,
+        )
+        project = read_project("p-stage")
+        project["stage"] = "赛道分流"
+        project["progress"]["percent"] = 8
+        project["progress"]["message"] = "赛道分流"
+        db.write_project(project)
+        seen = []
+
+        def writer(brief, skill_pack, debug_dir=None, model=None, template=None, trace_prompts=None):
+            stored = read_project("p-stage")
+            progress = stored.get("progress") or {}
+            pipeline = progress.get("pipeline") or {}
+            seen.append(
+                {
+                    "task": "route" if "任务：赛道分流" in brief else "script",
+                    "stage": stored.get("stage"),
+                    "message": progress.get("message"),
+                    "current": pipeline.get("current"),
+                    "percent": progress.get("percent"),
+                }
+            )
+            if "任务：赛道分流" in brief:
+                return {"text": "路线说明"}
+            return {"title": "题", "script": "剧本正文", "internal": "圆桌意见"}
+
+        with patch("end.stage_runner.check_stage", return_value=(True, "")):
+            execute(
+                read_project("p-stage"),
+                project_dir("p-stage"),
+                read_locks(project_dir("p-stage")),
+                writer,
+                lambda *args, **kwargs: "pack",
+            )
+        route_rows = [row for row in seen if row["task"] == "route"]
+        script_rows = [row for row in seen if row["task"] == "script"]
+        self.assertTrue(route_rows, seen)
+        self.assertTrue(script_rows, seen)
+        self.assertEqual(route_rows[0]["stage"], "赛道分流")
+        self.assertEqual(script_rows[0]["stage"], "剧本")
+        self.assertEqual(script_rows[0]["current"], "script")
+        self.assertEqual(script_rows[0]["percent"], 30)
+
     def test_recon_confirms_itself_and_stops_at_the_script(self):
+
         locks = _ready_locks(source="3", intel_confirmed=False)
         self._writing(
             "p-recon",
