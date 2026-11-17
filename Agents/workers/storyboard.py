@@ -26,7 +26,7 @@ from Agents.worker import (
     strip_fence,
 )
 from Agents.workers.critic import critic_user
-from Agents.workers.generator import run_generator
+from Agents.workers.generator import opening_or_fallback, run_generator
 
 STAGE = "storyboard"
 TASK = "storyboard"
@@ -110,12 +110,17 @@ def extract_storyboard(raw, previous=""):
     return text
 
 
+def _first_write_user(state):
+    opening = str(state.get("opening") or "").strip()
+    if opening:
+        return opening
+    return "任务：分镜\n\n剧本：\n%s" % str(state.get("source") or "").strip()
+
+
 def generator_messages(state):
     system = {"role": "system", "content": GENERATOR_SYSTEM}
-    if int(state.get("attempt") or 0) < 1 and str(state.get("opening") or "").strip():
-        return [system, {"role": "user", "content": state.get("opening")}]
     if int(state.get("attempt") or 0) < 1:
-        return [system, {"role": "user", "content": "任务：分镜\n\n剧本：\n%s" % str(state.get("source") or "").strip()}]
+        return [system, {"role": "user", "content": _first_write_user(state)}]
     user = revision_brief(
         STAGE,
         "任务：分镜",
@@ -141,7 +146,14 @@ def compile_storyboard_graph(complete, checker=None):
 
     def generate(state):
         attempt = int(state.get("attempt") or 0) + 1
-        brief = generator_messages(state)[-1]["content"]
+        brief = opening_or_fallback(state, _first_write_user(state))
+        repair_text = revision_brief(
+            STAGE,
+            "任务：分镜",
+            state.get("draft") or "",
+            state.get("critic_report"),
+            state.get("machine_report"),
+        ) if attempt > 1 else ""
         try:
             produced = run_generator(
                 TASK,
@@ -149,7 +161,7 @@ def compile_storyboard_graph(complete, checker=None):
                 role=GENERATOR_SYSTEM,
                 complete=complete,
                 partials=state.get("partials") or [],
-                repair_text=brief if attempt > 1 else "",
+                repair_text=repair_text,
             )
         except Exception as exc:
             return {

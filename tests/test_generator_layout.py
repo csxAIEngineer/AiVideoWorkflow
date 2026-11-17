@@ -239,6 +239,229 @@ class WorkerDispatchTest(unittest.TestCase):
         self.assertEqual(board_result["status"], "pass", board_result.get("machine_report"))
         self.assertEqual(feed_result["status"], "pass", feed_result)
 
+OPENING_MARK = "成片时长秒：60"
+CATALOG_MARK = "图1 = 书院正门"
+OPENING_BRIEF = "\n".join((
+    "任务：分镜",
+    OPENING_MARK,
+    "已锁定资产 id 对照（资产字段只写左边的完整 id）：",
+    CATALOG_MARK,
+    "图2 = 学堂内景",
+    "图4 = 走廊",
+    "图6 = 后山",
+    "图7 = 祠堂",
+    "剧本：\n她推开书院的门。",
+))
+BAD_BOARD = "\n".join((
+    "## S01",
+    "动作：推门",
+    "景别机位：中景",
+    "时长：6",
+    "资产：图1，图2_3，图4_3",
+))
+GOOD_BOARD = "\n".join((
+    "## S01",
+    "动作：推门",
+    "景别机位：中景",
+    "时长：6",
+    "资产：图1，图2，图4",
+))
+
+
+def _unmatched_checker(fail_text, ok_when):
+    def checker(text, state=None, min_blocks=None):
+        if ok_when(text):
+            return {"ok": True, "errors": [], "warnings": [], "fatal": "", "needs_human": False, "report": ""}
+        return {
+            "ok": False,
+            "errors": [fail_text],
+            "warnings": [],
+            "fatal": "",
+            "needs_human": False,
+            "report": fail_text,
+        }
+    return checker
+
+
+class RepairLoopPromptTest(unittest.TestCase):
+    """Loop repairs keep the first-write brief and do not restuff it as a merge."""
+
+    def test_unmatched_repair_keeps_opening_and_does_not_repeat_the_brief(self):
+        previous = [{"skill": PROP, "text": "旧道具专员稿"}]
+        calls = []
+
+        def complete(role, messages):
+            calls.append((role, messages[0]["content"], messages[-1]["content"]))
+            return json.dumps({"storyboard": GOOD_BOARD}, ensure_ascii=False)
+
+        produced = run_generator(
+            "storyboard",
+            OPENING_BRIEF,
+            role="角色",
+            complete=complete,
+            partials=previous,
+            repair_text="\n".join((
+                "任务：建议修补",
+                "阶段：storyboard",
+                "上一稿：\n%s" % BAD_BOARD,
+                "机检失败与警告（FAIL 必须清掉。只有警告、没有 FAIL 不算失败）：",
+                "分镜未完成：S01 资产不在对照表：图2_3，图4_3",
+            )),
+            files=FILES,
+        )
+        self.assertEqual([role for role, _system, _user in calls], ["director"])
+        system, user = calls[0][1], calls[0][2]
+        self.assertIn(OPENING_MARK, user)
+        self.assertIn(CATALOG_MARK, user)
+        self.assertEqual(user.count("任务：建议修补"), 1)
+        self.assertEqual(user.count("上一稿："), 1)
+        self.assertIn("图2_3", user)
+        self.assertNotIn("请汇总成这一阶段的一份稿", user)
+        self.assertNotIn("各节点正文", user)
+        self.assertNotIn("旧道具专员稿", user)
+        self.assertIn("以「上一稿」为底", user)
+        self.assertNotIn("资产：图1，图1_3，图2_3", system)
+        self.assertIn("资产：图1，图2，图4", system)
+        self.assertIn("不要自造", system)
+        self.assertIn("资产：图1，图2，图4", produced["raw"])
+
+    def test_storyboard_loop_repair_passes_opening_apart_from_revision(self):
+        calls = []
+
+        def complete(role, messages):
+            calls.append((role, messages[0]["content"], messages[-1]["content"]))
+            if role == "specialist":
+                return json.dumps({"text": "专员稿"}, ensure_ascii=False)
+            if role == "director":
+                if any("建议修补" in item[2] for item in calls if item[0] == "director"):
+                    return json.dumps({"storyboard": GOOD_BOARD}, ensure_ascii=False)
+                return json.dumps({"storyboard": BAD_BOARD}, ensure_ascii=False)
+            return '{"verdict":"accept","issues":[]}'
+
+        result = run_storyboard_loop(
+            "她推开书院的门。",
+            opening=OPENING_BRIEF,
+            known_ids=["图1", "图2", "图4", "图6", "图7"],
+            max_attempts=2,
+            complete=complete,
+            checker=_unmatched_checker(
+                "分镜未完成：S01 资产不在对照表：图2_3，图4_3",
+                lambda text: "图2_3" not in text and "资产：图1，图2，图4" in text,
+            ),
+        )
+        self.assertEqual(result["status"], "pass", result)
+        repair_users = [user for role, _system, user in calls if role == "director" and "建议修补" in user]
+        self.assertEqual(len(repair_users), 1)
+        user = repair_users[0]
+        self.assertIn(OPENING_MARK, user)
+        self.assertIn(CATALOG_MARK, user)
+        self.assertEqual(user.count("任务：建议修补"), 1)
+        self.assertEqual(user.count("上一稿："), 1)
+        self.assertIn(BAD_BOARD.splitlines()[-1], user)
+        self.assertNotIn("请汇总成这一阶段的一份稿", user)
+        self.assertNotIn("各节点正文", user)
+        self.assertNotIn("专员稿", user)
+
+    def test_each_worker_loop_keeps_the_opening_brief_on_repair(self):
+        cases = (
+            (
+                "asset",
+                lambda complete, checker: run_p2_asset_loop(
+                    "她把药盒放在桌上。锁记：成片时长秒：60",
+                    max_attempts=2,
+                    complete=complete,
+                    checker=checker,
+                ),
+                "#### 图1 · 林浅\n16:9\n通过块不要动",
+                "#### 图1 · 林浅\n16:9\n通过块不要动\n已补风格",
+                "图1 缺风格锁定",
+                lambda text: "已补风格" in text,
+            ),
+            (
+                "script",
+                lambda complete, checker: run_script_loop(
+                    "她把药盒放在桌上。",
+                    opening="任务：剧本\n成片时长秒：60\n用户原文\n她把药盒放在桌上。",
+                    max_attempts=2,
+                    complete=complete,
+                    checker=checker,
+                    reviewer=_semantic_pass,
+                ),
+                "她把药盒放在桌上。",
+                "她把药盒放在桌上，盖上盖子。",
+                "对白缺结尾",
+                lambda text: "盖上盖子" in text,
+            ),
+            (
+                "feed",
+                lambda complete, checker: run_feed_loop(
+                    "分镜",
+                    opening="任务：提示词封装\n成片时长秒：60\n分镜：\n分镜",
+                    max_attempts=2,
+                    complete=complete,
+                    checker=checker,
+                ),
+                "封装初稿",
+                "封装修补稿",
+                "封装单元 1/1 缺画面",
+                lambda text: "封装修补稿" in text,
+            ),
+        )
+        for task, runner, first_draft, second_draft, fail_text, ok_when in cases:
+            with self.subTest(task=task):
+                calls = []
+
+                def complete(role, messages, first=first_draft, second=second_draft):
+                    calls.append((role, messages[0]["content"], messages[-1]["content"]))
+                    if role == "specialist":
+                        return json.dumps({"text": "专员稿"}, ensure_ascii=False)
+                    if role == "director":
+                        payload = {
+                            "image_prompts": second if any("建议修补" in item[2] for item in calls if item[0] == "director") else first,
+                            "script": second if any("建议修补" in item[2] for item in calls if item[0] == "director") else first,
+                            "feed": second if any("建议修补" in item[2] for item in calls if item[0] == "director") else first,
+                        }
+                        return json.dumps(payload, ensure_ascii=False)
+                    return '{"verdict":"accept","issues":[]}'
+
+                if task == "asset":
+                    def checker(text, min_blocks=None):
+                        if ok_when(text):
+                            return {
+                                "ok": True,
+                                "errors": [],
+                                "warnings": [],
+                                "exit_code": 0,
+                                "fatal": "",
+                                "stats": {},
+                                "blocks": 1,
+                                "report": "",
+                            }
+                        return {
+                            "ok": False,
+                            "errors": [fail_text],
+                            "warnings": [],
+                            "exit_code": 1,
+                            "fatal": "",
+                            "stats": {},
+                            "blocks": 1,
+                            "report": fail_text,
+                        }
+                else:
+                    checker = _unmatched_checker(fail_text, ok_when)
+
+                result = runner(complete, checker)
+                self.assertEqual(result["status"], "pass", result)
+                repair_users = [user for role, _system, user in calls if role == "director" and "建议修补" in user]
+                self.assertEqual(len(repair_users), 1, repair_users)
+                user = repair_users[0]
+                self.assertIn(OPENING_MARK, user)
+                self.assertEqual(user.count("任务：建议修补"), 1)
+                self.assertEqual(user.count("上一稿："), 1)
+                self.assertNotIn("请汇总成这一阶段的一份稿", user)
+                self.assertNotIn("各节点正文", user)
+
+
 
 if __name__ == "__main__":
     unittest.main()

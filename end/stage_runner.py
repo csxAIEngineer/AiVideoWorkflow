@@ -44,6 +44,8 @@ from end.product_names import (
 )
 from end.storyboard_contract import (
     STORYBOARD_INSTRUCTION,
+    storyboard_instruction,
+    known_ids_from_brief,
     COMPLETE,
     FILL,
     lock_projected_shots,
@@ -918,8 +920,10 @@ def mount_header(stage, locks, carried, only):
     return "\n".join(lines)
 
 
-def stage_instruction(stage, locks=None):
+def stage_instruction(stage, locks=None, known_ids=None):
     """H3 feed is four English sections. Seedance keeps the seven-section sheet."""
+    if stage == "storyboard":
+        return storyboard_instruction(known_ids)
     if stage != "feed":
         return _INSTRUCTION.get(stage, "")
     model = str((locks or {}).get("model") or "h3").lower()
@@ -1097,6 +1101,9 @@ def _gate_copy(stage, passed, report, tries=0, has_draft=False):
         if str(report or "").strip() == "分镜是空的" or not has_draft:
             reply = "分镜没写出来。预演稿不能当作分镜。"
             options = [STORYBOARD_FILL]
+        elif tries:
+            reply = "已自动改了%d次，还是没过。分镜还缺字段。" % tries
+            options = [STORYBOARD_COMPLETE]
         else:
             reply = "分镜还缺字段，没有自动改写。"
             options = [STORYBOARD_COMPLETE]
@@ -3632,7 +3639,7 @@ def _stage_machine_report(passed, report, *, needs_human=False):
 
 
 def _named_storyboard_gap(report):
-    return bool(re.search(r"S\d+\s*缺", str(report or "")))
+    return bool(re.search(r"S\d+\s*(缺|资产不在对照表)", str(report or "")))
 
 
 def _script_worker_checker(folder, locks):
@@ -4056,7 +4063,7 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
                 task_line,
                 lock_brief(locks),
                 _user_story_block(stage, story, current_draft),
-                stage_instruction(stage, locks),
+                stage_instruction(stage, locks, known_ids_from_brief(asset_catalog) if stage == "storyboard" else None),
                 asset_catalog,
                 upload_block,
                 "当前这一稿：\n" + current_draft if current_draft else "",
@@ -4606,9 +4613,10 @@ def execute(project, folder, locks, write_model, load_pack):
         if current == "feed" and not passed and is_empty_draft(report):
             pipeline["retry_write"] = True
         if current == "storyboard" and not passed and needs_human(report):
-            pipeline["repairs"] = 0
             pipeline["retry_write"] = False
-            pipeline["machine_repairs"] = 0
+            if not _named_storyboard_gap(report):
+                pipeline["repairs"] = 0
+                pipeline["machine_repairs"] = 0
             if str(report or "").strip() == "分镜是空的" and shots_are_placeholder(spec.get("shots")):
                 spec["shots"] = []
         if worker_loop or passed or current in ("asset", "storyboard", "seam", "feed") or attempts >= REPAIR_LIMIT:

@@ -260,24 +260,33 @@ def _with_skeleton(text, state):
     return "%s\n\n%s" % (body, skeleton)
 
 
+def _first_write_user(state):
+    opening = str(state.get("opening") or "").strip()
+    if opening:
+        user = _with_scene_relation(_with_ids(opening, state))
+    else:
+        user = _with_scene_relation(_brief(state))
+    return _with_skeleton(user, state)
+
+
+def _repair_user(state):
+    user = revision_brief(
+        STAGE,
+        "任务：分镜衔接",
+        state.get("draft") or "",
+        state.get("critic_report"),
+        state.get("machine_report"),
+    )
+    return _with_skeleton(_with_scene_relation(_with_ids(user, state)), state)
+
+
 def generator_messages(state):
     system = {"role": "system", "content": GENERATOR_SYSTEM}
     if int(state.get("attempt") or 0) >= 1:
-        user = revision_brief(
-            STAGE,
-            "任务：分镜衔接",
-            state.get("draft") or "",
-            state.get("critic_report"),
-            state.get("machine_report"),
-        )
-        user = _with_scene_relation(_with_ids(user, state))
+        user = _repair_user(state)
     else:
-        opening = str(state.get("opening") or "").strip()
-        if opening:
-            user = _with_scene_relation(_with_ids(opening, state))
-        else:
-            user = _with_scene_relation(_brief(state))
-    return [system, {"role": "user", "content": _with_skeleton(user, state)}]
+        user = _first_write_user(state)
+    return [system, {"role": "user", "content": user}]
 
 
 def critic_messages(state):
@@ -308,7 +317,8 @@ def compile_seam_graph(complete, checker=None):
 
     def generate(state):
         attempt = int(state.get("attempt") or 0) + 1
-        brief = generator_messages(state)[-1]["content"]
+        brief = _first_write_user(state)
+        repair_text = _repair_user(state) if attempt > 1 else ""
         try:
             produced = run_generator(
                 TASK,
@@ -316,7 +326,7 @@ def compile_seam_graph(complete, checker=None):
                 role=GENERATOR_SYSTEM,
                 complete=complete,
                 partials=state.get("partials") or [],
-                repair_text=brief if attempt > 1 else "",
+                repair_text=repair_text,
                 files=[SKILL_FILE],
             )
         except Exception as exc:

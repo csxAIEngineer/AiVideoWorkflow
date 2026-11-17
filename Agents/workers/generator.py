@@ -57,9 +57,14 @@ def run_generator(
         ])
         notes[relative] = _node_text(raw)
     ordered = [{"skill": relative, "text": notes.get(relative) or ""} for relative in chosen]
+    include_notes = (not repairing) or bool(selected)
     raw = complete("director", [
         {"role": "system", "content": _director_system(role, merge_prompt(task, _routing_context(task, brief)))},
-        {"role": "user", "content": _director_user(brief, ordered, repair_text if repairing else "")},
+        {"role": "user", "content": _director_user(
+            brief,
+            ordered if include_notes else [],
+            repair_text if repairing else "",
+        )},
     ])
     return {"raw": raw or "", "partials": ordered}
 
@@ -137,17 +142,41 @@ def _specialist_user(brief, repair_text):
     return "\n\n".join(part for part in parts if part)
 
 
+def opening_or_fallback(state, fallback=""):
+    """First-write lock brief. Repair text is passed separately as repair_text."""
+    return str((state or {}).get("opening") or "").strip() or str(fallback or "").strip()
+
+
 def _director_user(brief, partials, repair_text):
-    blocks = ["各节点正文："]
-    for item in partials:
-        blocks.append("## %s\n%s" % (item["skill"], item.get("text") or ""))
-    blocks.append("简报：\n%s" % str(brief or "").strip())
-    if str(repair_text or "").strip():
-        blocks.append(
-            "审查和机检只点了这些问题。没有点名的节点正文保持原样。"
-            "不要采用审查员夹带的整稿。\n%s" % str(repair_text).strip()
-        )
-    blocks.append("请汇总成这一阶段的一份稿。")
+    blocks = []
+    notes = []
+    for item in partials or []:
+        path = str(item.get("skill") or "").strip()
+        body = str(item.get("text") or "")
+        if path or body.strip():
+            notes.append("## %s\n%s" % (path, body))
+    if notes:
+        blocks.append("各节点正文：\n\n%s" % "\n\n".join(notes))
+    brief_text = str(brief or "").strip()
+    if brief_text:
+        blocks.append("简报：\n%s" % brief_text)
+    repair = str(repair_text or "").strip()
+    if repair:
+        if repair != brief_text and repair not in brief_text:
+            blocks.append(
+                "只改点名的失败项。没有点名的段落原样保留。"
+                "以「上一稿」为底，不要整篇另起，不要换成一次「补全」。"
+                "不要采用审查员夹带的整稿。\n%s" % repair
+            )
+        elif "以「上一稿」为底" not in brief_text:
+            blocks.append(
+                "只改点名的失败项。没有点名的段落原样保留。"
+                "以「上一稿」为底，不要整篇另起，不要换成一次「补全」。"
+                "不要采用审查员夹带的整稿。"
+            )
+        blocks.append("请按失败项改上一稿，交出这一阶段的一份完整稿。")
+    else:
+        blocks.append("请汇总成这一阶段的一份稿。")
     return "\n\n".join(blocks)
 
 

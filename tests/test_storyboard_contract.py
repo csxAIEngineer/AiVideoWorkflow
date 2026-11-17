@@ -64,7 +64,7 @@ class ProjectionTest(unittest.TestCase):
             ["图2"],
         )
         self.assertEqual(missing, [])
-        self.assertIn("S01 缺时长、资产", report)
+        self.assertIn("S01 缺时长，资产不在对照表：林浅", report)
         self.assertNotIn("4", report)
 
         named, named_report = project_shots(
@@ -72,7 +72,7 @@ class ProjectionTest(unittest.TestCase):
             ["图2"],
         )
         self.assertEqual(named, [])
-        self.assertIn("缺资产", named_report)
+        self.assertIn("S01 资产不在对照表：林浅", named_report)
 
         shots, ok = project_shots(BOARD, ["A1"])
         self.assertEqual(ok, "")

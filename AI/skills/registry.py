@@ -126,11 +126,11 @@ def json_shape(template=None, brief=""):
     if step:
         return script_json_shape(step)
     if suite_task_for(brief) == "storyboard":
-        from end.storyboard_contract import STORYBOARD_INSTRUCTION
+        from end.storyboard_contract import known_ids_from_brief, storyboard_instruction
 
         return "\n".join((
             "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-            STORYBOARD_INSTRUCTION,
+            storyboard_instruction(known_ids_from_brief(brief)),
             "没有对白则不要写对白行。没有旁白则不要写旁白行。",
             "这一阶段用不到的字段用空字符串或空数组。不要在 JSON 里放 locks。",
         ))
@@ -708,9 +708,28 @@ def skill_node_prompt(relative, repair=False):
     return cohort_prompt([relative], repair=repair)
 
 
+def _storyboard_merge_shape(brief=""):
+    from end.storyboard_contract import asset_field_rules, known_ids_from_brief
+
+    return "\n".join((
+        "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
+        "不要写 previs。完整分镜只放在 storyboard 字符串。",
+        "每一镜以「## S01」单独成行，下面写动作、景别机位、时长、资产。",
+        "时长是正文里的整数秒。",
+        asset_field_rules(known_ids_from_brief(brief)),
+        "对照表在简报里。名称不要写进资产字段。",
+        "shots 不是第二份稿。若提交，id、duration、images 必须和同一镜号正文一致。",
+        "不要写段、格、六问、九宫格或预演完成标记。",
+        "这一阶段用不到的字段不要写。",
+    ))
+
+
 def merge_prompt(task, brief=""):
     """Short merge instruction plus the task's JSON shape. No skill originals."""
-    shape = _MERGE_SHAPE.get(task) or _MERGE_SHAPE["script"]
+    if task == "storyboard":
+        shape = _storyboard_merge_shape(brief)
+    else:
+        shape = _MERGE_SHAPE.get(task) or _MERGE_SHAPE["script"]
     if task == "feed" and parse_route(brief, "P4").get("model") == "h3":
         shape = shape + "\n" + _H3_FEED_CONTRACT
     return "\n\n".join((

@@ -64,19 +64,34 @@ from Agents.workers.feed.debug import (
 )
 
 
-def generator_messages(state):
-    system = {"role": "system", "content": _generator_system(state)}
+def _first_write_user(state):
     note = packing_plan_note(state)
-    if int(state.get("attempt") or 0) < 1 and str(state.get("opening") or "").strip():
-        user = state.get("opening")
+    opening = str(state.get("opening") or "").strip()
+    if opening:
+        user = opening
         if note:
             user = user.rstrip() + "\n\n" + note
-        return [system, {"role": "user", "content": user}]
+        return user
+    pieces = ["任务：提示词封装", "分镜：\n%s" % str(state.get("source") or "").strip()]
+    if note:
+        pieces.append(note)
+    return "\n\n".join(pieces)
+
+
+def _repair_user(state):
+    return revision_brief(
+        STAGE,
+        "任务：提示词封装",
+        state.get("draft") or "",
+        state.get("critic_report"),
+        state.get("machine_report"),
+    )
+
+
+def generator_messages(state):
+    system = {"role": "system", "content": _generator_system(state)}
     if int(state.get("attempt") or 0) < 1:
-        pieces = ["任务：提示词封装", "分镜：\n%s" % str(state.get("source") or "").strip()]
-        if note:
-            pieces.append(note)
-        return [system, {"role": "user", "content": "\n\n".join(pieces)}]
+        return [system, {"role": "user", "content": _first_write_user(state)}]
     user = revision_brief(
         STAGE,
         "任务：提示词封装",
@@ -159,7 +174,7 @@ def compile_feed_graph(complete, checker=None):
 
     def generate(state):
         attempt = int(state.get("attempt") or 0) + 1
-        brief = generator_messages(state)[-1]["content"]
+        brief = _first_write_user(state)
         calls = []
         specialist_index = {"n": 0}
 
@@ -192,7 +207,7 @@ def compile_feed_graph(complete, checker=None):
                 role=_generator_system(state),
                 complete=traced,
                 partials=state.get("partials") or [],
-                repair_text=brief if attempt > 1 else "",
+                repair_text=_repair_user(state) if attempt > 1 else "",
             )
         except Exception as exc:
             message = "%s: %s" % (type(exc).__name__, exc)

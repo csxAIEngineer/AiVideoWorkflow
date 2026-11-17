@@ -36,7 +36,7 @@ from end.product_names import (
 from end.prompt_gate import align_feed_unit_headers, delivery_units
 from end.repair_rules.feed_unit_headers import FeedUnitHeaderRule
 from end.rerun import _RESUME_LABEL
-from end.stage_runner import _FEED_SEEDANCE, _GATE_LABEL, _INSTRUCTION, _gate_copy, _unfinished_write, render_feed_text
+from end.stage_runner import STORYBOARD_COMPLETE, _FEED_SEEDANCE, _GATE_LABEL, _INSTRUCTION, _gate_copy, _unfinished_write, render_feed_text
 from end.trace import _NAME, _WRITE_LABEL
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -205,6 +205,30 @@ class GlossaryLockTest(unittest.TestCase):
                 text = file.read_text(encoding="utf-8")
                 for banned in _BANNED:
                     self.assertNotIn(banned, text, "%s still contains %s" % (file.relative_to(ROOT), banned))
+
+class StoryboardGateCopyTest(unittest.TestCase):
+
+    def test_storyboard_gap_after_worker_repairs_does_not_claim_no_rewrite(self):
+        reply, options = _gate_copy(
+            "storyboard",
+            False,
+            "分镜未完成：S01 资产不在对照表：图2_3",
+            tries=2,
+            has_draft=True,
+        )
+        self.assertIn("已自动改了2次，还是没过", reply)
+        self.assertNotIn("没有自动改写", reply)
+        self.assertIn(STORYBOARD_COMPLETE, options)
+
+        silent, _options = _gate_copy(
+            "storyboard",
+            False,
+            "分镜未完成：S01 缺动作",
+            tries=0,
+            has_draft=True,
+        )
+        self.assertIn("没有自动改写", silent)
+
 
 
 if __name__ == "__main__":

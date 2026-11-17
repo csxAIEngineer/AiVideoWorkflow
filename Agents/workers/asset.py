@@ -39,7 +39,7 @@ from Agents.machine_check import (
 from Agents.text import complete_text, resolved_model
 from Agents.worker import missing_skill_state, resolve_skill_pack
 from Agents.workers.critic import critic_user
-from Agents.workers.generator import run_generator
+from Agents.workers.generator import opening_or_fallback, run_generator
 
 STAGE = "P2"
 TASK = "asset"
@@ -230,8 +230,8 @@ def compile_p2_asset_graph(complete, checker=None):
 
     def generate(state):
         attempt = int(state.get("attempt") or 0) + 1
-        brief = generator_messages(state)[-1]["content"]
-        repair = brief if attempt > 1 else ""
+        brief = opening_or_fallback(state, _first_write_user(state))
+        repair = _repair_user(state) if attempt > 1 else ""
         try:
             produced = run_generator(
                 TASK,
@@ -358,7 +358,7 @@ def result_from_state(state):
     }
 
 
-def generator_messages(state):
+def _first_write_user(state):
     sections = [
         "阶段：P2 资产提示词。",
         "剧本：\n%s" % str(state.get("script") or "").strip(),
@@ -370,26 +370,44 @@ def generator_messages(state):
     if listed:
         sections.append("要写的资产：\n%s" % listed)
     draft = str(state.get("draft") or "").strip()
-    attempt = int(state.get("attempt") or 0)
-    if draft and attempt >= 1:
-        sections.append("上一稿（通过的图块原样保留）：\n%s" % draft)
-        critic = format_critic(state.get("critic_report"))
-        if critic:
-            sections.append("审查报告（只读。审查员没有改稿权）：\n%s" % critic)
-        machine = format_machine(state.get("machine_report"))
-        if machine:
-            sections.append("机检失败与警告（FAIL 必须清掉）：\n%s" % machine)
-        sections.append(
-            "按审查报告和机检失败项修改上一稿，交出完整 image_prompts。"
-            "不要采用审查员夹带的改写。"
-        )
-    elif draft:
+    if draft and int(state.get("attempt") or 0) < 1:
         sections.append("已有草稿。请写成完整资产稿：\n%s" % draft)
     else:
         sections.append("请根据剧本写出完整资产稿。")
+    return "\n\n".join(sections)
+
+
+def _repair_user(state):
+    sections = [
+        "任务：建议修补",
+        "阶段：asset",
+        "机检没过。只改点名的失败项，没有点名的段落原样保留。",
+        "不要整篇另起一套。审查员没有改稿权，审查报告里夹带的稿作废。",
+    ]
+    draft = str(state.get("draft") or "").strip()
+    if draft:
+        sections.append("上一稿：\n%s" % draft)
+    critic = format_critic(state.get("critic_report"))
+    if critic:
+        sections.append("审查报告（只读。审查员没有改稿权）：\n%s" % critic)
+    machine = format_machine(state.get("machine_report"))
+    if machine:
+        sections.append("机检失败与警告（FAIL 必须清掉）：\n%s" % machine)
+    sections.append(
+        "按审查报告和机检失败项修改上一稿，交出完整 image_prompts。"
+        "不要采用审查员夹带的改写。"
+    )
+    return "\n\n".join(sections)
+
+
+def generator_messages(state):
+    if int(state.get("attempt") or 0) >= 1:
+        user = _repair_user(state)
+    else:
+        user = opening_or_fallback(state, _first_write_user(state))
     return [
         {"role": "system", "content": GENERATOR_SYSTEM},
-        {"role": "user", "content": "\n\n".join(sections)},
+        {"role": "user", "content": user},
     ]
 
 

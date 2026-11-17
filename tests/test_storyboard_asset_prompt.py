@@ -80,9 +80,9 @@ def _brief(folder, draft=""):
 class StoryboardAssetPromptTest(unittest.TestCase):
     def test_example_parses_and_the_old_line_still_does_not(self):
         body = ASSET_FIELD_EXAMPLE.split("：", 1)[1]
-        self.assertEqual(_assets(body, KNOWN), ["图1", "图1_3", "图2_3"])
+        self.assertEqual(_assets(body, KNOWN), (["图1", "图1_3", "图2_3"], ""))
         _shots, report = project_shots(OLD_S01, KNOWN)
-        self.assertIn("S01 缺资产", report)
+        self.assertIn("S01 资产不在对照表", report)
         self.assertEqual(_shots, [])
 
     def test_catalog_keeps_figure_one_distinct_from_its_suffix(self):
@@ -102,16 +102,17 @@ class StoryboardAssetPromptTest(unittest.TestCase):
         again = _brief(folder, OLD_S01)
         for brief in (first, again):
             self.assertIn("任务：分镜", brief)
-            self.assertIn(ASSET_FIELD_EXAMPLE, brief)
-            self.assertIn(ASSET_FIELD_RULES, brief)
+            self.assertIn("资产：图1，图1_2，图1_3", brief)
+            self.assertIn("不要把图1_3写成图1", brief)
             self.assertIn("图1 = 古塔顶层内景（场景母版）", brief)
             self.assertIn("图1_3 = 阿青丝（角色立绘 · 2D）", brief)
             self.assertIn("图2_3 = 柳公子（角色立绘 · 2D）", brief)
             shape = json_shape(None, brief)
             merged = merge_prompt("storyboard", brief)
             for prompt in (shape, merged):
-                self.assertIn(ASSET_FIELD_EXAMPLE, prompt)
+                self.assertIn("资产：图1，图1_2，图1_3", prompt)
                 self.assertIn("不要把图1_3写成图1", prompt)
+                self.assertNotIn("不要自造图1_3", prompt)
                 self.assertNotIn("多个用顿号分开", prompt)
                 self.assertNotIn("资产：已经锁定的资产 id", prompt)
             self.assertNotIn("图1（阿青丝）", brief)

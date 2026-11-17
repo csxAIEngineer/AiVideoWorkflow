@@ -31,7 +31,7 @@ from Agents.worker import (
     strip_fence,
 )
 from Agents.workers.critic import critic_user
-from Agents.workers.generator import run_generator
+from Agents.workers.generator import opening_or_fallback, run_generator
 
 STAGE = "script"
 TASK = "script"
@@ -156,13 +156,18 @@ def semantic_revision_brief(draft, report):
     return "\n\n".join(sections)
 
 
+def _first_write_user(state):
+    opening = str(state.get("opening") or "").strip()
+    if opening:
+        return opening
+    story = str(state.get("source") or "").strip()
+    return "任务：剧本\n\n用户原文\n%s" % story
+
+
 def generator_messages(state):
     system = {"role": "system", "content": GENERATOR_SYSTEM}
-    if int(state.get("attempt") or 0) < 1 and str(state.get("opening") or "").strip():
-        return [system, {"role": "user", "content": state.get("opening")}]
     if int(state.get("attempt") or 0) < 1:
-        story = str(state.get("source") or "").strip()
-        return [system, {"role": "user", "content": "任务：剧本\n\n用户原文\n%s" % story}]
+        return [system, {"role": "user", "content": _first_write_user(state)}]
     if _semantic_retry(state):
         return [system, {"role": "user", "content": semantic_revision_brief(
             state.get("draft") or "",
@@ -258,7 +263,22 @@ def compile_script_graph(complete, checker=None, reviewer=None):
 
     def generate(state):
         attempt = int(state.get("attempt") or 0) + 1
-        brief = generator_messages(state)[-1]["content"]
+        brief = opening_or_fallback(state, _first_write_user(state))
+        if attempt > 1 and _semantic_retry(state):
+            repair_text = semantic_revision_brief(
+                state.get("draft") or "",
+                state.get("semantic_report"),
+            )
+        elif attempt > 1:
+            repair_text = revision_brief(
+                STAGE,
+                "任务：剧本",
+                state.get("draft") or "",
+                state.get("critic_report"),
+                state.get("machine_report"),
+            )
+        else:
+            repair_text = ""
         try:
             produced = run_generator(
                 TASK,
@@ -266,7 +286,7 @@ def compile_script_graph(complete, checker=None, reviewer=None):
                 role=GENERATOR_SYSTEM,
                 complete=complete,
                 partials=state.get("partials") or [],
-                repair_text=brief if attempt > 1 else "",
+                repair_text=repair_text,
             )
         except Exception as exc:
             return {

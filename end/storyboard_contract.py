@@ -16,27 +16,76 @@ HOLD = "分镜.hold"
 PLACEHOLDER_PROMPT = "按这张资产图演这一镜"
 
 ASSET_FIELD_EXAMPLE = "资产：图1，图1_3，图2_3"
-ASSET_FIELD_RULES = "\n".join((
-    "资产字段只写对照表里的完整 id，原样照抄，多个用中文逗号「，」分开。",
-    "格式示例（只示范格式，对照表里没有的 id 不要用）：%s" % ASSET_FIELD_EXAMPLE,
-    "资产字段不要写括号、名称或说明。名称可以写在动作或站位。",
-    "不要把图1_3写成图1，不要按类别重编号，不要靠名称猜 id，不要发明对照表以外的 id。",
-    "这一镜的人物或场景对不上对照表时，资产字段留空，不要改用别的资产。",
-))
-STORYBOARD_INSTRUCTION = "\n".join((
-    "只写一份完整分镜，放在 storyboard 字符串。不要写 previs，不要写预演故事板。",
-    "不要写段、格、六问、九宫格或预演完成标记。",
-    "每一镜一个标题，标题单独成行。镜号写成 S01、S02：",
-    "## S01",
-    "动作：这一镜里发生的动作",
-    "景别机位：景别和机位",
-    "时长：6",
-    ASSET_FIELD_EXAMPLE,
-    "站位、朝向、光线、对白、旁白只有这一镜确实要写才各占一行。",
-    "时长必须是这一镜写出的整数秒，不要省略，也不要写区间。",
-    ASSET_FIELD_RULES,
-    "不要另写一份镜头稿。若仍然提交 shots，每一项的 id、duration、images 必须和同一镜号正文一致。",
-))
+
+
+def asset_field_example(known_ids=None):
+    """Format-only example drawn from the live catalog, never invented suffix ids."""
+    ids = [str(item).strip() for item in (known_ids or []) if str(item).strip()]
+    if not ids:
+        return "资产：图1"
+    return "资产：" + "，".join(ids[:3])
+
+
+def asset_field_rules(known_ids=None):
+    ids = [str(item).strip() for item in (known_ids or []) if str(item).strip()]
+    lines = [
+        "资产字段只写对照表里的完整 id，原样照抄，多个用中文逗号「，」分开。",
+        "格式示例（只示范格式，对照表里没有的 id 不要用）：%s" % asset_field_example(ids),
+        "资产字段不要写括号、名称或说明。名称可以写在动作或站位。",
+        "不要按类别重编号，不要靠名称猜 id，不要发明对照表以外的 id。",
+    ]
+    if any("_" in item for item in ids):
+        lines.append("对照表里写了带后缀的 id，就按原样写，不要把图1_3写成图1。")
+    else:
+        lines.append("对照表没有带后缀的 id 时，不要自造图1_3 这类编号。")
+    lines.append("这一镜的人物或场景对不上对照表时，资产字段留空，不要改用别的资产。")
+    return "\n".join(lines)
+
+
+def storyboard_instruction(known_ids=None):
+    example = asset_field_example(known_ids)
+    return "\n".join((
+        "只写一份完整分镜，放在 storyboard 字符串。不要写 previs，不要写预演故事板。",
+        "不要写段、格、六问、九宫格或预演完成标记。",
+        "每一镜一个标题，标题单独成行。镜号写成 S01、S02：",
+        "## S01",
+        "动作：这一镜里发生的动作",
+        "景别机位：景别和机位",
+        "时长：6",
+        example,
+        "站位、朝向、光线、对白、旁白只有这一镜确实要写才各占一行。",
+        "时长必须是这一镜写出的整数秒，不要省略，也不要写区间。",
+        asset_field_rules(known_ids),
+        "不要另写一份镜头稿。若仍然提交 shots，每一项的 id、duration、images 必须和同一镜号正文一致。",
+    ))
+
+
+ASSET_FIELD_RULES = asset_field_rules()
+STORYBOARD_INSTRUCTION = storyboard_instruction()
+
+_CATALOG_LINE = re.compile(r"^(\S+)\s*=\s+\S")
+
+
+def known_ids_from_brief(brief):
+    """Catalog ids from locked-asset lines in a brief, in written order."""
+    found = []
+    in_catalog = False
+    for line in str(brief or "").splitlines():
+        text = line.strip()
+        if text.startswith("已锁定资产"):
+            in_catalog = True
+            continue
+        if not in_catalog:
+            continue
+        if not text:
+            break
+        match = _CATALOG_LINE.match(text)
+        if not match:
+            break
+        asset_id = match.group(1).strip()
+        if asset_id and asset_id not in found:
+            found.append(asset_id)
+    return found
 
 _HEADING = re.compile(r"^##\s*(?:镜号\s*)?(S\d+)\b", re.I)
 _FIELD = re.compile(
@@ -97,10 +146,11 @@ def _duration(text):
 def _assets(text, known):
     parts = [part for part in re.split(r"[、,，\s]+", str(text or "").strip()) if part]
     if not parts:
-        return None
-    if any(part not in known for part in parts):
-        return None
-    return parts
+        return None, "资产"
+    unknown = [part for part in parts if part not in known]
+    if unknown:
+        return None, "资产不在对照表：" + "，".join(unknown)
+    return parts, ""
 
 
 _ASSET_LINE = re.compile(r"^[ \t]*资产[ \t]*[:：][ \t]*(.*)$")
@@ -185,11 +235,26 @@ def project_shots(text, known_ids):
         duration = _duration(fields.get("时长") or "")
         if duration is None:
             missing.append("时长")
-        images = _assets(fields.get("资产") or "", known)
+        images, asset_gap = _assets(fields.get("资产") or "", known)
         if images is None:
-            missing.append("资产")
+            if asset_gap == "资产":
+                missing.append("资产")
+            else:
+                missing.append(asset_gap)
         if missing:
-            gaps.append("%s 缺%s" % (shot_id, "、".join(missing)))
+            # Keep a leading 缺 only for absent fields; unknown ids keep their own label.
+            labels = []
+            unknown = []
+            for item in missing:
+                if item.startswith("资产不在对照表"):
+                    unknown.append(item)
+                else:
+                    labels.append(item)
+            parts = []
+            if labels:
+                parts.append("缺%s" % "、".join(labels))
+            parts.extend(unknown)
+            gaps.append("%s %s" % (shot_id, "，".join(parts)))
             continue
         shots.append(
             {
