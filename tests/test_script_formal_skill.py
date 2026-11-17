@@ -1,12 +1,15 @@
 """剧本专员只挂精简正式剧本 skill，不再整份塞入六阶段总流程。"""
 
 import unittest
+from pathlib import Path
 
 from AI.skills.registry import SUITE, _slice_module, cohort_prompt, suite_files
 
 
 SLIM_SKILL = "sd-script-engine/references/formal-script.md"
 ORIGINAL = "sd-script-engine/references/six-stage-pipeline.md"
+SOURCE_REGISTRATION = "sd-script-engine/references/source-registration.md"
+SOURCE_BACKUP = Path(__file__).resolve().parents[1] / "AI" / "skills" / "_backups" / "sd-script-engine" / "source-registration.md"
 
 # Distinctive machinery from the full six-stage host. The write-script
 # specialist should not be handed these sections.
@@ -51,6 +54,19 @@ class FormalScriptSkillTests(unittest.TestCase):
         routed = _slice_module().resolve_files("P1")
         self.assertIn(ORIGINAL, routed)
         self.assertNotIn(SLIM_SKILL, routed)
+
+    def test_script_does_not_mount_source_registration(self):
+        files = suite_files("script", "任务：剧本")
+        self.assertNotIn(SOURCE_REGISTRATION, files)
+
+    def test_source_registration_original_and_backup_are_kept(self):
+        original = SUITE / SOURCE_REGISTRATION
+        self.assertTrue(original.is_file())
+        self.assertTrue(SOURCE_BACKUP.is_file())
+        self.assertEqual(
+            original.read_bytes(),
+            SOURCE_BACKUP.read_bytes(),
+        )
 
 
 if __name__ == "__main__":

@@ -96,7 +96,6 @@ class SuiteGraphTest(unittest.TestCase):
         files = suite_files("script", "任务：剧本")
         cohorts = pack_cohorts(files)
         self.assertEqual(files, [
-            "sd-script-engine/references/source-registration.md",
             "sd-script-engine/references/formal-script.md",
             "sd-script-engine/references/dialogue-naturalization.md",
             "short-drama-director/references/dialogue-doctor-7d.md",

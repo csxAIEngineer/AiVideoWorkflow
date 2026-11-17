@@ -116,7 +116,11 @@ class ScriptChainRunTest(unittest.TestCase):
         script_calls = [call for call in calls if "任务：剧本" in call]
         self.assertGreater(len(script_calls), 1)
         self.assertTrue(any("独有的用户故事句子" in call and "用户原文" in call for call in script_calls))
-        self.assertTrue(any("各节点正文" in call and "来源正文" in call for call in script_calls))
+        self.assertTrue(any("各节点正文" in call and "节点正文" in call for call in script_calls))
+        self.assertFalse(any(
+            "# 本节点原文 sd-script-engine/references/source-registration.md" in call
+            for call in calls
+        ))
         self.assertFalse(any(
             "# 本节点原文 sd-script-engine/references/story-bible-and-ip.md" in call
             for call in calls
@@ -126,7 +130,7 @@ class ScriptChainRunTest(unittest.TestCase):
             for call in calls
         ))
         self.assertEqual((folder / "_内部_" / "路线.md").read_text(encoding="utf-8").strip(), "路线说明")
-        self.assertEqual((folder / "_内部_" / "剧本链" / "01-来源登记.md").read_text(encoding="utf-8").strip(), "来源正文")
+        self.assertFalse((folder / "_内部_" / "剧本链" / "01-来源登记.md").exists())
         self.assertEqual((folder / "_内部_" / "剧本.md").read_text(encoding="utf-8").strip(), "正式剧本正文")
         self.assertEqual((folder / "_内部_" / "剧本过程.md").read_text(encoding="utf-8").strip(), "圆桌意见")
         self.assertEqual(outcome["progress"]["phase"], "gate_script")
@@ -416,8 +420,8 @@ class RepairPromptTest(unittest.TestCase):
         def writer(brief, skill_pack, debug_dir=None, model=None, template=None, trace_prompts=None):
             if "任务：赛道分流" in brief:
                 return {"text": "路线"}
-            if "source-registration.md" in brief and "各节点正文" not in brief:
-                return {"text": "来源登记"}
+            if "roundtable-review.md" in brief and "各节点正文" not in brief:
+                return {"text": "圆桌意见"}
             return {"title": "题", "script": "正式剧本正文"}
 
         project = {
@@ -427,8 +431,9 @@ class RepairPromptTest(unittest.TestCase):
         }
         with patch("end.stage_runner.check_stage", return_value=(True, "")):
             execute(project, folder, {"duration_seconds": 60, "aspect": "16:9"}, writer, lambda *args, **kwargs: "pack")
-        saved = (folder / "_内部_" / "剧本链" / "01-来源登记.md").read_text(encoding="utf-8").strip()
-        self.assertEqual(saved, "来源登记")
+        saved = (folder / "_内部_" / "剧本链" / "06-圆桌.md").read_text(encoding="utf-8").strip()
+        self.assertEqual(saved, "圆桌意见")
+        self.assertFalse((folder / "_内部_" / "剧本链" / "01-来源登记.md").exists())
 
     def test_batched_internal_body_is_kept_for_a_script_step(self):
         from AI.agent.batch import catalog_request, merge_specs

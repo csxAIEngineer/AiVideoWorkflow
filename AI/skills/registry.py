@@ -401,7 +401,6 @@ LOCK_FILES = (
 # Story bible and episode planning stay in the skill pack. The script
 # generator does not dispatch them.
 SCRIPT_FILES = (
-    "sd-script-engine/references/source-registration.md",
     "sd-script-engine/references/formal-script.md",
     "sd-script-engine/references/dialogue-naturalization.md",
     "short-drama-director/references/dialogue-doctor-7d.md",
