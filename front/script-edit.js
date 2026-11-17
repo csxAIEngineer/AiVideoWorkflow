@@ -1467,11 +1467,48 @@
     return list.filter((item) => item && (item.source === "official" || item.source === "draft" || item.source === "opinion"));
   }
 
-  function sourceLabel(source) {
-    if (source === "official") return "正式原稿";
-    if (source === "draft") return "最新未采用候选";
-    if (source === "opinion") return "意见候选";
-    return "这一稿";
+  function sourceKind(source) {
+    if (source && typeof source === "object") return source.source || "";
+    return source || "";
+  }
+
+  function parseScriptVersion(text) {
+    const lines = String(text || "").split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      let line = lines[i].trim();
+      if (line.charAt(0) === "-") line = line.slice(1).trim();
+      if (line.indexOf("SCRIPT_VERSION") !== 0) continue;
+      return line.slice("SCRIPT_VERSION".length).replace(/^[：:]+/, "").trim();
+    }
+    return "";
+  }
+
+  function shortScriptVersion(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    return raw.replace(/^SCRIPT-/, "");
+  }
+
+  function versionOf(source, view) {
+    if (source && typeof source === "object" && source.script_version) {
+      return shortScriptVersion(source.script_version);
+    }
+    const kind = sourceKind(source);
+    const text = kind === "official" ? (view && view.official_text)
+      : kind === "draft" ? (view && view.draft_text)
+      : kind === "opinion" ? (view && view.opinion_candidate_text)
+      : "";
+    return shortScriptVersion(parseScriptVersion(text));
+  }
+
+  function sourceLabel(source, view) {
+    const kind = sourceKind(source);
+    const name = kind === "official" ? "正式原稿"
+      : kind === "draft" ? "最新未采用候选"
+      : kind === "opinion" ? "意见候选"
+      : "这一稿";
+    const version = versionOf(source, view);
+    return version ? (name + "（" + version + "）") : name;
   }
 
   function acceptChoiceOpen(view) {
@@ -1563,7 +1600,7 @@
   function paintAcceptRisk() {
     if (!acceptDialog || !acceptDialog.risk) return;
     const source = selectedAcceptSource();
-    acceptDialog.risk.textContent = source ? ("你要确认的是" + sourceLabel(source.source) + "。" + riskSentence(source)) : "先选择要确认的一稿。";
+    acceptDialog.risk.textContent = source ? ("你要确认的是" + sourceLabel(source, acceptDialog.view) + "。" + riskSentence(source)) : "先选择要确认的一稿。";
   }
 
   function closeAccept() {
@@ -1727,7 +1764,7 @@
       }
       input.addEventListener("change", paintAcceptRisk);
       const name = document.createElement("span");
-      name.textContent = sourceLabel(source.source);
+      name.textContent = sourceLabel(source, view);
       label.append(input, name);
       const extra = unavailableCopy(source);
       if (!enabled && extra) {
@@ -1789,7 +1826,7 @@
       event.stopPropagation();
       closeAccept();
     };
-    acceptDialog = { projectId: projectId, options: options, trigger: trigger || null, layer: layer, dialog: dialog, risk: risk, message: message, confirm: confirm, inflight: false, keydown: keydown };
+    acceptDialog = { projectId: projectId, options: options, trigger: trigger || null, layer: layer, dialog: dialog, risk: risk, message: message, confirm: confirm, inflight: false, keydown: keydown, view: view };
     paintAcceptRisk();
     document.body.appendChild(layer);
     document.addEventListener("keydown", keydown, true);

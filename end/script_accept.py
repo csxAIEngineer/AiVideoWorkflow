@@ -16,6 +16,19 @@ _SOURCES = ("official", "draft", "opinion", "editor")
 _BLOCKING = ("suspect", "blocked", "failed")
 
 
+
+def script_version(text):
+    """Read the SCRIPT_VERSION header from a manuscript. Empty when the field is missing."""
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("-"):
+            stripped = stripped[1:].strip()
+        if not stripped.startswith("SCRIPT_VERSION"):
+            continue
+        return stripped[len("SCRIPT_VERSION"):].lstrip("：:").strip()
+    return ""
+
+
 def _fail(code, message, reason, retryable, saved=False, retry_same_key=False, official_saved=False):
     from end.script_revision import RevisionError
 
@@ -212,6 +225,7 @@ def accept_view(project, official, row):
                 "related_review": None,
                 "can_accept": official_can,
                 "unavailable_reason": official_reason,
+                "script_version": script_version(official),
             },
             {
                 "source": "draft",
@@ -225,6 +239,7 @@ def accept_view(project, official, row):
                 "related_review": None if draft_hash == script_hash else related,
                 "can_accept": draft_can,
                 "unavailable_reason": "" if draft_can or not draft_text else "closed",
+                "script_version": script_version(draft_text),
             },
             {
                 "source": "opinion",
@@ -239,6 +254,7 @@ def accept_view(project, official, row):
                 "related_review": None if opinion_hash == script_hash else related,
                 "can_accept": opinion_can,
                 "unavailable_reason": "" if opinion_can else ("stale" if opinion.get("opinion_stale") else "not_ready"),
+                "script_version": script_version(opinion_text) if not opinion.get("opinion_stale") else "",
             },
         ],
         "editor_accept": {

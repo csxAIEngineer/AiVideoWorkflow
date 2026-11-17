@@ -723,9 +723,9 @@ async function runBrowser(origin) {
 
   await evalValue(`__fixture.state.acceptView = {
     accept_sources: [
-      { source: "official", available: true, text_hash: "hash-official", issue_state: "reviewed", review_status: "blocked", issues: [{ reason: "声画对不上" }], risk: null, related_review: null, can_accept: true, unavailable_reason: "" },
-      { source: "draft", available: true, draft_source: "rejected_text", text_hash: "hash-draft", issue_state: "unreviewed", review_status: "", issues: null, risk: { from: "repair_candidate", status: "blocked", reason: "需要人工确认", validation: { evidence: "旧声明" } }, related_review: { applies_to: "official", status: "blocked", reason: "对着正式稿" }, can_accept: true, unavailable_reason: "" },
-      { source: "opinion", available: true, opinion_id: "op-accept", opinion_revision: 2, text_hash: "hash-opinion", issue_state: "unknown", review_status: "", issues: null, risk: null, related_review: { applies_to: "official", status: "blocked", reason: "对着正式稿" }, can_accept: true, unavailable_reason: "" }
+      { source: "official", available: true, text_hash: "hash-official", issue_state: "reviewed", review_status: "blocked", issues: [{ reason: "声画对不上" }], risk: null, related_review: null, can_accept: true, unavailable_reason: "", script_version: "SCRIPT-V3" },
+      { source: "draft", available: true, draft_source: "rejected_text", text_hash: "hash-draft", issue_state: "unreviewed", review_status: "", issues: null, risk: { from: "repair_candidate", status: "blocked", reason: "需要人工确认", validation: { evidence: "旧声明" } }, related_review: { applies_to: "official", status: "blocked", reason: "对着正式稿" }, can_accept: true, unavailable_reason: "", script_version: "SCRIPT-V2" },
+      { source: "opinion", available: true, opinion_id: "op-accept", opinion_revision: 2, text_hash: "hash-opinion", issue_state: "unknown", review_status: "", issues: null, risk: null, related_review: { applies_to: "official", status: "blocked", reason: "对着正式稿" }, can_accept: true, unavailable_reason: "", script_version: "SCRIPT-V4-CANDIDATE" }
     ],
     continue_state: "none",
     continue_retryable: false,
@@ -738,10 +738,14 @@ async function runBrowser(origin) {
   await waitText(".script-revision-accept-cost", "会调用模型并可能修复");
   const cost = await evalValue("document.querySelector('.script-revision-accept-cost').textContent");
   check("accept explains the writing cost without calling", cost === "继续下一段提示词写作，会调用模型并可能修复；不自动出图或视频，完成后仍需确认。" && cost.indexOf("一次") < 0 && cost.indexOf("免费") < 0 && await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is').length") === acceptBefore, cost);
+  const acceptLabels = await evalValue("Array.from(document.querySelectorAll('.script-revision-accept-sources label')).map((el) => el.textContent.replace(/\\s+/g, ''))");
+  check("accept sources show script versions", acceptLabels[0].indexOf("正式原稿（V3）") === 0 && acceptLabels[1].indexOf("最新未采用候选（V2）") === 0 && acceptLabels[2].indexOf("意见候选（V4-CANDIDATE）") === 0, JSON.stringify(acceptLabels));
+  const officialRisk = await evalValue("document.querySelector('.script-revision-accept-risk').textContent");
+  check("accept risk names the official version", officialRisk.indexOf("你要确认的是正式原稿（V3）。") === 0, officialRisk);
   await evalValue("document.querySelector('#script-revision-accept-draft').click()");
   const draftRisk = await evalValue("document.querySelector('.script-revision-accept-risk').textContent");
   const afterSwitch = await evalValue("__fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is').length");
-  check("unreviewed issues are not shown as no problem", draftRisk.indexOf("不能当成没有问题") >= 0 && draftRisk.indexOf("不是选中稿自身的审查") >= 0 && draftRisk.indexOf("无问题") < 0 && afterSwitch === acceptBefore, draftRisk);
+  check("unreviewed issues are not shown as no problem", draftRisk.indexOf("你要确认的是最新未采用候选（V2）。") === 0 && draftRisk.indexOf("不能当成没有问题") >= 0 && draftRisk.indexOf("不是选中稿自身的审查") >= 0 && draftRisk.indexOf("无问题") < 0 && afterSwitch === acceptBefore, draftRisk);
   await evalValue("document.querySelector('.script-revision-accept-cancel').click()");
   check("cancel accept does not submit", await evalValue("!document.querySelector('.script-revision-accept-dialog') && __fixture.calls().filter((item) => item.method === 'projects.script_revision.accept_as_is').length === " + acceptBefore) === true);
   await evalValue("__fixture.setMode('rejected')");

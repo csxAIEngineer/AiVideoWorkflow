@@ -187,6 +187,44 @@ class ScriptAcceptTest(unittest.TestCase):
         self.assertFalse(passed["can_accept"])
         self.assertEqual(passed["unavailable_reason"], "review_passed")
 
+    def test_accept_sources_name_the_script_version(self):
+        folder = self._project()
+        bare = {item["source"]: item for item in self._get()["accept_sources"]}
+        self.assertEqual(bare["official"]["script_version"], "")
+        self.assertEqual(bare["draft"]["script_version"], "")
+        self.assertEqual(bare["opinion"]["script_version"], "")
+        official = "- SCRIPT_VERSION：SCRIPT-V3\n" + _SCRIPT
+        draft = "- SCRIPT_VERSION：SCRIPT-V2\n" + _DRAFT
+        (folder / "_内部_" / "剧本.md").write_text(official + "\n", encoding="utf-8")
+        row = load_candidate(folder)
+        row["rejected_text"] = draft
+        _save_candidate(folder, row)
+        token = self._get()["base_token"]
+        opinion = "- SCRIPT_VERSION：SCRIPT-V4-CANDIDATE\n意见候选。她放下瓶子离开。"
+        (folder / "_内部_" / "剧情意见.json").write_text(json.dumps({
+            "active_id": "op1",
+            "calls": {},
+            "items": {
+                "op1": {
+                    "opinion_id": "op1",
+                    "opinion_revision": 1,
+                    "state": "ready",
+                    "base": "official",
+                    "base_token": token,
+                    "requirements_hash": content_hash("取出小茶瓶。"),
+                    "candidate_text": opinion,
+                    "opinion": "让她离开",
+                    "identity": "same",
+                }
+            },
+            "confirmed": {},
+            "idempotency": {},
+        }, ensure_ascii=False), encoding="utf-8")
+        sources = {item["source"]: item for item in self._get()["accept_sources"]}
+        self.assertEqual(sources["official"]["script_version"], "SCRIPT-V3")
+        self.assertEqual(sources["draft"]["script_version"], "SCRIPT-V2")
+        self.assertEqual(sources["opinion"]["script_version"], "SCRIPT-V4-CANDIDATE")
+
     def test_dirty_editor_is_not_saved_or_accepted(self):
         folder = self._project()
         token = self._get()["base_token"]
