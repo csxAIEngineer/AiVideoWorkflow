@@ -176,6 +176,37 @@ class SuiteGraphTest(unittest.TestCase):
         self.assertIn("short-drama-director/references/h3-adapter.md", suite_files("qc", qc))
         self.assertEqual(suite_files("qc", qc)[-1], "short-drama-director/references/h3-adapter.md")
 
+    def test_each_model_call_is_written_to_the_prompt_log_once(self):
+        from AI.agent.model import LLMModel
+        from AI.qwen_api.graph import bind_trace_prompts, log_prompt
+
+        class AlsoLogs(LLMModel):
+            def complete(self, messages, model, max_tokens, timeout, kind=None, effort=None):
+                log_prompt(messages)
+                return _Model().complete(messages, model, max_tokens, timeout, kind, effort)
+
+        brief = "\n".join((
+            "阶段：P0",
+            "赛道：1",
+            "来源：1",
+            "动作档：none",
+            "模型：h3",
+            "素材形态：M1",
+            "",
+            "任务：赛道分流",
+        ))
+        prompts = tempfile.NamedTemporaryFile(delete=False)
+        prompts.close()
+        path = Path(prompts.name)
+        try:
+            with bind_trace_prompts(str(path)):
+                run_suite("route", brief, AlsoLogs(), trace_path=str(path))
+            lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(len(set(lines)), 2)
+        finally:
+            path.unlink()
+
     def test_h3_feed_leads_with_the_adapter(self):
         brief = "\n".join((
             "阶段：P4",

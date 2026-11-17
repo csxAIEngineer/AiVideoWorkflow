@@ -12,7 +12,7 @@ import time
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
-from AI.qwen_api.graph import TextState, _BURST_SKILL, _burst_log, prompt_debug_enabled, prompt_text
+from AI.qwen_api.graph import TextState, _BURST_SKILL, _burst_log, log_prompt, prompt_debug_enabled
 # #region agent log
 try:
     with open("/Users/shaneson/AiVideo/.cursor/debug-eab7ec.log", "a", encoding="utf-8") as _agent_log:
@@ -194,8 +194,7 @@ def _skill_node(relatives, model, kind, repair):
                 {"role": "system", "content": system},
                 {"role": "user", "content": state.get("brief") or ""},
             ]
-            _record(state.get("trace_path") or "", messages)
-            raw = _complete(model, messages, state.get("model"), kind, label, tokens=tokens, timeout=timeout)
+            raw = _complete(model, messages, state.get("model"), kind, label, tokens=tokens, timeout=timeout, trace_path=state.get("trace_path") or "")
             # #region agent log
             _agent_debug(
                 "A",
@@ -295,7 +294,6 @@ def _merge_node(task, model, kind):
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ]
-            _record(state.get("trace_path") or "", messages)
             if task == "storyboard":
                 mark = user.rfind("每一格都要答完六问")
                 p45 = ""
@@ -318,7 +316,7 @@ def _merge_node(task, model, kind):
                     },
                 )
                 # endregion
-            raw = _complete(model, messages, state.get("model"), kind, "merge", tokens=tokens, timeout=timeout)
+            raw = _complete(model, messages, state.get("model"), kind, "merge", tokens=tokens, timeout=timeout, trace_path=state.get("trace_path") or "")
             # #region agent log
             _agent_debug(
                 "D",
@@ -397,8 +395,7 @@ def _retry_empty(model, messages, model_name, kind, skill, trace_path, raw, toke
     if tokens is None:
         tokens = _DRILL_RETRY_TOKENS if kind == "drill" else _WRITE_RETRY_TOKENS
     follow = list(messages) + [{"role": "user", "content": _RETRY_NOTE}]
-    _record(trace_path, follow)
-    return _complete(model, follow, model_name, kind, skill, tokens=tokens, timeout=timeout)
+    return _complete(model, follow, model_name, kind, skill, tokens=tokens, timeout=timeout, trace_path=trace_path)
 
 
 def _pace_node(model, skill):
@@ -425,11 +422,14 @@ def _pace_node(model, skill):
     return wait
 
 
-def _complete(model, messages, model_name, kind, skill="", tokens=None, timeout=None):
+def _complete(model, messages, model_name, kind, skill="", tokens=None, timeout=None, trace_path=""):
     if tokens is None:
         tokens = _DRILL_TOKENS if kind == "drill" else _WRITE_TOKENS
     if timeout is None:
         timeout = _DRILL_TIMEOUT if kind == "drill" else _WRITE_TIMEOUT
+    from AI.agent.model import LLMModel
+    if not isinstance(model, LLMModel):
+        log_prompt(messages, path=trace_path)
     token = _BURST_SKILL.set(str(skill or ""))
     try:
         _pace_node(model, skill)
@@ -485,16 +485,6 @@ def _agent_debug(hypothesis_id, location, message, data):
     except OSError:
         pass
     # #endregion
-
-
-def _record(path, messages):
-    body = prompt_text(messages)
-    if not path:
-        return
-    line = json.dumps({"prompt": body}, ensure_ascii=False)
-    with _LOG_LOCK:
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
 
 
 def _flatten_prompt_text(value):

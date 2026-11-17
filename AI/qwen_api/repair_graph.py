@@ -11,7 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from AI.qwen_api.graph import TextState, prompt_debug_enabled
-from AI.qwen_api.suite_graph import _complete, _mark, _node_text, _object, _record, _retry_empty
+from AI.qwen_api.suite_graph import _complete, _mark, _node_text, _object, _retry_empty
 from AI.script import normalize_model
 
 _SYSTEM = "\n".join((
@@ -191,8 +191,7 @@ def _repair_node(unit, model, kind, tokens=None, retry_tokens=None, timeout=None
                 {"role": "system", "content": repair_system(state.get("brief") or "")},
                 {"role": "user", "content": _unit_user(unit)},
             ]
-            _record(state.get("trace_path") or "", messages)
-            raw = _complete(model, messages, state.get("model"), kind, unit["id"], tokens=tokens, timeout=timeout)
+            raw = _complete(model, messages, state.get("model"), kind, unit["id"], tokens=tokens, timeout=timeout, trace_path=state.get("trace_path") or "")
             raw = _retry_empty(
                 model,
                 messages,

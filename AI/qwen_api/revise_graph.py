@@ -13,7 +13,7 @@ import re
 from langgraph.graph import END, START, StateGraph
 
 from AI.qwen_api.graph import TextState, prompt_debug_enabled
-from AI.qwen_api.suite_graph import _complete, _node_text, _object, _record, _retry_empty
+from AI.qwen_api.suite_graph import _complete, _node_text, _object, _retry_empty
 from AI.script import normalize_model
 from end.product_names import UNIT_HEAD_ANY, UNIT_NAME, UNIT_TOKEN
 
@@ -137,7 +137,6 @@ def _revise_node(kind, model, kind_name):
             {"role": "system", "content": system},
             {"role": "user", "content": state.get("brief") or ""},
         ]
-        _record(state.get("trace_path") or "", messages)
         raw = _complete(
             model,
             messages,
@@ -146,6 +145,7 @@ def _revise_node(kind, model, kind_name):
             kind,
             tokens=_TOKENS,
             timeout=_TIMEOUT,
+            trace_path=state.get("trace_path") or "",
         )
         raw = _retry_empty(
             model,
