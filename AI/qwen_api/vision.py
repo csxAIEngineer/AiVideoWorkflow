@@ -1,7 +1,7 @@
-"""Read an uploaded still with qwen4-max-preview on the shared Qwen host.
+"""Read an uploaded still with qwen3.8-flash on the shared Qwen host.
 
 Token Plan does not list qwen3.8-omni-flash, and that id returns
-``model_not_found`` on the production host. qwen4-max-preview accepts an image
+``model_not_found`` on the production host. qwen3.8-flash accepts an image
 and returns text. The call is a streaming compatible-mode chat completion
 with thinking turned off. Uploads here are png, jpeg, or webp stills, so
 the part is an ``image_url`` data URL. Each still is shrunk to a JPEG first.
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from AI.qwen_api.client import QwenError, load_dotenv, normalize_host, qwen_api_key, resolve_qwen_host
 
-DEFAULT_QWEN_VISION_MODEL = "qwen4-max-preview"
+DEFAULT_QWEN_VISION_MODEL = "qwen3.8-flash"
 MAX_BASE64_CHARS = 10 * 1024 * 1024
 UNREAD = "尚未读图"
 READ_PROMPT = (
@@ -36,7 +36,7 @@ class QwenVisionError(QwenError):
 
 
 class QwenVisionReader(object):
-    """Send one local still to ``qwen4-max-preview`` and return its text."""
+    """Send one local still to ``qwen3.8-flash`` and return its text."""
 
     def __init__(self, api_key=None, model=None, base_url=None, timeout=180, opener=None):
         load_dotenv()

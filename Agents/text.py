@@ -1,6 +1,6 @@
 """Text calls for stage agents. Uses the product Responses client.
 
-The product model is ``qwen4-max-preview`` on the Token Plan Responses
+The product model is ``qwen3.8-flash`` on the Token Plan Responses
 API. ``invoke_text`` uses that client: ``enable_thinking: false`` and no
 ``reasoning.effort``. This module does not open its own HTTP client.
 """

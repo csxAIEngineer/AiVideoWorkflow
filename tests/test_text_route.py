@@ -1,4 +1,4 @@
-"""Text calls use Token Plan qwen4-max-preview. Stills use MiniMax-H3-Image."""
+"""Text calls use Token Plan qwen3.8-flash. Stills use MiniMax-H3-Image."""
 
 import json
 import os
@@ -22,7 +22,7 @@ class _FakeResponses(object):
 
 
 class TextRouteTest(unittest.TestCase):
-    def test_text_request_uses_token_plan_qwen4_max_preview_and_stills_use_minimax(self):
+    def test_text_request_uses_token_plan_qwen3_8_flash_and_stills_use_minimax(self):
         seen = {}
 
         class FakeOpenAI(object):
@@ -54,7 +54,7 @@ class TextRouteTest(unittest.TestCase):
         self.assertEqual(seen["base_url"], TEXT_HOST + "/compatible-mode/v1")
         self.assertEqual(seen["api_key"], "plan-test")
         self.assertEqual(fake.calls[0]["model"], TEXT_MODEL)
-        self.assertEqual(fake.calls[0]["model"], "qwen4-max-preview")
+        self.assertEqual(fake.calls[0]["model"], "qwen3.8-flash")
         self.assertNotEqual(fake.calls[0]["model"], IMAGE_MODEL)
         self.assertEqual(image.base_url, DEFAULT_BASE_URL)
         self.assertEqual(image.base_url, "https://api.minimax.cn/v1")

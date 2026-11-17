@@ -2101,7 +2101,7 @@ briefEl.addEventListener("keydown", (event) => {
 function syncModelFoot() {
   if (!modelFoot || !modelEl) return;
   const option = modelEl.selectedOptions && modelEl.selectedOptions[0];
-  modelFoot.textContent = (option ? option.textContent : "qwen4-max-preview") + " · 本机出片";
+  modelFoot.textContent = (option ? option.textContent : "qwen3.8-flash") + " · 本机出片";
 }
 
 function fillModels(models) {

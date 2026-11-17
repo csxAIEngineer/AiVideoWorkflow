@@ -2,7 +2,7 @@
   "provider": "qwen",
   "providers": {
     "qwen": {
-      "model": "qwen4-max-preview"
+      "model": "qwen3.8-flash"
     }
   },
   "roles": {

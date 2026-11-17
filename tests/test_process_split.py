@@ -59,8 +59,8 @@ class ProcessSplitTest(unittest.TestCase):
         from end.ai_client import catalog, normalize_model, normalize_template
 
         info = catalog()
-        self.assertEqual({item["id"] for item in info["models"]}, {"qwen4-max-preview"})
-        self.assertEqual(info["default_model"], "qwen4-max-preview")
+        self.assertEqual({item["id"] for item in info["models"]}, {"qwen3.8-flash"})
+        self.assertEqual(info["default_model"], "qwen3.8-flash")
         self.assertEqual(normalize_model("nope"), info["default_model"])
         self.assertEqual(normalize_template("apple-product"), "short-drama-director")
         self.assertEqual({item["id"] for item in info["templates"]}, {"short-drama-director"})
