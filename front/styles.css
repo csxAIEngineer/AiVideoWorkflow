@@ -2361,6 +2361,17 @@ html[data-theme="dark"] .contract-thumb .none {
 
 .dock-head b { font-size: 15px; }
 
+.dock-project-id {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-all;
+  user-select: all;
+  cursor: pointer;
+}
+
 #dock-percent {
   color: var(--accent);
   font-weight: 650;
@@ -2630,6 +2641,7 @@ html[data-theme="dark"] .style-card span,
 html[data-theme="dark"] .style-look,
 html[data-theme="dark"] .style-grade,
 html[data-theme="dark"] .dock-elapsed,
+html[data-theme="dark"] .dock-project-id,
 html[data-theme="dark"] .dock-message,
 html[data-theme="dark"] .wf-upload-label,
 html[data-theme="dark"] .job-elapsed,

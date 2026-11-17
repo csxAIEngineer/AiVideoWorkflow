@@ -3220,7 +3220,13 @@ function syncDock(project) {
   const phase = document.querySelector("#dock-phase");
   const percentNode = document.querySelector("#dock-percent");
   const message = document.querySelector("#dock-message");
+  const projectIdNode = document.querySelector("#dock-project-id");
   if (phase) phase.textContent = statusText(project);
+  if (projectIdNode) {
+    const id = project && project.id ? String(project.id) : "";
+    projectIdNode.textContent = id;
+    projectIdNode.hidden = !id;
+  }
   const percent = project.status === "done" ? 100 : Math.max(0, Math.min(100, Number((project.progress || {}).percent) || 0));
   if (percentNode) percentNode.textContent = percent + "%";
   if (message) message.textContent = (project.progress && project.progress.message) || project.stage || "";
@@ -4475,6 +4481,22 @@ function bindCanvas() {
     dockToggle.addEventListener("click", () => {
       debugDock.classList.toggle("open");
       dockToggle.classList.toggle("on", debugDock.classList.contains("open"));
+    });
+  }
+  const projectIdNode = document.querySelector("#dock-project-id");
+  if (projectIdNode) {
+    projectIdNode.addEventListener("click", async () => {
+      const id = (projectIdNode.textContent || "").trim();
+      if (!id) return;
+      try {
+        await navigator.clipboard.writeText(id);
+      } catch (_error) {
+        const range = document.createRange();
+        range.selectNodeContents(projectIdNode);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
     });
   }
   const menuToggle = document.querySelector("#menu-toggle");
