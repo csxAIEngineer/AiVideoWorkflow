@@ -235,19 +235,19 @@ class RpcContractTest(unittest.TestCase):
     def test_catalog(self):
         result = self.rpc("catalog")
         self.assertEqual(result, AI_METHODS["catalog"]({}))
-        self.assertEqual(result["default_model"], "qwen4-max")
-        self.assertEqual({item["id"] for item in result["models"]}, {"qwen4-max"})
+        self.assertEqual(result["default_model"], "qwen4-max-preview")
+        self.assertEqual({item["id"] for item in result["models"]}, {"qwen4-max-preview"})
         self.assertEqual(result["default_template"], "short-drama-director")
         self.assertTrue(result["templates"])
 
     def test_models_normalize(self):
         result = self.rpc("models.normalize", {"model": "qwen3.8-flash"})
-        self.assertEqual(result, {"model": "qwen4-max"})
+        self.assertEqual(result, {"model": "qwen4-max-preview"})
         self.assertEqual(result, AI_METHODS["models.normalize"]({"model": "nope"}))
 
     def test_models_label(self):
-        result = self.rpc("models.label", {"model": "qwen4-max"})
-        self.assertEqual(result, AI_METHODS["models.label"]({"model": "qwen4-max"}))
+        result = self.rpc("models.label", {"model": "qwen4-max-preview"})
+        self.assertEqual(result, AI_METHODS["models.label"]({"model": "qwen4-max-preview"}))
         self.assertTrue(result["label"])
 
     def test_templates_normalize(self):
@@ -304,7 +304,7 @@ class RpcContractTest(unittest.TestCase):
         with patch("AI.qwen_api.graph.generate_text", return_value="  角色  ") as fake:
             result = self.rpc("text.ask", {"messages": [{"role": "user", "content": "分类"}], "model": "other"})
         self.assertEqual(result, {"text": "角色"})
-        self.assertEqual(fake.call_args.kwargs["model"], "qwen4-max")
+        self.assertEqual(fake.call_args.kwargs["model"], "qwen4-max-preview")
 
     def test_text_ask_rejects_empty_messages(self):
         error = self.rpc_error("text.ask", {"messages": []})
@@ -341,7 +341,7 @@ class RpcContractTest(unittest.TestCase):
                 {
                     "role": "director",
                     "messages": [{"role": "user", "content": "汇总这一节点"}],
-                    "model": "qwen4-max",
+                    "model": "qwen4-max-preview",
                 },
             )
         self._job_keys(snap)
@@ -604,7 +604,7 @@ class RpcContractTest(unittest.TestCase):
             ):
                 self.assertEqual(client.call("ping"), {"ok": True})
                 info = client.call("catalog")
-            self.assertEqual(info["default_model"], "qwen4-max")
+            self.assertEqual(info["default_model"], "qwen4-max-preview")
         finally:
             client._READY = previous_ready
             client._MEMO.clear()

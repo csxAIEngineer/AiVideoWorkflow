@@ -119,7 +119,7 @@ class GateTest(unittest.TestCase):
         outcome = execute(
             {
                 "template": "short-drama-director",
-                "model": "qwen4-max",
+                "model": "qwen4-max-preview",
                 "brief": "发丝救援",
                 "progress": {
                     "pipeline": {
@@ -304,7 +304,7 @@ class QueueTest(unittest.TestCase):
         outcome = execute(
             {
                 "template": "short-drama-director",
-                "model": "qwen4-max",
+                "model": "qwen4-max-preview",
                 "brief": "冲突",
                 "progress": {
                     "pipeline": {
