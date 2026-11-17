@@ -516,6 +516,25 @@ def run_script_repair(folder, requirements, complete, model=""):
             "attempts": attempts_used(folder, requirements) + 1,
         })
         return row
+    attempts = attempts_used(folder, requirements) + 1
+    existing = dict(load_candidate(folder) or {})
+    follow = _story_repair_source(existing, identity, issues)
+    if follow:
+        row = _run_repair_story(
+            folder,
+            requirements,
+            complete,
+            model,
+            before,
+            follow["issues"],
+            identity,
+            attempts,
+            follow["script"],
+            keep_if_empty=existing if existing.get("status") or existing.get("rejected_text") or existing.get("candidate") else None,
+        )
+        if official_script(folder) != before:
+            raise RuntimeError("剧本修订改写了正式稿")
+        return row
     app = compile_script_repair_graph(complete)
     try:
         from end.script_opinion import intent_for_script
@@ -531,15 +550,51 @@ def run_script_repair(folder, requirements, complete, model=""):
         })
     except Exception as error:
         state = {"status": "error", "reason": str(error), "calls": []}
-    candidate = str(state.get("candidate") or "")
-    status = state.get("status") or ""
-    reason = str(state.get("reason") or "")
+    row = _candidate_from_state(folder, requirements, before, issues, identity, attempts, state, model)
+    if official_script(folder) != before:
+        raise RuntimeError("剧本修订改写了正式稿")
+    follow_text = str(row.get("rejected_text") or row.get("candidate") or "").strip()
+    follow_issues = list(row.get("issues") or issues)
+    if follow_text and follow_issues:
+        row = _run_repair_story(
+            folder,
+            requirements,
+            complete,
+            model,
+            before,
+            follow_issues,
+            identity,
+            attempts,
+            follow_text,
+            keep_if_empty=row,
+        )
+    if official_script(folder) != before:
+        raise RuntimeError("剧本修订改写了正式稿")
+    return row
+
+
+def _story_repair_source(row, identity, issues):
+    """Reuse a saved candidate as the next draft. Official text is not the base."""
+    row = row or {}
+    if not same_budget(row, identity):
+        return None
+    text = str(row.get("rejected_text") or row.get("candidate") or "").strip()
+    saved_issues = list(row.get("issues") or issues or [])
+    if not text or not saved_issues:
+        return None
+    return {"script": text, "issues": saved_issues}
+
+
+def _candidate_from_state(folder, requirements, before, issues, identity, attempts, state, model):
+    candidate = str((state or {}).get("candidate") or "")
+    status = (state or {}).get("status") or ""
+    reason = str((state or {}).get("reason") or "")
     validation = {"stage": "graph", "source": status or "error", "evidence": reason}
     if status == "error":
         judged, why = "error", reason or "修订没有完成"
-    elif status == "blocked" and not state.get("review_notes"):
+    elif status == "blocked" and not (state or {}).get("review_notes"):
         judged, why = "blocked", reason or "修订停住了"
-        calls = list(state.get("calls") or [])
+        calls = list((state or {}).get("calls") or [])
         validation = {"stage": calls[-1] if calls else "graph", "source": "graph", "evidence": why}
     else:
         judged, why, validation = judge_candidate(
@@ -547,33 +602,56 @@ def run_script_repair(folder, requirements, complete, model=""):
             before,
             candidate,
             issues,
-            state.get("added") or [],
-            state.get("review_notes") or {},
-            plan=state.get("revision_plan") or {},
+            (state or {}).get("added") or [],
+            (state or {}).get("review_notes") or {},
+            plan=(state or {}).get("revision_plan") or {},
         )
-    attempts = attempts_used(folder, requirements) + 1
-    row = _save_candidate(folder, {
+    return _save_candidate(folder, {
         "status": judged,
         "reason": why,
         "candidate": candidate if judged == "passed" else "",
         "rejected_text": candidate if judged != "passed" else "",
-        "source_hash": content_hash(before),
-        "requirements_hash": content_hash(requirements),
-        "issues_hash": content_hash(json.dumps(issues, ensure_ascii=False, sort_keys=True)),
+        "source_hash": identity["source_hash"],
+        "requirements_hash": identity["requirements_hash"],
+        "issues_hash": identity["issues_hash"],
         "issues": issues,
-        "plan": state.get("revision_plan") or {},
-        "locations": state.get("locations") or [],
-        "review": state.get("review_notes") or {},
-        "review_raw": str(state.get("review_raw") or "")[:4000],
-        "locate_raw": str(state.get("locate_raw") or "")[:4000],
+        "plan": (state or {}).get("revision_plan") or {},
+        "locations": (state or {}).get("locations") or [],
+        "review": (state or {}).get("review_notes") or {},
+        "review_raw": str((state or {}).get("review_raw") or "")[:4000],
+        "locate_raw": str((state or {}).get("locate_raw") or "")[:4000],
         "validation": validation,
         "needs_human": validation.get("source") in _HUMAN,
-        "calls": list(state.get("calls") or []),
-        "model": str(state.get("model") or model or ""),
+        "calls": list((state or {}).get("calls") or []),
+        "model": str((state or {}).get("model") or model or ""),
         "attempts": attempts,
     })
-    if official_script(folder) != before:
-        raise RuntimeError("剧本修订改写了正式稿")
+
+
+def _run_repair_story(folder, requirements, complete, model, before, issues, identity, attempts, script, keep_if_empty=None):
+    """Turn a saved candidate into a new manuscript version. The official file stays put."""
+    from AI.qwen_api.repair_story_graph import compile_repair_story_graph
+    from end.script_opinion import intent_for_script
+
+    try:
+        state = compile_repair_story_graph(complete).invoke({
+            "requirements": str(requirements or ""),
+            "script": script,
+            "issues": issues,
+            "model": str(model or ""),
+            "calls": [],
+            "status": "",
+            "user_intent": intent_for_script(folder, content_hash(before)) or {},
+        })
+    except Exception as error:
+        state = {"status": "error", "reason": str(error), "calls": []}
+    next_text = str(state.get("candidate") or "").strip()
+    if not next_text and keep_if_empty:
+        return keep_if_empty
+    first = keep_if_empty or {}
+    row = _candidate_from_state(folder, requirements, before, issues, identity, attempts, state, model)
+    if row.get("status") != "passed" and first.get("status") == "passed" and str(first.get("candidate") or "").strip():
+        return _save_candidate(folder, dict(first, attempts=attempts))
     return row
 
 

@@ -238,7 +238,7 @@ class RepairContractTest(unittest.TestCase):
         before = (folder / "_内部_" / "剧本.md").read_text(encoding="utf-8")
         folder = self._run()
         row = load_candidate(folder)
-        self.assertEqual([item[0] for item in self.calls], ["locate", "plan", "revise", "review"])
+        self.assertEqual([item[0] for item in self.calls], ["locate", "plan", "revise", "review"] * 2)
         review_system = self.calls[-1][1][0]["content"]
         revise_system = self.calls[2][1][0]["content"]
         self.assertIn("独立审稿", review_system)
@@ -567,7 +567,7 @@ class RepairContractTest(unittest.TestCase):
             open_gate()
             self._run()
             self.assertEqual(load_candidate(folder)["attempts"], 1, kind)
-            self.assertEqual([item[0] for item in self.calls], ["locate", "plan", "revise", "review"], kind)
+            self.assertEqual([item[0] for item in self.calls], ["locate", "plan", "revise", "review"] * 2, kind)
             view = rpc_send_message({"id": "a1b2c3d4e511", "text": "再修一次"})
             self.assertEqual(self.tasks[-1].kind, "script_repair")
             with patch("end.script_repair.default_complete", side_effect=lambda _model: self._complete):
