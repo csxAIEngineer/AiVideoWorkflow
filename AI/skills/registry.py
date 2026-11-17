@@ -534,7 +534,9 @@ def suite_files(task, brief=""):
         return list(SCRIPT_FILES)
     if task == "board":
         return list(BOARD_FILES)
-    stage = {"route": "P0", "asset": "P2", "storyboard": "P3", "feed": "P4", "qc": "P5"}.get(task)
+    if task == "route":
+        return ["sd-route-engine/SKILL.md"]
+    stage = {"asset": "P2", "storyboard": "P3", "feed": "P4", "qc": "P5"}.get(task)
     if not stage:
         raise RuntimeError("没有这个任务")
     route = parse_route(brief, stage)

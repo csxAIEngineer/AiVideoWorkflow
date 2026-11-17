@@ -312,8 +312,8 @@ def prompt_text(messages):
     return "\n\n".join(parts)
 
 
-def log_prompt(messages):
-    path = _TRACE_PROMPTS.get()
+def log_prompt(messages, path=""):
+    path = str(path or _TRACE_PROMPTS.get() or "")
     if not path:
         return
     body = prompt_text(messages)
