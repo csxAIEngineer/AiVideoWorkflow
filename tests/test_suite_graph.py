@@ -162,7 +162,7 @@ class SuiteGraphTest(unittest.TestCase):
             "",
             "任务：赛道分流",
         ))
-        self.assertIn("sd-overseas-engine/SKILL.md", suite_files("route", route))
+        self.assertEqual(suite_files("route", route), ["sd-route-engine/SKILL.md"])
         qc = "\n".join((
             "阶段：P5",
             "赛道：1",
