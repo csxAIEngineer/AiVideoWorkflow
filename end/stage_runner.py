@@ -768,7 +768,7 @@ _SCRIPT_CHAIN = {
     "sd-script-engine/references/source-registration.md": "01-来源登记.md",
     "sd-script-engine/references/story-bible-and-ip.md": "02-IP与角色.md",
     "sd-script-engine/references/episode-planning.md": "04-分集规划.md",
-    "sd-script-engine/references/six-stage-pipeline.md": "05-正式剧本.md",
+    "sd-script-engine/references/formal-script.md": "05-正式剧本.md",
     "sd-script-engine/references/dialogue-naturalization.md": "05-台词.md",
     "short-drama-director/references/dialogue-doctor-7d.md": "05-对白医生.md",
     "sd-script-engine/references/roundtable-review.md": "06-圆桌.md",

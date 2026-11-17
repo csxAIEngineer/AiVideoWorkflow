@@ -189,7 +189,7 @@ class WorkerDispatchTest(unittest.TestCase):
         self.assertNotIn("# 本节点原文 sd-script-engine/references/story-bible-and-ip.md", joined)
         self.assertNotIn("# 本节点原文 sd-script-engine/references/episode-planning.md", joined)
         self.assertIn("source-registration.md", joined)
-        self.assertIn("six-stage-pipeline.md", joined)
+        self.assertIn("formal-script.md", joined)
         self.assertIn("dialogue-naturalization.md", joined)
         self.assertIn("dialogue-doctor-7d.md", joined)
         self.assertIn("roundtable-review.md", joined)
