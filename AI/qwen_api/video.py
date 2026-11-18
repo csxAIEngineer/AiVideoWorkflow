@@ -163,8 +163,9 @@ def video_ratio(aspect):
 def video_duration(duration, model=None):
     """Shot length for the selected model.
 
-    MiniMax stays 4–15. A model record may set duration_min, duration_max,
-    and duration_extra (wan3.0-video uses 2–30 or -1).
+    A model record may set duration_min, duration_max, and duration_extra
+    (wan3.0-video uses 2–30 or -1). Missing bounds default to the Wan 2–30
+    window. MiniMax stays 4–15 when that record is selected.
     """
     record = model or {}
     has_bounds = "duration_min" in record or "duration_max" in record
@@ -185,8 +186,8 @@ def video_duration(duration, model=None):
     else:
         message = "duration 必须是 %s 到 %s 的整数" % (lo, hi)
     if not has_bounds and not extra:
-        message = "duration 必须是 4 到 15 的整数"
-        lo, hi = 4, 15
+        message = "duration 必须是 2 到 30 的整数"
+        lo, hi = 2, 30
     try:
         seconds = int(duration)
     except (TypeError, ValueError):

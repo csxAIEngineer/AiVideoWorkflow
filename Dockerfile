@@ -24,6 +24,7 @@ COPY AI/skills ./AI/skills
 COPY Agents ./Agents
 COPY end ./end
 COPY front ./front
+COPY config ./config
 COPY deploy/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh \

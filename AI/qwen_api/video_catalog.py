@@ -315,12 +315,18 @@ def platforms(env_path=None):
 
 
 def routes(env_path=None):
-    """Profile -> {platform, model, url}. Empty platform keeps the page host."""
+    """Profile -> {platform, model, url}. Empty platform keeps the page host.
+
+    A missing catalog defaults to wan3.0-video (2–30s). An on-disk catalog
+    that omits a route still keeps the MiniMax key so older fixtures hold.
+    """
     names = set(parameter_profiles(env_path))
+    catalog = _load_catalog(env_path)
+    default_model = WAN_MODEL_KEY if not catalog else DEFAULT_MODEL_KEY
     table = {}
     for name in names:
-        table[name] = {"platform": "", "model": DEFAULT_MODEL_KEY, "url": None}
-    for name, value in _section(_load_catalog(env_path), "routes").items():
+        table[name] = {"platform": "", "model": default_model, "url": None}
+    for name, value in _section(catalog, "routes").items():
         if not isinstance(value, dict):
             raise QwenError("%s 的 routes.%s 必须是对象" % (CATALOG_LABEL, name))
         params, route = _split_legacy(_plain(value))
