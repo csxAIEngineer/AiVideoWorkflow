@@ -425,7 +425,7 @@ class StoryboardPropAssetBindTest(unittest.TestCase):
 
 
 class StoryboardH3DurationSplitTest(unittest.TestCase):
-    def test_official_80s_three_scene_script_splits_scenes_over_20s(self):
+    def test_official_80s_three_scene_script_keeps_scenes_within_30s(self):
         self.assertIn("## EP001-SC01｜外·明代江南雨巷·日（0s - 25s）", OFFICIAL_80S_H3_SCRIPT)
         self.assertIn("## EP001-SC03｜外·明代山间石阶·晨（50s - 80s）", OFFICIAL_80S_H3_SCRIPT)
         skeleton = storyboard_skeleton({
@@ -433,20 +433,17 @@ class StoryboardH3DurationSplitTest(unittest.TestCase):
             "locks": {"duration_seconds": 80, "model": "h3", "aspect": "16:9"},
         })
         shots = skeleton["shots"]
-        self.assertEqual([shot["id"] for shot in shots], ["S01", "S02", "S03", "S04", "S05", "S06"])
-        self.assertEqual([shot["duration"] for shot in shots], [20, 5, 20, 5, 20, 10])
+        self.assertEqual([shot["id"] for shot in shots], ["S01", "S02", "S03"])
+        self.assertEqual([shot["duration"] for shot in shots], [25, 25, 30])
         self.assertEqual(sum(shot["duration"] for shot in shots), 80)
         self.assertEqual(skeleton["duration_lock"], 80)
         self.assertEqual(
             [shot["scene_id"] for shot in shots],
-            ["EP001-SC01", "EP001-SC01", "EP001-SC02", "EP001-SC02", "EP001-SC03", "EP001-SC03"],
+            ["EP001-SC01", "EP001-SC02", "EP001-SC03"],
         )
-        self.assertFalse((shots[0].get("dialogue") or "").strip())
-        self.assertIn("风从背入，先暖后散", shots[1].get("dialogue") or "")
-        self.assertFalse((shots[2].get("dialogue") or "").strip())
-        self.assertIn("静中藏寒，莫让凉意趁虚而入", shots[3].get("dialogue") or "")
-        self.assertFalse((shots[4].get("dialogue") or "").strip())
-        self.assertIn("晨露侵骨，宜早驱之", shots[5].get("dialogue") or "")
+        self.assertIn("风从背入，先暖后散", shots[0].get("dialogue") or "")
+        self.assertIn("静中藏寒，莫让凉意趁虚而入", shots[1].get("dialogue") or "")
+        self.assertIn("晨露侵骨，宜早驱之", shots[2].get("dialogue") or "")
 
     def test_scene_over_30s_is_split_for_wan(self):
         script = (
@@ -460,7 +457,7 @@ class StoryboardH3DurationSplitTest(unittest.TestCase):
             "locks": {"duration_seconds": 40, "model": "h3", "aspect": "16:9"},
         })
         shots = skeleton["shots"]
-        self.assertEqual([shot["duration"] for shot in shots], [20, 20])
+        self.assertEqual([shot["duration"] for shot in shots], [30, 10])
         self.assertEqual(sum(shot["duration"] for shot in shots), 40)
 
     def test_official_80s_script_also_splits_when_model_is_unset(self):
@@ -469,8 +466,8 @@ class StoryboardH3DurationSplitTest(unittest.TestCase):
             "locks": {"duration_seconds": 80, "aspect": "16:9"},
         })
         shots = skeleton["shots"]
-        self.assertEqual([shot["id"] for shot in shots], ["S01", "S02", "S03", "S04", "S05", "S06"])
-        self.assertEqual([shot["duration"] for shot in shots], [20, 5, 20, 5, 20, 10])
+        self.assertEqual([shot["id"] for shot in shots], ["S01", "S02", "S03"])
+        self.assertEqual([shot["duration"] for shot in shots], [25, 25, 30])
         self.assertEqual(sum(shot["duration"] for shot in shots), 80)
 
 

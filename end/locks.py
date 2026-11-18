@@ -13,7 +13,7 @@ SEGMENT_LIMITS = {"2.5": 30, "2.0": 15, "h3": 30, "wan3": 30, "wan": 30}
 # Video is Wan 3.0 (max 30s). The stored lock "h3" still uses this path;
 # MiniMax H3 remains the stills backend. Seedance 2.0 stays 15s.
 DEFAULT_CLIP_LIMIT = 30
-DEFAULT_PACK_LIMIT = 20
+DEFAULT_PACK_LIMIT = 30
 
 TRACK_OPTIONS = ("① 国内剧", "② 海外剧", "③ 解说叙事", "④ 其他")
 SOURCE_OPTIONS = ("① 原创", "② 改编", "③ 对标爆款", "④ 热点速成")
@@ -174,8 +174,9 @@ def clip_limit(model=None, locks=None):
 def pack_limit(model=None, locks=None):
     """Preferred max seconds for one packed unit or storyboard shot.
 
-    Wan 3.0 packing stays within 20 seconds; a span over 20 is split.
-    The hard render cap remains ``clip_limit`` (30). Seedance 2.0 stays 15.
+    Wan 3.0 packing fills toward 30 seconds. A span over 30 is split and
+    later units are stitched with the previous tail (first_frame).
+    Seedance 2.0 stays 15.
     """
     return min(DEFAULT_PACK_LIMIT, clip_limit(model=model, locks=locks))
 

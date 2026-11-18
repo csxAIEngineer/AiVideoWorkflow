@@ -117,6 +117,8 @@ def _split_overlong_shots(shots, limit):
             if index != last:
                 child["dialogue"] = ""
                 child["narration"] = ""
+            if index > 0:
+                child["action_continuous"] = True
             out.append(child)
     for index, shot in enumerate(out, 1):
         shot["id"] = "S%02d" % index
@@ -381,9 +383,9 @@ def _merge_beats(beats, target):
 def _fill_to_limit(duration, limit, minimum=4):
     """Split an overlong span by filling earlier shots up to ``limit``.
 
-    A 25s scene becomes 20+5, not an even 13+12. The last leftover stays at
-    least ``minimum`` seconds when the total allows it; the overall sum is
-    never shortened.
+    A 40s scene becomes 30+10, and a 25s scene stays 25. The last leftover
+    stays at least ``minimum`` seconds when the total allows it; the overall
+    sum is never shortened.
     """
     duration = int(duration)
     limit = int(limit)

@@ -2268,13 +2268,14 @@ def group_shot_durations(
 ):
     """Pack consecutive shot lengths into render units.
 
-    Aim to stay within ``target_max`` (20 seconds on Wan 3.0). A span over
-    20 seconds is split rather than packed together. The hard render cap is
-    ``limit`` (30 on Wan 3.0). A unit never stays in range by shortening a
-    shot. A shot longer than ``limit`` stays in its own unit at its real
-    length so the caller can split the shot instead of clamping. A leftover
-    shorter than ``minimum`` is kept only when no legal merge exists.
-    D-lock marks are not available yet, so they do not split a unit.
+    Aim to fill toward ``target_max`` (30 seconds on Wan 3.0). A span over
+    30 seconds is split rather than packed together; later units are
+    stitched with first_frame. The hard render cap is ``limit`` (also 30
+    on Wan 3.0). A unit never stays in range by shortening a shot. A shot
+    longer than ``limit`` stays in its own unit at its real length so the
+    caller can split the shot instead of clamping. A leftover shorter than
+    ``minimum`` is kept only when no legal merge exists. D-lock marks are
+    not available yet, so they do not split a unit.
     """
     if limit is None:
         limit = clip_limit(locks=locks)
@@ -2319,7 +2320,7 @@ def _pack_shot_durations(shots, limit, minimum, target_min, target_max, merge_li
             return 1000.0 + (minimum - total)
         if total > target_max + 1e-6:
             return (total - target_max) ** 2
-        # Prefer filling up to the pack target (20s on Wan 3.0).
+        # Prefer filling up to the pack target (30s on Wan 3.0).
         return (target_max - total) ** 2
 
     infinite = 10 ** 18
@@ -2390,9 +2391,9 @@ def feed_duration_failures(feed, storyboard="", shots=None, limit=None, locks=No
 
     Merging shots into one unit is allowed. The sum of declared unit
     durations must not fall below the storyboard total, spoken lines must
-    remain, and a storyboard span over the pack target (20s on Wan 3.0)
-    must be split rather than clamped. The hard render cap is ``clip_limit``
-    (30s). A feed that has not declared a duration yet is not failed here.
+    remain, and a storyboard span over the pack target (30s on Wan 3.0)
+    must be split rather than clamped; later units are stitched with
+    first_frame. A feed that has not declared a duration yet is not failed here.
     The format checker still owns missing-field warnings.
     """
     if limit is None:
