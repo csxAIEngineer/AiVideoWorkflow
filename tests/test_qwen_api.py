@@ -376,7 +376,7 @@ class QwenMediaTest(unittest.TestCase):
 
     def test_video_keeps_documented_ratios_and_separates_roles(self):
         captured, opener = self._capture({"output": {"task_id": "vid-1", "task_status": "PENDING"}})
-        bare = self._catalog()
+        bare = self._catalog({"routes": {"preview": {"model": "minimax-h3"}, "generate": {"model": "minimax-h3"}}})
         task = QwenVideoClient(client=_client(opener), env_path=bare).submit_video(
             "海面亮起来",
             model="minimax-h3-text-to-video",
@@ -633,7 +633,7 @@ class QwenMediaTest(unittest.TestCase):
         self.assertIsNone(PREVIEW_PARAMETERS["url"])
         self.assertEqual(PREVIEW_PARAMETERS["model"], VIDEO_MODEL)
         images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
-        env_path = self._catalog()
+        env_path = self._catalog({"routes": {"preview": {"model": "minimax-h3"}, "generate": {"model": "minimax-h3"}}})
         self.assertEqual(video_mode_parameters(None, env_path=env_path), dict(PREVIEW_PARAMETERS))
         self.assertEqual(video_mode_parameters("", env_path=env_path), dict(GENERATE_PARAMETERS))
         self.assertEqual(
@@ -1073,6 +1073,22 @@ class QwenMediaTest(unittest.TestCase):
         self.assertEqual(negative["resolution"], "720P")
         self.assertIn("2 到 30", str(too_short.exception))
         self.assertIn("-1", str(too_short.exception))
+
+    def test_missing_catalog_allows_wan3_clip_duration(self):
+        captured, opener = self._capture({"output": {"task_id": "vid-missing", "task_status": "PENDING"}})
+        client = QwenVideoClient(client=_client(opener), env_path=self._catalog())
+        client.submit_video("海面亮起来", duration=20, aspect_ratio="16:9", mode="generate")
+        self.assertEqual(captured["body"]["model"], "wan3.0-video")
+        self.assertEqual(captured["body"]["parameters"]["duration"], 20)
+        client.submit_video("海面亮起来", duration=30, aspect_ratio="16:9", mode="generate")
+        self.assertEqual(captured["body"]["parameters"]["duration"], 30)
+        with self.assertRaises(QwenError) as too_long:
+            client.submit_video("海面亮起来", duration=31, mode="generate")
+        self.assertIn("2 到 30", str(too_long.exception))
+
+    def test_dockerfile_copies_video_catalog(self):
+        dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+        self.assertIn("COPY config ", dockerfile.read_text(encoding="utf-8"))
 
     def test_remote_video_submit_passes_mode(self):
         from end.remote import RemoteVideoClient
