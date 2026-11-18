@@ -140,7 +140,7 @@
 | | 支持 |
 |---|---|
 | **Agent 平台** | OpenClaw · WorkBuddy · 豆包智能体 / 扣子(Coze) · Dify 及通用 LLM（支持豆包 JSON 分块，防上下文截断） |
-| **视频模型** | **Seedance 2.5 / 2.0**（强制二选一，语法契约彻底分流）+ **MiniMax H3**（格式支线：七段式 → H3 原生格式，单段 4–15s）；即梦为次选 / 历史兼容 |
+| **视频模型** | **Seedance 2.5 / 2.0**（强制二选一，语法契约彻底分流）+ **MiniMax H3**（格式支线：七段式 → H3 原生格式，单段 4–30s）；即梦为次选 / 历史兼容 |
 | **输出** | 七段式投喂提示词组（Seedance）· **H3 Ref2VA 六段式稿** · Canvas / API 结构化载荷 · 单文件离线分镜看板 · 情绪曲线图 |
 
 ---
@@ -329,7 +329,7 @@ Genre-agnostic: anything that goes **script → storyboard → video-model feed*
 | | Support |
 |---|---|
 | **Agent platforms** | OpenClaw · WorkBuddy · Doubao Agent / Coze · Dify, plus generic LLMs |
-| **Video models** | **Seedance 2.5 / 2.0** (mandatory choice) + **MiniMax H3** (format branch, 4–15s per segment); Jimeng = secondary / legacy |
+| **Video models** | **Seedance 2.5 / 2.0** (mandatory choice) + **MiniMax H3** (format branch, 4–30s per segment); Jimeng = secondary / legacy |
 | **Outputs** | 7-section feed prompts (Seedance) · **H3 Ref2VA six-section scripts** · Canvas / API payloads · offline board · emotion curve |
 
 ---

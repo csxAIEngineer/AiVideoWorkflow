@@ -306,11 +306,60 @@ function clockTime(iso) {
   return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
+function officialShotDuration(shot) {
+  if (!shot || typeof shot !== "object") return null;
+  const prompt = String(shot.prompt || "");
+  const match = prompt.match(/(?:^|\r?\n)duration\s*:\s*(\d+)\s*(?:\r?\n|$)/i);
+  if (match) {
+    const seconds = Number(match[1]);
+    if (seconds > 0) return seconds;
+  }
+  if (shot.duration == null || shot.duration === "") return null;
+  const fallback = Number(shot.duration);
+  return Number.isFinite(fallback) ? fallback : shot.duration;
+}
+
+function shotDurationLabel(shot, empty) {
+  const seconds = officialShotDuration(shot);
+  if (seconds == null || seconds === "") return empty == null ? "" : empty;
+  return seconds + " 秒";
+}
+
+function shotForTask(task) {
+  const shots = (typeof current !== "undefined" && current && current.shots) || [];
+  const id = task && (task.id || task.shot_id || task.title);
+  if (!id) return null;
+  return shots.find((item) => item && item.id === id) || null;
+}
+
+function officialTaskSeconds(task) {
+  const seconds = officialShotDuration(shotForTask(task));
+  if (seconds != null) return seconds;
+  return task && task.duration;
+}
+
+function officialJoinSeconds(task) {
+  const shots = (typeof current !== "undefined" && current && current.shots) || [];
+  if (shots.length) {
+    let total = 0;
+    let found = false;
+    shots.forEach((shot) => {
+      const seconds = Number(officialShotDuration(shot));
+      if (Number.isFinite(seconds)) {
+        total += seconds;
+        found = true;
+      }
+    });
+    if (found) return total;
+  }
+  return task && task.duration;
+}
+
 function durationText(task) {
-  if (task.kind === "join") return "合计 " + task.duration + " 秒";
+  if (task.kind === "join") return "合计 " + officialJoinSeconds(task) + " 秒";
   if (task.kind === "audio") return "声轨";
   if (task.kind === "subtitles") return "烧录字幕";
-  if (task.kind === "video") return task.duration + " 秒";
+  if (task.kind === "video") return officialTaskSeconds(task) + " 秒";
   return "生图";
 }
 
@@ -1616,7 +1665,8 @@ function restingMeta(project, node) {
   if (kind === "image") return ((project.assets || []).length) + " 张 · 必须";
   if (kind === "shot") {
     const shot = (project.shots || []).find((item) => item.id === node.dataset.id);
-    if (shot && shot.duration != null && shot.duration !== "") return shot.duration + " 秒";
+    const label = shotDurationLabel(shot);
+    if (label) return label;
     const count = node.querySelectorAll(".wf-thumb").length;
     return count ? count + " 张" : "";
   }
@@ -1962,7 +2012,7 @@ function paintTranscript(options, full) {
   if ((current.shots || []).length) {
     const shotLines = current.shots.map((shot) => {
       const images = (shot.images || []).join(", ");
-      return "- **" + shot.id + "** · " + (shot.duration || "?") + "s"
+      return "- **" + shot.id + "** · " + (officialShotDuration(shot) || "?") + "s"
         + (images ? " · images: " + images : "")
         + (shot.prompt ? "\n  " + shot.prompt : "");
     }).join("\n");
@@ -2991,7 +3041,7 @@ function renderNode(project, info) {
     node.classList.add("is-live");
     meta.textContent = liveText;
   } else if (info.kind === "image") meta.textContent = (info.assets || []).length + " 张 · 必须";
-  else if (info.kind === "shot" && info.shot) meta.textContent = (info.shot.duration || "?") + " 秒";
+  else if (info.kind === "shot" && info.shot) meta.textContent = shotDurationLabel(info.shot, "? 秒");
   else if (info.kind === "shot") meta.textContent = (info.assets || []).length + " 张";
   head.append(dot, title, meta);
   node.append(head);
@@ -3963,6 +4013,7 @@ function syncPreview(project) {
 function shotStripSignature(project) {
   const shots = (project.shots || []).map((shot) => [
     shot.id,
+    officialShotDuration(shot),
     shot.duration,
     (shot.images || []).join(","),
     shotThumbUrl(project, shot),
@@ -3995,9 +4046,9 @@ function shotChip(shot) {
   const name = document.createElement("b");
   name.textContent = film ? "成片" : (shot.id || "镜头");
   button.append(name);
-  if (!film && shot.duration != null && shot.duration !== "") {
+  if (!film && officialShotDuration(shot) != null) {
     const time = document.createElement("small");
-    time.textContent = shot.duration + " 秒";
+    time.textContent = shotDurationLabel(shot);
     button.append(time);
   }
   if (!film) button.append(renderContractTags(shot));
@@ -4110,7 +4161,7 @@ function retouchTargetLabel(project, selection) {
     return "静帧 · " + ((asset && (asset.title || asset.id)) || selection.targetId);
   }
   const shot = (project.shots || []).find((item) => item.id === selection.targetId);
-  const duration = shot && shot.duration != null && shot.duration !== "" ? " · " + shot.duration + " 秒" : "";
+  const duration = shot && officialShotDuration(shot) != null ? " · " + shotDurationLabel(shot) : "";
   return "镜头 · " + selection.targetId + duration;
 }
 

@@ -146,9 +146,23 @@
     });
   }
 
+  function officialShotDuration(shot) {
+    if (!shot || typeof shot !== "object") return null;
+    const prompt = String(shot.prompt || "");
+    const match = prompt.match(/(?:^|\r?\n)duration\s*:\s*(\d+)\s*(?:\r?\n|$)/i);
+    if (match) {
+      const seconds = Number(match[1]);
+      if (seconds > 0) return seconds;
+    }
+    if (shot.duration == null || shot.duration === "") return null;
+    const fallback = Number(shot.duration);
+    return Number.isFinite(fallback) ? fallback : shot.duration;
+  }
+
   function durationText(shot) {
-    if (!shot || shot.duration == null || shot.duration === "") return "空";
-    return String(shot.duration) + " 秒";
+    const seconds = officialShotDuration(shot);
+    if (seconds == null || seconds === "") return "空";
+    return String(seconds) + " 秒";
   }
 
   function contractNote() {

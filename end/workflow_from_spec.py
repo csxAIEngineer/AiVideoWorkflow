@@ -9,7 +9,6 @@ from end.build_workflows import gemini_node, save_image_node
 from end.soundtrack import normalize_soundtrack
 
 MIN_SECONDS = 4
-MAX_SECONDS = 15
 # One H3 call accepts 9 reference images. The previous shot's tail frame uses one slot.
 MAX_SHOT_REFERENCES = 8
 CHARS_PER_SECOND = 4.1
@@ -19,17 +18,20 @@ def _spoken_chars(text):
     return len(re.sub(r"[\s，。！？、…—\-：:（）()「」\"“”]", "", text or ""))
 
 
-def _clamp_duration(value, dialogue=""):
-    """Keep a beat's own length. The generator only accepts 4–30 for one call."""
+def _clamp_duration(value, dialogue="", model=None, locks=None):
+    """Keep a beat's own length. One call follows the model's clip limit."""
+    from end.locks import clip_limit
+
+    limit = clip_limit(model=model, locks=locks)
     if value not in (None, ""):
         try:
-            return max(MIN_SECONDS, min(MAX_SECONDS, int(value)))
+            return max(MIN_SECONDS, min(limit, int(value)))
         except (TypeError, ValueError):
             pass
     chars = _spoken_chars(dialogue)
     if chars:
         needed = int(round(chars / CHARS_PER_SECOND)) + 1
-        return max(MIN_SECONDS, min(MAX_SECONDS, needed))
+        return max(MIN_SECONDS, min(limit, needed))
     return MIN_SECONDS
 
 
@@ -38,7 +40,7 @@ _FEED_CUT = re.compile(
 )
 
 
-def _duration_from_feed(prompt):
+def _duration_from_feed(prompt, model=None, locks=None):
     """H3 feed units declare length as ``duration: N``. One unit = one API call.
 
     The machine check stamps ``duration:`` onto feed.md only. spec.json keeps the
@@ -48,7 +50,7 @@ def _duration_from_feed(prompt):
     match = re.search(r"(?m)^duration\s*:\s*(\d+)\s*$", text)
     if match:
         try:
-            return _clamp_duration(int(match.group(1)))
+            return _clamp_duration(int(match.group(1)), model=model, locks=locks)
         except (TypeError, ValueError):
             return None
     clocks = list(_FEED_CUT.finditer(text))
@@ -56,7 +58,7 @@ def _duration_from_feed(prompt):
         return None
     last = clocks[-1]
     seconds = int(last.group(1)) * 60 + int(last.group(2)) + int(last.group(3)) / 1000.0
-    return _clamp_duration(int(math.ceil(seconds)))
+    return _clamp_duration(int(math.ceil(seconds)), model=model, locks=locks)
 
 
 def _safe_id(value, fallback):
@@ -157,7 +159,7 @@ def _feed_shot_images(unit, known, template, board_images=None):
     return list((template or {}).get("images") or []), "storyboard_index_fallback"
 
 
-def assemble_steps(spec):
+def assemble_steps(spec, locks=None):
     """Assets, shots, and how each shot's images were chosen.
 
     The shot dicts match ``collect_steps``. Image-source rows are for the
@@ -166,6 +168,9 @@ def assemble_steps(spec):
     from end.prompt_gate import delivery_units
 
     spec = spec or {}
+    if locks is None:
+        maybe = spec.get("locks")
+        locks = maybe if isinstance(maybe, dict) else None
     blocks = _figure_blocks(spec.get("image_prompts") or "")
     units = delivery_units(spec.get("feed"))
     assets = []
@@ -221,9 +226,9 @@ def assemble_steps(spec):
             continue
         dialogue = str(item.get("dialogue") or "").strip()
         narration = str(item.get("narration") or "").strip()
-        duration = _clamp_duration(item.get("duration"), dialogue)
+        duration = _clamp_duration(item.get("duration"), dialogue, locks=locks)
         if narration:
-            duration = max(duration, _clamp_duration(None, narration))
+            duration = max(duration, _clamp_duration(None, narration, locks=locks))
         shot = {
             "id": _safe_id(item.get("id"), "S%02d" % (index + 1)),
             "duration": duration,
@@ -276,7 +281,7 @@ def assemble_steps(spec):
             if image_kind == "storyboard_index_fallback":
                 source["index"] = template_index
             sources.append(source)
-            feed_duration = _duration_from_feed(unit)
+            feed_duration = _duration_from_feed(unit, locks=locks)
             # region agent log
             try:
                 import json as _json
@@ -344,9 +349,9 @@ def assemble_steps(spec):
     return assets, shots, sources
 
 
-def collect_steps(spec):
+def collect_steps(spec, locks=None):
     """Assets and shots that actually become nodes, in run order."""
-    assets, shots, _sources = assemble_steps(spec)
+    assets, shots, _sources = assemble_steps(spec, locks=locks)
     return assets, shots
 
 
@@ -371,9 +376,9 @@ def ordered_assets(assets):
     return ordered
 
 
-def task_plan(spec, soundtrack="off"):
+def task_plan(spec, soundtrack="off", locks=None):
     """Local render rows: MiniMax stills, video clips, ffmpeg join, optional narration, then write 字幕.ass."""
-    assets, shots = collect_steps(spec)
+    assets, shots = collect_steps(spec, locks=locks)
     if not assets or not shots:
         return []
     tasks = []

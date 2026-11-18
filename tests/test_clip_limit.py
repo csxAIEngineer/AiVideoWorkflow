@@ -154,3 +154,36 @@ class ClipLimitTest(unittest.TestCase):
         self.assertIn("最后一刀不超过 30 秒", merge_prompt("feed", ""))
         seedance = merge_prompt("feed", "模型：Seedance 2.0")
         self.assertIn("最后一刀不超过 15 秒", seedance)
+
+
+    def test_assemble_steps_feed_duration_follows_clip_limit(self):
+        from end.workflow_from_spec import assemble_steps
+
+        feed = (
+            "## 【封装单元 1/1】\n"
+            "duration: 30\n"
+            "subject_definitions:\n"
+            "A man in the rain.\n"
+            "detailed_description:\n"
+            "[Shot 1] Rain falls in the alley.\n"
+            "overall_soundscape:\n"
+            "Rain.\n"
+            "non_diegetic_music:\n"
+            "None.\n"
+        )
+        spec = {
+            "assets": [{"id": "图1", "title": "巷", "prompt": "雨巷"}],
+            "shots": [{"id": "S01", "duration": 10, "prompt": "雨巷", "images": ["图1"]}],
+            "feed": feed,
+            "locks": {"model": "h3"},
+        }
+        _assets, shots, _sources = assemble_steps(spec)
+        self.assertEqual([shot["duration"] for shot in shots], [30])
+
+        spec["locks"] = {"model": "2.0"}
+        _assets, shots, _sources = assemble_steps(spec)
+        self.assertEqual([shot["duration"] for shot in shots], [15])
+
+        spec["feed"] = feed.replace("duration: 30", "duration: 15")
+        _assets, shots, _sources = assemble_steps(spec)
+        self.assertEqual([shot["duration"] for shot in shots], [15])
