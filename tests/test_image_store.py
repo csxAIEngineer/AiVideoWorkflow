@@ -289,5 +289,101 @@ class ImageStoreTest(unittest.TestCase):
         self.assertNotIn("要等上一段真实尾帧", str(raised.exception))
 
 
+    def test_cos_publish_clip_puts_mp4_and_returns_the_domain_url(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = CosImageStore(
+            bucket="demo-1250000000",
+            domain="https://demo-1250000000.cos.ap-guangzhou.myqcloud.com",
+            root=root,
+        )
+        payload = b"\x00\x00\x00\x18ftypmp42clip"
+        path = root / "65d271c72399" / "outputs" / "clips" / "S01.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        calls = []
+
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            calls.append((request, timeout))
+            return _Response()
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open):
+            url = store.publish_clip("65d271c72399", "S01.mp4", payload)
+        self.assertEqual(
+            url,
+            "https://demo-1250000000.cos.ap-guangzhou.myqcloud.com/projects/65d271c72399/clips/S01.mp4",
+        )
+        self.assertEqual(path.read_bytes(), payload)
+        self.assertEqual(len(calls), 1)
+        request, timeout = calls[0]
+        self.assertEqual(request.get_method(), "PUT")
+        self.assertEqual(request.full_url, url)
+        self.assertEqual(request.data, payload)
+        self.assertEqual(request.get_header("Content-type"), "video/mp4")
+        self.assertGreater(timeout, 0)
+
+    def test_cos_ensure_clip_uploads_once_then_reuses_the_published_url(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = CosImageStore(
+            bucket="demo-1250000000",
+            domain="https://demo-1250000000.cos.ap-guangzhou.myqcloud.com",
+            root=root,
+        )
+        payload = b"\x00\x00\x00\x18ftypmp42clip"
+        path = root / "65d271c72399" / "outputs" / "clips" / "S01.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        calls = []
+
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            calls.append(request.full_url)
+            return _Response()
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open):
+            first = store.ensure_clip("65d271c72399", "S01.mp4", source=path)
+            second = store.ensure_clip("65d271c72399", "S01.mp4", source=path)
+        self.assertEqual(first, second)
+        self.assertTrue(first.endswith("/projects/65d271c72399/clips/S01.mp4"))
+        self.assertEqual(len(calls), 1)
+
+    def test_local_ensure_clip_returns_the_media_path_without_uploading(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = LocalImageStore(base="http://127.0.0.1:8787", root=root)
+        path = root / "65d271c72399" / "outputs" / "clips" / "S01.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"clip-bytes")
+        with patch("end.image_store.store.urllib.request.urlopen") as fake_open:
+            url = store.ensure_clip("65d271c72399", "S01.mp4", source=path)
+        fake_open.assert_not_called()
+        self.assertEqual(url, "/media/projects/65d271c72399/clips/S01.mp4")
+
+
+
 if __name__ == "__main__":
     unittest.main()

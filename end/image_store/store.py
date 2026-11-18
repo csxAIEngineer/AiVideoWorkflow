@@ -14,6 +14,7 @@ from pathlib import Path
 
 _PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _IMAGE_SUFFIX = re.compile(r"\.(?:png|jpe?g|webp)\Z", re.IGNORECASE)
+_VIDEO_SUFFIX = re.compile(r"\.(?:mp4|webm|mov)\Z", re.IGNORECASE)
 _MAX_STEM = 64
 
 
@@ -101,6 +102,20 @@ class LocalImageStore(ImageStore):
         """File is already on disk. Build the public address and do not upload again."""
         return self._join(_project_id(project_id), _filename(filename))
 
+    def publish_clip(self, project_id, filename, payload):
+        del payload
+        return self.ensure_clip(project_id, filename)
+
+    def ensure_clip(self, project_id, filename, source=None):
+        del source
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        return "/media/projects/%s/clips/%s" % (project_id, filename)
+
+    def ensure_video(self, project_id, filename, source=None):
+        del filename, source
+        return "/media/projects/%s/video" % _project_id(project_id)
+
     def _join(self, project_id, filename):
         key = "media/projects/%s/images/%s" % (project_id, filename)
         return _http_object_url(self.public_base(), key)
@@ -113,6 +128,18 @@ class OssImageStore(ImageStore):
 
     def url(self, project_id, filename):
         del project_id, filename
+        raise ImageStoreError("OSS 图片存储尚未接入")
+
+    def publish_clip(self, project_id, filename, payload):
+        del project_id, filename, payload
+        raise ImageStoreError("OSS 图片存储尚未接入")
+
+    def ensure_clip(self, project_id, filename, source=None):
+        del project_id, filename, source
+        raise ImageStoreError("OSS 图片存储尚未接入")
+
+    def ensure_video(self, project_id, filename, source=None):
+        del project_id, filename, source
         raise ImageStoreError("OSS 图片存储尚未接入")
 
 
@@ -185,6 +212,92 @@ class CosImageStore(ImageStore):
         domain = self.domain()
         return _put_cos(domain, bucket, key, payload, _content_type(filename))
 
+    def clip_url(self, project_id, filename):
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        return _http_object_url(self.domain(), "projects/%s/clips/%s" % (project_id, filename))
+
+    def video_url(self, project_id, filename):
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        return _http_object_url(self.domain(), "projects/%s/video/%s" % (project_id, filename))
+
+    def publish_clip(self, project_id, filename, payload):
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        if not payload:
+            raise ImageStoreError("没有这段视频")
+        key = "projects/%s/clips/%s" % (project_id, filename)
+        return _put_cos(self.domain(), self.bucket(), key, payload, _content_type(filename))
+
+    def publish_video(self, project_id, filename, payload):
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        if not payload:
+            raise ImageStoreError("没有这段视频")
+        key = "projects/%s/video/%s" % (project_id, filename)
+        return _put_cos(self.domain(), self.bucket(), key, payload, _content_type(filename))
+
+    def ensure_clip(self, project_id, filename, source=None):
+        return self._ensure_video_object(
+            project_id,
+            filename,
+            source=source,
+            folder="clips",
+            publish=self.publish_clip,
+            url_for=self.clip_url,
+        )
+
+    def ensure_video(self, project_id, filename, source=None):
+        return self._ensure_video_object(
+            project_id,
+            filename,
+            source=source,
+            folder="video",
+            publish=self.publish_video,
+            url_for=self.video_url,
+        )
+
+    def _ensure_video_object(self, project_id, filename, source, folder, publish, url_for):
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        if source:
+            path = Path(source)
+        elif folder == "clips":
+            path = self.root() / project_id / "outputs" / "clips" / filename
+        else:
+            path = self.root() / project_id / "outputs" / filename
+        if not path.is_file():
+            raise ImageStoreError("本地没有这段视频，不能上传到 COS")
+        expected = url_for(project_id, filename)
+        marker = path.with_name(path.name + ".cos.json")
+        stat = path.stat()
+        if marker.is_file():
+            try:
+                data = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = None
+            if (
+                isinstance(data, dict)
+                and data.get("url") == expected
+                and int(data.get("size") or -1) == stat.st_size
+                and int(data.get("mtime") or -1) == int(stat.st_mtime)
+            ):
+                return expected
+        url = publish(project_id, filename, path.read_bytes())
+        marker.write_text(
+            json.dumps(
+                {
+                    "url": url,
+                    "size": path.stat().st_size,
+                    "mtime": int(path.stat().st_mtime),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return url
+
 
 def get_image_store(kind=None):
     if kind is None:
@@ -219,6 +332,12 @@ def _write_local(root, project_id, filename, payload):
 
 def _content_type(filename):
     suffix = Path(filename).suffix.lower()
+    if suffix == ".mp4":
+        return "video/mp4"
+    if suffix == ".webm":
+        return "video/webm"
+    if suffix == ".mov":
+        return "video/quicktime"
     if suffix in (".jpg", ".jpeg"):
         return "image/jpeg"
     if suffix == ".webp":
@@ -380,6 +499,18 @@ def _filename(value):
         or not _safe_stem(Path(text).stem)
     ):
         raise ImageStoreError("图片文件名无效")
+    return text
+
+
+def _clip_filename(value):
+    text = str(value or "").strip()
+    suffix = Path(text).suffix
+    if (
+        text != Path(text).name
+        or not _VIDEO_SUFFIX.fullmatch(suffix)
+        or not _safe_stem(Path(text).stem)
+    ):
+        raise ImageStoreError("视频文件名无效")
     return text
 
 

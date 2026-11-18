@@ -959,6 +959,36 @@ class ProjectApiTest(unittest.TestCase):
         self.assertEqual(shot["feed"]["unit"], "")
         self.assertIsNone(shot["feed"]["index"])
 
+    def test_projects_get_returns_cos_urls_for_clips_and_film(self):
+        project_id = "c11d00000001"
+        make_project(project_id)
+        clip_dir = project_dir(project_id) / "outputs" / "clips"
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / "S01.mp4").write_bytes(b"clip-bytes")
+        film = read_project(project_id)
+        film["video_file"] = "joined.mp4"
+        write_project(film)
+        (project_dir(project_id) / "outputs" / "joined.mp4").write_bytes(b"film-bytes")
+        domain = self._use_cos()
+        self._quiet_view()
+        calls = []
+        with patch("end.image_store.store.urllib.request.urlopen", self._cos_open(calls)):
+            view = self.rpc("projects.get", {"id": project_id})["result"]
+            again = self.rpc("projects.get", {"id": project_id})["result"]
+        clip_url = "%s/projects/%s/clips/S01.mp4" % (domain, project_id)
+        film_url = "%s/projects/%s/video/joined.mp4" % (domain, project_id)
+        self.assertEqual(view["clips"][0]["url"], clip_url)
+        self.assertEqual(view["clips"][0]["download_url"], clip_url)
+        self.assertEqual(view["video_url"], film_url)
+        self.assertEqual(view["video_download_url"], film_url)
+        self.assertEqual(again["clips"][0]["url"], clip_url)
+        self.assertEqual(again["video_url"], film_url)
+        put_urls = [req.full_url for req in calls if req.get_method() == "PUT"]
+        self.assertEqual(set(put_urls), {clip_url, film_url})
+        self.assertEqual(len(put_urls), 2)
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

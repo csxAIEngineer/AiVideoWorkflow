@@ -3169,6 +3169,35 @@ def _publish_generated_still(ctx, asset_id, path, provider_url):
     return hosted
 
 
+def _publish_generated_clip(ctx, path, provider_url=""):
+    """Local file is already written. Upload it and prefer that address over a 24h URL."""
+    path = Path(path)
+    if not getattr(ctx, "project_id", None) or not path.is_file():
+        return provider_url
+    try:
+        hosted = get_image_store().ensure_clip(ctx.project_id, path.name, source=path)
+    except Exception as error:
+        _append_render_log(ctx.work_dir, "片段上传失败：%s" % error)
+        return provider_url
+    if hosted and hosted != provider_url:
+        _append_render_log(ctx.work_dir, "片段已写入对象存储 %s" % hosted)
+    return hosted or provider_url
+
+
+def _publish_generated_film(ctx, path):
+    path = Path(path)
+    if not getattr(ctx, "project_id", None) or not path.is_file():
+        return ""
+    try:
+        hosted = get_image_store().ensure_video(ctx.project_id, path.name, source=path)
+    except Exception as error:
+        _append_render_log(ctx.work_dir, "成片上传失败：%s" % error)
+        return ""
+    if hosted:
+        _append_render_log(ctx.work_dir, "成片已写入对象存储 %s" % hosted)
+    return hosted
+
+
 def run_local_pipeline(
     spec,
     work_dir,
@@ -3487,7 +3516,8 @@ def run_local_pipeline(
             cr.download_video(task, temporary)
             if temporary.is_file():
                 temporary.replace(path)
-            return getattr(task, "url", "") or ""
+            provider_url = getattr(task, "url", "") or ""
+            return _publish_generated_clip(ctx, path, provider_url)
 
         ctx.run_remote(
             shot_id,
@@ -3509,6 +3539,7 @@ def run_local_pipeline(
     if soundtrack_enabled(ctx.soundtrack):
         ctx.run_audio(joined, clips, shots, spec)
     joined = ctx.run_subtitles(joined, shots, spec)
+    _publish_generated_film(ctx, joined)
     return {
         "prompt_id": ctx.last_remote_id,
         "video_file": joined.name,

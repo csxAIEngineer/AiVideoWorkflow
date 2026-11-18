@@ -404,6 +404,7 @@ def public_view(project):
 
     load_tasks(project)
     folder = project_dir(project["id"])
+    video_url, video_download_url = _public_film_urls(project)
     spec = load_spec(project["id"])
     assets, shots = ([], [])
     if spec:
@@ -457,18 +458,8 @@ def public_view(project):
         ),
         "has_video": bool(project.get("video_file"))
         and (folder / "outputs" / str(project.get("video_file"))).is_file(),
-        "video_url": (
-            "/media/projects/%s/video" % project["id"]
-            if project.get("video_file")
-            and (folder / "outputs" / str(project.get("video_file"))).is_file()
-            else ""
-        ),
-        "video_download_url": (
-            "/media/projects/%s/video?download=1" % project["id"]
-            if project.get("video_file")
-            and (folder / "outputs" / str(project.get("video_file"))).is_file()
-            else ""
-        ),
+        "video_url": video_url,
+        "video_download_url": video_download_url,
         "prompt_id": project.get("prompt_id") or "",
         "model": normalize_model(project.get("model")),
         "model_label": model_label(project.get("model")),
@@ -2264,20 +2255,47 @@ def list_output_clips(project_id):
     folder = project_dir(project_id) / "outputs" / "clips"
     if not folder.is_dir():
         return []
+    store = get_image_store()
     clips = []
     for path in sorted(folder.iterdir()):
         if not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES:
             continue
-        url = "/media/projects/%s/clips/%s" % (project_id, path.name)
+        url = _public_clip_url(store, project_id, path)
+        download = url if url.startswith("http") else url + "?download=1"
         clips.append(
             {
                 "id": path.stem,
                 "name": path.name,
                 "url": url,
-                "download_url": url + "?download=1",
+                "download_url": download,
             }
         )
     return clips
+
+
+def _public_clip_url(store, project_id, path):
+    fallback = "/media/projects/%s/clips/%s" % (project_id, path.name)
+    try:
+        return store.ensure_clip(project_id, path.name, source=path) or fallback
+    except Exception:
+        return fallback
+
+
+def _public_film_urls(project):
+    project_id = project["id"]
+    name = str(project.get("video_file") or "")
+    video = project_dir(project_id) / "outputs" / name
+    if not name or name != Path(name).name or not video.is_file():
+        return "", ""
+    local = "/media/projects/%s/video" % project_id
+    local_download = local + "?download=1"
+    try:
+        url = get_image_store().ensure_video(project_id, name, source=video)
+    except Exception:
+        url = ""
+    if url and url.startswith("http"):
+        return url, url
+    return local, local_download
 
 
 def finish_image_debug(project, result):
