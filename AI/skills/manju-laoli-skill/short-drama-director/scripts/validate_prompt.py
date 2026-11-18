@@ -269,7 +269,7 @@
 H 系列（--model h3 · MiniMax H3 格式支线 · h3-adapter.md）：
   H1 字段集       Ref2VA 四段齐全且顺序正确（不要求 summary / retention_analysis）；基础模式三字段齐全
   H2 镜号/切点    [Shot 1] 不得带时间戳；[Shot N] 切点 MM:SS.mmm 严格递增；切镜动词须用官方绑定短语（the camera/shot cuts to…）
-  H3 时长         声明时长落在 4–15s；最后切点 ≤15s
+  H3 时长         声明时长落在 4–30s；最后切点 ≤30s（万相 3.0）
   H4 语言         正文应为英文（2026-10-02 官方复核：base-en/ref-en "Write all six rewrite sections in English"）；
                   <d> 内必须带语言标签（<d>[Chinese] …</d>），<d> 与双引号画内文字之外的正文出现中文 → WARN
   H5 参考标签     标签先定义后引用；summary 不引新标签；定义项 >9 告警；定义了却未引用 → 告警
@@ -608,7 +608,7 @@ H3_SEVEN_LEAK = ["【画幅风格】", "【场景资产】", "【核心人物】
 H3_JARGON = ["顿挫", "阻尼", "弹开", "微停顿",
              "J-cut", "L-cut", "Whip Pan", "Match Cut", "Sound Bridge"]
 H3_WORKFLOW = ["末态继承", "拼接节点", "换机位", "同机位硬接"]
-H3_MIN_DUR, H3_MAX_DUR = 4, 15
+H3_MIN_DUR, H3_MAX_DUR = 4, 30
 H3_PIC_MAX = 9
 H3_VO_EVID = re.compile(r"闭合|闭口|紧闭|lips\s+(?:remain|stay)\s+(?:completely\s+)?closed")
 # H9 画外声官方固定短语（base-en §4.4；2026-10-02 官方复核新增）
@@ -727,8 +727,8 @@ def validate_h3(text, mode="new"):
         if t2 <= t1:
             issues.append(f"H2 切点未严格递增：[Shot {n1}] {t1}s -> [Shot {n2}] {t2}s")
     if cuts and max(t for _, t in cuts) > H3_MAX_DUR + 0.001:
-        issues.append(f"H3 最后切点 {max(t for _, t in cuts)}s > {H3_MAX_DUR}s（H3 单段硬上限 15s；"
-                      "Seedance 2.5 的 15~30s 段必须再拆一刀）")
+        issues.append(f"H3 最后切点 {max(t for _, t in cuts)}s > {H3_MAX_DUR}s（万相 3.0 单段硬上限 {H3_MAX_DUR}s；"
+                      "超过上限必须再拆一刀）")
     # region agent log
     try:
         import json as _json
@@ -4365,9 +4365,9 @@ def _self_test():
     if not any("H2" in i for i in iss):
         print("FAIL self-test: [Shot 1] 带时间戳应报 H2"); ok = 0
     # H3 时长越界
-    iss, _, _ = validate_h3(h3_ok + '"duration_seconds": 20\n')
+    iss, _, _ = validate_h3(h3_ok + '"duration_seconds": 31\n')
     if not any("H3" in i and "越界" in i for i in iss):
-        print("FAIL self-test: 声明时长 20s 应报 H3"); ok = 0
+        print("FAIL self-test: 声明时长 31s 应报 H3"); ok = 0
     # H4 <d> 缺语言标签
     iss, _, _ = validate_h3(h3_ok.replace("<d>[Chinese] 你迟了半刻。</d>", "<d>你迟了半刻。</d>"))
     if not any("H4" in i for i in iss):
@@ -5676,7 +5676,7 @@ def main():
         segs = _split_feed_segments(text) if "--whole" not in argv else []
         if len(segs) >= 2:
             print(f"[i] 分单元校验：识别到 {len(segs)} 个投喂段，逐段独立跑 H3 判据"
-                  "（整份合并会把各段时间码累加，误判成一段超过 15s）")
+                  "（整份合并会把各段时间码累加，误判成一段超过 30s）")
             issues, warns = [], []
             stats = {"duration_s": 0, "shots": 0, "chars": 0, "segments": len(segs)}
             for _label, _body in segs:

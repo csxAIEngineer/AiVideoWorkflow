@@ -420,6 +420,21 @@ _TASK_MARKERS = (
 )
 from end.storyboard_contract import ASSET_FIELD_RULES
 
+def _feed_merge_shape(brief=""):
+    from end.locks import pack_limit
+
+    model = parse_route(brief, "P4").get("model")
+    limit = pack_limit(locks={"model": model} if model else None)
+    return "\n".join((
+        "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
+        _MARKDOWN_FIELDS,
+        "%s放在 feed（字符串）。不要写 segments 对象，不要写接口 JSON。" % DRAFT_NAME,
+        "%s。" % HEADING_RULE,
+        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 %s 秒。不要写成 At 00:04.000 [Shot 2]。" % (UNIT_NAME, limit),
+        "这一阶段用不到的字段不要写。",
+    ))
+
+
 _MERGE_SHAPE = {
     "lock": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
@@ -456,14 +471,7 @@ _MERGE_SHAPE = {
         "不要写段、格、六问、九宫格或预演完成标记。",
         "这一阶段用不到的字段不要写。",
     )),
-    "feed": "\n".join((
-        "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
-        _MARKDOWN_FIELDS,
-        "%s放在 feed（字符串）。不要写 segments 对象，不要写接口 JSON。" % DRAFT_NAME,
-        "%s。" % HEADING_RULE,
-        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。" % UNIT_NAME,
-        "这一阶段用不到的字段不要写。",
-    )),
+    "feed": _feed_merge_shape(),
     "qc": "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
         "质检意见放在 text。不要改写剧本、资产、分镜或%s。" % DRAFT_NAME,
@@ -728,6 +736,8 @@ def merge_prompt(task, brief=""):
     """Short merge instruction plus the task's JSON shape. No skill originals."""
     if task == "storyboard":
         shape = _storyboard_merge_shape(brief)
+    elif task == "feed":
+        shape = _feed_merge_shape(brief)
     else:
         shape = _MERGE_SHAPE.get(task) or _MERGE_SHAPE["script"]
     if task == "feed" and parse_route(brief, "P4").get("model") == "h3":

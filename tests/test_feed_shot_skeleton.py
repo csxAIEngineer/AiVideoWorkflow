@@ -331,8 +331,8 @@ class ShotSkeletonPatchTest(unittest.TestCase):
         self.assertTrue(any("[Shot 9]" in item for item in errors), errors)
         self.assertIn("不要自己发明切点", "\n".join(errors))
 
-    def test_a_span_over_15_seconds_is_split_not_clamped(self):
-        rows = (("S01", 6), ("S02", 5), ("S03", 16))
+    def test_a_span_over_30_seconds_is_split_not_clamped(self):
+        rows = (("S01", 6), ("S02", 5), ("S03", 31))
         state = _state(rows)
         draft = "\n".join((
             "## 【封装单元 1/1】",
@@ -349,8 +349,9 @@ class ShotSkeletonPatchTest(unittest.TestCase):
             "N/A",
         ))
         fixed = apply_packing_plan(draft, state)
-        self.assertEqual(_declared(fixed), [11, 16])
+        self.assertEqual(_declared(fixed), [11, 31])
         self.assertNotIn("duration: 15", fixed)
+        self.assertNotIn("duration: 30", fixed)
         chunks = _chunks(fixed)
         self.assertEqual(len(chunks), 2)
         self.assertIn("[Shot 2] At 00:06.000", chunks[0])

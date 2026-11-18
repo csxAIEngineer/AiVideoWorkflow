@@ -520,12 +520,15 @@ def apply_storyboard_shots(spec):
     return updated
 
 
-def packing_membership(shots, limit=15):
+def packing_membership(shots, limit=None, locks=None):
     """Which packed unit each storyboard shot belongs to.
 
-    Display only. Unit 1 is the first 15-second group, for example S01–S03.
+    Display only. Unit 1 is the first packed group, for example S01–S03.
     This does not write packed text onto ``shot.prompt``.
     """
+    from end.locks import clip_limit
+    if limit is None:
+        limit = clip_limit(locks=locks)
     from end.stage_runner import group_shot_durations
 
     ids = []

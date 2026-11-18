@@ -106,7 +106,7 @@ def _feed_skill():
         "路径：%s" % _VALIDATOR.relative_to(_ROOT),
         _slice(manual, "**退出码与交付铁律**", "\n\n"),
         _slice(manual, "## 三、H1~H12", "## 四、"),
-        "本分支在 validate_prompt 之后还有硬门。超长跨度要拆开，禁止钳成 15 秒，总时长不得短于分镜。",
+        "本分支在 validate_prompt 之后还有硬门。超长跨度要拆开，禁止钳成 30 秒，总时长不得短于分镜。",
         "画风锁也是硬门。程序把剧本「画风」或项目已定画风写成每一段 subject_definitions 的第一行。"
         "缺这句、写成别的句子、或多写一种风格，都是 FAIL。只出现在房间或道具主体上不算通过。"
         "不要要求生成员另写一种画风。",

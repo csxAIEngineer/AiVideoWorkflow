@@ -66,7 +66,7 @@ def repair_brief(stage, units):
         brief += (
             "\nH2 改法：禁止 [Shot N] [MM:SS.mmm-MM:SS.mmm] 区间时码。"
             "写成 [Shot 1] 无时间戳；[Shot N] At MM:SS.mmm, the camera cuts to …；"
-            "单元头加 duration: 秒数（4–15）。\n"
+            "单元头加 duration: 秒数（4–30）。\n"
         )
     return brief
 

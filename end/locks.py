@@ -9,7 +9,11 @@ RENDER_COMMANDS = ("出图出片", "生成图片", "跑图", "出片", "出图")
 _BLOCKED = ("不出图", "不要出图", "别出图", "先不出图", "不出片", "不要出片", "别出片")
 
 STYLE_RECOMMEND = "按你的推荐走"
-SEGMENT_LIMITS = {"2.5": 30, "2.0": 15, "h3": 15}
+SEGMENT_LIMITS = {"2.5": 30, "2.0": 15, "h3": 30, "wan3": 30, "wan": 30}
+# Video is Wan 3.0 (max 30s). The stored lock "h3" still uses this path;
+# MiniMax H3 remains the stills backend. Seedance 2.0 stays 15s.
+DEFAULT_CLIP_LIMIT = 30
+DEFAULT_PACK_LIMIT = 30
 
 TRACK_OPTIONS = ("① 国内剧", "② 海外剧", "③ 解说叙事", "④ 其他")
 SOURCE_OPTIONS = ("① 原创", "② 改编", "③ 对标爆款", "④ 热点速成")
@@ -149,7 +153,32 @@ def absorb_model_output(folder, _payload):
 
 
 def segment_limit(model):
-    return SEGMENT_LIMITS.get(str(model or ""), 0)
+    key = str(model or "").strip().lower()
+    return SEGMENT_LIMITS.get(key, 0)
+
+
+def clip_limit(model=None, locks=None):
+    """Hard max seconds for one rendered clip.
+
+    Wan 3.0 allows 30 seconds. A missing model lock, and the stored ``h3``
+    lock, follow that video path. Seedance 2.0 stays at 15.
+    """
+    if isinstance(locks, dict):
+        model = locks.get("model")
+    key = str(model or "").strip().lower()
+    if key in SEGMENT_LIMITS:
+        return SEGMENT_LIMITS[key]
+    return DEFAULT_CLIP_LIMIT
+
+
+def pack_limit(model=None, locks=None):
+    """Preferred max seconds for one packed unit or storyboard shot.
+
+    Wan 3.0 packing fills toward 30 seconds. A span over 30 is split and
+    later units are stitched with the previous tail (first_frame).
+    Seedance 2.0 stays 15.
+    """
+    return min(DEFAULT_PACK_LIMIT, clip_limit(model=model, locks=locks))
 
 
 def seam_needed(locks):

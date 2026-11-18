@@ -335,7 +335,7 @@ def load_tasks(project):
     spec = load_spec(project["id"])
     if not spec:
         return
-    tasks = task_plan(spec, soundtrack=project_soundtrack(project))
+    tasks = task_plan(spec, soundtrack=project_soundtrack(project), locks=read_locks(project_dir(project["id"])))
     if not tasks:
         return
     project["tasks"] = tasks
@@ -420,7 +420,7 @@ def public_view(project):
         from end.shot_contract import annotate_shots
         from end.workflow_from_spec import assemble_steps
 
-        assets, shots, sources = assemble_steps(spec)
+        assets, shots, sources = assemble_steps(spec, locks=read_locks(folder))
         shots = annotate_shots(shots, sources, folder, project["id"])
     debug_dir = folder / "debug"
     debug_files = [
@@ -1794,7 +1794,7 @@ def _save_written_spec(project_id, spec):
         fresh["script"] = str(spec.get("script") or "")
         fresh["storyboard"] = str(spec.get("storyboard") or "")
         fresh["image_prompts"] = str(spec.get("image_prompts") or "")
-        fresh["tasks"] = task_plan(spec, soundtrack=project_soundtrack(fresh))
+        fresh["tasks"] = task_plan(spec, soundtrack=project_soundtrack(fresh), locks=read_locks(project_dir(project_id)))
         fresh["updated_at"] = now()
         write_project(fresh)
         return fresh
@@ -2009,7 +2009,7 @@ def _start_explicit_render(project, keep_done=None, video_submit_mode="generate"
     )
     _store_aspect(project, aspect)
     project = read_project(project_id) or project
-    tasks = task_plan(spec, soundtrack=project_soundtrack(project))
+    tasks = task_plan(spec, soundtrack=project_soundtrack(project), locks=read_locks(project_dir(project_id)))
     kept = {str(step_id) for step_id in (keep_done or ())}
     for task in tasks:
         if str(task.get("id") or "") in kept:
@@ -2322,7 +2322,7 @@ def _execute_render(project_id, project=None, video_submit_mode="generate"):
         raise RuntimeError("没有 spec，不能出片")
     images_only = project_debug_llm(project)
     if not project.get("tasks"):
-        project["tasks"] = task_plan(spec, soundtrack=project_soundtrack(project))
+        project["tasks"] = task_plan(spec, soundtrack=project_soundtrack(project), locks=read_locks(folder))
         write_project(project)
 
     def on_progress(payload):

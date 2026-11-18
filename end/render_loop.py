@@ -2563,7 +2563,8 @@ class RenderContext(object):
                 by_id = {}
                 title = ""
                 if fresh:
-                    _assets, fresh_shots = collect_steps(fresh)
+                    from end.locks import read_locks
+                    _assets, fresh_shots = collect_steps(fresh, locks=read_locks(self.work_dir) if getattr(self, "work_dir", None) else None)
                     by_id = {shot["id"]: shot for shot in fresh_shots}
                     title = str(fresh.get("title") or "")
                 current_shots = [by_id.get(shot["id"], shot) for shot in shots]
@@ -3193,7 +3194,9 @@ def run_local_pipeline(
 
     images_only stops after the stills. Video, join, soundtrack, and subtitles are left for a later run.
     """
-    assets, shots = collect_steps(spec)
+    from end.locks import read_locks
+
+    assets, shots = collect_steps(spec, locks=read_locks(work_dir) if work_dir else None)
     from end.seam_ledger import seam_blocks_render
 
     blocked = seam_blocks_render(spec, shots)

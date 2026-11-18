@@ -119,7 +119,7 @@ def check_feed_draft(text, state=None):
     """H3 ``check_feed`` / ``validate_prompt``, plus duration, style, and shot skeleton.
 
     A warnings-only validator exit still passes. Duration shrink, a clamped
-    over-15s span, deleted dialogue, a packed unit that misses the locked
+    over-limit span, deleted dialogue, a packed unit that misses the locked
     style sentence or carries a different one, and a unit whose local
     ``[Shot N]`` headings or ``At MM:SS.mmm`` cuts disagree with the storyboard
     skeleton are FAILs even when the validator only printed an info line.
@@ -172,6 +172,7 @@ def check_feed_draft(text, state=None):
             raw,
             state.get("storyboard") or "",
             state.get("shots") or [],
+            locks=(state.get("locks") or {}),
         )
     )
     model = str((state.get("locks") or {}).get("model") or "h3").strip().lower()

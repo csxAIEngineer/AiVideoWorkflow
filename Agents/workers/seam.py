@@ -58,7 +58,7 @@ GENERATOR_SYSTEM = "\n".join((
     "怎么判 ①②③④，以技能原文为准。拿不准就按分流表，不要把 ① 当成唯一默认。剧情段默认 ②。",
     "第一个封装单元 d_lock 写 none。每个后面的单元恰好一条入缝。",
     "video_mode 只能是 first_frame 或 reference。不要写 text，不要写 first_last_frame，不要写 end_image。一次调用不能混用首帧和参考图。",
-    "第一个封装单元没有上一段，video_mode 用 reference。后面的单元只有动作连续或剧情连续才用 first_frame，first_frame_source 写 previous_tail，这一发不要带参考图。其余用 reference，即使 images 是空的也不要改成 text。",
+    "第一个封装单元没有上一段，video_mode 用 reference。后面的单元在动作连续、剧情连续，或因单场超过 30 秒拆开时用 first_frame，first_frame_source 写 previous_tail，这一发不要带参考图。其余用 reference，即使 images 是空的也不要改成 text。",
     "动作连续写 action_continuous。剧情连续是一句话被拆开、一镜到底，或 plot_continuous。同场景但事件已断开、剧情段、换场、时间跳、地点跳、空镜都不是连续。",
     "D 锁仍然记 ①②③④。video_mode 不按 D 锁编号选。",
     "起镜景别 start_size 和末镜景别 end_size 只能是：%s。"

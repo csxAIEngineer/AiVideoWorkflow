@@ -343,10 +343,13 @@ def _first_frame():
     }
 
 
-def continues_from_previous(entry, *, first=False):
+def continues_from_previous(entry, shot=None, *, first=False):
     """Whether this packed unit continues the previous unit's action or plot.
 
     The first packed unit has no previous tail, so it is never continuous.
+    A later unit from an over-limit split of the same scene is also
+    continuous: those shots are marked ``action_continuous`` so they
+    stitch with first_frame from the previous tail.
 
     Action-continuous: ``action_continuous`` is true. The action, camera
     direction, light, or prop state does not reset across the cut (同场景顺延,
@@ -364,7 +367,13 @@ def continues_from_previous(entry, *, first=False):
     if first:
         return False
     entry = entry or {}
-    if _flag(entry.get("action_continuous")) or _flag(entry.get("plot_continuous")):
+    shot = shot or {}
+    if (
+        _flag(entry.get("action_continuous"))
+        or _flag(entry.get("plot_continuous"))
+        or _flag(shot.get("action_continuous"))
+        or _flag(shot.get("plot_continuous"))
+    ):
         return True
     relation = normalize_scene_relation(entry.get("scene_relation"), first=False)
     return relation in PLOT_CONTINUOUS_RELATIONS
@@ -488,7 +497,7 @@ def _board_rows(spec):
 
 
 def _shot_slices(board, unit_count):
-    """Shots packed into each unit, using the same 15s groups as feed packing."""
+    """Shots packed into each unit, using the same packed groups as feed packing."""
     empty = [[] for _ in range(unit_count)]
     if not board or unit_count <= 0:
         return empty
@@ -593,6 +602,7 @@ def packed_units(spec):
     unions = unit_storyboard_images(spec, len(derived))
     from end.storyboard_contract import asset_ids_from_text
 
+    slices = _shot_slices(_board_rows(spec), len(derived))
     rows = []
     for index, unit in enumerate(derived):
         row = dict(unit)
@@ -616,6 +626,10 @@ def packed_units(spec):
                     row[key] = saved.get(key)
             if isinstance(saved.get("video_images"), list):
                 row["video_images"] = list(saved.get("video_images") or [])
+        if not _flag(row.get("action_continuous")):
+            members = slices[index] if index < len(slices) else []
+            if any(isinstance(member, dict) and _flag(member.get("action_continuous")) for member in members or []):
+                row["action_continuous"] = True
         rows.append(row)
     return rows
 
@@ -694,7 +708,7 @@ def map_submit_params(entry, shot=None, *, first=False):
     ``first_last_frame`` are never chosen. D-lock is not the selector.
     """
     entry = entry or {}
-    if first or not continues_from_previous(entry, first=False):
+    if first or not continues_from_previous(entry, shot, first=False):
         return _reference(_reference_ids(entry, shot))
     return _first_frame()
 

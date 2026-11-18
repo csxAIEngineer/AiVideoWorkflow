@@ -2179,7 +2179,7 @@ check("◑15 self-test 含 N-N秒 双向用例（70l 正例 7 组 / 反例散文
 #   曾经：SKILL.md §〇.D.⑦=25~30s ／ SKILL.md §二=每组≤15s ／ seedance-render-engine=严格4~15秒
 #        ／ 铁律2=每镜10秒 —— 四处并存互不引用，执行时无法判断听谁。
 #   裁定：唯一权威 = model-adapters.md（模型契约表 + §5）；其余一律改指针。
-_DUR_ALLOW = ("h3-adapter.md",          # H3 独立通道，可写自己的 4~15s
+_DUR_ALLOW = ("h3-adapter.md",          # H3 独立通道，可写自己的 4~30s
               "machine-check-manual.md",  # 机检手册复述 C1b 口径（登记用途）
               "model-adapters.md")        # 权威本体
 # ⚠️ 元规则四：判据只抓「肯定式写死」，放过「否定式引用」。
