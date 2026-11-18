@@ -815,10 +815,12 @@ def fold_seam_entries(entries, units):
 
     ``shot_id``, ``prev_id``, ``scene_relation``, and the official submit
     fields are program-owned. The first unit's ``d_lock`` is ``none``.
-    A later ``d_lock`` is kept only when it is 1–4. 景别 values that sit on
-    the ladder (or a ladder word plus 镜头/景别) are kept; any other size is
-    left so the machine check can still fail it. Reason text and other
-    prose are not invented.
+    A later ``d_lock`` is kept only when it is 1–4. A ① row's
+    ``start_size`` is locked to the previous unit's ``end_size`` when that
+    end sits on the ladder. 景别 values that sit on the ladder (or a
+    ladder word plus 镜头/景别) are kept; any other size is left so the
+    machine check can still fail it. Reason text and other prose are not
+    invented.
     """
     rows = [unit for unit in units or [] if isinstance(unit, dict) and _text(unit.get("id"))]
     if not rows:
@@ -860,12 +862,16 @@ def fold_seam_entries(entries, units):
                 row[key] = _text(model.get(key))
         built.append(row)
     applied = apply_submit_params(built, rows)
-    for row in applied:
+    for index, row in enumerate(applied):
         for key in SEAM_SLOT_KEYS:
             if key not in row:
                 row[key] = [] if key == "images" else ""
         if not isinstance(row.get("images"), list):
             row["images"] = _listed_ids(row.get("images"))
+        if index > 0 and _lock(row.get("d_lock")) == "1":
+            prev_end = _size_class(applied[index - 1].get("end_size"))
+            if prev_end:
+                row["start_size"] = prev_end
     return applied
 
 
@@ -968,6 +974,7 @@ def check_seam_ledger(ledger, units):
             errors.append("%s 的提交参数和连续关系不一致" % shot_id)
         end_size = _size_class(entry.get("end_size"))
         start_size = _size_class(entry.get("start_size"))
+        prev_end_size = _size_class(entries[index - 1].get("end_size")) if index > 0 else ""
         if _text(entry.get("end_size")) and not end_size:
             errors.append("%s 的末镜景别不在景别阶梯上" % shot_id)
         if _text(entry.get("start_size")) and not start_size:
@@ -983,7 +990,7 @@ def check_seam_ledger(ledger, units):
                 errors.append("%s 标了 ①，但动作、对白或一镜到底并没有接上" % shot_id)
             if not entry.get("tail_croppable") or not _text(entry.get("crop_plan")):
                 errors.append("%s 的 ① 缺少可截计划" % shot_id)
-            if not (end_size and start_size and end_size == start_size):
+            if not (prev_end_size and start_size and prev_end_size == start_size):
                 errors.append("%s 的 ① 两侧景别必须同档" % shot_id)
             if not entry.get("camera_change") or same_camera:
                 errors.append("%s 的 ① 必须换机位" % shot_id)
