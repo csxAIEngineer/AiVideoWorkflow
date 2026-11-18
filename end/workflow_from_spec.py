@@ -20,7 +20,7 @@ def _spoken_chars(text):
 
 
 def _clamp_duration(value, dialogue=""):
-    """Keep a beat's own length. The generator only accepts 4–15 for one call."""
+    """Keep a beat's own length. The generator only accepts 4–30 for one call."""
     if value not in (None, ""):
         try:
             return max(MIN_SECONDS, min(MAX_SECONDS, int(value)))

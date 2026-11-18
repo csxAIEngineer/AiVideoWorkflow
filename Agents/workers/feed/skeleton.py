@@ -128,17 +128,21 @@ def _packing_shot_rows(state):
     return [row for row in _storyboard_duration_rows(_storyboard_text(state)) if row["duration"] > 0]
 
 
-def packing_shot_skeleton(state, limit=15):
+def packing_shot_skeleton(state, limit=None):
     """Local ``[Shot N]`` headings for each packed unit.
 
     Numbers restart at 1 inside the unit. ``[Shot 1]`` has no cut. Each later
     cut is the sum of the earlier shots in that unit, as ``MM:SS.mmm``.
-    A span over 15 seconds stays its own unit at its real length. It is not
-    clamped, and it is not given a cut time by shortening it.
+    A span over the clip limit stays its own unit at its real length. It is
+    not clamped, and it is not given a cut time by shortening it.
     """
+    from end.locks import clip_limit
+
     rows = _packing_shot_rows(state)
     if not rows:
         return []
+    if limit is None:
+        limit = clip_limit(locks=(state or {}).get("locks"))
     runner = importlib.import_module("end.stage_runner")
     groups = runner.group_shot_durations([row["duration"] for row in rows], limit)
     skeleton = []

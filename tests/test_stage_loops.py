@@ -287,8 +287,8 @@ class FeedDurationTest(unittest.TestCase):
         self.assertIn("38", errors[0])
         groups = group_shot_durations(SHOTS)
         self.assertEqual(sum(sum(group) for group in groups), 60)
-        self.assertTrue(all(sum(group) <= 15 or len(group) == 1 for group in groups))
-        self.assertTrue(all(sum(group) <= 15 for group in groups))
+        self.assertTrue(all(sum(group) <= 30 or len(group) == 1 for group in groups))
+        self.assertTrue(all(sum(group) <= 30 for group in groups))
         self.assertEqual(_declared_h3_duration(18), 18)
         self.assertEqual(_declared_h3_duration(4.5), 5)
         block = "\n".join((

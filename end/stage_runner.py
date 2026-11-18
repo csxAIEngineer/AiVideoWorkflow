@@ -18,7 +18,7 @@ from end.gates import (
     unverified_claim,
 )
 from end.intake import enrich_brief, load_intake, writer_upload_block
-from end.locks import lock_brief
+from end.locks import clip_limit, lock_brief
 from end.product_names import (
     DRAFT_NAME,
     EMPTY_DRAFT,
@@ -799,7 +799,7 @@ _INSTRUCTION = {
         H3_SUBJECT_SOUND_RULE,
         "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
         "四段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
-        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 15 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。" % UNIT_NAME,
+        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 %s 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。" % (UNIT_NAME, clip_limit()),
         "每个 Subject 必须对应 assets.md 里已经有的图。没有关键帧资产就不要写 Picture。",
         "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
     )),
@@ -2070,8 +2070,11 @@ def _cut_moment(seconds):
     return float(seconds)
 
 
-def _expand_overlong_unit(block):
-    """Move shots whose cut is past 15s into a following unit and rebase that unit."""
+def _expand_overlong_unit(block, limit=None):
+    """Move shots whose cut is past the clip limit into a following unit and rebase that unit."""
+    if limit is None:
+        limit = clip_limit()
+    cap = float(limit) + 0.001
     lines = str(block or "").splitlines()
     start, end = _detail_span(lines)
     if start is None:
@@ -2082,7 +2085,7 @@ def _expand_overlong_unit(block):
     origin = None
     for _number, seconds, chunk in pieces:
         moment = _cut_moment(seconds)
-        if origin is None and moment is not None and moment > 15.001:
+        if origin is None and moment is not None and moment > cap:
             origin = moment
         if origin is None:
             stay.append(chunk.strip())
@@ -2096,7 +2099,7 @@ def _expand_overlong_unit(block):
     for index, (local, chunk) in enumerate(move, 1):
         moved_lines.append(_restamp_shot(chunk, index, local, index == 1))
     spawned = "\n".join(lines[:start + 1] + moved_lines + lines[end:]).strip()
-    return [stayed] + _expand_overlong_unit(spawned)
+    return [stayed] + _expand_overlong_unit(spawned, limit=limit)
 
 
 def _peel_feed_tail(block):
@@ -2134,13 +2137,13 @@ def _unit_over_cap(text):
             (int(match.group(1)), int(match.group(2)) * 60 + int(match.group(3)) + int(match.group(4)) / 1000)
             for match in _SHOT_CLOCK.finditer(block)
         ):
-            if seconds > 15.001:
+            if seconds > float(clip_limit()) + 0.001:
                 return True
     return False
 
 
 def _settle_ready_units(raw):
-    """Drop Shot 1 clocks. Split a unit whose later cuts pass 15s."""
+    """Drop Shot 1 clocks. Split a unit whose later cuts pass the clip limit."""
     stripped = _SHOT1_CLOCK.sub(r"\1 ", str(raw or ""))
     if not _unit_over_cap(stripped):
         return stripped
@@ -2170,8 +2173,8 @@ def _settle_ready_units(raw):
 def _declared_h3_duration(seconds):
     """Integer seconds H3 writes on ``duration``.
 
-    Four seconds is the shortest H3 render. A span over 15 seconds stays over
-    15. Callers split that unit. They do not clamp it to 15.
+    Four seconds is the shortest render. A span over the clip limit stays
+    over the limit. Callers split that unit. They do not clamp it.
     """
     whole = int(math.ceil(float(seconds) - 1e-9))
     if whole < 4:
@@ -2254,25 +2257,33 @@ def format_seconds(value):
     return text or "0"
 
 
+PACK_MERGE_LIMIT = 15
+
+
 def group_shot_durations(
     durations,
-    limit=15,
+    limit=None,
     locks=None,
     minimum=4,
     target_min=8,
     target_max=10,
+    merge_limit=None,
 ):
-    """Pack consecutive shot lengths into H3 units.
+    """Pack consecutive shot lengths into render units.
 
     Aim for 8–10 seconds so adjacent units can be spliced with first and last
-    frames. The hard range is ``minimum``–``limit`` (4–15). Merging is allowed.
-    A unit never stays in range by shortening a shot. A shot longer than
+    frames. Merging is allowed, but a merged unit still stays within
+    ``minimum``–``merge_limit`` (4–15). A single shot may be as long as the
+    clip ``limit`` (30 on Wan 3.0) and is never shortened. A shot longer than
     ``limit`` stays in its own unit at its real length so the caller can split
     the shot instead of clamping. A leftover shorter than ``minimum`` is kept
     only when no legal merge exists. D-lock marks are not available yet, so
     they do not split a unit.
     """
-    del locks
+    if limit is None:
+        limit = clip_limit(locks=locks)
+    if merge_limit is None:
+        merge_limit = min(PACK_MERGE_LIMIT, limit)
     shots = []
     for raw in durations or []:
         try:
@@ -2281,10 +2292,12 @@ def group_shot_durations(
             continue
         if seconds > 0:
             shots.append(seconds)
-    return _pack_shot_durations(shots, limit, minimum, target_min, target_max)
+    return _pack_shot_durations(shots, limit, minimum, target_min, target_max, merge_limit)
 
 
-def _pack_shot_durations(shots, limit, minimum, target_min, target_max):
+def _pack_shot_durations(shots, limit, minimum, target_min, target_max, merge_limit=None):
+    if merge_limit is None:
+        merge_limit = min(PACK_MERGE_LIMIT, limit)
     count = len(shots)
     if not count:
         return []
@@ -2299,9 +2312,10 @@ def _pack_shot_durations(shots, limit, minimum, target_min, target_max):
         if start >= end:
             return None
         total = span(start, end)
-        if total > limit + 1e-6:
-            if end - start == 1:
+        if end - start == 1:
+            if total > limit + 1e-6:
                 return 0.0
+        elif total > merge_limit + 1e-6:
             return None
         if total + 1e-6 < minimum:
             return 1000.0 + (minimum - total)
@@ -2375,15 +2389,17 @@ def _unit_declared_seconds(block):
     return None
 
 
-def feed_duration_failures(feed, storyboard="", shots=None, limit=15):
+def feed_duration_failures(feed, storyboard="", shots=None, limit=None, locks=None):
     """Hard failures when a packed feed is shorter than the storyboard.
 
-    Merging shots into one H3 unit is allowed. The sum of declared unit
+    Merging shots into one unit is allowed. The sum of declared unit
     durations must not fall below the storyboard total, spoken lines must
     remain, and a storyboard span over ``limit`` must be split rather than
     clamped. A feed that has not declared a duration yet is not failed here.
-    The H3 checker still owns missing-field warnings.
+    The format checker still owns missing-field warnings.
     """
+    if limit is None:
+        limit = clip_limit(locks=locks)
     durations = []
     for shot in shots or []:
         if isinstance(shot, dict) and shot.get("duration") not in (None, ""):
@@ -2456,8 +2472,8 @@ def normalize_h3_shot_cuts(text):
     """Turn ``[Shot N] [start-end]`` ranges into H2 ``At MM:SS.mmm`` cuts.
 
     Shot 1 drops the clock. Later shots keep the range start as the cut point.
-    A headed unit whose cut passes 15s is split, and the next unit starts again
-    with an untimed Shot 1.
+    A headed unit whose cut passes the clip limit is split, and the next unit
+    starts again with an untimed Shot 1.
     """
     raw = str(text or "")
     if "[Shot" not in raw:
@@ -2578,13 +2594,14 @@ def _shot_groups(pieces):
         if seconds is None:
             seconds = last
         last = seconds
-        if current and seconds >= origin + 15:
+        cap = clip_limit()
+        if current and seconds >= origin + cap:
             groups.append((origin, current))
-            origin = int(seconds // 15) * 15
+            origin = int(seconds // cap) * cap
             current = [(number, seconds, chunk)]
         else:
             if not current:
-                origin = int(seconds // 15) * 15
+                origin = int(seconds // cap) * cap
             current.append((number, seconds, chunk))
     if current:
         groups.append((origin, current))
@@ -2785,7 +2802,9 @@ def _normalize_loose_h3(text):
             if number == 1:
                 chunk = _SHOT1_CLOCK.sub(r"\1 ", chunk)
             shot_text.append(chunk)
-        span = max(4, min(15, int(round(last - origin)) or 4))
+        span = int(round(last - origin)) or 4
+        if span < 4:
+            span = 4
         lines.append("duration: %s" % span)
         for field in _H3_SECTION_FIELDS:
             if field == "detailed_description":

@@ -4,6 +4,7 @@ import re
 
 from Agents.workers.asset_skeleton import _place_name, _PROP_LINE, _SKIP_PROP, extract_asset_catalog
 from Agents.workers.script_skeleton import parse_script_scenes
+from end.locks import clip_limit
 
 _BEAT = re.compile(r"^▲\s*(.+)$")
 _CAST_LINE = re.compile(r"^出场\s*[:：]\s*(.+)$")
@@ -88,10 +89,7 @@ def format_storyboard_skeleton(skeleton):
 
 
 def _max_shot_seconds(locks):
-    model = str((locks or {}).get("model") or "").strip().lower()
-    if model == "h3" or model.startswith("h3"):
-        return 15
-    return None
+    return clip_limit(locks=locks)
 
 
 def _split_overlong_shots(shots, limit):

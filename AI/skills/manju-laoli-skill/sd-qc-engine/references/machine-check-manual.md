@@ -11,7 +11,7 @@
 - **C22 共用同一触发门**（未新增独立参数）：C22 规则权威在 `sd-combat-engine/references/combat-rhythm-and-load-guardrails.md`，与 C21 **共用 `--combat on|off|auto`**。二者分工——**C21 管激烈度（下限型·不许躺平），C22 管渲染负载与节奏（含上限型·不许过载）**，缺一则打戏必在「呆板站桩」与「小孩打架」两档之间摆动。
 - **`--c23` 与 `--style-source`（画风锁机检触发门）**：C23 只对**启用 I 画风锁的稿**生效（`on` 强制 / `off` 关闭 / 默认 `auto`——稿内存在【STYLE/【PERFORMANCE 行首段标记或 `--style-source` 登记来源即启用，未启用画风锁的旧稿不追溯）。规则权威在总控 `short-drama-director/references/style-bible/director-to-prompt-protocol.md` §六；判据速查与实拍复盘教训见 `short-drama-director/references/style-bible/style-bible-spec.md` §四/§五。
 - **`--aspect`（画幅任务锁回填）**：传入本次任务的画幅三选一（`16:9` / `9:16` / `21:9`），供 **C6b** 做「`aspect_ratio=` 字段 ↔【画幅风格】行声明 ↔ 任务锁」**三处互校**；并据此判「横竖构图词越界」。**多段稿建议逐段跑并带上本参数**（画幅锁是 B 锁，全片一致，漏传仅少一道比对）。
-- **逐段判定（多段稿 · 2026-10-10 六维审计并入）**：脚本以 **`【画幅风格】`行**为界把稿件切成 N 段（真实交付稿＝「提示词组 × N 组」，3 分钟剧 ≈14 段，每段从 00:00 起、≤15s）。**C1 / C2 / C3 / C4 / C17 / C24 按段独立判定**——此前的「单段假设」会把合规多段稿全线误报、且**第 2 段起的人物遗漏抓不到**（"B 在下一镜不见了"的结构性盲区）。单段稿行为不变。**投喂正文口径**：含 ```` ``` ```` 围栏时只取围栏内容（C11/C12/C12b），避免稿件自带的说明散文/自检表被当成投喂正文误报。
+- **逐段判定（多段稿 · 2026-10-10 六维审计并入）**：脚本以 **`【画幅风格】`行**为界把稿件切成 N 段（真实交付稿＝「提示词组 × N 组」，3 分钟剧 ≈14 段，每段从 00:00 起、≤30s）。**C1 / C2 / C3 / C4 / C17 / C24 按段独立判定**——此前的「单段假设」会把合规多段稿全线误报、且**第 2 段起的人物遗漏抓不到**（"B 在下一镜不见了"的结构性盲区）。单段稿行为不变。**投喂正文口径**：含 ```` ``` ```` 围栏时只取围栏内容（C11/C12/C12b），避免稿件自带的说明散文/自检表被当成投喂正文误报。
 
 ## 一、命令行用法
 
@@ -24,7 +24,7 @@ python scripts/validate_prompt.py <提示词文件.md|.txt> [--model 2.5|2.0|h3]
 | `<提示词文件>` | 待检的投喂稿（md/txt，UTF-8），通常为七段式或 H3 格式投喂稿 |
 | `--model 2.5` | Seedance 2.5 侧检查（C1~C26），段上限 30s |
 | `--model 2.0` | Seedance 2.0 侧检查（C1~C26），段上限 15s |
-| `--model h3` | MiniMax H3 格式支线检查（H1~H12），硬区间 4–15s |
+| `--model h3` | MiniMax H3 格式支线检查（H1~H12），硬区间 4–30s（万相 3.0） |
 | `--mode new\|extend` | new=完整新稿；extend=续写稿 |
 | `--track 1\|2\|3\|4` | **赛道分流**（〇·0：1 国内剧 / 2 海外剧 / 3 解说叙事 / 4 其他），默认 `1`。**仅赛道 3 改变判定**：C14 篇幅卡口豁免、改判 C14n；其余赛道口径不变 |
 | `--combat on\|off\|auto` | **C21 打戏护栏触发门**，默认 `auto`：打戏信号词达阈值即启用 C21，文戏稿自动跳过；`on` / `off` 为强制开关 |
@@ -238,7 +238,7 @@ C1b C2d C6b C7b C7c C11b C12b C14n C16a C16b C16c C16d C17b C17c C17d C17e C17f 
 |---|---|---|
 | H1 | 字段集 | Ref2VA 六段齐全且顺序正确（subject_definitions/summary/retention_analysis/detailed_description/overall_soundscape/non_diegetic_music）；基础模式三字段齐全 |
 | H2 | 镜号/切点 | [Shot 1] 不得带时间戳；[Shot N] 切点 MM:SS.mmm 严格递增；**切镜动词须用官方绑定短语**（`the camera/shot cuts to…`；中文「镜头切至」与 cross-dissolve/fade/wipe → WARN，2026-10-02 官方复核） |
-| H3 | 时长 | 声明时长落在 4–15s；最后切点 ≤15s |
+| H3 | 时长 | 声明时长落在 4–30s；最后切点 ≤30s（万相 3.0） |
 | H4 | 语言 | **正文应为英文**（官方 base-en/ref-en "Write all six rewrite sections in English"；`<d>` 与双引号画内文字之外的正文出现中文 → WARN）；`<d>` 内必须带语言标签（`<d>[Chinese] 原文</d>`），台词保原语言 |
 | H5 | 参考标签 | 标签先定义后引用；summary 不引新标签；定义项 >9 告警（素材上限图 9 张）；定义了却未引用 → 告警 |
 | H6 | 保留度标记 | 只用合法英文固定值（fully_preserved/partially_preserved/attribute_transfer/weak_reference 等）；retention_analysis 不写 (Sx) |

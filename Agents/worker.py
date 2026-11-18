@@ -214,7 +214,7 @@ def revision_brief(stage, task_line, draft, critic_report, machine_report):
         sections.append("按失败项补上点名的字段。不要把整份分镜换成一次「补全」。")
     if stage == "feed":
         sections.append(
-            "时长不够就按分镜时长拆单元写回，禁止把超过 15 秒的跨度钳成 15，禁止缩短总时长或删对白。"
+            "时长不够就按分镜时长拆单元写回，禁止把超过 30 秒的跨度钳成 30，禁止缩短总时长或删对白。"
             "对照当前骨架只改正文：保留已经填好的单元，补上还空着的字段。"
             "不要另起 JSON，不要改字段名，不要丢掉单元标题、duration、画面风格锁定句或镜号。"
         )

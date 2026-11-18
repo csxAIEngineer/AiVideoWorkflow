@@ -488,7 +488,7 @@ def _board_rows(spec):
 
 
 def _shot_slices(board, unit_count):
-    """Shots packed into each unit, using the same 15s groups as feed packing."""
+    """Shots packed into each unit, using the same packed groups as feed packing."""
     empty = [[] for _ in range(unit_count)]
     if not board or unit_count <= 0:
         return empty

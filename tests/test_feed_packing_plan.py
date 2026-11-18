@@ -628,11 +628,11 @@ class PackingPlanTest(unittest.TestCase):
             "## S02",
             "时长：5",
             "## S03",
-            "时长：16",
+            "时长：31",
         ))
         result = run_feed_loop(
             board,
-            shots=[{"duration": 6}, {"duration": 5}, {"duration": 16}],
+            shots=[{"duration": 6}, {"duration": 5}, {"duration": 31}],
             locks={"model": "h3"},
             max_attempts=2,
             complete=complete,
@@ -640,7 +640,7 @@ class PackingPlanTest(unittest.TestCase):
         )
         self.assertEqual(result["status"], "pass", result.get("machine_report"))
         self.assertEqual(result["attempts"], 2)
-        self.assertEqual(_declared(result["feed"]), [11, 16])
+        self.assertEqual(_declared(result["feed"]), [11, 31])
         self.assertNotIn("duration: 15", result["feed"])
         self.assertIn("但习惯，不代表没事。", _unit_chunks(result["feed"])[0])
         self.assertIn("## 【封装单元 2/2】", result["feed"])
@@ -651,7 +651,7 @@ class PackingPlanTest(unittest.TestCase):
         split_errors = feed_duration_failures(
             result["feed"],
             board,
-            [{"duration": 6}, {"duration": 5}, {"duration": 16}],
+            [{"duration": 6}, {"duration": 5}, {"duration": 31}],
         )
         self.assertTrue(any("必须把这一镜拆开" in item for item in split_errors), split_errors)
         self.assertFalse(any("时长被压缩" in item for item in split_errors), split_errors)
