@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY AI/__init__.py AI/script.py AI/api.py AI/server.py AI/vision.py ./AI/
 COPY AI/agent ./AI/agent
 COPY AI/qwen_api ./AI/qwen_api
+COPY AI/minimax_api ./AI/minimax_api
 COPY AI/skills ./AI/skills
 COPY Agents ./Agents
 COPY end ./end
