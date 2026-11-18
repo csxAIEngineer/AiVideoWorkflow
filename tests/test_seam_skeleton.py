@@ -173,6 +173,84 @@ class SeamFoldTest(unittest.TestCase):
         self.assertIn("开场已经写好", skeleton)
         self.assertEqual(skeleton.count("封装单元 1/3"), 2)
 
+    def test_first_frame_start_size_is_locked_to_previous_end(self):
+        folded = fold_seam_entries([
+            {
+                "shot_id": "封装单元 1/3",
+                "d_lock": "none",
+                "start_size": "全景",
+                "end_size": "中近景",
+            },
+            {
+                "shot_id": "封装单元 2/3",
+                "d_lock": "1",
+                "reason": "动作还在继续",
+                "start_size": "特写",
+                "end_size": "近景",
+                "action_continuous": True,
+                "camera_change": True,
+                "camera_from": "侧面",
+                "camera_to": "正面",
+                "tail_croppable": True,
+                "crop_plan": "人在场，朝向可用，背景锚点可见，无压屏",
+            },
+            {
+                "shot_id": "封装单元 3/3",
+                "d_lock": "2",
+                "reason": "换场",
+                "start_size": "中景",
+                "end_size": "近景",
+                "camera_change": True,
+                "camera_from": "左",
+                "camera_to": "右",
+            },
+        ], _units())
+        self.assertEqual(folded[1]["d_lock"], "1")
+        self.assertEqual(folded[1]["start_size"], "中近景")
+        self.assertEqual(folded[1]["end_size"], "近景")
+        self.assertEqual(folded[2]["start_size"], "中景")
+        report = check_seam_ledger({"entries": folded}, _units())
+        self.assertNotIn("两侧景别必须同档", report["report"], report["report"])
+
+    def test_prompts_lock_first_frame_start_size_to_previous_end(self):
+        draft = json.dumps({
+            "seam_ledger": {
+                "entries": fold_seam_entries([
+                    {
+                        "shot_id": "封装单元 1/3",
+                        "d_lock": "none",
+                        "start_size": "全景",
+                        "end_size": "中近景",
+                    },
+                    {
+                        "shot_id": "封装单元 2/3",
+                        "d_lock": "1",
+                        "start_size": "特写",
+                        "end_size": "近景",
+                        "action_continuous": True,
+                        "camera_change": True,
+                        "camera_from": "侧面",
+                        "camera_to": "正面",
+                        "tail_croppable": True,
+                        "crop_plan": "人在场，朝向可用，背景锚点可见，无压屏",
+                    },
+                ], _units()),
+            },
+        }, ensure_ascii=False)
+        brief = generator_messages({
+            "attempt": 1,
+            "units": _units(),
+            "draft": draft,
+            "source": "剧本",
+            "storyboard": "分镜",
+            "critic_report": {"verdict": "revise", "issues": []},
+            "machine_report": {"errors": [], "warnings": []},
+        })[-1]["content"]
+        self.assertIn("① 的起镜景别由程序锁成上一单元的末镜景别", brief)
+        self.assertIn('"start_size": "中近景"', brief)
+        self.assertIn("① 的起镜景别由程序锁成上一单元的末镜景别", GENERATOR_SYSTEM)
+
+
 
 if __name__ == "__main__":
     unittest.main()

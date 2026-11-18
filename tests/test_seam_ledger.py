@@ -62,7 +62,7 @@ def _entry(shot_id, prev, lock, **extra):
             "4": "same_scene",
         }[lock],
         "action_continuous": lock == "1",
-        "end_size": "" if lock == "none" else "中景",
+        "end_size": "中景",
         "start_size": "中景",
         "camera_change": lock in ("1", "2", "4"),
         "camera_from": "" if lock == "none" else "平视左",
@@ -167,8 +167,8 @@ class MachineCheckTest(unittest.TestCase):
         self.assertIn("换机位", report["report"])
 
         loose_size = apply_submit_params([
-            _entry("S01", "", "none"),
-            _entry("S02", "S01", "1", end_size="全景", start_size="中景"),
+            _entry("S01", "", "none", end_size="全景"),
+            _entry("S02", "S01", "1", start_size="中景", end_size="中景"),
         ], shots)
         report = check_seam_ledger({"entries": loose_size}, shots)
         self.assertIn("同档", report["report"])
@@ -179,6 +179,26 @@ class MachineCheckTest(unittest.TestCase):
         ], shots)
         report = check_seam_ledger({"entries": bare}, shots)
         self.assertIn("可截", report["report"])
+
+
+    def test_first_frame_size_matches_previous_end_not_this_units_end(self):
+        shots = [_shot("S01", ["图1"]), _shot("S02", ["图1"])]
+        aligned = apply_submit_params([
+            _entry("S01", "", "none", start_size="全景", end_size="中近景"),
+            _entry("S02", "S01", "1", start_size="中近景", end_size="近景"),
+        ], shots)
+        report = check_seam_ledger({"entries": aligned}, shots)
+        self.assertNotIn("同档", report["report"], report["report"])
+        self.assertTrue(report["ok"], report["report"])
+
+        mismatched = apply_submit_params([
+            _entry("S01", "", "none", start_size="全景", end_size="中近景"),
+            _entry("S02", "S01", "1", start_size="特写", end_size="特写"),
+        ], shots)
+        report = check_seam_ledger({"entries": mismatched}, shots)
+        self.assertFalse(report["ok"])
+        self.assertIn("同档", report["report"])
+        self.assertIn("S02", report["report"])
 
     def test_hard_cut_freeze_words_and_reference_mix_fail(self):
         shots = [_shot("S01", ["图1"]), _shot("S02", ["图1"])]

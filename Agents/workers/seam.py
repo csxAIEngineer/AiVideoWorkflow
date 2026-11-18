@@ -63,6 +63,7 @@ GENERATOR_SYSTEM = "\n".join((
     "D 锁仍然记 ①②③④。video_mode 不按 D 锁编号选。",
     "起镜景别 start_size 和末镜景别 end_size 只能是：%s。"
     "不在景别阶梯上的词要改成阶梯里的词，不要自造景别。"
+    "① 的起镜景别由程序锁成上一单元的末镜景别。不要改这个槽。本单元末镜可以是另一档。"
     % "、".join(SIZE_LADDER),
     "简报里的段缝骨架是程序写好的。只填或修改骨架里的槽。"
     "不要另起包装，不要删行，不要改 shot_id，不要丢掉必填槽名。",
@@ -239,6 +240,7 @@ def format_seam_skeleton(state):
         "scene_relation 只能是：%s。" % "、".join(SCENE_RELATIONS),
         "起镜景别 start_size 和末镜景别 end_size 只能是：%s。" % "、".join(SIZE_LADDER),
         "不在景别阶梯上的值必须改成其中之一，不要自造景别。",
+        "① 的起镜景别由程序锁成上一单元的末镜景别。不要改这个槽。本单元末镜可以是另一档。",
         "第一个单元 d_lock 是 none。后面的单元 d_lock 只能是 1、2、3、4。",
         "video_mode 只能是 first_frame 或 reference。不要写 text，也不要写 first_last_frame。",
         "保留已经填对的槽。修补时只补空槽，并只改机检点名的失败项。",
