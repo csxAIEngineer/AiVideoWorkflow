@@ -988,16 +988,16 @@ class OfficialModeTest(unittest.TestCase):
         self.assertEqual(opening[0]["first_frame_source"], "none")
 
     def test_empty_unit_images_still_reference_and_bind_storyboard_stills(self):
-        feed = "\n\n".join((_h3_unit(1, 2, 10), _h3_unit(2, 2, 10)))
+        feed = "\n\n".join((_h3_unit(1, 2, 20), _h3_unit(2, 2, 11)))
         assets = [
             {"id": "图1", "title": "小君", "subject": "小君", "subject_kind": "character"},
             {"id": "图2", "title": "药盒", "subject": "药盒", "subject_kind": "prop"},
             {"id": "图3", "title": "小君房间", "subject": "房间", "subject_kind": "location"},
         ]
         board = [
-            _shot("S01", ["图1"], duration=5),
-            _shot("S02", ["图2"], duration=5),
-            _shot("S03", ["图3"], duration=10),
+            _shot("S01", ["图1"], duration=10),
+            _shot("S02", ["图2"], duration=10),
+            _shot("S03", ["图3"], duration=11),
         ]
         spec = {"feed": feed, "assets": assets, "shots": board}
         units = packed_units(spec)

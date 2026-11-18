@@ -33,7 +33,7 @@ from end.seam_ledger import packed_units
 from end.stage_runner import feed_duration_failures, group_shot_durations
 
 SHOTS = [6, 5, 5, 6, 6, 4, 6, 7, 5, 6]
-PLANNED = [11, 11, 10, 13, 11]
+PLANNED = [16, 16, 13, 11]
 LINE = "小君：（轻叹）三天没洗，贴得跟浆糊似的。"
 EXACT = "男主：别改了。"
 MISSING = "小君：怎么，一直看着我？"
@@ -89,15 +89,15 @@ def _unit_chunks(text):
 
 
 class PackingPlanTest(unittest.TestCase):
-    def test_groups_aim_for_eight_to_ten_seconds_and_do_not_leave_a_short_tail(self):
+    def test_groups_fill_up_to_20_seconds_and_do_not_merge_past_it(self):
         # Official 473b653d4de5 storyboard lengths: last scene had six beats in 20s.
         shots = [5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 3, 3, 3, 3]
         groups = group_shot_durations(shots)
         totals = [sum(group) for group in groups]
         self.assertEqual([item for group in groups for item in group], shots)
         self.assertEqual(sum(totals), 60)
-        self.assertEqual(totals, [10, 10, 10, 10, 11, 9])
-        self.assertTrue(all(8 <= total <= 11 for total in totals), totals)
+        self.assertEqual(totals, [20, 20, 20])
+        self.assertTrue(all(total <= 20 for total in totals), totals)
 
     def test_fifteen_second_groups_sum_the_storyboard(self):
         groups = group_shot_durations(SHOTS)
@@ -106,7 +106,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertEqual(sum(PLANNED), 56)
 
     def test_a_short_draft_is_overwritten_with_the_planned_sums(self):
-        draft = _units([5, 5, 6, 6, 5], ["a", "b", "c", "d", "e"])
+        draft = _units([5, 5, 6, 5], ["a", "b", "c", "d"])
         fixed = correct_unit_durations(draft, group_shot_durations(SHOTS))
         self.assertEqual(_declared(fixed), PLANNED)
         self.assertNotIn("duration: 5\n", fixed)
@@ -114,7 +114,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertFalse(errors, errors)
 
     def test_a_compound_duration_line_is_replaced_by_the_unit_sum(self):
-        draft = _units([5, 5, 6, 6, 5], ["a", "b", "c", "d", "e"]).replace(
+        draft = _units([5, 5, 6, 5], ["a", "b", "c", "d"]).replace(
             "duration: 5",
             "duration: 5+5+6+6+5 = 27s",
             1,
@@ -125,7 +125,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertEqual(_declared(fixed), PLANNED)
 
     def test_correct_durations_are_left_unchanged(self):
-        draft = _units(PLANNED, ["a", "b", "c", "d", "e"])
+        draft = _units(PLANNED, ["a", "b", "c", "d"])
         self.assertEqual(correct_unit_durations(draft, group_shot_durations(SHOTS)), draft)
 
     def test_a_different_unit_count_is_materialized_from_the_plan(self):
@@ -192,19 +192,18 @@ class PackingPlanTest(unittest.TestCase):
         }
         result = apply_packing_plan(draft, state)
         chunks = _unit_chunks(result)
-        self.assertEqual(len(chunks), 3, result)
-        self.assertEqual(_declared(result), [11, 9, 14])
+        self.assertEqual(len(chunks), 2, result)
+        self.assertEqual(_declared(result), [16, 18])
         self.assertNotIn("\nduration: 6\n", "\n" + result)
         self.assertIn("[Shot 1]", chunks[0])
         self.assertIn("[Shot 2]", chunks[0])
         self.assertIn("At 00:06.000", chunks[0])
         self.assertIn("自语：杯子还是脏的。", chunks[0])
         self.assertIn("但习惯，不代表没事。", chunks[0])
-        self.assertIn("男主（温和）：「别改了。」", chunks[1])
+        self.assertIn("男主（温和）：「别改了。」", chunks[0])
+        self.assertNotIn("男主（温和）：「别改了。」", chunks[1])
         self.assertIn("我替她做了个决定。今晚，眼睛先下班。", chunks[1])
-        self.assertNotIn("男主（温和）：「别改了。」", chunks[0])
-        self.assertNotIn("小君（带笑）：「怎么，一直看着我？」", chunks[1])
-        self.assertIn("小君（带笑）：「怎么，一直看着我？」", chunks[2])
+        self.assertIn("小君（带笑）：「怎么，一直看着我？」", chunks[1])
         self.assertIn("\ndetailed_description:\n", chunks[1])
         self.assertNotIn("overall_soundscape:\n<d>", result)
         for word in ("末态继承", "拼接节点", "换机位", "可变数据"):
@@ -225,11 +224,10 @@ class PackingPlanTest(unittest.TestCase):
 
     def test_the_brief_and_the_written_draft_use_the_plan_without_a_model(self):
         bad = _units(
-            [5, 5, 6, 6, 5],
+            [5, 5, 6, 5],
             [
                 "<d>[Chinese] 三天没洗，贴得跟浆糊似的。</d>",
                 "<d>[Chinese] %s</d>" % EXACT,
-                "She waits.",
                 "She waits.",
                 "She waits.",
             ],
@@ -268,8 +266,8 @@ class PackingPlanTest(unittest.TestCase):
         )
         self.assertEqual(result["status"], "pass", result.get("machine_report"))
         self.assertEqual(result["attempts"], 1)
-        self.assertIn("6+5=11", prompts[0])
-        self.assertIn("【封装单元 1/5】镜头 1-2：6+5=11", prompts[0])
+        self.assertIn("6+5+5=16", prompts[0])
+        self.assertIn("【封装单元 1/4】镜头 1-3：6+5+5=16", prompts[0])
         self.assertIn(LINE, prompts[0])
         self.assertIn(EXACT, prompts[0])
         self.assertEqual(_declared(result["feed"]), PLANNED)
@@ -294,8 +292,8 @@ class PackingPlanTest(unittest.TestCase):
         state["locks"] = {"model": "h3"}
         note = packing_plan_note(state)
         self.assertEqual(H3_SECTIONS, _H3_SECTIONS)
-        self.assertIn("6+5=11", note)
-        self.assertIn("【封装单元 1/5】镜头 1-2：6+5=11", note)
+        self.assertIn("6+5+5=16", note)
+        self.assertIn("【封装单元 1/4】镜头 1-3：6+5+5=16", note)
         self.assertIn(LINE, note)
         scaffold = h3_packing_scaffold(packing_groups(state))
         self.assertIn(scaffold, note)
@@ -310,10 +308,10 @@ class PackingPlanTest(unittest.TestCase):
         self.assertNotIn("\nsummary:", scaffold)
         self.assertNotIn("\nretention_analysis:", scaffold)
         chunks = scaffold.split("## 【封装单元 ")
-        self.assertEqual(len(chunks), 6)
+        self.assertEqual(len(chunks), 5)
         for index, seconds in enumerate(PLANNED, 1):
             block = "## 【封装单元 " + chunks[index]
-            self.assertTrue(block.startswith("## 【封装单元 %s/5】" % index))
+            self.assertTrue(block.startswith("## 【封装单元 %s/4】" % index))
             self.assertIn("\nduration: %s\n" % seconds, block)
             positions = [block.index("\n%s:" % name) for name in H3_SECTIONS]
             self.assertEqual(positions, sorted(positions))
@@ -322,11 +320,11 @@ class PackingPlanTest(unittest.TestCase):
         messages = generator_messages(dict(state, attempt=0, source=state["storyboard"]))
         self.assertIn("不要自己发明 Ref2VA 版式", messages[0]["content"])
         self.assertIn(H3_SUBJECT_SOUND_RULE, messages[0]["content"])
-        self.assertIn("## 【封装单元 5/5】", messages[-1]["content"])
+        self.assertIn("## 【封装单元 4/4】", messages[-1]["content"])
         self.assertIn("\nnon_diegetic_music:", messages[-1]["content"])
         seedance = dict(state, locks={"model": "2.5"})
         seedance_note = packing_plan_note(seedance)
-        self.assertIn("6+5=11", seedance_note)
+        self.assertIn("6+5+5=16", seedance_note)
         self.assertNotIn("subject_definitions:", seedance_note)
         self.assertNotIn(H3_SUBJECT_SOUND_RULE, seedance_note)
         seedance_system = generator_messages(dict(seedance, attempt=0, source="分镜"))[0]["content"]
@@ -335,12 +333,12 @@ class PackingPlanTest(unittest.TestCase):
 
     def test_json_blob_unwraps_nested_units_for_the_h3_check(self):
         inner = []
-        for index in range(1, 6):
+        for index in range(1, 5):
             shot = "[Shot 1] beat %s." % index
             if index == 1:
                 shot += " <d>[Chinese] 三天没洗，贴得跟浆糊似的。</d>"
             inner.append("\n".join((
-                "## 【封装单元 %s/5】" % index,
+                "## 【封装单元 %s/4】" % index,
                 "duration: 6",
                 "summary:",
                 "summary-body-%s" % index,
@@ -365,9 +363,9 @@ class PackingPlanTest(unittest.TestCase):
         self.assertNotIn("\nduration: 6\n", "\n" + restored)
         self.assertEqual(_declared(restored), PLANNED)
         chunks = _unit_chunks(restored)
-        self.assertEqual(len(chunks), 5)
+        self.assertEqual(len(chunks), 4)
         for index, chunk in enumerate(chunks, 1):
-            self.assertTrue(chunk.startswith("## 【封装单元 %s/5】" % index))
+            self.assertTrue(chunk.startswith("## 【封装单元 %s/4】" % index))
             positions = [chunk.index("\n%s:\n" % name) for name in H3_SECTIONS]
             self.assertEqual(positions, sorted(positions))
             self.assertNotIn("summary-body-%s" % index, chunk)
@@ -377,7 +375,7 @@ class PackingPlanTest(unittest.TestCase):
             self.assertIn("<Subject 1> is a woman standing indoors.", chunk)
             self.assertIn("Room tone.", chunk)
             self.assertNotIn("fully_preserved", chunk)
-            for other in range(1, 6):
+            for other in range(1, 5):
                 if other == index:
                     continue
                 self.assertNotIn("summary-body-%s" % other, chunk)
@@ -394,14 +392,14 @@ class PackingPlanTest(unittest.TestCase):
         self.assertEqual(_unit_chunks(seedance), [])
         self.assertIn(LINE, seedance)
 
-    def test_merged_markdown_shell_becomes_five_units(self):
+    def test_merged_markdown_shell_becomes_four_units(self):
         inner = "\n\n".join(
             "\n".join((
-                "## 【封装单元 %s/5】" % index,
+                "## 【封装单元 %s/4】" % index,
                 "duration: 6",
                 "[Shot 1] beat %s." % index,
             ))
-            for index in range(1, 6)
+            for index in range(1, 5)
         )
         shell = "\n".join((
             "duration: 6",
@@ -422,7 +420,7 @@ class PackingPlanTest(unittest.TestCase):
         state["locks"] = {"model": "h3"}
         restored = apply_packing_plan(shell, state)
         chunks = _unit_chunks(restored)
-        self.assertEqual(len(chunks), 5, restored)
+        self.assertEqual(len(chunks), 4, restored)
         self.assertEqual(_declared(restored), PLANNED)
         self.assertEqual(h3_structure_report(restored), "")
         for index, chunk in enumerate(chunks, 1):
@@ -438,7 +436,7 @@ class PackingPlanTest(unittest.TestCase):
     def test_omitted_sections_are_stripped_and_the_gate_still_runs(self):
         body = "\n\n".join(
             "\n".join((
-                "## 【封装单元 %s/5】" % index,
+                "## 【封装单元 %s/4】" % index,
                 "duration: %s" % seconds,
                 "subject_definitions:",
                 "<Subject 1> is a woman standing indoors.",
@@ -522,10 +520,9 @@ class PackingPlanTest(unittest.TestCase):
 
     def test_duration_and_spoken_lines_still_restore_on_a_markdown_draft(self):
         draft = _units(
-            [6, 6, 6, 6, 6],
+            [6, 6, 6, 6],
             [
                 "<d>[Chinese] 三天没洗，贴得跟浆糊似的。</d>",
-                "She waits.",
                 "She waits.",
                 "She waits.",
                 "She waits.",
@@ -676,7 +673,7 @@ LOCK = "画面风格：" + STYLE
 
 
 def _three_state():
-    shots = (8, 8, 8)
+    shots = (11, 11, 11)
     rows = []
     for index, seconds in enumerate(shots, 1):
         rows.append("## S%02d" % index)
@@ -699,7 +696,7 @@ def _official_markdown():
     for index, (subject, shot) in enumerate(prose, 1):
         blocks.append("\n".join((
             "## 【封装单元 %s/3】" % index,
-            "duration: 8",
+            "duration: 11",
             "subject_definitions:",
             LOCK,
             subject,
@@ -719,7 +716,7 @@ class SkeletonFoldTest(unittest.TestCase):
         feed = "\n\n".join((
             "\n".join((
                 "## 【封装单元 1/3】",
-                "duration: 8",
+                "duration: 11",
                 "Subject 1: a woman by the glass",
                 "[Shot 1] She looks out.",
                 "Soundscape: glass tick",
@@ -727,7 +724,7 @@ class SkeletonFoldTest(unittest.TestCase):
             )),
             "\n".join((
                 "## 【封装单元 2/3】",
-                "duration: 8",
+                "duration: 11",
                 "Subject 1: a man at the door",
                 "[Shot 1] He waits.",
                 "Soundscape: hallway",
@@ -735,7 +732,7 @@ class SkeletonFoldTest(unittest.TestCase):
             )),
             "\n".join((
                 "## 【封装单元 3/3】",
-                "duration: 8",
+                "duration: 11",
                 "Subject 1: the empty room",
                 "[Shot 1] The door shuts.",
                 "Soundscape: quiet",
@@ -824,7 +821,7 @@ class SkeletonFoldTest(unittest.TestCase):
         state = _three_state()
         draft = "\n".join((
             "## 【封装单元 1/1】",
-            "duration: 8",
+            "duration: 11",
             "<d>[Chinese] 别改了。</d>",
         ))
         folded = apply_packing_plan(draft, state)

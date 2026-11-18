@@ -18,7 +18,7 @@ from end.gates import (
     unverified_claim,
 )
 from end.intake import enrich_brief, load_intake, writer_upload_block
-from end.locks import clip_limit, lock_brief
+from end.locks import clip_limit, lock_brief, pack_limit
 from end.product_names import (
     DRAFT_NAME,
     EMPTY_DRAFT,
@@ -799,7 +799,7 @@ _INSTRUCTION = {
         H3_SUBJECT_SOUND_RULE,
         "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
         "四段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
-        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 %s 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。" % (UNIT_NAME, clip_limit()),
+        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 %s 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。" % (UNIT_NAME, pack_limit()),
         "每个 Subject 必须对应 assets.md 里已经有的图。没有关键帧资产就不要写 Picture。",
         "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
     )),
@@ -2073,7 +2073,7 @@ def _cut_moment(seconds):
 def _expand_overlong_unit(block, limit=None):
     """Move shots whose cut is past the clip limit into a following unit and rebase that unit."""
     if limit is None:
-        limit = clip_limit()
+        limit = pack_limit()
     cap = float(limit) + 0.001
     lines = str(block or "").splitlines()
     start, end = _detail_span(lines)
@@ -2137,7 +2137,7 @@ def _unit_over_cap(text):
             (int(match.group(1)), int(match.group(2)) * 60 + int(match.group(3)) + int(match.group(4)) / 1000)
             for match in _SHOT_CLOCK.finditer(block)
         ):
-            if seconds > float(clip_limit()) + 0.001:
+            if seconds > float(pack_limit()) + 0.001:
                 return True
     return False
 
@@ -2263,23 +2263,25 @@ def group_shot_durations(
     locks=None,
     minimum=4,
     target_min=8,
-    target_max=10,
+    target_max=None,
     merge_limit=None,
 ):
     """Pack consecutive shot lengths into render units.
 
-    Aim for 8–10 seconds so adjacent units can be spliced with first and last
-    frames. The hard range is ``minimum``–``limit`` (4–30 on Wan 3.0, including
-    merged units). A unit never stays in range by shortening a shot. A shot
-    longer than ``limit`` stays in its own unit at its real length so the
-    caller can split the shot instead of clamping. A leftover shorter than
-    ``minimum`` is kept only when no legal merge exists. D-lock marks are
-    not available yet, so they do not split a unit.
+    Aim to stay within ``target_max`` (20 seconds on Wan 3.0). A span over
+    20 seconds is split rather than packed together. The hard render cap is
+    ``limit`` (30 on Wan 3.0). A unit never stays in range by shortening a
+    shot. A shot longer than ``limit`` stays in its own unit at its real
+    length so the caller can split the shot instead of clamping. A leftover
+    shorter than ``minimum`` is kept only when no legal merge exists.
+    D-lock marks are not available yet, so they do not split a unit.
     """
     if limit is None:
         limit = clip_limit(locks=locks)
+    if target_max is None:
+        target_max = pack_limit(locks=locks)
     if merge_limit is None:
-        merge_limit = limit
+        merge_limit = target_max
     shots = []
     for raw in durations or []:
         try:
@@ -2315,12 +2317,10 @@ def _pack_shot_durations(shots, limit, minimum, target_min, target_max, merge_li
             return None
         if total + 1e-6 < minimum:
             return 1000.0 + (minimum - total)
-        if total + 1e-6 < target_min:
-            # Staying under 8s is always worse than a legal unit over the aim.
-            return 100.0 + (target_min - total) ** 2
         if total > target_max + 1e-6:
             return (total - target_max) ** 2
-        return 0.0
+        # Prefer filling up to the pack target (20s on Wan 3.0).
+        return (target_max - total) ** 2
 
     infinite = 10 ** 18
     best = [(0.0, -1)] + [(infinite, -1)] * count
@@ -2390,12 +2390,13 @@ def feed_duration_failures(feed, storyboard="", shots=None, limit=None, locks=No
 
     Merging shots into one unit is allowed. The sum of declared unit
     durations must not fall below the storyboard total, spoken lines must
-    remain, and a storyboard span over ``limit`` must be split rather than
-    clamped. A feed that has not declared a duration yet is not failed here.
+    remain, and a storyboard span over the pack target (20s on Wan 3.0)
+    must be split rather than clamped. The hard render cap is ``clip_limit``
+    (30s). A feed that has not declared a duration yet is not failed here.
     The format checker still owns missing-field warnings.
     """
     if limit is None:
-        limit = clip_limit(locks=locks)
+        limit = pack_limit(locks=locks)
     durations = []
     for shot in shots or []:
         if isinstance(shot, dict) and shot.get("duration") not in (None, ""):
@@ -2590,7 +2591,7 @@ def _shot_groups(pieces):
         if seconds is None:
             seconds = last
         last = seconds
-        cap = clip_limit()
+        cap = pack_limit()
         if current and seconds >= origin + cap:
             groups.append((origin, current))
             origin = int(seconds // cap) * cap
