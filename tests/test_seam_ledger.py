@@ -292,7 +292,7 @@ class SubmitAndPackingTest(unittest.TestCase):
         self.assertEqual(framed, [{"role": "first_frame", "url": "https://cdn.example/tail.jpg"}])
 
     def test_collect_steps_reads_fields_from_packed_units(self):
-        self.assertEqual(group_shot_durations([5, 5, 6]), [[5, 5], [6]])
+        self.assertEqual(group_shot_durations([5, 5, 6]), [[5, 5, 6]])
         self.assertEqual(group_shot_durations([5, 5], locks=["2", "2"]), [[5, 5]])
         feed = "\n\n".join((
             "## 【封装单元 1/2】\nduration: 10\nsubject_definitions:\n<Subject 1>: a woman\ndetailed_description:\nShe stays.\noverall_soundscape:\nroom\nnon_diegetic_music:\nN/A",
@@ -988,7 +988,7 @@ class OfficialModeTest(unittest.TestCase):
         self.assertEqual(opening[0]["first_frame_source"], "none")
 
     def test_empty_unit_images_still_reference_and_bind_storyboard_stills(self):
-        feed = "\n\n".join((_h3_unit(1, 2, 10), _h3_unit(2, 2, 6)))
+        feed = "\n\n".join((_h3_unit(1, 2, 10), _h3_unit(2, 2, 10)))
         assets = [
             {"id": "图1", "title": "小君", "subject": "小君", "subject_kind": "character"},
             {"id": "图2", "title": "药盒", "subject": "药盒", "subject_kind": "prop"},
@@ -997,7 +997,7 @@ class OfficialModeTest(unittest.TestCase):
         board = [
             _shot("S01", ["图1"], duration=5),
             _shot("S02", ["图2"], duration=5),
-            _shot("S03", ["图3"], duration=6),
+            _shot("S03", ["图3"], duration=10),
         ]
         spec = {"feed": feed, "assets": assets, "shots": board}
         units = packed_units(spec)

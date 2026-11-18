@@ -2257,9 +2257,6 @@ def format_seconds(value):
     return text or "0"
 
 
-PACK_MERGE_LIMIT = 15
-
-
 def group_shot_durations(
     durations,
     limit=None,
@@ -2272,18 +2269,17 @@ def group_shot_durations(
     """Pack consecutive shot lengths into render units.
 
     Aim for 8–10 seconds so adjacent units can be spliced with first and last
-    frames. Merging is allowed, but a merged unit still stays within
-    ``minimum``–``merge_limit`` (4–15). A single shot may be as long as the
-    clip ``limit`` (30 on Wan 3.0) and is never shortened. A shot longer than
-    ``limit`` stays in its own unit at its real length so the caller can split
-    the shot instead of clamping. A leftover shorter than ``minimum`` is kept
-    only when no legal merge exists. D-lock marks are not available yet, so
-    they do not split a unit.
+    frames. The hard range is ``minimum``–``limit`` (4–30 on Wan 3.0, including
+    merged units). A unit never stays in range by shortening a shot. A shot
+    longer than ``limit`` stays in its own unit at its real length so the
+    caller can split the shot instead of clamping. A leftover shorter than
+    ``minimum`` is kept only when no legal merge exists. D-lock marks are
+    not available yet, so they do not split a unit.
     """
     if limit is None:
         limit = clip_limit(locks=locks)
     if merge_limit is None:
-        merge_limit = min(PACK_MERGE_LIMIT, limit)
+        merge_limit = limit
     shots = []
     for raw in durations or []:
         try:
@@ -2297,7 +2293,7 @@ def group_shot_durations(
 
 def _pack_shot_durations(shots, limit, minimum, target_min, target_max, merge_limit=None):
     if merge_limit is None:
-        merge_limit = min(PACK_MERGE_LIMIT, limit)
+        merge_limit = limit
     count = len(shots)
     if not count:
         return []
@@ -2320,7 +2316,7 @@ def _pack_shot_durations(shots, limit, minimum, target_min, target_max, merge_li
         if total + 1e-6 < minimum:
             return 1000.0 + (minimum - total)
         if total + 1e-6 < target_min:
-            # Staying under 8s is always worse than a legal 11–15s unit.
+            # Staying under 8s is always worse than a legal unit over the aim.
             return 100.0 + (target_min - total) ** 2
         if total > target_max + 1e-6:
             return (total - target_max) ** 2

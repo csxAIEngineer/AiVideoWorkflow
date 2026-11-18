@@ -156,7 +156,7 @@ def packing_plan_note(state):
         total = sum(sum(group) for group in groups)
         lines = [
             "分镜时长合计 %ss。可以合并镜头。总时长不得短于这个数，对白不得删。"
-            "每段尽量 8 到 10 秒，方便前后帧接长镜。合并后不超过 15 秒。"
+            "每段尽量 8 到 10 秒，方便前后帧接长镜。硬区间 4 到 30 秒。"
             "单镜最长 30 秒，超过 30 秒就拆成下一单元，禁止钳成 30，也禁止留下短于 4 秒的段。"
             % runner.format_seconds(total),
             "这些单元的 duration 已经算好，按这个写，不要自己另分组，也不要把时长写短：",
@@ -227,7 +227,7 @@ _SHOT_BOUNDARY = re.compile(r"(?=\[Shot\s+\d+\])")
 def correct_unit_durations(text, groups, h3=None):
     """Write the planned heading and duration onto every unit.
 
-    The sums are the 8–10s groups (merged units stay within 4–15; a single Wan shot may be 30). A draft that used a shot
+    The sums are the 8–10s groups (hard range 4–30 on Wan 3.0). A draft that used a shot
     length, or that closed early as one unit, is rewritten to this count. A
     span over the clip limit is not clamped. This does not invent a different grouping. When ``h3`` is
     set, a rebuilt unit keeps the four field lines even if a body is empty.

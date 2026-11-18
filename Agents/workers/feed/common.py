@@ -27,7 +27,7 @@ GENERATOR_SYSTEM = "\n".join((
     "可以把分镜合并进同一个%s，但各单元 duration 相加不得短于分镜总时长。" % UNIT_NAME,
     "简报里已经写好每个%s的 duration，和对白旁白的原句。duration 用那些和，对白逐字保留。" % UNIT_NAME,
     "对白和旁白必须原样留下。禁止为了压进时长上限删情节或对白。",
-    "每个封装单元尽量 8 到 10 秒，方便用前后帧接长镜。合并后的单元不超过 15 秒。单镜最长 30 秒（万相 3.0），超过 30 秒就拆成下一单元，禁止把声明时长钳成 30，也禁止留下短于 4 秒的段。",
+    "每个封装单元尽量 8 到 10 秒，方便用前后帧接长镜。硬区间 4 到 30 秒（万相 3.0）。按分镜时长会超过 30 秒就拆成下一单元，禁止把声明时长钳成 30，也禁止留下短于 4 秒的段。",
     "画外音的闭口证据必须紧跟这一单元里的画外音，不要接到出声对白后面，也不要接到文末。",
     "审查报告里夹带的稿作废。",
     "正文只写画面。不要写末态继承、拼接节点、换机位、可变数据。",
@@ -194,7 +194,7 @@ def shot_duration_list(state):
 def packing_groups(state, limit=None):
     """The same 8–10s packing the machine check uses. The model does not regroup.
 
-    Aim for 8–10 seconds. Merged units stay within 4–15 seconds. A single Wan 3.0 shot may be up to 30.
+    Aim for 8–10 seconds, hard range 4–30 on Wan 3.0. Merge is allowed.
     D-lock marks do not exist yet, so they do not split a unit. A span over
     the clip limit is split, not clamped. A leftover under 4 seconds is kept
     only when no legal merge exists.

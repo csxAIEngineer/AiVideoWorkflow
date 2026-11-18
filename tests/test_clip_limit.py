@@ -39,6 +39,7 @@ class ClipLimitTest(unittest.TestCase):
     def test_25s_shot_stays_one_packed_unit(self):
         self.assertEqual(group_shot_durations([25], locks={"model": "h3"}), [[25]])
         self.assertEqual(group_shot_durations([13, 12], locks={"model": "h3"}), [[13], [12]])
+        self.assertEqual(group_shot_durations([5, 5, 6], locks={"model": "h3"}), [[5, 5, 6]])
         self.assertEqual(
             packing_groups({"shots": [{"id": "S01", "duration": 25}], "locks": {"model": "h3"}}),
             [[25]],
