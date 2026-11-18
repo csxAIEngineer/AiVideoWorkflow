@@ -39,7 +39,7 @@ class ClipLimitTest(unittest.TestCase):
             "locks": {"duration_seconds": 25, "model": "h3", "aspect": "16:9"},
         })
         shots = skeleton["shots"]
-        self.assertEqual([shot["duration"] for shot in shots], [13, 12])
+        self.assertEqual([shot["duration"] for shot in shots], [20, 5])
 
     def test_20s_scene_stays_one_shot(self):
         script = (
@@ -56,6 +56,7 @@ class ClipLimitTest(unittest.TestCase):
     def test_packing_stays_within_20s_and_does_not_merge_past_it(self):
         self.assertEqual(group_shot_durations([25], locks={"model": "h3"}), [[25]])
         self.assertEqual(group_shot_durations([13, 12], locks={"model": "h3"}), [[13], [12]])
+        self.assertEqual(group_shot_durations([20, 5], locks={"model": "h3"}), [[20], [5]])
         self.assertEqual(group_shot_durations([5, 5, 6], locks={"model": "h3"}), [[5, 5, 6]])
         self.assertEqual(group_shot_durations([10, 10], locks={"model": "h3"}), [[10, 10]])
         self.assertEqual(

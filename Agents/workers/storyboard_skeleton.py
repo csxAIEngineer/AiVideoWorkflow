@@ -106,7 +106,7 @@ def _split_overlong_shots(shots, limit):
         if duration <= limit:
             out.append(dict(shot))
             continue
-        shares = _distribute(duration, (duration + limit - 1) // limit)
+        shares = _fill_to_limit(duration, limit)
         last = len(shares) - 1
         for index, seconds in enumerate(shares):
             child = dict(shot)
@@ -376,6 +376,37 @@ def _merge_beats(beats, target):
         left["sound_beat"] = _join_cue(left.get("sound_beat"), right.get("sound_beat"))
         left["music_beat"] = _join_cue(left.get("music_beat"), right.get("music_beat"))
     return packed
+
+
+def _fill_to_limit(duration, limit, minimum=4):
+    """Split an overlong span by filling earlier shots up to ``limit``.
+
+    A 25s scene becomes 20+5, not an even 13+12. The last leftover stays at
+    least ``minimum`` seconds when the total allows it; the overall sum is
+    never shortened.
+    """
+    duration = int(duration)
+    limit = int(limit)
+    minimum = int(minimum)
+    if duration <= limit:
+        return [duration]
+    parts = (duration + limit - 1) // limit
+    shares = [limit] * (parts - 1)
+    last = duration - limit * (parts - 1)
+    if last < minimum:
+        need = minimum - last
+        last = minimum
+        index = len(shares) - 1
+        while need > 0 and index >= 0:
+            can = shares[index] - minimum
+            take = min(max(can, 0), need)
+            shares[index] -= take
+            need -= take
+            index -= 1
+        if need > 0:
+            last = duration - sum(shares)
+    shares.append(last)
+    return shares
 
 
 def _distribute(total, count, weights=None):

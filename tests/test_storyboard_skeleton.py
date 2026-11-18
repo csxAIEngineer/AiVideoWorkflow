@@ -434,7 +434,7 @@ class StoryboardH3DurationSplitTest(unittest.TestCase):
         })
         shots = skeleton["shots"]
         self.assertEqual([shot["id"] for shot in shots], ["S01", "S02", "S03", "S04", "S05", "S06"])
-        self.assertEqual([shot["duration"] for shot in shots], [13, 12, 13, 12, 15, 15])
+        self.assertEqual([shot["duration"] for shot in shots], [20, 5, 20, 5, 20, 10])
         self.assertEqual(sum(shot["duration"] for shot in shots), 80)
         self.assertEqual(skeleton["duration_lock"], 80)
         self.assertEqual(
@@ -470,7 +470,7 @@ class StoryboardH3DurationSplitTest(unittest.TestCase):
         })
         shots = skeleton["shots"]
         self.assertEqual([shot["id"] for shot in shots], ["S01", "S02", "S03", "S04", "S05", "S06"])
-        self.assertEqual([shot["duration"] for shot in shots], [13, 12, 13, 12, 15, 15])
+        self.assertEqual([shot["duration"] for shot in shots], [20, 5, 20, 5, 20, 10])
         self.assertEqual(sum(shot["duration"] for shot in shots), 80)
 
 
