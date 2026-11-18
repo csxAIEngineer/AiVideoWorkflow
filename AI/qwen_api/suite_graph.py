@@ -190,9 +190,14 @@ def _skill_node(relatives, model, kind, repair):
         for relative in relatives:
             _mark(state, relative, "进行中")
         try:
+            brief = state.get("brief") or ""
+            if (state.get("task") or "") == "asset":
+                from Agents.workers.asset_skeleton import slice_asset_brief
+
+                brief = slice_asset_brief(brief, relatives)
             messages = [
                 {"role": "system", "content": system},
-                {"role": "user", "content": state.get("brief") or ""},
+                {"role": "user", "content": brief},
             ]
             raw = _complete(model, messages, state.get("model"), kind, label, tokens=tokens, timeout=timeout, trace_path=state.get("trace_path") or "")
             # #region agent log

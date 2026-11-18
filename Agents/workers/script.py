@@ -32,6 +32,12 @@ from Agents.worker import (
 )
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import opening_or_fallback, run_generator
+from Agents.workers.script_skeleton import (
+    format_script_skeleton,
+    restore_script_locks,
+    script_skeleton,
+    script_skeleton_failures,
+)
 
 STAGE = "script"
 TASK = "script"
@@ -156,12 +162,27 @@ def semantic_revision_brief(draft, report):
     return "\n\n".join(sections)
 
 
+
+def _with_skeleton(text, state):
+    skeleton = format_script_skeleton(script_skeleton(state))
+    body = str(text or "").strip()
+    if not skeleton:
+        return body
+    if skeleton in body:
+        return body
+    if not body:
+        return skeleton
+    return "%s\n\n%s" % (body, skeleton)
+
+
 def _first_write_user(state):
     opening = str(state.get("opening") or "").strip()
     if opening:
-        return opening
-    story = str(state.get("source") or "").strip()
-    return "任务：剧本\n\n用户原文\n%s" % story
+        user = opening
+    else:
+        story = str(state.get("source") or "").strip()
+        user = "任务：剧本\n\n用户原文\n%s" % story
+    return _with_skeleton(user, state)
 
 
 def generator_messages(state):
@@ -169,10 +190,11 @@ def generator_messages(state):
     if int(state.get("attempt") or 0) < 1:
         return [system, {"role": "user", "content": _first_write_user(state)}]
     if _semantic_retry(state):
-        return [system, {"role": "user", "content": semantic_revision_brief(
+        user = semantic_revision_brief(
             state.get("draft") or "",
             state.get("semantic_report"),
-        )}]
+        )
+        return [system, {"role": "user", "content": _with_skeleton(user, state)}]
     user = revision_brief(
         STAGE,
         "任务：剧本",
@@ -180,7 +202,7 @@ def generator_messages(state):
         state.get("critic_report"),
         state.get("machine_report"),
     )
-    return [system, {"role": "user", "content": user}]
+    return [system, {"role": "user", "content": _with_skeleton(user, state)}]
 
 
 def critic_messages(state):
@@ -265,18 +287,18 @@ def compile_script_graph(complete, checker=None, reviewer=None):
         attempt = int(state.get("attempt") or 0) + 1
         brief = opening_or_fallback(state, _first_write_user(state))
         if attempt > 1 and _semantic_retry(state):
-            repair_text = semantic_revision_brief(
+            repair_text = _with_skeleton(semantic_revision_brief(
                 state.get("draft") or "",
                 state.get("semantic_report"),
-            )
+            ), state)
         elif attempt > 1:
-            repair_text = revision_brief(
+            repair_text = _with_skeleton(revision_brief(
                 STAGE,
                 "任务：剧本",
                 state.get("draft") or "",
                 state.get("critic_report"),
                 state.get("machine_report"),
-            )
+            ), state)
         else:
             repair_text = ""
         try:
@@ -296,7 +318,7 @@ def compile_script_graph(complete, checker=None, reviewer=None):
             }
         raw = produced.get("raw") or ""
         previous = str(state.get("draft") or "")
-        draft = extract_script(raw, previous)
+        draft = restore_script_locks(extract_script(raw, previous), script_skeleton(state))
         note = "revision_kept_previous" if previous.strip() and draft.strip() == previous.strip() and attempt > 1 else ""
         update = {"attempt": attempt, "draft": draft, "error": "", "generator_note": note}
         update.update(absorb_script(raw))

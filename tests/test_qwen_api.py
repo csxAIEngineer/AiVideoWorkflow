@@ -1022,7 +1022,7 @@ class QwenMediaTest(unittest.TestCase):
         self.assertEqual(catalog_path(None), shipped)
         self.assertTrue(shipped.is_file())
         images = [{"role": "reference_image", "url": "https://cdn.example/ref.png"}]
-        with patch.dict(os.environ, {"TOKE_PLAN_QWEN_API_KEY": "plan-key"}):
+        with patch.dict(os.environ, {"QWEN_API_KEY": "qwen-key", "TOKE_PLAN_QWEN_API_KEY": "plan-key"}):
             registry = video_registry()
             self.assertEqual(set(registry["platforms"]), {"qwen", "omniref", "token-plan"})
             self.assertEqual(registry["models"]["minimax-h3"]["id"], "MiniMax/MiniMax-H3")
@@ -1032,9 +1032,9 @@ class QwenMediaTest(unittest.TestCase):
             self.assertEqual(registry["profiles"]["minimax"]["preset"], "fast")
             self.assertEqual(registry["profiles"]["preview"]["resolution"], "480P")
             self.assertEqual(registry["profiles"]["generate"]["resolution"], "720P")
-            self.assertEqual(registry["routes"]["preview"]["platform"], "token-plan")
+            self.assertEqual(registry["routes"]["preview"]["platform"], "qwen")
             self.assertEqual(registry["routes"]["preview"]["model"], "wan3.0-video")
-            self.assertEqual(registry["routes"]["generate"]["platform"], "token-plan")
+            self.assertEqual(registry["routes"]["generate"]["platform"], "qwen")
             self.assertEqual(registry["routes"]["generate"]["model"], "wan3.0-video")
             captured, client = self._mode_client(False)
             preview = client.submit_video("海面亮起来", duration=2, aspect_ratio="16:9", mode="preview")
@@ -1053,9 +1053,9 @@ class QwenMediaTest(unittest.TestCase):
             negative = dict(captured["body"]["parameters"])
             with self.assertRaises(QwenError) as too_short:
                 client.submit_video("海面亮起来", duration=1, mode="preview")
-        self.assertEqual(preview_url, QWEN_ENVS["prod"] + VIDEO_PATH)
-        self.assertEqual(preview_auth, "Bearer plan-key")
-        self.assertEqual(preview.platform, "token-plan")
+        self.assertEqual(preview_url, QWEN_ENVS["test"] + VIDEO_PATH)
+        self.assertEqual(preview_auth, "Bearer qwen-key")
+        self.assertEqual(preview.platform, "qwen")
         self.assertEqual(preview_body["model"], "wan3.0-video")
         self.assertEqual(preview_body["parameters"]["resolution"], "480P")
         self.assertEqual(preview_body["parameters"]["ratio"], "16:9")

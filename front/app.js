@@ -148,9 +148,10 @@ function autoRun(project) {
   const phase = progress.phase || "";
   if (phase && phase !== "writing" && phase !== "qc") return null;
   const key = autoStageKey(project);
-  if (key !== "asset" && key !== "storyboard" && key !== "feed" && key !== "seam" && key !== "check") return null;
+  if (key !== "script" && key !== "asset" && key !== "storyboard" && key !== "feed" && key !== "seam" && key !== "check") return null;
   const attempt = repairAttempt(progress.pipeline || {});
   let text = key === "check" ? "正在机检…" : ({
+    script: "正在写剧本…",
     asset: "正在自动写资产…",
     storyboard: "正在自动写分镜…",
     feed: "正在自动写提示词封装…",
@@ -584,7 +585,17 @@ function progressPanel(project) {
   const elapsed = document.createElement("span");
   elapsed.className = "job-elapsed";
   elapsed.textContent = elapsedLabel(project);
-  head.append(title, elapsed);
+  const heading = document.createElement("span");
+  heading.className = "job-head-title";
+  if (autoRun(project)) {
+    const spinner = document.createElement("span");
+    spinner.className = "job-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    heading.append(spinner, title);
+  } else {
+    heading.append(title);
+  }
+  head.append(heading, elapsed);
   panel.append(head);
 
   const steps = document.createElement("ol");
@@ -1077,20 +1088,69 @@ function syncChoiceDisabled() {
   });
 }
 
+function isSeamSoftCut(label) {
+  return String(label || "").startsWith("①");
+}
+
+function isSeamHardCut(label) {
+  return String(label || "").startsWith("②");
+}
+
+function nextSeamChecks(checked, label, on) {
+  const current = Array.isArray(checked) ? checked : [];
+  const exclusive = isSeamSoftCut(label) || isSeamHardCut(label);
+  const next = [];
+  current.forEach((item) => {
+    if (item === label) return;
+    if (on && exclusive && ((isSeamSoftCut(label) && isSeamHardCut(item)) || (isSeamHardCut(label) && isSeamSoftCut(item)))) {
+      return;
+    }
+    next.push(item);
+  });
+  if (on) next.push(label);
+  return next;
+}
+
+function sanitizedSeamKept(labels) {
+  const list = Array.isArray(labels) ? labels.slice() : [];
+  const lastExclusive = [...list].reverse().find((item) => isSeamSoftCut(item) || isSeamHardCut(item));
+  if (!lastExclusive) return list;
+  const soft = list.some(isSeamSoftCut);
+  const hard = list.some(isSeamHardCut);
+  if (!(soft && hard)) return list;
+  return list.filter((item) => {
+    if (isSeamSoftCut(item) || isSeamHardCut(item)) return item === lastExclusive;
+    return true;
+  });
+}
+
 function multiChoices(options) {
   const list = document.createElement("div");
   list.className = "choices seam-choices";
   const boxes = [];
+  const kept = sanitizedSeamKept([...seamKept]);
   options.forEach((label) => {
     const row = document.createElement("label");
     row.className = "seam-option";
     const box = document.createElement("input");
     box.type = "checkbox";
     box.value = label;
-    box.checked = seamKept.has(label);
+    box.checked = kept.includes(label);
     boxes.push(box);
     row.append(box, document.createTextNode(label));
     list.append(row);
+  });
+  function applyChecks(selected) {
+    const allowed = new Set(selected);
+    boxes.forEach((box) => {
+      box.checked = allowed.has(box.value);
+    });
+  }
+  boxes.forEach((box) => {
+    box.addEventListener("change", () => {
+      const current = boxes.filter((item) => item.checked && item !== box).map((item) => item.value);
+      applyChecks(nextSeamChecks(current, box.value, box.checked));
+    });
   });
   const submit = document.createElement("button");
   submit.type = "button";
@@ -1774,12 +1834,13 @@ function paintTranscript(options, full) {
     syncChoiceDisabled();
     if (opts.scroll === "top" || opts.scroll === "bottom") thread.scrollTop = 0;
     syncComposer();
+    syncChatSpinner(current);
     return;
   }
   const followLatest = thread.scrollTop <= 8;
   const anchor = followLatest ? null : threadAnchor();
   seamKept = new Set(
-    sameProject ? checkedBefore.filter((box) => box.checked).map((box) => box.value) : []
+    sanitizedSeamKept(sameProject ? checkedBefore.filter((box) => box.checked).map((box) => box.value) : [])
   );
   thread.innerHTML = "";
   clearChatPin();
@@ -1830,6 +1891,7 @@ function paintTranscript(options, full) {
   if (!full) {
     if (durationBox) pinActions.push(durationBox);
     fillChatPin(showProgress ? progressPanel(current) : null, pinActions);
+    syncChatSpinner(current);
   } else {
     pinActions.forEach((node) => wrap.append(node));
     if (running) {
@@ -1841,6 +1903,7 @@ function paintTranscript(options, full) {
     if (showProgress) wrap.append(progressPanel(current));
     if (durationBox) wrap.append(durationBox);
   }
+  syncChatSpinner(current);
   if (current.status === "drilling" && !current.can_reply) {
     const thinking = document.createElement("p");
     thinking.className = "stage";
@@ -4636,6 +4699,15 @@ function refitCanvas() {
   });
 }
 
+function syncChatSpinner(project) {
+  const spinner = document.querySelector(".chat-toggle-spinner");
+  if (!spinner) return;
+  const on = !!(autoRun(project) || (project && project.status === "writing"));
+  spinner.classList.toggle("hidden", !on);
+  spinner.hidden = !on;
+  spinner.setAttribute("aria-hidden", on ? "false" : "true");
+}
+
 function setChatOpen(open, persist) {
   if (main) main.classList.toggle("chat-collapsed", !open);
   const button = document.querySelector("#chat-toggle");
@@ -4653,6 +4725,7 @@ function setChatOpen(open, persist) {
       localStorage.setItem("aivideo.chat_open", open ? "1" : "0");
     } catch (_error) {}
   }
+  syncChatSpinner(typeof current === "undefined" ? null : current);
   refitCanvas();
 }
 

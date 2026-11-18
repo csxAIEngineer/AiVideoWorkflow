@@ -51,7 +51,7 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 | `duration` | 这一镜的秒数，整数，只允许 4–15 |
 | `watermark` | 固定 `false` |
 | `ratio` | 纯文生时用锁定画幅 `16:9`、`9:16` 或 `21:9`。带图时传入空值，客户端写成 `adaptive`。文档里的比例还有 `4:3`、`1:1`、`3:4`，其它值也会变成 `adaptive` |
-| `prompt` | 投喂稿正文。六段式 H3 整段照发，`<d>` 仍是口播。当前 preview/generate 走 Wan 3.0 时，末尾加官方负向清单「不要字幕，不要水印，不要复杂文字」三遍；英文无字幕提醒可留在这句前面。路线若明确只走 MiniMax-H3，六段式可以只留英文提醒。Seedance 与短提示词末尾加同一句负向清单。短提示词另加环境声或口播；带首帧且不是整段投喂时，再追加「从这张首帧开始」，负向清单放在整段最后 |
+| `prompt` | 投喂稿正文。六段式 H3 整段照发。投喂稿内部仍用 `<d>` 标记对白；当前 preview/generate 走 Wan 3.0 时，提交前剥掉 `<d>` 标签、保留对白原文，再按官方公式把情绪、情节和台词写入对应槽位，参考图若是母版或九宫格则声明只作分镜指导、不要把标题印章边框图注生成进画面，末尾加官方负向清单「不要字幕，不要水印，不要复杂文字」一遍；英文无字幕提醒可留在这句前面。路线若明确只走 MiniMax-H3，保留官方 `<d>` 口播标签，六段式可以只留英文提醒。Seedance 与短提示词末尾加同一句负向清单。短提示词另加环境声或口播；带首帧且不是整段投喂时，再追加「从这张首帧开始」，负向清单放在整段最后 |
 
 `preview` 和 `generate` 各有一套配置，字段相同：`resolution`、`ratio`、`duration`、`watermark`、`preset`、`url`、`model`。默认两套一样。`ratio` 和 `duration` 留空时用这一镜的画幅和秒数。`url` 留空时，云端用当前千问主机，本地用 `MINIMAX_H3_BASE_URL`。`model` 留空时仍是 `MiniMax/MiniMax-H3`。`url` 和 `model` 不进入 `parameters`。出片固定传 `mode=generate`。`video.submit` 不传 `mode`、或传空字符串时，也按 `generate` 组装，请求体与上面的示例一致。调试要换一套时传 `mode=preview`（也认 `预览` / `生成`）。
 

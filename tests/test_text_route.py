@@ -1,4 +1,4 @@
-"""Text calls use Token Plan qwen3.8-flash. Stills use MiniMax-H3-Image."""
+"""Text calls use QWEN_API_KEY qwen3.8-flash. Stills use MiniMax-H3-Image."""
 
 import json
 import os
@@ -22,7 +22,7 @@ class _FakeResponses(object):
 
 
 class TextRouteTest(unittest.TestCase):
-    def test_text_request_uses_token_plan_qwen3_8_flash_and_stills_use_minimax(self):
+    def test_text_request_uses_qwen_api_key_qwen3_8_flash_and_stills_use_minimax(self):
         seen = {}
 
         class FakeOpenAI(object):
@@ -52,7 +52,7 @@ class TextRouteTest(unittest.TestCase):
             image = MiniMaxImageClient(api_key="mm-test", env_path=root / ".env")
         self.assertEqual(text, "ok")
         self.assertEqual(seen["base_url"], TEXT_HOST + "/compatible-mode/v1")
-        self.assertEqual(seen["api_key"], "plan-test")
+        self.assertEqual(seen["api_key"], "qwen-test")
         self.assertEqual(fake.calls[0]["model"], TEXT_MODEL)
         self.assertEqual(fake.calls[0]["model"], "qwen3.8-flash")
         self.assertNotEqual(fake.calls[0]["model"], IMAGE_MODEL)
@@ -72,13 +72,13 @@ class TextRouteTest(unittest.TestCase):
             generate_text([{"role": "user", "content": "写"}], model="other", client=fake)
         self.assertEqual(fake.calls[0]["model"], "deepseek-v4-flash-0731")
 
-    def test_missing_token_plan_key_is_named(self):
+    def test_missing_qwen_api_key_is_named(self):
         from AI.qwen_api.client import QwenError
 
-        with patch.dict(os.environ, {"TOKE_PLAN_QWEN_API_KEY": ""}, clear=False):
+        with patch.dict(os.environ, {"QWEN_API_KEY": "", "TOKE_PLAN_QWEN_API_KEY": "plan-test"}, clear=False):
             with self.assertRaises(QwenError) as caught:
                 responses_client(api_key="")
-        self.assertEqual(str(caught.exception), "未配置 TOKE_PLAN_QWEN_API_KEY")
+        self.assertEqual(str(caught.exception), "未配置 QWEN_API_KEY")
 
 
 if __name__ == "__main__":

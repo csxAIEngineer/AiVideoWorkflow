@@ -1841,6 +1841,41 @@ html[data-theme="dark"] .contract-thumb .none {
 
 .main.workflow .chat-toggle:hover { color: var(--text); }
 
+.chat-toggle-spinner,
+.job-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex: none;
+  box-sizing: border-box;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: chat-spin 0.7s linear infinite;
+}
+
+.chat-toggle-spinner.hidden { display: none; }
+
+.job-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+@keyframes chat-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-toggle-spinner,
+  .job-spinner {
+    animation: none;
+    border-right-color: currentColor;
+    opacity: 0.7;
+  }
+}
+
 .main.workflow.chat-collapsed .chat-column {
   flex: 0 0 44px;
   width: 44px;

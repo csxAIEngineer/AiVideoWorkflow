@@ -175,8 +175,6 @@ def _brief(state):
         _id_line(state),
         _SCENE_RELATION_RULE,
         "只写段缝。段内五维不要写进账本。",
-        "剧本：\n%s" % str(state.get("source") or "").strip(),
-        "分镜：\n%s" % str(state.get("storyboard") or "").strip(),
         "封装单元：\n%s" % json.dumps(_unit_brief(units), ensure_ascii=False),
     ]
     feed = str(state.get("feed") or "").strip()

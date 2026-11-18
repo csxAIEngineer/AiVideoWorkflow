@@ -9,7 +9,7 @@
       if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
     } catch (_error) {}
   </script>
-  <link rel="stylesheet" href="/styles.css?v=52" />
+  <link rel="stylesheet" href="/styles.css?v=53" />
 </head>
 <body>
   <aside id="app-menu" class="sidebar" aria-label="项目菜单">
@@ -112,6 +112,7 @@
         <button id="chat-toggle" class="chat-toggle" type="button" aria-expanded="true" aria-controls="thread">
           <span class="chat-toggle-mark" aria-hidden="true">›</span>
           <span class="chat-toggle-label">收起</span>
+          <span class="chat-toggle-spinner hidden" hidden aria-hidden="true"></span>
         </button>
         <div id="chat-pin" class="chat-pin hidden">
           <div id="chat-progress" class="chat-progress"></div>
@@ -207,6 +208,6 @@
   <script src="/rpc.js?v=2"></script>
   <script src="/script-edit.js?v=2"></script>
   <script src="/shot-contract-view.js?v=1"></script>
-  <script src="/app.js?v=82"></script>
+  <script src="/app.js?v=83"></script>
 </body>
 </html>

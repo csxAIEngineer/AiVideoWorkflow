@@ -646,12 +646,12 @@ class RenderLoopTest(unittest.TestCase):
             False,
         )
         self.assertIn("画外旁白", prompt)
-        self.assertIn("<d>[Chinese] 夜色已经很深了</d>", prompt)
+        self.assertIn("[Chinese] 夜色已经很深了", prompt)
+        self.assertNotIn("<d>", prompt)
         self.assertNotIn("在画内开口", prompt)
         self.assertTrue(prompt.endswith(NO_ONSCREEN_CAPTION))
-        self.assertLess(prompt.index("<d>"), prompt.rindex("负向清单"))
         for phrase in ("不要字幕", "不要水印", "不要复杂文字"):
-            self.assertEqual(prompt.count(phrase), 3)
+            self.assertEqual(prompt.count(phrase), 1)
         ass = build_subtitle_ass(cues)
         self.assertIn("Dialogue: 0,0:00:00.00,0:00:05.00,正片,,0,0,0,,再站一会儿就好", ass)
         self.assertIn("PlayResX: 768", ass)
@@ -755,10 +755,10 @@ class RenderLoopTest(unittest.TestCase):
         run_local_pipeline(spec, self.work, icreat=FakeICreat(), cr=cr, sleeper=_noop_sleep, burner=burner)
         prompt = cr.submits[0]["text"]
         self.assertTrue(prompt.endswith(NO_ONSCREEN_CAPTION))
-        self.assertIn("<d>[Chinese] 再站一会儿就好。</d>", prompt)
-        self.assertLess(prompt.index("<d>"), prompt.rindex("负向清单"))
+        self.assertIn("[Chinese] 再站一会儿就好。", prompt)
+        self.assertNotIn("<d>", prompt)
         for phrase in ("不要字幕", "不要水印", "不要复杂文字"):
-            self.assertEqual(prompt.count(phrase), 3)
+            self.assertEqual(prompt.count(phrase), 1)
 
     def test_full_h3_delivery_bans_painted_captions_and_does_not_burn_ass(self):
         unit = "\n".join((
@@ -808,15 +808,16 @@ class RenderLoopTest(unittest.TestCase):
             burner=burner,
         )
         text = cr.submits[0]["text"]
-        self.assertTrue(text.startswith(unit.strip()))
-        self.assertIn("<d>[Chinese] 等我。</d>", text)
-        self.assertIn("<d>[Chinese] 你说煮水茶好有了吗</d>", text)
+        self.assertIn("等我。", text)
+        self.assertIn("你说煮水茶好有了吗", text)
+        self.assertNotIn("[Chinese]", text)
+        self.assertNotIn("<d>", text)
         self.assertIn("No readable on-screen subtitles, captions, or overlaid dialogue text.", text)
-        self.assertIn("Lines inside <d> are spoken audio only", text)
+        self.assertIn("Spoken lines are audio only", text)
         self.assertIn("Chinese caption glyphs", text)
         self.assertTrue(text.endswith(NO_ONSCREEN_CAPTION))
         for phrase in ("不要字幕", "不要水印", "不要复杂文字"):
-            self.assertEqual(text.count(phrase), 3)
+            self.assertEqual(text.count(phrase), 1)
         self.assertNotIn("本镜无对白", text)
         self.assertNotIn("从这张首帧", text)
         self.assertNotIn("旧分镜", text)

@@ -89,6 +89,16 @@ def _unit_chunks(text):
 
 
 class PackingPlanTest(unittest.TestCase):
+    def test_groups_aim_for_eight_to_ten_seconds_and_do_not_leave_a_short_tail(self):
+        # Official 473b653d4de5 storyboard lengths: last scene had six beats in 20s.
+        shots = [5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 3, 3, 3, 3]
+        groups = group_shot_durations(shots)
+        totals = [sum(group) for group in groups]
+        self.assertEqual([item for group in groups for item in group], shots)
+        self.assertEqual(sum(totals), 60)
+        self.assertEqual(totals, [10, 10, 10, 10, 11, 9])
+        self.assertTrue(all(8 <= total <= 11 for total in totals), totals)
+
     def test_fifteen_second_groups_sum_the_storyboard(self):
         groups = group_shot_durations(SHOTS)
         self.assertEqual([sum(group) for group in groups], PLANNED)
@@ -183,7 +193,7 @@ class PackingPlanTest(unittest.TestCase):
         result = apply_packing_plan(draft, state)
         chunks = _unit_chunks(result)
         self.assertEqual(len(chunks), 3, result)
-        self.assertEqual(_declared(result), [11, 14, 9])
+        self.assertEqual(_declared(result), [11, 9, 14])
         self.assertNotIn("\nduration: 6\n", "\n" + result)
         self.assertIn("[Shot 1]", chunks[0])
         self.assertIn("[Shot 2]", chunks[0])

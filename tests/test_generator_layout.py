@@ -127,6 +127,35 @@ class SharedLayoutTest(unittest.TestCase):
         run_generator("script", "只有一份原文。", role="角色", complete=complete, files=[PROP])
         self.assertEqual(calls, ["specialist", "director"])
 
+    def test_director_does_not_repaste_the_brief_when_specialists_already_wrote(self):
+        brief = "这是一份很长的开场简报，专员已经读过。"
+        calls = []
+
+        def complete(role, messages):
+            calls.append((role, messages[-1]["content"]))
+            if role == "specialist":
+                return json.dumps({"text": "NOTE-SLOT"}, ensure_ascii=False)
+            return json.dumps({"image_prompts": "MERGED"}, ensure_ascii=False)
+
+        run_generator(
+            "asset",
+            brief,
+            role="角色包装",
+            complete=complete,
+            files=FILES,
+        )
+        specialist_users = [user for role, user in calls if role == "specialist"]
+        director_users = [user for role, user in calls if role == "director"]
+        self.assertTrue(specialist_users)
+        self.assertEqual(len(director_users), 1)
+        for user in specialist_users:
+            self.assertIn(brief, user)
+        user = director_users[0]
+        self.assertIn("各节点正文", user)
+        self.assertIn("NOTE-SLOT", user)
+        self.assertNotIn(brief, user)
+        self.assertNotIn("简报：", user)
+
     def test_unmatched_repair_does_not_rerun_every_node(self):
         chosen = select_nodes(FILES, "图1 不要写同上", [{"skill": PROP, "text": "旧"}])
         self.assertEqual(chosen, [])

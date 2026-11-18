@@ -13,3 +13,6 @@ data/*.db-wal
 data/*.db-shm
 data/feed-debug.jsonl
 data/feed-attempt-*.txt
+data/dev_debug_pulls/
+scripts/dev-host.env
+.env.dev

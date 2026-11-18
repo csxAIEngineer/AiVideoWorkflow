@@ -107,7 +107,7 @@ def align_feed_unit_headers(feed):
 def is_full_delivery(text):
     """A six-section H3 unit or a Seedance unit. Render must not add room-tone lines.
 
-    ``delivery_prompt`` still appends a caption lock. ``<d>`` stays spoken audio.
+    ``delivery_prompt`` still appends a caption lock. On Wan, ``<d>`` is unwrapped and the spoken line stays.
     """
     raw = str(text or "")
     if "subject_definitions" in raw and "detailed_description" in raw:

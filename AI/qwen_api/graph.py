@@ -15,7 +15,7 @@ from typing import Annotated, Any, List, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 TEXT_MODEL = "qwen3.8-flash"
-TEXT_HOST = "https://token-plan.maas.qianwenaiapi.com"
+TEXT_HOST = "https://maas.qianwenaiapi.com"
 INTENT_EFFORT = "low"
 WRITE_EFFORT = "low"
 _EFFORTS = ("low", "high", "max")
@@ -82,25 +82,27 @@ class TextState(TypedDict, total=False):
 
 
 def text_base_host(base_url=None):
-    """Token Plan text host. Image and video keep resolve_qwen_host."""
-    from AI.qwen_api.client import normalize_host
+    """Text host follows config/qwen.json, or AIVIDEO_TEXT_BASE_URL when set."""
+    from AI.qwen_api.client import normalize_host, resolve_qwen_host
 
-    chosen = str(base_url if base_url is not None else os.environ.get("AIVIDEO_TEXT_BASE_URL") or TEXT_HOST).strip()
-    return normalize_host(chosen or TEXT_HOST)
+    chosen = str(base_url if base_url is not None else os.environ.get("AIVIDEO_TEXT_BASE_URL") or "").strip()
+    if chosen:
+        return normalize_host(chosen)
+    return resolve_qwen_host()
 
 
 def responses_client(api_key=None, base_url=None, client=None):
-    """Text client only. Uses the Token Plan key and host, not the image host."""
+    """Text client uses the Qwen API key and host from config/qwen.json."""
     if client is not None:
         return client
     from openai import OpenAI
 
-    from AI.qwen_api.client import QwenError, load_dotenv
+    from AI.qwen_api.client import QwenError, load_dotenv, qwen_api_key
 
     load_dotenv()
-    key = str(api_key if api_key is not None else os.environ.get("TOKE_PLAN_QWEN_API_KEY") or "").strip()
+    key, var = qwen_api_key(api_key=api_key)
     if not key:
-        raise QwenError("未配置 TOKE_PLAN_QWEN_API_KEY")
+        raise QwenError("未配置 %s" % var)
     return OpenAI(api_key=key, base_url=text_base_host(base_url) + "/compatible-mode/v1", max_retries=0)
 
 

@@ -1077,20 +1077,23 @@ VIDEO_MODEL = "MiniMax/MiniMax-H3"
 VIDEO_MODE_MODELS = {mode: VIDEO_MODEL for mode in VIDEO_MODES}
 FRAME_OPENING = "从这张首帧的可见内容开始，主体、材质和构图保持一致，只做本镜写的光影和轻微运镜。"
 # Official Wan 3.0 负向清单. The three phrases are written three times.
-# Spoken lines inside <d> stay; this lock does not drop dialogue.
-NO_ONSCREEN_CAPTION = (
-    "负向清单：不要字幕，不要水印，不要复杂文字。"
-    "不要字幕，不要水印，不要复杂文字。"
-    "不要字幕，不要水印，不要复杂文字。"
+# Spoken lines stay; this lock does not drop dialogue.
+NO_ONSCREEN_CAPTION = "负向清单：不要字幕，不要水印，不要复杂文字。"
+WAN_REFERENCE_SHEET_GUIDE = (
+    "参考图只用于人物外形、道具与场景的空间、光影和陈设。"
+    "若参考图是母版、九宫格或故事板，使用故事板作为分镜指导，禁止将故事板作为单张图像生成视频，"
+    "不要把图上的标题、印章、边框、图注或任何可读文字生成进画面。"
 )
 # Six-section H3 copy is English. This sentence stays as an extra reminder.
 # Wan submits still get the official Chinese 负向清单 after it.
 H3_NO_ONSCREEN_CAPTION = (
     "The frame shows the scene and the performers. "
     "No readable on-screen subtitles, captions, or overlaid dialogue text. "
-    "Lines inside <d> are spoken audio only and must not be painted into the frame "
+    "Spoken lines are audio only and must not be painted into the frame "
     "as Chinese caption glyphs, bottom white text, or any other burned-in dialogue."
 )
+_SPOKEN_D_TAG = re.compile(r"(?is)<d\b[^>]*>(.*?)</d>")
+_CHINESE_LANG_TAG = re.compile(r"\[Chinese\][ \t]*")
 _MINIMAX_MODEL_NAMES = frozenset(("minimax-h3", "MiniMax/MiniMax-H3"))
 
 
@@ -1308,6 +1311,162 @@ def _clearly_minimax_h3_only():
     return all(is_minimax(token, model_id) for token, model_id in rows)
 
 
+def _unwrap_spoken_d_tags(text):
+    """Keep spoken line text and drop ``<d>`` wrappers and ``[Chinese]`` markers.
+
+    Wan 3.0 paints garbled on-screen captions when those tags are in the
+    submit. The words inside the tag still drive spoken audio. ``[Chinese]``
+    is a MiniMax H3 language marker and is not used by Wan.
+    """
+    body = _SPOKEN_D_TAG.sub(lambda match: match.group(1), str(text or ""))
+    return _CHINESE_LANG_TAG.sub("", body)
+
+
+_WAN_DIALOGUE_FIELD = re.compile(r"^对白（([^）]+)）：(.*)$")
+_WAN_NAMED_FIELD = re.compile(r"^([^：]{1,30})：(.*)$")
+_WAN_SAYS = re.compile(r"^(.+?)说[道]?：[「\"\u201c](.*?)[」\"\u201d]$")
+_WAN_HAS_SPEECH = re.compile(
+    r"台词：(?!无台词)|"
+    r"\bsays(?:\s+at[^:]*)?[:：]?\s*\S|"
+    r"说[道]?[：:「\"\u201c]"
+)
+_WAN_SLOT_LABELS = {
+    "情绪": "mood",
+    "风格/情绪": "mood",
+    "风格情绪": "mood",
+    "风格": "mood",
+    "情节": "plot",
+    "台词": "line_raw",
+    "旁白": "vo",
+}
+_WAN_META_SPEAKERS = frozenset((
+    "资产", "时长", "镜号", "画面", "景别", "运镜", "出场", "道具", "地点",
+    "场景", "备注", "负向清单", "音效", "BGM", "对白",
+))
+
+
+def _reshape_wan_delivery(text):
+    """Move leftover 情绪/情节/对白/「无」 into official Wan 3.0 slots.
+
+    The content is kept. Mood goes to 风格/情绪, plot stays in the description,
+    and spoken lines become ``角色说："原文"``. A bare 「无」 is not a line.
+    """
+    moods, plots, spoken = [], [], []
+    kept = []
+    saw_wu = False
+    for raw in str(text or "").splitlines():
+        stripped = raw.strip()
+        fields = _wan_dump_fields(stripped)
+        if fields is None:
+            kept.append(raw)
+            continue
+        if stripped == "无":
+            saw_wu = True
+        for kind, speaker, value in fields:
+            value = (value or "").strip()
+            if kind == "mood" and value:
+                moods.append(value)
+            elif kind == "plot" and value:
+                plots.append(value)
+            elif kind == "vo":
+                if value and value != "无":
+                    spoken.append(("画外音", value))
+            elif kind in ("line", "line_raw"):
+                if not value or value in ("无", "无台词", "No dialogue.", "No dialogue"):
+                    continue
+                if kind == "line_raw":
+                    spoken.extend(_wan_official_lines(value, speaker))
+                else:
+                    spoken.append((speaker, value))
+    body = "\n".join(kept).strip()
+    extras = []
+    seen_plot = set()
+    for plot in plots:
+        if plot and plot not in body and plot not in seen_plot:
+            extras.append("情节：%s" % plot)
+            seen_plot.add(plot)
+    seen_line = set()
+    for speaker, line in spoken:
+        line = (line or "").strip()
+        if not line or line == "无":
+            continue
+        key = (speaker, line)
+        if key in seen_line:
+            continue
+        seen_line.add(key)
+        if speaker == "画外音":
+            extras.append('台词：画外音："%s"' % line)
+        elif speaker:
+            extras.append('台词：%s说："%s"' % (speaker, line))
+        else:
+            extras.append('台词："%s"' % line)
+    blob = body + "\n" + "\n".join(extras)
+    has_line = any(
+        (item[1] or "").strip() not in ("", "无", "无台词", "No dialogue.", "No dialogue")
+        for item in spoken
+    )
+    if "台词：无台词" not in blob and not has_line and not _WAN_HAS_SPEECH.search(blob):
+        if saw_wu or _h3_shaped(body):
+            extras.append("台词：无台词")
+    seen_mood = set()
+    for mood in moods:
+        if mood and mood not in seen_mood:
+            extras.append("风格/情绪：%s" % mood)
+            seen_mood.add(mood)
+    if not extras:
+        return body
+    if not body:
+        return "\n".join(extras)
+    return body + "\n" + "\n".join(extras)
+
+
+def _wan_dump_fields(line):
+    """Parse a leftover packing dump line, or return None if it should stay."""
+    if not line:
+        return None
+    if line == "无":
+        return []
+    if "：" not in line:
+        return None
+    fields = []
+    for part in re.split(r"\s*/\s*", line):
+        part = part.strip()
+        if not part:
+            continue
+        parsed = _wan_dump_part(part)
+        if parsed is None:
+            return None
+        fields.append(parsed)
+    return fields or None
+
+
+def _wan_dump_part(part):
+    match = _WAN_DIALOGUE_FIELD.match(part)
+    if match:
+        return ("line", match.group(1).strip(), match.group(2).strip())
+    match = _WAN_NAMED_FIELD.match(part)
+    if not match:
+        return None
+    label, value = match.group(1).strip(), match.group(2).strip()
+    if label in _WAN_SLOT_LABELS:
+        return (_WAN_SLOT_LABELS[label], "", value)
+    if label in _WAN_META_SPEAKERS:
+        return None
+    return ("line", label, value)
+
+
+def _wan_official_lines(value, speaker=""):
+    match = _WAN_SAYS.match(value)
+    if match:
+        return [(match.group(1).strip(), match.group(2).strip())]
+    match = re.match(r"^画外音：[「\"\u201c](.*?)[」\"\u201d]$", value)
+    if match:
+        return [("画外音", match.group(1).strip())]
+    if speaker:
+        return [(speaker, value)]
+    return [("", value)]
+
+
 def _append_lock(body, lock):
     """Append ``lock`` once. An exact copy already in the text is left alone."""
     text = str(body or "").strip()
@@ -1318,15 +1477,39 @@ def _append_lock(body, lock):
     return text + "\n" + lock
 
 
-def _with_caption_lock(text):
+def _with_reference_sheet_guide(text, shot=None):
+    """Tell Wan not to treat 母版/九宫格/故事板 reference images as the frame."""
+    if not (shot or {}).get("images"):
+        return str(text or "").strip()
+    body = str(text or "").strip()
+    if WAN_REFERENCE_SHEET_GUIDE in body:
+        return body
+    suffix = []
+    if body.endswith(NO_ONSCREEN_CAPTION):
+        body = body[: -len(NO_ONSCREEN_CAPTION)].rstrip()
+        suffix.append(NO_ONSCREEN_CAPTION)
+    if body.endswith(H3_NO_ONSCREEN_CAPTION):
+        body = body[: -len(H3_NO_ONSCREEN_CAPTION)].rstrip()
+        suffix.insert(0, H3_NO_ONSCREEN_CAPTION)
+    parts = [body, WAN_REFERENCE_SHEET_GUIDE] if body else [WAN_REFERENCE_SHEET_GUIDE]
+    return "\n".join(parts + suffix)
+
+
+def _with_caption_lock(text, shot=None):
     """Put caption locks at the end of a full H3 or Seedance unit.
 
     Wan-bound H3 bodies keep the English reminder, then the official Chinese
-    负向清单. Spoken lines inside ``<d>`` are not removed.
+    负向清单 once. On Wan, ``<d>`` wrappers and ``[Chinese]`` markers are stripped,
+    leftover 情绪/情节/对白 are placed in official slots, and the spoken line stays.
+    A MiniMax-H3-only route keeps the official ``<d>`` tags.
     """
     body = str(text or "").strip()
     h3 = _h3_shaped(body)
     need_chinese = (not h3) or not _clearly_minimax_h3_only()
+    if not _clearly_minimax_h3_only():
+        body = _unwrap_spoken_d_tags(body)
+        body = _reshape_wan_delivery(body)
+        body = _with_reference_sheet_guide(body, shot)
     if h3 and H3_NO_ONSCREEN_CAPTION not in body:
         if need_chinese and body.endswith(NO_ONSCREEN_CAPTION):
             head = body[: -len(NO_ONSCREEN_CAPTION)].rstrip()
@@ -1346,17 +1529,22 @@ def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack=
     """Prompt sent with the clip. Vehicle lines come only from the active template's skills.
 
     Music or narration is mixed after the join, so those shots keep only room tone.
-    A full H3 or Seedance unit is sent as written. The official Chinese 负向清单
-    is last, which is where the Wan 3.0 formula places it. ``<d>`` stays spoken
-    audio and is not dropped. Burned 字幕.ass is a later ffmpeg step and still
+    A full H3 or Seedance unit is sent as written, except a Wan submit unwraps
+    ``<d>`` and ``[Chinese]``, keeps the spoken line, and places leftover 情绪/情节/对白
+    in official slots. Reference images get a 母版/故事板 guidance line. The official
+    Chinese 负向清单 is last, once. Burned 字幕.ass is a later ffmpeg step and still
     reads only shot dialogue and narration.
     """
     from end.ai_client import template_render
     from end.prompt_gate import is_full_delivery
 
     base = (shot.get("prompt") or "").strip()
+    wan = not _clearly_minimax_h3_only()
+    had_dialogue = "<d>" in base
+    if wan:
+        base = _unwrap_spoken_d_tags(base)
     if is_full_delivery(base):
-        return _with_caption_lock(base)
+        return _with_caption_lock(base, shot)
     render = template_render(template)
     if mode in ("first_frame", "first_last_frame"):
         parts = [base, FRAME_OPENING]
@@ -1371,19 +1559,31 @@ def delivery_prompt(shot, spoken, index, has_tail, mode="reference", soundtrack=
     post = soundtrack_enabled(soundtrack)
     narration = str(shot.get("narration") or "").strip()
     if narration and narration not in base and not post:
-        parts.append("画外旁白，人物不要对口型，嘴保持自然闭合：<d>[Chinese] %s</d>" % narration)
-    elif "<d>" not in base:
+        if wan:
+            parts.append("画外旁白，人物不要对口型，嘴保持自然闭合：[Chinese] %s" % narration)
+        else:
+            parts.append("画外旁白，人物不要对口型，嘴保持自然闭合：<d>[Chinese] %s</d>" % narration)
+    elif not had_dialogue:
         if spoken and not post:
             for item in spoken:
-                parts.append(
-                    "%s在画内开口，口型只跟这一句，其他人嘴唇保持闭合，不要额外人声，不要外语开场：<d>[Chinese] %s</d>"
-                    % (item["speaker"], item["line"])
-                )
+                if wan:
+                    parts.append(
+                        "%s在画内开口，口型只跟这一句，其他人嘴唇保持闭合，不要额外人声，不要外语开场：[Chinese] %s"
+                        % (item["speaker"], item["line"])
+                    )
+                else:
+                    parts.append(
+                        "%s在画内开口，口型只跟这一句，其他人嘴唇保持闭合，不要额外人声，不要外语开场：<d>[Chinese] %s</d>"
+                        % (item["speaker"], item["line"])
+                    )
         else:
             parts.append("本镜无对白。保留环境声和音效，不要凭空说话。")
     if "non_diegetic_music" not in base:
         parts.append("non_diegetic_music: N/A")
-    return _append_lock("\n".join(parts), NO_ONSCREEN_CAPTION)
+    text = "\n".join(parts)
+    if wan:
+        text = _with_reference_sheet_guide(text, shot)
+    return _append_lock(text, NO_ONSCREEN_CAPTION)
 
 
 def _tail_frame(clip_path, dest):

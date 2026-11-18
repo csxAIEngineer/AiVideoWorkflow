@@ -53,6 +53,9 @@ def check_script_draft(text, state=None):
     invented = gates.invented_upload_claim(raw, state.get("intake") or [])
     if invented:
         errors.append(invented)
+    from Agents.workers.script_skeleton import script_skeleton, script_skeleton_failures
+
+    errors.extend(script_skeleton_failures(raw, script_skeleton(state)))
     return report(errors)
 
 
@@ -102,6 +105,12 @@ def check_storyboard_draft(text, state=None):
     hold = str(state.get("hold") or "").strip()
     if hold:
         errors.append(hold)
+    from Agents.workers.storyboard_skeleton import (
+        storyboard_skeleton,
+        storyboard_skeleton_failures,
+    )
+
+    errors.extend(storyboard_skeleton_failures(raw, storyboard_skeleton(state)))
     joined = "\n".join(errors)
     return report(errors, needs_human=storyboard_stops_for_person(joined))
 

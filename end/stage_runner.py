@@ -976,11 +976,11 @@ def carried_text(folder, stage):
         script = _read(internal / "剧本.md")
         if script:
             chunks.append(script)
-    if stage in ("storyboard", "feed", "seam"):
+    if stage in ("storyboard", "feed"):
         assets = _read(internal / "assets.md")
         if assets:
             chunks.append(assets)
-    if stage in ("feed", "seam"):
+    if stage == "feed":
         board = _read(internal / "分镜.md")
         if board:
             chunks.append(board)
@@ -1299,6 +1299,14 @@ def check_stage(folder, stage, locks, title=""):
         invented = invented_upload_claim(text, load_intake(folder))
         if invented:
             return False, invented
+        from Agents.workers.script_skeleton import script_skeleton, script_skeleton_failures
+
+        skeleton_errors = script_skeleton_failures(
+            text,
+            script_skeleton({"locks": locks or {}, "draft": ""}),
+        )
+        if skeleton_errors:
+            return False, "；".join(skeleton_errors)
         return True, ""
     if stage == "asset":
         path = internal / "assets.md"
@@ -1312,8 +1320,19 @@ def check_stage(folder, stage, locks, title=""):
         if invented:
             return False, invented
         code, report = check_asset_blocks(path)
-        if code != 0:
-            return False, report
+        from Agents.workers.asset_skeleton import asset_skeleton, asset_skeleton_failures
+
+        skeleton_errors = asset_skeleton_failures(
+            text,
+            asset_skeleton({"script": _read(internal / "剧本.md")}),
+        )
+        if code != 0 or skeleton_errors:
+            parts = []
+            if code != 0 and report:
+                parts.append(report)
+            if skeleton_errors:
+                parts.append("；".join(skeleton_errors))
+            return False, "\n".join(parts)
         return True, ""
     if stage == "storyboard":
         text = _read(internal / "分镜.md")
@@ -1336,6 +1355,19 @@ def check_stage(folder, stage, locks, title=""):
         _shots, field_report = project_shots(text, known_ids(spec.get("assets")))
         if field_report:
             return False, field_report
+        from Agents.workers.storyboard_skeleton import (
+            storyboard_skeleton,
+            storyboard_skeleton_failures,
+        )
+
+        skeleton = storyboard_skeleton({
+            "source": _read(internal / "剧本.md") or str(spec.get("script") or ""),
+            "locks": locks or {},
+            "assets": spec.get("assets") or [],
+        })
+        skeleton_errors = storyboard_skeleton_failures(text, skeleton)
+        if skeleton_errors:
+            return False, "；".join(skeleton_errors)
         hold = read_hold(folder) or str(spec.get("storyboard_hold") or "").strip()
         if hold:
             return False, hold
@@ -2222,41 +2254,84 @@ def format_seconds(value):
     return text or "0"
 
 
-def group_shot_durations(durations, limit=15, locks=None):
+def group_shot_durations(
+    durations,
+    limit=15,
+    locks=None,
+    minimum=4,
+    target_min=8,
+    target_max=10,
+):
     """Pack consecutive shot lengths into H3 units.
 
-    Merging is allowed. A unit never keeps more than ``limit`` seconds by
-    shortening a shot. A shot longer than ``limit`` stays in its own unit at
-    its real length so the caller can split the shot instead of clamping.
-    D-lock marks are not available yet, so they do not split a unit.
+    Aim for 8–10 seconds so adjacent units can be spliced with first and last
+    frames. The hard range is ``minimum``–``limit`` (4–15). Merging is allowed.
+    A unit never stays in range by shortening a shot. A shot longer than
+    ``limit`` stays in its own unit at its real length so the caller can split
+    the shot instead of clamping. A leftover shorter than ``minimum`` is kept
+    only when no legal merge exists. D-lock marks are not available yet, so
+    they do not split a unit.
     """
     del locks
-    groups = []
-    bucket = []
-    total = 0.0
+    shots = []
     for raw in durations or []:
         try:
             seconds = float(raw)
         except (TypeError, ValueError):
             continue
-        if seconds <= 0:
-            continue
-        if seconds > limit:
-            if bucket:
-                groups.append(bucket)
-                bucket = []
-                total = 0.0
-            groups.append([seconds])
-            continue
-        if bucket and total + seconds > limit + 1e-6:
-            groups.append(bucket)
-            bucket = [seconds]
-            total = seconds
-        else:
-            bucket.append(seconds)
-            total += seconds
-    if bucket:
-        groups.append(bucket)
+        if seconds > 0:
+            shots.append(seconds)
+    return _pack_shot_durations(shots, limit, minimum, target_min, target_max)
+
+
+def _pack_shot_durations(shots, limit, minimum, target_min, target_max):
+    count = len(shots)
+    if not count:
+        return []
+    prefix = [0.0]
+    for seconds in shots:
+        prefix.append(prefix[-1] + seconds)
+
+    def span(start, end):
+        return prefix[end] - prefix[start]
+
+    def cost(start, end):
+        if start >= end:
+            return None
+        total = span(start, end)
+        if total > limit + 1e-6:
+            if end - start == 1:
+                return 0.0
+            return None
+        if total + 1e-6 < minimum:
+            return 1000.0 + (minimum - total)
+        if total + 1e-6 < target_min:
+            # Staying under 8s is always worse than a legal 11–15s unit.
+            return 100.0 + (target_min - total) ** 2
+        if total > target_max + 1e-6:
+            return (total - target_max) ** 2
+        return 0.0
+
+    infinite = 10 ** 18
+    best = [(0.0, -1)] + [(infinite, -1)] * count
+    for end in range(1, count + 1):
+        for start in range(end):
+            penalty = cost(start, end)
+            if penalty is None:
+                continue
+            total = best[start][0] + penalty
+            if total < best[end][0] - 1e-9:
+                best[end] = (total, start)
+    groups = []
+    end = count
+    while end > 0:
+        start = best[end][1]
+        if start < 0:
+            groups.append(shots[:end])
+            break
+        groups.append(shots[start:end])
+        end = start
+    groups.reverse()
     return groups
 
 
@@ -3594,6 +3669,39 @@ def _script_brief(project, folder, locks, only, pipeline, step_id, previous):
     return "\n".join(line for line in lines if line is not None).strip()
 
 
+
+def _with_asset_skeleton(brief, script):
+    from Agents.workers.asset_skeleton import asset_skeleton, format_asset_skeleton
+
+    skeleton = format_asset_skeleton(asset_skeleton({"script": script}))
+    body = str(brief or "").strip()
+    if not skeleton:
+        return body
+    if skeleton.strip() in body:
+        return body
+    if not body:
+        return skeleton.strip()
+    return "%s\n\n%s" % (body, skeleton.strip())
+
+
+def _restore_asset_result(result, script):
+    from Agents.workers.asset_skeleton import (
+        asset_skeleton,
+        restore_asset_locks,
+    )
+
+    result = dict(result or {})
+    skeleton = asset_skeleton({"script": script})
+    text = str(result.get("image_prompts") or result.get("draft") or "")
+    if not text.strip() and not skeleton.get("assets"):
+        return result
+    restored = restore_asset_locks(text, skeleton)
+    if restored.strip():
+        result["image_prompts"] = restored
+        result["draft"] = restored
+    return result
+
+
 def _uses_worker(stage, pipeline):
     """Script, storyboard, and feed writes go through the Agents loops.
 
@@ -4072,6 +4180,11 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
             )
             if part
         )
+    if stage == "asset":
+        brief = _with_asset_skeleton(
+            brief,
+            _read(Path(folder) / "_内部_" / "剧本.md"),
+        )
     pack = _loaded_pack(load_pack, project, brief, stage)
     from end.trace import begin_trace
 
@@ -4091,6 +4204,11 @@ def _produce(project, folder, stage, locks, only, write_model, load_pack):
     )
     if not isinstance(result, dict):
         raise RuntimeError("这一段没有写成 JSON")
+    if stage == "asset":
+        result = _restore_asset_result(
+            result,
+            _read(Path(folder) / "_内部_" / "剧本.md"),
+        )
     return result
 
 

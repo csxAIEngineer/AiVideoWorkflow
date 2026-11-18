@@ -15,7 +15,7 @@ def tearDownModule():
 
 from end.board_shots import apply_feed_binding, apply_storyboard_shots, shots_from_storyboard
 from end.prompt_gate import feed_text
-from end.render_loop import NO_ONSCREEN_CAPTION, delivery_prompt, image_prompt, subtitle_cues
+from end.render_loop import NO_ONSCREEN_CAPTION, WAN_REFERENCE_SHEET_GUIDE, delivery_prompt, image_prompt, subtitle_cues
 from end.server import _merge_spec
 from end.workflow_from_spec import collect_steps
 
@@ -41,22 +41,25 @@ PLACEHOLDER = "按这张资产图演这一镜"
 H3_CAPTION_LOCK = (
     "The frame shows the scene and the performers. "
     "No readable on-screen subtitles, captions, or overlaid dialogue text. "
-    "Lines inside <d> are spoken audio only and must not be painted into the frame "
+    "Spoken lines are audio only and must not be painted into the frame "
     "as Chinese caption glyphs, bottom white text, or any other burned-in dialogue."
 )
+
+
+def _wan_unit(text):
+    """What Wan should receive: spoken text stays, <d> and [Chinese] do not."""
+    import re
+    text = re.sub(r"(?is)<d\b[^>]*>(.*?)</d>", r"\1", text)
+    return re.sub(r"\[Chinese\][ \t]*", "", text)
 SEEDANCE_CAPTION_LOCK = NO_ONSCREEN_CAPTION
-WAN_NEGATIVE = (
-    "负向清单：不要字幕，不要水印，不要复杂文字。"
-    "不要字幕，不要水印，不要复杂文字。"
-    "不要字幕，不要水印，不要复杂文字。"
-)
+WAN_NEGATIVE = "负向清单：不要字幕，不要水印，不要复杂文字。"
 
 
 def _assert_wan_negative(test, text):
     test.assertEqual(NO_ONSCREEN_CAPTION, WAN_NEGATIVE)
     test.assertTrue(text.endswith(WAN_NEGATIVE))
     for phrase in ("不要字幕", "不要水印", "不要复杂文字"):
-        test.assertEqual(text.count(phrase), 3, phrase)
+        test.assertEqual(text.count(phrase), 1, phrase)
 
 
 def _spec():
@@ -83,13 +86,15 @@ class HandoffTest(unittest.TestCase):
         self.assertEqual(shots[0]["prompt"], UNIT.strip())
         self.assertEqual(shots[0]["duration"], 8)
         sent = delivery_prompt(shots[0], [], 0, False, "first_frame")
-        self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK + "\n" + WAN_NEGATIVE)
+        self.assertEqual(sent, _wan_unit(UNIT.strip()) + "\n" + WAN_REFERENCE_SHEET_GUIDE + "\n" + H3_CAPTION_LOCK + "\n" + WAN_NEGATIVE)
         _assert_wan_negative(self, sent)
         self.assertNotIn("本镜无对白", sent)
         self.assertNotIn("non_diegetic_music: N/A", sent)
         self.assertNotIn("从这张首帧", sent)
         self.assertIn("non_diegetic_music:", sent)
-        self.assertIn("<d>[Chinese] 等我。</d>", sent)
+        self.assertIn("等我。", sent)
+        self.assertNotIn("[Chinese]", sent)
+        self.assertNotIn("<d>", sent)
 
     def test_units_fill_shots_in_order(self):
         spec = _spec()
@@ -136,7 +141,7 @@ class HandoffTest(unittest.TestCase):
 
     def test_a_full_unit_keeps_its_body_and_bans_onscreen_captions(self):
         sent = delivery_prompt({"prompt": UNIT}, [], 1, True, "first_frame")
-        self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK + "\n" + WAN_NEGATIVE)
+        self.assertEqual(sent, _wan_unit(UNIT.strip()) + "\n" + H3_CAPTION_LOCK + "\n" + WAN_NEGATIVE)
         _assert_wan_negative(self, sent)
         self.assertNotIn("从这张首帧", sent)
         self.assertNotIn("本镜无对白", sent)
@@ -153,16 +158,18 @@ class HandoffTest(unittest.TestCase):
         spoken = [{"speaker": "她", "line": "这句不该写进画面。"}]
         for mode in ("reference", "first_frame", "first_last_frame"):
             sent = delivery_prompt({"prompt": UNIT}, spoken, 1, True, mode)
-            self.assertEqual(sent, UNIT.strip() + "\n" + H3_CAPTION_LOCK + "\n" + WAN_NEGATIVE)
+            self.assertEqual(sent, _wan_unit(UNIT.strip()) + "\n" + H3_CAPTION_LOCK + "\n" + WAN_NEGATIVE)
             _assert_wan_negative(self, sent)
-            self.assertEqual(sent.count("<d>[Chinese] 等我。</d>"), 1)
+            self.assertEqual(sent.count("等我。"), 1)
+            self.assertNotIn("[Chinese]", sent)
+            self.assertNotIn("<d>", sent)
             self.assertNotIn("这句不该写进画面", sent)
             self.assertNotIn("从这张首帧", sent)
             self.assertNotIn("本镜无对白", sent)
             self.assertNotIn("non_diegetic_music: N/A", sent)
         again = delivery_prompt({"prompt": sent}, spoken, 0, False, "reference")
         self.assertEqual(again, sent)
-        english_only = UNIT.strip() + "\n" + H3_CAPTION_LOCK
+        english_only = _wan_unit(UNIT.strip()) + "\n" + H3_CAPTION_LOCK
         self.assertEqual(
             delivery_prompt({"prompt": english_only}, [], 0, False, "reference"),
             english_only + "\n" + WAN_NEGATIVE,
@@ -239,7 +246,130 @@ class HandoffTest(unittest.TestCase):
             sent = delivery_prompt({"prompt": UNIT}, [], 0, False, "reference")
         _assert_wan_negative(self, sent)
         self.assertIn(H3_CAPTION_LOCK, sent)
-        self.assertEqual(sent.count("<d>[Chinese] 等我。</d>"), 1)
+        self.assertEqual(sent.count("等我。"), 1)
+        self.assertNotIn("[Chinese]", sent)
+        self.assertNotIn("<d>", sent)
+
+    def test_wan_submit_keeps_spoken_lines_without_d_tags(self):
+        """Wan paints garbled captions from <d> tags; the spoken line itself must stay."""
+        body = UNIT.replace(
+            "<d>[Chinese] 等我。</d>",
+            "<d>[Chinese] 真的不痒了……感觉好平静。</d>\n<d>[Chinese] 无</d>",
+        )
+        sent = delivery_prompt({"prompt": body}, [], 0, False, "first_frame")
+        self.assertIn("真的不痒了……感觉好平静。", sent)
+        self.assertIsNone(__import__("re").search(r"(?m)^无$", sent))
+        self.assertIn("says", sent)
+        self.assertNotIn("[Chinese]", sent)
+        self.assertNotIn("<d>", sent)
+        self.assertNotIn("</d>", sent)
+        _assert_wan_negative(self, sent)
+
+    def test_wan_submit_strips_chinese_tags_and_keeps_spoken_lines(self):
+        """Wan ignores [Chinese]; the marker is dropped and the spoken line stays."""
+        body = "\n".join((
+            "## 【封装单元 1/6】",
+            "duration: 15",
+            "subject_definitions:",
+            "<Subject 1> = Jingfang Daxia (Picture 1)",
+            "detailed_description:",
+            "[Shot 1] In the misty, rain-slicked alley.",
+            "<d>[Chinese] 情绪：冷雨中一点不动声色的暖意</d>",
+            "<d>[Chinese] 无</d>",
+            "<d>[Chinese] 荆防大侠：看您冻得发抖，鼻塞难忍？莫硬扛。</d>",
+            "overall_soundscape:",
+            "Rain.",
+            "non_diegetic_music:",
+            "None",
+        ))
+        sent = delivery_prompt({"prompt": body}, [], 0, False, "first_frame")
+        self.assertNotIn("<d>", sent)
+        self.assertNotIn("</d>", sent)
+        self.assertNotIn("[Chinese]", sent)
+        self.assertIn("风格/情绪：冷雨中一点不动声色的暖意", sent)
+        self.assertIsNone(__import__("re").search(r"(?m)^无$", sent))
+        self.assertIn('台词：荆防大侠说："看您冻得发抖，鼻塞难忍？莫硬扛。"', sent)
+        self.assertIn("Chinese caption glyphs", sent)
+        self.assertIn("In the misty, rain-slicked alley.", sent)
+        _assert_wan_negative(self, sent)
+
+    def test_wan_submit_places_mood_plot_and_lines_in_official_slots(self):
+        """Wan 3.0 Prompt Guide: keep 情绪/情节, put them in official slots, format 台词."""
+        body = "\n".join((
+            "## 【封装单元 2/3】",
+            "duration: 15",
+            "subject_definitions:",
+            "<Subject 1> = Jingfang Daxia (Picture 1)",
+            "detailed_description:",
+            "[Shot 1] The young swordsman with a low, flat, cool voice (S1) says at an even pace: 夜凉透骨，莫让寒气趁虚而入。",
+            "<d>[Chinese] 情绪：安静里被截住的一缕寒 / 情节：荆防大侠静立房中，窗外雨声渐密。 / 对白（荆防大侠）：夜凉透骨，莫让寒气趁虚而入。</d>",
+            "<d>[Chinese] 无</d>",
+            "overall_soundscape:",
+            "Rain.",
+            "non_diegetic_music:",
+            "None.",
+        ))
+        sent = delivery_prompt({"prompt": body}, [], 0, False, "first_frame")
+        self.assertNotIn("<d>", sent)
+        self.assertNotIn("</d>", sent)
+        self.assertNotIn("[Chinese]", sent)
+        self.assertIn('台词：荆防大侠说："夜凉透骨，莫让寒气趁虚而入。"', sent)
+        self.assertIn("风格/情绪：安静里被截住的一缕寒", sent)
+        self.assertIn("荆防大侠静立房中，窗外雨声渐密。", sent)
+        self.assertNotIn("对白（荆防大侠）", sent)
+        self.assertNotIn("情绪：安静里被截住的一缕寒 / 情节：", sent)
+        self.assertIsNone(__import__("re").search(r"(?m)^无$", sent))
+        self.assertNotIn("无台词", sent)
+        self.assertIn("The young swordsman", sent)
+        _assert_wan_negative(self, sent)
+
+    def test_wan_submit_writes_no_dialogue_when_there_is_no_speech(self):
+        """Wan 3.0 Prompt Guide: if there is no speech, write 无台词 instead of a bare 无."""
+        body = "\n".join((
+            "## 【封装单元 1/3】",
+            "duration: 15",
+            "subject_definitions:",
+            "<Subject 1> = Jingfang Daxia (Picture 1)",
+            "detailed_description:",
+            "[Shot 1] The scholar sleeps under the window.",
+            "<d>[Chinese] 情绪：雨夜里的一室安静</d>",
+            "<d>[Chinese] 无</d>",
+            "overall_soundscape:",
+            "Rain.",
+            "non_diegetic_music:",
+            "None.",
+        ))
+        sent = delivery_prompt({"prompt": body}, [], 0, False, "first_frame")
+        self.assertIn("台词：无台词", sent)
+        self.assertEqual(sent.count("无台词"), 1)
+        self.assertIsNone(__import__("re").search(r"(?m)^无$", sent))
+        self.assertIn("风格/情绪：雨夜里的一室安静", sent)
+        self.assertNotIn("<d>", sent)
+        self.assertNotIn("[Chinese]", sent)
+        _assert_wan_negative(self, sent)
+
+    def test_wan_submit_keeps_master_sheets_from_becoming_the_frame(self):
+        """Wan 3.0 Prompt Guide: 母版/九宫格 are guidance only, not a single generated frame."""
+        body = "\n".join((
+            "## 【封装单元 2/3】",
+            "duration: 15",
+            "subject_definitions:",
+            "<Subject 1> = Jingfang Daxia (Picture 1)",
+            "detailed_description:",
+            "[Shot 1] The scholar sleeps in the inn.",
+            "overall_soundscape:",
+            "Rain.",
+            "non_diegetic_music:",
+            "None.",
+        ))
+        sent = delivery_prompt({"prompt": body, "images": ["图14"]}, [], 0, False, "reference")
+        self.assertIn("使用故事板作为分镜指导，禁止将故事板作为单张图像生成视频", sent)
+        self.assertIn("不要把图上的标题、印章、边框、图注", sent)
+        self.assertTrue(sent.endswith(WAN_NEGATIVE))
+        self.assertLess(sent.index("禁止将故事板作为单张图像生成视频"), sent.index(WAN_NEGATIVE))
+        plain = delivery_prompt({"prompt": body}, [], 0, False, "first_frame")
+        self.assertNotIn("禁止将故事板作为单张图像生成视频", plain)
+        _assert_wan_negative(self, sent)
 
     def test_markdown_board_does_not_keep_the_placeholder_when_feed_exists(self):
         spec = apply_storyboard_shots({

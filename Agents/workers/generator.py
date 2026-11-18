@@ -53,7 +53,11 @@ def run_generator(
         system = _specialist_system(role, _node_prompt(relative, repair=repairing))
         raw = complete("specialist", [
             {"role": "system", "content": system},
-            {"role": "user", "content": _specialist_user(brief, repair_text if repairing else "")},
+            {"role": "user", "content": _specialist_user(
+                brief,
+                repair_text if repairing else "",
+                task,
+            )},
         ])
         notes[relative] = _node_text(raw)
     ordered = [{"skill": relative, "text": notes.get(relative) or ""} for relative in chosen]
@@ -64,6 +68,7 @@ def run_generator(
             brief,
             ordered if include_notes else [],
             repair_text if repairing else "",
+            task,
         )},
     ])
     return {"raw": raw or "", "partials": ordered}
@@ -133,8 +138,10 @@ def _director_system(_role, merge):
     return str(merge or "")
 
 
-def _specialist_user(brief, repair_text):
+def _specialist_user(brief, repair_text, task=""):
     parts = [str(brief or "").strip()]
+    if task in ("script", "asset", "storyboard"):
+        parts.append("只填骨架里你领到的填写槽。不要在骨架外另写一份完整的阶段成稿。")
     if str(repair_text or "").strip():
         parts.append(
             "只改点到本节点原文的失败项。不要重写其他节点负责的内容。\n%s" % str(repair_text).strip()
@@ -147,7 +154,7 @@ def opening_or_fallback(state, fallback=""):
     return str((state or {}).get("opening") or "").strip() or str(fallback or "").strip()
 
 
-def _director_user(brief, partials, repair_text):
+def _director_user(brief, partials, repair_text, task=""):
     blocks = []
     notes = []
     for item in partials or []:
@@ -158,7 +165,7 @@ def _director_user(brief, partials, repair_text):
     if notes:
         blocks.append("各节点正文：\n\n%s" % "\n\n".join(notes))
     brief_text = str(brief or "").strip()
-    if brief_text:
+    if brief_text and not notes:
         blocks.append("简报：\n%s" % brief_text)
     repair = str(repair_text or "").strip()
     if repair:
@@ -176,7 +183,12 @@ def _director_user(brief, partials, repair_text):
             )
         blocks.append("请按失败项改上一稿，交出这一阶段的一份完整稿。")
     else:
-        blocks.append("请汇总成这一阶段的一份稿。")
+        if task in ("script", "asset", "storyboard"):
+            blocks.append(
+                "请按槽汇编成这一阶段的稿。不要另起一篇，不要整份采用某一专员的成稿，不要改写锁定槽，不要把锁定时长改短。"
+            )
+        else:
+            blocks.append("请汇总成这一阶段的一份稿。")
     return "\n\n".join(blocks)
 
 

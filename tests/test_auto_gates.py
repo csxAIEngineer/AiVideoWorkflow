@@ -193,6 +193,10 @@ class AutoAdvanceTest(unittest.TestCase):
                 return {"title": "雨夜", "script": "她在雨里等车。"}
             if "对标情报" in brief:
                 return {"intel": "来源：一条爆款。这不是事实。"}
+            if "你是汇总节点" in brief and "sd-script-engine/" in brief:
+                return {"title": "雨夜", "script": "她在雨里等车。"}
+            if "你是汇总节点" in brief and "sd-route-engine/" in brief:
+                return {"text": "路线"}
             raise AssertionError(brief[:120])
 
         with patch("end.stage_runner.check_stage", return_value=(True, "")), patch(
@@ -266,6 +270,19 @@ class AutoAdvanceTest(unittest.TestCase):
                 return {"storyboard": "她进门。", "previs": "## 段 1\n第 1 格：人在门内。"}
             if "任务：提示词封装" in brief:
                 return {"feed": "## 【封装单元 1/1】\n投喂正文"}
+            if "你是汇总节点" in brief:
+                if "segment-splicing/generator.md" in brief:
+                    return {"seam_ledger": {"entries": []}}
+                if "sd-feed-engine/" in brief:
+                    return {"feed": "## 【封装单元 1/1】\n投喂正文"}
+                if "sd-storyboard-engine/" in brief:
+                    return {"storyboard": "她进门。", "previs": "## 段 1\n第 1 格：人在门内。"}
+                if "sd-asset-engine/" in brief:
+                    return {"image_prompts": "#### 图1 · 女\n同上"}
+                if "sd-script-engine/" in brief:
+                    return {"title": "雨夜", "script": "她在雨里等车。"}
+                if "sd-route-engine/" in brief:
+                    return {"text": "路线"}
             raise AssertionError(brief[:160])
 
         def check(folder, stage, locks, title=""):

@@ -30,6 +30,7 @@ from end.seam_ledger import (
 from end.stage_runner import (
     _spec_patch,
     accepted_done,
+    carried_text,
     group_shot_durations,
     next_pending,
     stages_for,
@@ -1196,6 +1197,81 @@ class StoryboardAssetBindingTest(unittest.TestCase):
         self.assertEqual(built[3]["images"], [])
         self.assertNotIn("end_image", built[3])
         self.assertIn("资产：图3，图9，图4，图5，图6", built[3]["prompt"])
+
+
+class SeamBriefScopeTest(unittest.TestCase):
+    def test_seam_carried_text_is_only_the_packed_feed(self):
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+        internal = folder / "_内部_"
+        internal.mkdir()
+        (internal / "剧本.md").write_text("剧本正文不应该进衔接简报\n", encoding="utf-8")
+        (internal / "assets.md").write_text("#### 图1 · 女主（角色）\n资产正文不应该进衔接简报\n", encoding="utf-8")
+        (internal / "分镜.md").write_text("## S01\n分镜正文不应该进衔接简报\n", encoding="utf-8")
+        feed = "## 【封装单元 1/1】\nduration: 60\n只要这份封装稿\n"
+        (internal / "feed.md").write_text(feed, encoding="utf-8")
+        text = carried_text(folder, "seam")
+        self.assertIn("只要这份封装稿", text)
+        self.assertNotIn("不应该进衔接简报", text)
+        packed = carried_text(folder, "feed")
+        self.assertIn("剧本正文不应该进衔接简报", packed)
+        self.assertIn("资产正文不应该进衔接简报", packed)
+        self.assertIn("分镜正文不应该进衔接简报", packed)
+        self.assertNotIn("只要这份封装稿", packed)
+
+    def test_seam_first_write_brief_uses_the_packed_feed_not_script_or_board(self):
+        feed = self._feed()
+        state = {
+            "attempt": 0,
+            "units": packed_units({"feed": feed}),
+            "source": "这是剧本全文，不应该出现在衔接简报里",
+            "storyboard": "这是分镜全文，不应该出现在衔接简报里",
+            "feed": feed,
+        }
+        brief = generator_messages(state)[-1]["content"]
+        self.assertIn("封装单元 1/3", brief)
+        self.assertIn(feed.splitlines()[0], brief)
+        self.assertNotIn("这是剧本全文，不应该出现在衔接简报里", brief)
+        self.assertNotIn("这是分镜全文，不应该出现在衔接简报里", brief)
+
+    def _feed(self):
+        return UnitOrderTest()._timed_feed((11, 14, 9))
+
+
+
+
+class SeamEmptyShotSkillTest(unittest.TestCase):
+    def test_skills_require_canonical_empty_use_and_a_one_to_two_second_unit(self):
+        from Agents.workers.seam import SKILL_FILE
+
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual(SKILL_FILE, "segment-splicing/generator.md")
+        generator = (root / "Agents/skills" / SKILL_FILE).read_text(encoding="utf-8")
+        critic = (root / "Agents/skills/segment-splicing/critic.md").read_text(encoding="utf-8")
+
+        self.assertNotIn("情绪段落收尾 → ③", generator)
+        self.assertNotIn("情绪段落收尾 -> ③", generator)
+
+        for token in ("情绪空镜", "音效桥", "时空转场"):
+            self.assertIn(token, generator)
+            self.assertIn(token, critic)
+
+        self.assertIn("empty_use", generator)
+        self.assertIn("empty_use", critic)
+        self.assertIn("恰好", generator)
+        self.assertIn("原词", critic)
+        self.assertIn("duration", generator)
+        self.assertIn("duration", critic)
+        self.assertTrue(
+            any(token in generator for token in ("1 或 2", "1–2", "1-2", "1 到 2")),
+            generator,
+        )
+        self.assertTrue(
+            any(token in critic for token in ("1 或 2", "1–2", "1-2", "1 到 2")),
+            critic,
+        )
+
+
 
 
 if __name__ == "__main__":

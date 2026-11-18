@@ -27,6 +27,11 @@ from Agents.worker import (
 )
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import opening_or_fallback, run_generator
+from Agents.workers.storyboard_skeleton import (
+    format_storyboard_skeleton,
+    restore_storyboard_locks,
+    storyboard_skeleton,
+)
 
 STAGE = "storyboard"
 TASK = "storyboard"
@@ -110,11 +115,26 @@ def extract_storyboard(raw, previous=""):
     return text
 
 
+
+def _with_skeleton(text, state):
+    skeleton = format_storyboard_skeleton(storyboard_skeleton(state))
+    body = str(text or "").strip()
+    if not skeleton:
+        return body
+    if skeleton.strip() in body:
+        return body
+    if not body:
+        return skeleton.strip()
+    return "%s\n\n%s" % (body, skeleton.strip())
+
+
 def _first_write_user(state):
     opening = str(state.get("opening") or "").strip()
     if opening:
-        return opening
-    return "任务：分镜\n\n剧本：\n%s" % str(state.get("source") or "").strip()
+        user = opening
+    else:
+        user = "任务：分镜\n\n剧本：\n%s" % str(state.get("source") or "").strip()
+    return _with_skeleton(user, state)
 
 
 def generator_messages(state):
@@ -128,7 +148,7 @@ def generator_messages(state):
         state.get("critic_report"),
         state.get("machine_report"),
     )
-    return [system, {"role": "user", "content": user}]
+    return [system, {"role": "user", "content": _with_skeleton(user, state)}]
 
 
 def critic_messages(state):
@@ -146,14 +166,14 @@ def compile_storyboard_graph(complete, checker=None):
 
     def generate(state):
         attempt = int(state.get("attempt") or 0) + 1
-        brief = opening_or_fallback(state, _first_write_user(state))
-        repair_text = revision_brief(
+        brief = _with_skeleton(opening_or_fallback(state, _first_write_user(state)), state)
+        repair_text = _with_skeleton(revision_brief(
             STAGE,
             "任务：分镜",
             state.get("draft") or "",
             state.get("critic_report"),
             state.get("machine_report"),
-        ) if attempt > 1 else ""
+        ), state) if attempt > 1 else ""
         try:
             produced = run_generator(
                 TASK,
@@ -171,7 +191,10 @@ def compile_storyboard_graph(complete, checker=None):
             }
         raw = produced.get("raw") or ""
         previous = str(state.get("draft") or "")
-        draft = extract_storyboard(raw, previous)
+        draft = restore_storyboard_locks(
+            extract_storyboard(raw, previous),
+            storyboard_skeleton(state),
+        )
         note = ""
         if previous.strip() and draft.strip() == previous.strip() and attempt > 1:
             note = "revision_kept_previous"

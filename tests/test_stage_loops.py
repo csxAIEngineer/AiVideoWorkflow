@@ -638,7 +638,7 @@ class EndDispatchTest(unittest.TestCase):
 
         def writer(brief, skill_pack="", debug_dir=None, model=None, template=None, trace_prompts=None):
             calls.append(brief)
-            if "任务：分镜" in brief or "阶段：storyboard" in brief:
+            if "任务：分镜" in brief or "阶段：storyboard" in brief or "你是汇总节点" in brief:
                 if "缺时长" in brief or "机检没过" in brief:
                     return {"storyboard": FIXED_BOARD}
                 return {"storyboard": NAMED_BOARD}

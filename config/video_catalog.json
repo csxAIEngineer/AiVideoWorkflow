@@ -1,8 +1,8 @@
 {
-  "_comment": "出镜正式配置，随仓库提交。进程默认读这一份。preview 走 token-plan 上的 wan3.0-video、480P，generate 走同一平台和模型、720P。default_video 是路线没写 platform 时的回退：cloud 用 qwen，local 用 omniref。MiniMax-H3、qwen、omniref 和 minimax 参数档都还在。密钥放 .env，不要写进这个文件。以 _ 开头的键只是说明。",
+  "_comment": "出镜正式配置，随仓库提交。进程默认读这一份。preview 走 qwen 上的 wan3.0-video、480P，generate 走同一平台和模型、720P。default_video 是路线没写 platform 时的回退：cloud 用 qwen，local 用 omniref。MiniMax-H3、qwen、omniref 和 minimax 参数档都还在。密钥放 .env，不要写进这个文件。以 _ 开头的键只是说明。",
   "default_video": "cloud",
   "platforms": {
-    "_comment": "token-plan 固定生产主机 https://token-plan.maas.qianwenaiapi.com 和 TOKE_PLAN_QWEN_API_KEY。qwen 与 omniref 是内置平台，这里写出来是为了留档。",
+    "_comment": "qwen 用 QWEN_API_KEY 和 config/qwen.json 的主机（当前是测试主机 https://maas.qianwenaiapi.com）。token-plan 仍保留，用 TOKE_PLAN_QWEN_API_KEY。omniref 是本地 MiniMax。",
     "qwen": {
       "adapter": "dashscope",
       "host": "qwen",
@@ -56,13 +56,13 @@
     }
   },
   "routes": {
-    "_comment": "当前 preview 和 generate 都走 token-plan + wan3.0-video。改回 MiniMax：platform 写 qwen 或 omniref，model 写 minimax-h3，参数档用 minimax，或把 preview/generate 的 resolution 改回 768P。",
+    "_comment": "当前 preview 和 generate 都走 qwen + wan3.0-video（API Key）。改回 token-plan：platform 写 token-plan。改回 MiniMax：platform 写 qwen 或 omniref，model 写 minimax-h3，参数档用 minimax，或把 preview/generate 的 resolution 改回 768P。",
     "preview": {
-      "platform": "token-plan",
+      "platform": "qwen",
       "model": "wan3.0-video"
     },
     "generate": {
-      "platform": "token-plan",
+      "platform": "qwen",
       "model": "wan3.0-video"
     }
   }

@@ -446,6 +446,10 @@ class DirectorDbTest(unittest.TestCase):
                 return {"title": "雨夜", "script": "她在雨里等车。"}
             if "只写资产" in brief or "机检没过" in brief or "任务：建议修补" in brief:
                 return {"image_prompts": "#### 图1 · 女（角色）\n同上"}
+            if "你是汇总节点" in brief and "sd-script-engine/" in brief:
+                return {"title": "雨夜", "script": "她在雨里等车。"}
+            if "你是汇总节点" in brief and "sd-route-engine/" in brief:
+                return {"text": "路线"}
             raise AssertionError("跳到了后面的阶段")
 
         with patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"):

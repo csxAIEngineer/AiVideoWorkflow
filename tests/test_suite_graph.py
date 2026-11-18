@@ -392,5 +392,77 @@ def _invoke_files(files, model, trace_path):
     )
 
 
+class AssetBriefSliceGraphTest(unittest.TestCase):
+    def test_asset_specialists_receive_sliced_slots_and_merge_keeps_the_full_skeleton(self):
+        from Agents.workers.asset_skeleton import asset_skeleton, format_asset_skeleton
+        from tests.test_asset_skeleton import SCRIPT
+
+        brief = "\n".join((
+            "阶段：P2",
+            "赛道：1",
+            "来源：1",
+            "动作档：R2",
+            "模型：h3",
+            "素材形态：M2",
+            "任务：资产锁定",
+            "只写资产提示词，放在 image_prompts。每条以「#### 图N · 名称」开头。",
+            "",
+            format_asset_skeleton(asset_skeleton({"script": SCRIPT})).rstrip(),
+        ))
+
+        class AssetModel(object):
+            def __init__(self):
+                self.users = {}
+
+            def complete(self, messages, model, max_tokens, timeout, kind=None, effort=None):
+                system = messages[0]["content"]
+                user = messages[-1]["content"]
+
+                class Reply(object):
+                    def __init__(self, content):
+                        self.content = content
+
+                if "你是汇总节点" in system:
+                    self.users["merge"] = user
+                    return Reply(json.dumps({"image_prompts": "资产正文", "seen": user}, ensure_ascii=False))
+                if "# 本节点原文 sd-asset-engine/references/character-portrait-templates.md" in system:
+                    key = "portrait"
+                elif "# 本节点原文 sd-asset-engine/references/scene-grid-template.md" in system:
+                    key = "scene"
+                elif "# 本节点原文 sd-asset-engine/references/three-list-extraction.md" in system:
+                    key = "catalog"
+                elif "# 本节点原文 short-drama-director/references/asset-spatial-ledger.md" in system:
+                    key = "spatial"
+                else:
+                    key = "other"
+                self.users[key] = user
+                return Reply(json.dumps({"text": "片段"}, ensure_ascii=False))
+
+        model = AssetModel()
+        result = run_suite("asset", brief, model)
+        self.assertEqual(result["image_prompts"], "资产正文")
+        portrait = model.users["portrait"]
+        self.assertIn("#### 图1 · 女主（角色）", portrait)
+        self.assertIn("#### 图4 · 精芙美松凝胶（道具）", portrait)
+        self.assertNotIn("#### 图5 · 卧室（母版）", portrait)
+        scene = model.users["scene"]
+        self.assertIn("#### 图5 · 卧室（母版）", scene)
+        self.assertIn("#### 图8 · 产品展示区（九宫格）", scene)
+        self.assertNotIn("#### 图1 · 女主（角色）", scene)
+        catalog = model.users["catalog"]
+        self.assertIn("#### 图1 · 女主（角色）", catalog)
+        self.assertNotIn("【填写】", catalog)
+        spatial = model.users["spatial"]
+        self.assertIn("#### 图5 · 卧室（母版）", spatial)
+        self.assertNotIn("#### 图1 · 女主（角色）", spatial)
+        self.assertNotIn("【填写】", spatial)
+        merge = model.users["merge"]
+        self.assertIn("#### 图1 · 女主（角色）", merge)
+        self.assertIn("#### 图8 · 产品展示区（九宫格）", merge)
+        self.assertIn("【填写】", merge)
+
+
+
+
 if __name__ == "__main__":
     unittest.main()

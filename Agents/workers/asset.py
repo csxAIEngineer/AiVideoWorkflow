@@ -40,6 +40,11 @@ from Agents.text import complete_text, resolved_model
 from Agents.worker import missing_skill_state, resolve_skill_pack
 from Agents.workers.critic import critic_user
 from Agents.workers.generator import opening_or_fallback, run_generator
+from Agents.workers.asset_skeleton import (
+    asset_skeleton,
+    format_asset_skeleton,
+    restore_asset_locks,
+)
 
 STAGE = "P2"
 TASK = "asset"
@@ -122,6 +127,7 @@ def initial_state(
     asset_list=None,
     skill_pack="",
     prior_draft="",
+    opening="",
     model=None,
     max_attempts=DEFAULT_MAX_ATTEMPTS,
     min_blocks=DEFAULT_MIN_BLOCKS,
@@ -140,6 +146,7 @@ def initial_state(
         "locks": dict(locks or {}),
         "asset_list": list(asset_list or []),
         "skill_pack": str(skill_pack or ""),
+        "opening": str(opening or ""),
         "draft": str(prior_draft or ""),
         "attempt": 0,
         "max_attempts": budget,
@@ -163,6 +170,7 @@ def run_p2_asset_loop(
     asset_list=None,
     skill_pack="",
     prior_draft="",
+    opening="",
     model=None,
     max_attempts=DEFAULT_MAX_ATTEMPTS,
     min_blocks=DEFAULT_MIN_BLOCKS,
@@ -189,6 +197,7 @@ def run_p2_asset_loop(
         asset_list=asset_list,
         skill_pack=skill_pack,
         prior_draft=prior_draft,
+        opening=opening,
         model=model,
         max_attempts=max_attempts,
         min_blocks=min_blocks,
@@ -230,7 +239,7 @@ def compile_p2_asset_graph(complete, checker=None):
 
     def generate(state):
         attempt = int(state.get("attempt") or 0) + 1
-        brief = opening_or_fallback(state, _first_write_user(state))
+        brief = _with_skeleton(opening_or_fallback(state, _first_write_user(state)), state)
         repair = _repair_user(state) if attempt > 1 else ""
         try:
             produced = run_generator(
@@ -248,7 +257,10 @@ def compile_p2_asset_graph(complete, checker=None):
                 "generator_note": "model_error",
             }
         previous = str(state.get("draft") or "")
-        draft = apply_generator_output(produced.get("raw") or "", previous=previous)
+        draft = restore_asset_locks(
+            apply_generator_output(produced.get("raw") or "", previous=previous),
+            asset_skeleton(state),
+        )
         note = ""
         if previous.strip() and draft.strip() == previous.strip():
             note = "revision_kept_previous"
@@ -358,6 +370,19 @@ def result_from_state(state):
     }
 
 
+
+def _with_skeleton(text, state):
+    skeleton = format_asset_skeleton(asset_skeleton(state))
+    body = str(text or "").strip()
+    if not skeleton:
+        return body
+    if skeleton.strip() in body:
+        return body
+    if not body:
+        return skeleton.strip()
+    return "%s\n\n%s" % (body, skeleton.strip())
+
+
 def _first_write_user(state):
     sections = [
         "阶段：P2 资产提示词。",
@@ -374,7 +399,7 @@ def _first_write_user(state):
         sections.append("已有草稿。请写成完整资产稿：\n%s" % draft)
     else:
         sections.append("请根据剧本写出完整资产稿。")
-    return "\n\n".join(sections)
+    return _with_skeleton("\n\n".join(sections), state)
 
 
 def _repair_user(state):
@@ -397,14 +422,14 @@ def _repair_user(state):
         "按审查报告和机检失败项修改上一稿，交出完整 image_prompts。"
         "不要采用审查员夹带的改写。"
     )
-    return "\n\n".join(sections)
+    return _with_skeleton("\n\n".join(sections), state)
 
 
 def generator_messages(state):
     if int(state.get("attempt") or 0) >= 1:
         user = _repair_user(state)
     else:
-        user = opening_or_fallback(state, _first_write_user(state))
+        user = _with_skeleton(opening_or_fallback(state, _first_write_user(state)), state)
     return [
         {"role": "system", "content": GENERATOR_SYSTEM},
         {"role": "user", "content": user},
