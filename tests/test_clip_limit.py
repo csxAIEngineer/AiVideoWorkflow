@@ -144,3 +144,13 @@ class ClipLimitTest(unittest.TestCase):
         self.assertIn("必须把这一镜拆开", joined)
         self.assertNotIn("钳成 15", joined)
         self.assertNotIn("超过 15s", joined)
+
+    def test_feed_merge_prompt_last_cut_follows_pack_limit(self):
+        from AI.skills.registry import merge_prompt
+
+        h3 = merge_prompt("feed", "模型：MiniMax H3")
+        self.assertIn("最后一刀不超过 30 秒", h3)
+        self.assertNotIn("最后一刀不超过 15 秒", h3)
+        self.assertIn("最后一刀不超过 30 秒", merge_prompt("feed", ""))
+        seedance = merge_prompt("feed", "模型：Seedance 2.0")
+        self.assertIn("最后一刀不超过 15 秒", seedance)

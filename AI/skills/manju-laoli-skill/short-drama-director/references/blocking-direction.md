@@ -12,7 +12,7 @@
 |---|---|---|
 | **导演决策层（本文件）** | 这场戏的人物**怎么调度**、权力关系怎么用空间表达、节拍怎么走、何时切镜 | **本文件** |
 | **投喂执行层** | 站位**怎么写进提示词**（一行式四要素 + 轴线行 + 位移行） | `asset-spatial-ledger.md` §三 + `model-adapters.md` §5.0 |
-| **分段/转场层** | 怎么切成 ≤15 秒的生成段、切点落哪 | `segment-splicing.md` + `sd-qc-engine/references/editing-transition-gate.md` |
+| **分段/转场层** | 怎么按模型单段上限切成生成段、切点落哪 | `segment-splicing.md` + `sd-qc-engine/references/editing-transition-gate.md` |
 | **图形化层** | 逐镜面板怎么画、面板边界≠剪辑点 | `sd-storyboard-engine/references/storyboard-sheet-template.md` |
 
 **四条边界（越界即返工）**：
