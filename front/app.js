@@ -2062,7 +2062,18 @@ async function refreshList() {
   projects = await rpc("projects.list");
   if (current) {
     const fresh = projects.find((item) => item.id === current.id);
-    if (fresh) current = fresh;
+    if (fresh) {
+      current.title = fresh.title || current.title;
+      current.brief = fresh.brief != null ? fresh.brief : current.brief;
+      current.status = fresh.status;
+      current.stage = fresh.stage;
+      current.error = fresh.error;
+      current.updated_at = fresh.updated_at;
+      current.finished_at = fresh.finished_at;
+      current.debug_llm = fresh.debug_llm;
+      if (fresh.debug_stop != null) current.debug_stop = fresh.debug_stop;
+      if (fresh.progress) current.progress = fresh.progress;
+    }
   }
   renderHistory();
   renderThread();
