@@ -369,7 +369,7 @@ def load_skill_pack(template=None, context="", stage="P4"):
     only = str(route["only"] or "")
     if only:
         files = [item for item in files if item.startswith(only)]
-        adapter = "short-drama-director/references/h3-adapter.md"
+        adapter = "short-drama-director/references/wan-adapter.md"
         if only.startswith("sd-feed-engine/") and route["model"] == "h3" and adapter not in files:
             files.insert(0, adapter)
         if not files:

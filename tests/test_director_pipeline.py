@@ -937,7 +937,8 @@ class MachineAndMountTest(unittest.TestCase):
         feed = mount_header("feed", _base_locks(model="h3"), "", "feed")
         feed_pack = load_skill_pack(context=feed, stage="P4")
         self.assertIn("# sd-feed-engine/", feed_pack)
-        self.assertIn("# short-drama-director/references/h3-adapter.md", feed_pack)
+        self.assertIn("# short-drama-director/references/wan-adapter.md", feed_pack)
+        self.assertNotIn("# short-drama-director/references/h3-adapter.md", feed_pack)
         self.assertNotIn("# sd-storyboard-engine/", feed_pack)
         self.assertNotIn("# short-drama-director/SKILL.md", feed_pack)
 

@@ -283,7 +283,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn("4+6+7+5+6=28", repair)
         self.assertIn(LINE, repair)
         self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", repair)
-        self.assertIn("short-drama-director/references/h3-adapter.md", repair)
+        self.assertIn("short-drama-director/references/wan-adapter.md", repair)
 
     def test_h3_brief_locks_headings_durations_and_section_lines(self):
         state = _state([LINE])
@@ -553,7 +553,7 @@ class PackingPlanTest(unittest.TestCase):
         duration_nodes = select_nodes(files, duration_brief, previous)
         self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", duration_nodes)
         self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", duration_nodes)
-        self.assertIn("short-drama-director/references/h3-adapter.md", duration_nodes)
+        self.assertIn("short-drama-director/references/wan-adapter.md", duration_nodes)
         self.assertNotIn("sd-feed-engine/SKILL.md", duration_nodes)
         self.assertNotIn("sd-feed-engine/references/asset-mapping-and-rules.md", duration_nodes)
         self.assertNotIn("short-drama-director/references/segment-splicing.md", duration_nodes)
@@ -567,7 +567,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn("sd-feed-engine/SKILL.md", dialogue_nodes)
         self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", dialogue_nodes)
         self.assertNotIn("sd-feed-engine/references/feed-mode-and-gates.md", dialogue_nodes)
-        self.assertNotIn("short-drama-director/references/h3-adapter.md", dialogue_nodes)
+        self.assertNotIn("short-drama-director/references/wan-adapter.md", dialogue_nodes)
         self.assertEqual(
             packing_repair_targets(dialogue_state["machine_report"], h3=False),
             [
@@ -649,7 +649,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertTrue(any("必须把这一镜拆开" in item for item in split_errors), split_errors)
         self.assertFalse(any("时长被压缩" in item for item in split_errors), split_errors)
         self.assertIn(
-            "short-drama-director/references/h3-adapter.md",
+            "short-drama-director/references/wan-adapter.md",
             packing_repair_targets({"errors": split_errors}, h3=True),
         )
         first_critic = calls.index("critic")
@@ -658,7 +658,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", repair_nodes)
         self.assertIn("sd-feed-engine/SKILL.md", repair_nodes)
         self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", repair_nodes)
-        self.assertIn("short-drama-director/references/h3-adapter.md", repair_nodes)
+        self.assertIn("short-drama-director/references/wan-adapter.md", repair_nodes)
         self.assertNotIn("sd-feed-engine/references/asset-mapping-and-rules.md", repair_nodes)
         self.assertNotIn("short-drama-director/references/segment-splicing.md", repair_nodes)
         self.assertEqual(repair.count("director"), 1)

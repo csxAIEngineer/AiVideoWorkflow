@@ -218,7 +218,7 @@ _DIALOGUE_WRITERS = (
 )
 
 
-_H3_UNIT_WRITER = "short-drama-director/references/h3-adapter.md"
+_H3_UNIT_WRITER = "short-drama-director/references/wan-adapter.md"
 
 
 _SHOT_BOUNDARY = re.compile(r"(?=\[Shot\s+\d+\])")

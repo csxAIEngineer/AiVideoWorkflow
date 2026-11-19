@@ -36,7 +36,7 @@ _LIVE_ACTION_STYLE = re.compile(r"(?i)\blive-action\s+style\b|\blive action\s+st
 
 _STYLE_WRITERS = (
     "sd-feed-engine/references/feed-mode-and-gates.md",
-    "short-drama-director/references/h3-adapter.md",
+    "short-drama-director/references/wan-adapter.md",
     "short-drama-director/references/prompt-feeding-checklist.md",
 )
 

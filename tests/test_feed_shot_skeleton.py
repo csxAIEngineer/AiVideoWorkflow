@@ -403,20 +403,20 @@ class ShotSkeletonRepairTest(unittest.TestCase):
         self.assertIn("不要沿用全集镜号", brief)
         self.assertIn("【封装单元 1/1】S03、S04：[Shot 1] / [Shot 2] At 00:07.000", brief)
         self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", brief)
-        self.assertIn("short-drama-director/references/h3-adapter.md", brief)
+        self.assertIn("short-drama-director/references/wan-adapter.md", brief)
         self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", brief)
         self.assertEqual(
             packing_repair_targets(state["machine_report"], h3=True),
             [
                 "sd-feed-engine/references/feed-mode-and-gates.md",
-                "short-drama-director/references/h3-adapter.md",
+                "short-drama-director/references/wan-adapter.md",
                 "short-drama-director/references/prompt-feeding-checklist.md",
             ],
         )
         files = suite_files("feed", "阶段：P4\n模型：h3\n" + brief)
         previous = [{"skill": relative, "text": "旧节点"} for relative in files]
         nodes = select_nodes(files, brief, previous)
-        self.assertIn("short-drama-director/references/h3-adapter.md", nodes)
+        self.assertIn("short-drama-director/references/wan-adapter.md", nodes)
         skill = machine_check_skill("feed")
         self.assertIn("镜号锁", skill)
         self.assertIn("shot_skeleton_failures", skill)
@@ -475,7 +475,7 @@ class ShotSkeletonRepairTest(unittest.TestCase):
         repair = next(item for item in prompts if "镜号锁没过" in item)
         self.assertIn("不要自己发明切点", repair)
         self.assertIn("[Shot 2] At 00:07.000", repair)
-        self.assertIn("short-drama-director/references/h3-adapter.md", repair)
+        self.assertIn("short-drama-director/references/wan-adapter.md", repair)
 
 
 class UnitAssetLineTest(unittest.TestCase):

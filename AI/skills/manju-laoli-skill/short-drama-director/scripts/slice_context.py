@@ -128,9 +128,9 @@ def resolve_files(stage, track="1", combat="none", model="2.5", source="1", prev
     if stage.upper() in ("P3", "P4") and combat.upper() in COMBAT_FILES:
         files.extend(COMBAT_FILES[combat.upper()])
     if model.lower() == "h3" and stage.upper() == "P4":
-        # Lead the feed specialists. The seven-section adapter is much larger
-        # and used to land in a later cohort, so drafts kept the Chinese sheet.
-        files.insert(0, "short-drama-director/references/h3-adapter.md")
+        # Live locks still say h3, but video is Wan 3.0. Lead the feed
+        # specialists with the Wan adapter, not the H3 English shell.
+        files.insert(0, "short-drama-director/references/wan-adapter.md")
     elif model.lower() == "h3" and stage.upper() == "P5":
         files.append("short-drama-director/references/h3-adapter.md")
     if previs:

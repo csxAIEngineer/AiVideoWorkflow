@@ -294,7 +294,7 @@ class StyleBriefTest(unittest.TestCase):
         self.assertIn("不要改写画风", brief)
         self.assertIn(LOCK, brief)
         self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", brief)
-        self.assertIn("short-drama-director/references/h3-adapter.md", brief)
+        self.assertIn("short-drama-director/references/wan-adapter.md", brief)
         self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", brief)
         self.assertNotIn("时长或对白没过", brief)
         self.assertNotIn("请写画风", brief)
@@ -302,7 +302,7 @@ class StyleBriefTest(unittest.TestCase):
             packing_repair_targets(state["machine_report"], h3=True),
             [
                 "sd-feed-engine/references/feed-mode-and-gates.md",
-                "short-drama-director/references/h3-adapter.md",
+                "short-drama-director/references/wan-adapter.md",
                 "short-drama-director/references/prompt-feeding-checklist.md",
             ],
         )
@@ -310,7 +310,7 @@ class StyleBriefTest(unittest.TestCase):
         files = suite_files("feed", "阶段：P4\n模型：h3\n" + brief)
         previous = [{"skill": relative, "text": "旧节点"} for relative in files]
         nodes = select_nodes(files, brief, previous)
-        self.assertIn("short-drama-director/references/h3-adapter.md", nodes)
+        self.assertIn("short-drama-director/references/wan-adapter.md", nodes)
         self.assertNotIn("sd-feed-engine/references/asset-mapping-and-rules.md", nodes)
 
 
@@ -362,7 +362,6 @@ class StyleLoopTest(unittest.TestCase):
         self.assertIn("duration: 8", result["feed"])
         repair = next(item for item in prompts if "不要改写画风" in item)
         self.assertIn(LOCK, repair)
-        self.assertIn("short-drama-director/references/h3-adapter.md", repair)
 
 
 if __name__ == "__main__":

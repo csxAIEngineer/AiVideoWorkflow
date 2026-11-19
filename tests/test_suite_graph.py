@@ -206,7 +206,7 @@ class SuiteGraphTest(unittest.TestCase):
         finally:
             path.unlink()
 
-    def test_h3_feed_leads_with_the_adapter(self):
+    def test_wan_feed_leads_with_the_adapter(self):
         brief = "\n".join((
             "阶段：P4",
             "赛道：1",
@@ -218,9 +218,10 @@ class SuiteGraphTest(unittest.TestCase):
             "任务：提示词封装",
         ))
         files = suite_files("feed", brief)
-        adapter = "short-drama-director/references/h3-adapter.md"
+        adapter = "short-drama-director/references/wan-adapter.md"
         seven = "short-drama-director/references/model-adapters.md"
         self.assertEqual(files[0], adapter)
+        self.assertNotIn("short-drama-director/references/h3-adapter.md", files)
         self.assertLess(files.index(adapter), files.index(seven))
         self.assertEqual(pack_cohorts(files)[0], [adapter])
         prompt = merge_prompt("feed", brief)
