@@ -30,6 +30,14 @@ from Agents.workers.feed.style import (
     style_lock_line,
     style_lock_rule,
 )
+from Agents.workers.feed.wan_format import (
+    WAN_SECTIONS,
+    WAN_NEGATIVE_LINE,
+    is_wan_shaped,
+    map_h3_sections_to_wan,
+    render_wan_unit,
+    section_lines as wan_section_lines,
+)
 from Agents.workers.feed.extract import (
     _fold_director_text,
     _join_fold_source,
@@ -87,16 +95,7 @@ def _generator_system(state):
 
 
 def _section_lines(style, shots=None):
-    line = style_lock_line(style)
-    rows = []
-    for name in H3_SECTIONS:
-        if name == "subject_definitions" and line:
-            rows.append("subject_definitions:\n%s" % line)
-        elif name == "detailed_description" and shots:
-            rows.append("detailed_description:\n%s" % "\n".join(shot["heading"] for shot in shots))
-        else:
-            rows.append("%s:" % name)
-    return "\n".join(rows)
+    return wan_section_lines(style_lock_line(style), shots)
 
 
 def h3_packing_scaffold(groups, style=""):
@@ -115,21 +114,21 @@ def h3_packing_scaffold(groups, style=""):
         return ""
     total = len(groups)
     header = [
-        "H3 的 Ref2VA 骨架已经按%s写好。只填每个字段名下面的正文。" % UNIT_NAME,
-        "不要改 ## 标题，不要改 duration，不要调换这四段的顺序。",
+        "万相 3.0 的封装骨架已经按%s写好。只填每个字段名下面的正文。" % UNIT_NAME,
+        "不要改 ## 标题，不要改 duration，不要调换字段顺序。",
         "不要写 summary 或 retention_analysis。",
-        "不要输出 JSON，不要把四个字段写成 JSON 键，也不要把多个单元写进同一个 detailed_description。",
-        "不要改字段名，不要用 Subject、Soundscape、Music 代替这四行。",
-        "不要只写第一个单元。空着的单元也留下这四个字段名、锁定句和镜号。",
+        "不要输出 JSON，不要把字段写成 JSON 键，也不要把多个单元写进同一段分镜。",
+        "不要改字段名，不要再写成 subject_definitions、detailed_description、overall_soundscape、non_diegetic_music。",
+        "不要写 <d> 或 [Chinese]。台词写成角色说：\"原文\"，无对白写无台词。",
+        "不要只写第一个单元。空着的单元也留下字段名、锁定句和分镜起止秒。",
         "只填或修改字段名下面的正文。已经写好的正文保留，只补还空着的槽。",
-        "镜号和切点已经按这一段里的分镜时长算好，不是模型写的。"
-        "每一段从 [Shot 1] 起，第一镜不写时间。"
-        "后面每一镜紧跟预先算好的 At MM:SS.mmm，只累加这一段里前面各镜的时长。"
+        "分镜起止秒已经按这一段里的分镜时长算好，不是模型写的。"
+        "写成「分镜1（00:00.000-00:08.000）：」，首尾相接，只累加这一段里前面各镜的时长。"
         "不要增删、合并或调换镜头，不要改本地镜号，不要改这些时间码，也不要自己发明切点。"
-        "只在这些标题下补画面、对白和声音。",
+        "只在这些标题下补画面、对白和声音。不要把情绪或情节写进台词行。",
         "若这一段已经写了资产：，那一行是程序按分镜资产栏写的，格式与分镜相同。"
         "不要改这行，不要另写一份资产列表，也不要靠角色名或英文单词补图号。",
-        H3_SUBJECT_SOUND_RULE,
+        "负向清单只写官方已有的项，以及用户或锁已经提出的排除。本片出镜锁已经写上：%s。" % WAN_NEGATIVE_LINE,
     ]
     rule = style_lock_rule(style)
     if rule:
@@ -195,7 +194,7 @@ def packing_plan_note(state):
     if spoken:
         spoken_lines = [
             "对白和旁白必须逐字出现，包括角色前缀和表演提示。"
-            "写在 <d> 里时，标签内也必须是这一整句，不能只留去掉前缀后的一句：",
+            "写在台词栏里，不要加 <d> 或 [Chinese]。不要只留去掉前缀后的一句：",
         ]
         for line in spoken:
             spoken_lines.append("- %s" % line)
@@ -259,7 +258,7 @@ def _rewrite_heading(block, index, total):
 
 def _draft_uses_h3(text):
     raw = str(text or "")
-    return any(name in raw for name in H3_SECTIONS)
+    return any(name in raw for name in H3_SECTIONS) or is_wan_shaped(raw)
 
 
 def _source_units(raw, heads):
@@ -275,9 +274,13 @@ def _source_units(raw, heads):
     return units
 
 
+_CARRY_SECTIONS = tuple(H3_SECTIONS) + tuple(WAN_SECTIONS)
+_BODY_FIELDS = ("detailed_description", "分镜")
+
+
 def _description_pieces(unit):
     sections = unit.get("sections") or {}
-    desc = str(sections.get("detailed_description") or "")
+    desc = str(sections.get("分镜") or sections.get("detailed_description") or "")
     parts = _SHOT_BOUNDARY.split(desc)
     shots = [part.strip() for part in parts[1:] if part.strip()]
     if shots:
@@ -300,7 +303,7 @@ def _assign_source_units(sources, groups):
         if any("[Shot" in piece for piece in pieces):
             shot_mode = True
         if not pieces:
-            if any(str(sections.get(name) or "").strip() for name in H3_SECTIONS if name != "detailed_description"):
+            if any(str(sections.get(name) or "").strip() for name in _CARRY_SECTIONS if name not in _BODY_FIELDS):
                 flat.append(("", sections))
             continue
         for piece in pieces:
@@ -329,28 +332,36 @@ def _render_planned_unit(index, total, seconds, items, h3, runner):
         unit_heading(index, total),
         "duration: %s" % runner.format_seconds(seconds),
     ]
-    carried = {name: [] for name in H3_SECTIONS}
-    seen = {name: set() for name in H3_SECTIONS}
+    carried = {name: [] for name in _CARRY_SECTIONS}
+    seen = {name: set() for name in _CARRY_SECTIONS}
     descriptions = []
     for piece, source in items:
         if str(piece or "").strip():
             descriptions.append(str(piece).strip())
-        for name in H3_SECTIONS:
-            if name == "detailed_description":
+        for name in _CARRY_SECTIONS:
+            if name in _BODY_FIELDS:
                 continue
             body = str((source or {}).get(name) or "").strip()
             if body and body not in seen[name]:
                 seen[name].add(body)
                 carried[name].append(body)
-    rendered = {name: "\n\n".join(carried[name]).strip() for name in H3_SECTIONS}
-    rendered["detailed_description"] = "\n\n".join(descriptions).strip()
+    rendered = {name: "\n\n".join(carried[name]).strip() for name in _CARRY_SECTIONS}
+    joined = "\n\n".join(descriptions).strip()
+    rendered["detailed_description"] = joined
+    if joined:
+        rendered["分镜"] = joined
     if h3:
-        for name in H3_SECTIONS:
-            body = rendered[name]
-            lines.append("%s:" % name)
+        wan = map_h3_sections_to_wan({name: rendered.get(name, "") for name in H3_SECTIONS})
+        for name in WAN_SECTIONS:
+            body = rendered.get(name) or ""
             if body:
-                lines.append(body)
-    elif rendered["detailed_description"]:
+                wan[name] = body
+        return render_wan_unit(
+            unit_heading(index, total),
+            runner.format_seconds(seconds),
+            wan,
+        )
+    if rendered["detailed_description"]:
         lines.append(rendered["detailed_description"])
     return "\n".join(lines)
 
@@ -580,19 +591,66 @@ def spoken_lines_for_units(state, groups):
     return units
 
 
+def _section_span(block, name):
+    """Return (start, end) of a named section body, or None."""
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name
+
+    raw = str(block or "")
+    lines = raw.splitlines(keepends=True)
+    start = None
+    at = 0
+    current = ""
+    for line in lines:
+        match = WAN_FIELD_LINE.match(line.strip())
+        field = None
+        if not match:
+            # leftover English field
+            stripped = line.strip()
+            for field_name in H3_SECTIONS:
+                if stripped == field_name + ":" or stripped.startswith(field_name + ":"):
+                    field = field_name
+                    break
+        else:
+            field = canonical_wan_name(match.group("name"))
+        if field:
+            if current == name and start is not None:
+                return start, at
+            current = field
+            start = at + len(line) if field == name else None
+        at += len(line)
+    if current == name and start is not None:
+        return start, at
+    return None
+
+
 def _insert_spoken(block, line, h3_fields):
-    """Put the exact storyboard line in this unit, outside overall_soundscape."""
+    """Put the exact storyboard line under 台词, without wrapping tags."""
     spoken = str(line or "").strip()
-    if not spoken or spoken in block:
+    if not spoken:
         return block
-    snippet = "<d>[Chinese] %s</d>" % spoken
+    span = _section_span(block, "台词")
+    dialogue = block[span[0]:span[1]] if span else ""
+    if spoken in dialogue:
+        return block
+    core = _spoken_core(spoken)
+    if core and core != spoken and core in dialogue:
+        start, end = span
+        return block[:start] + dialogue.replace(core, spoken, 1) + block[end:]
+    # An exact line only inside a leftover visual <d> tag still belongs in 台词.
+    if spoken in block and span is None:
+        return block
+    snippet = spoken
     trailing = block[len(block.rstrip()) :]
     body = block.rstrip()
-    placed = _append_to_field(body, "detailed_description", snippet)
+    placed = _append_to_field(body, "台词", snippet)
+    if placed is None:
+        placed = _append_to_field(body, "detailed_description", snippet)
+    if placed is None and (h3_fields or is_wan_shaped(block) or "台词:" in body or "台词：" in body):
+        placed = _insert_field(body, "台词", snippet)
     if placed is None and h3_fields:
         placed = _insert_field(body, "detailed_description", snippet)
     if placed is None:
-        placed = body + "\n" + snippet
+        placed = body + "\n台词:\n" + snippet
     return placed + trailing
 
 
@@ -731,7 +789,7 @@ def inject_unit_assets(text, lines):
     heads = list(UNIT_HEAD_LINE.finditer(raw))
     if not heads:
         if len(planned) == 1 and (
-            "subject_definitions" in raw or "detailed_description" in raw
+            "subject_definitions" in raw or "detailed_description" in raw or "分镜:" in raw or "总体描述:" in raw
         ):
             return _patch_asset_line(raw, planned[0])
         return raw
@@ -751,25 +809,16 @@ def _rebuild_unit_fields(block):
     second pass does not rewrap prose. Loose lines land in
     ``detailed_description``. Nothing is invented for an empty field.
     """
-    if all(_field_parts(block, name) is not None for name in H3_SECTIONS):
+    if is_wan_shaped(block) and all(_field_parts(block, name) is not None for name in WAN_SECTIONS):
         return block
     parsed = _parse_one_block(block)
     head = UNIT_HEAD_LINE.search(block)
-    lines = []
-    if head:
-        lines.append(head.group(0).strip())
+    header = head.group(0).strip() if head else ""
     duration = str(parsed.get("duration") or "").strip()
-    if duration:
-        lines.append("duration: %s" % duration)
-    for name in H3_SECTIONS:
-        body = str((parsed.get("sections") or {}).get(name) or "").strip()
-        lines.append("%s:" % name)
-        if body:
-            lines.append(body)
-    text = "\n".join(lines)
+    rendered = render_wan_unit(header, duration, parsed.get("sections") or {})
     if str(block).endswith("\n\n"):
-        return text + "\n\n"
-    return text + "\n"
+        return rendered.rstrip() + "\n\n"
+    return rendered if rendered.endswith("\n") else rendered + "\n"
 
 
 def _ensure_h3_fields(text):
@@ -789,6 +838,49 @@ def _ensure_h3_fields(text):
     if not changed:
         return raw
     return "".join(parts)
+
+
+_VISUAL_WAN_FIELDS = ("总体描述", "参考素材引用", "分镜")
+
+
+def _strip_wan_visual_d_tags(text):
+    """Drop leftover <d> wrappers from Wan visual sections; keep 台词 inners."""
+    from Agents.workers.feed.wan_format import _D_TAG, _CHINESE_TAG, WAN_FIELD_LINE, canonical_wan_name
+
+    raw = str(text or "")
+    lines = raw.splitlines()
+    current = ""
+    out = []
+    for line in lines:
+        match = WAN_FIELD_LINE.match(line.strip())
+        if match:
+            current = canonical_wan_name(match.group("name"))
+            rest = match.group("rest") or ""
+            if current in _VISUAL_WAN_FIELDS and rest:
+                rest = _D_TAG.sub("", rest)
+                rest = _CHINESE_TAG.sub("", rest).strip()
+                prefix, _, _ = line.partition(match.group("name"))
+                # rebuild the header line without the tag body
+                colon = "：" if "：" in line[match.start():] else ":"
+                # Keep original punctuation by replacing only the rest after the colon.
+                head, sep, _tail = line.partition("：" if "：" in line else ":")
+                line = head + sep + ((" " + rest) if rest else "")
+            out.append(line)
+            continue
+        if current in _VISUAL_WAN_FIELDS:
+            cleaned = _D_TAG.sub("", line)
+            cleaned = _CHINESE_TAG.sub("", cleaned)
+            if cleaned.strip() or not line.strip():
+                out.append(cleaned.rstrip() if cleaned.strip() else "")
+            continue
+        if current == "台词":
+            out.append(_CHINESE_TAG.sub("", _D_TAG.sub(lambda m: m.group(1).strip(), line)))
+            continue
+        out.append(line)
+    body = "\n".join(out)
+    if raw.endswith("\n"):
+        body += "\n"
+    return body
 
 
 def apply_packing_plan(text, state):
@@ -820,8 +912,14 @@ def apply_packing_plan(text, state):
     if h3 and groups:
         corrected = _ensure_h3_fields(corrected)
     spoken = runner.storyboard_spoken_lines(_storyboard_text(state))
-    restored = restore_spoken_lines(corrected, spoken)
+    # Leftover H3 drafts still need <d> rewritten in place. A Wan official
+    # unit already has the exact line under 台词, so do not wrap it again.
+    restored = corrected
+    if not is_wan_shaped(corrected):
+        restored = restore_spoken_lines(corrected, spoken)
     placed = place_owned_spoken_lines(restored, state)
+    if is_wan_shaped(placed):
+        placed = _strip_wan_visual_d_tags(placed)
     if not h3:
         apply_packing_plan.last_fold_source = source
         return placed

@@ -425,12 +425,23 @@ def _feed_merge_shape(brief=""):
 
     model = parse_route(brief, "P4").get("model")
     limit = pack_limit(locks={"model": model} if model else None)
+    if (model or "h3").lower() in {"h3", "wan", "wan3", "wan3.0"}:
+        shot_rule = (
+            "每个%s单独计时。分镜写成「分镜1（00:00.000-00:08.000）：」，"
+            "起止秒在本单元内首尾相接，最后一刀不超过 %s 秒。"
+            "不要再写成 [Shot 1] 或 At 00:04.000。"
+        ) % (UNIT_NAME, limit)
+    else:
+        shot_rule = (
+            "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，"
+            "只在本单元内递增，最后一刀不超过 %s 秒。不要写成 At 00:04.000 [Shot 2]。"
+        ) % (UNIT_NAME, limit)
     return "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
         _MARKDOWN_FIELDS,
         "%s放在 feed（字符串）。不要写 segments 对象，不要写接口 JSON。" % DRAFT_NAME,
         "%s。" % HEADING_RULE,
-        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 %s 秒。不要写成 At 00:04.000 [Shot 2]。" % (UNIT_NAME, limit),
+        shot_rule,
         "这一阶段用不到的字段不要写。",
     ))
 
@@ -494,15 +505,15 @@ _MERGE_SHAPE = {
     )),
 }
 _H3_FEED_CONTRACT = "\n".join((
-    "模型是 H3。feed 只写四段英文正文。",
-    "feed 字符串必须是简报里的那份骨架，不要在 feed 里面再套一层 JSON，也不要把四个字段写成 JSON 键。",
+    "当前视频模型走万相 3.0。feed 按万相官方公式写，不要再写成 H3 四段英文字段。",
+    "feed 字符串必须是简报里的那份骨架，不要在 feed 里面再套一层 JSON，也不要把字段写成 JSON 键。",
     "不要写 summary 或 retention_analysis。",
-    H3_SUBJECT_SOUND_RULE,
-    "字段名必须单独成行并带冒号，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
-    "不要改这四行的名字，不要用 Subject、Soundscape、Music 代替它们。",
-    "不要只交第一个单元。缺的单元留着标题、duration、四个字段名、锁定句和镜号，正文可以先空着。",
-    "只填或修改骨架里的正文。不要改单元标题、duration、字段名、画面风格锁定句或镜号。",
-    "不要使用七段式栏名。四段正文一律英文。对白写成 <d>[Chinese] 原文</d>。画面内文字保留原语言。",
+    "字段名必须单独成行并带冒号，顺序固定：总体描述:、参考素材引用:、分镜:、台词:、音效 / BGM:、风格 / 情绪:、负向清单:。",
+    "不要改这些栏名，不要写回 subject_definitions、detailed_description、overall_soundscape、non_diegetic_music。",
+    "不要只交第一个单元。缺的单元留着标题、duration、栏名、锁定句和分镜起止秒，正文可以先空着。",
+    "只填或修改骨架里的正文。不要改单元标题、duration、栏名、画面风格锁定句或分镜起止秒。",
+    "不要使用七段式栏名，也不要写 <d> 或 [Chinese]。台词写成角色说：\"原文\"，无对白写无台词。不要把情绪或情节写进台词行。",
+    "负向清单只写官方已有的项，以及用户或锁已经提出的排除：不要字幕、不要水印、不要复杂文字。",
 ))
 _NODE_SHAPE = "\n".join((
     "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",

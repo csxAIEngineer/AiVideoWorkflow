@@ -22,7 +22,7 @@ TASK = "feed"
 GENERATOR_SYSTEM = "\n".join((
     "你是提示词封装的生成员。你只写%s，放在 feed 字符串。" % DRAFT_NAME,
     "投喂机检是这一环的硬门。审查员只交报告，不会替你改稿。",
-    "H3 怎么写，以技能原文为准。不要跑在还没封装的剧本或分镜上。",
+    "万相 3.0 怎么写，以技能原文为准。不要跑在还没封装的剧本或分镜上。",
     "%s。" % HEADING_RULE,
     "可以把分镜合并进同一个%s，但各单元 duration 相加不得短于分镜总时长。" % UNIT_NAME,
     "简报里已经写好每个%s的 duration，和对白旁白的原句。duration 用那些和，对白逐字保留。" % UNIT_NAME,
@@ -52,21 +52,20 @@ H3_OMITTED = (
 
 H3_FILL_ONLY = (
     (
-        "简报里的 ## 【%s N/M】、duration 和四段字段名是锁定骨架。"
-        "只填或修改各段正文，不要自己发明 Ref2VA 版式，也不要输出 JSON。"
-        "不要把四段写成 JSON 字段，不要另包一层。"
-        "不要改字段名，不要用 Subject、Soundscape、Music 代替这四行。"
-        "不要丢掉单元标题、duration、画面风格锁定句或镜号。"
+        "简报里的 ## 【%s N/M】、duration 和万相栏名是锁定骨架。"
+        "只填或修改各段正文，不要自己发明 H3 四段英文字段，也不要输出 JSON。"
+        "不要把栏名写成 JSON 字段，不要另包一层。"
+        "不要改栏名，不要写回 subject_definitions、detailed_description、overall_soundscape、non_diegetic_music。"
+        "不要丢掉单元标题、duration、画面风格锁定句或分镜起止秒。"
         "不要只写第一个单元。已经填好的单元保留，空着的槽只补正文。"
         "不要写 summary 或 retention_analysis。"
+        "不要写 <d> 或 [Chinese]。台词写成角色说：\"原文\"，无对白写无台词。不要把情绪或情节写进台词行。"
     )
     % UNIT_NAME
-    + H3_SUBJECT_SOUND_RULE
-    + "若简报里有锁定句，subject_definitions 的第一行只能是那一句。"
+    + "若简报里有锁定句，风格 / 情绪 的第一行只能是那一句。"
     "不要自己写画风，不要翻译，不要另写一种风格。"
-    "detailed_description 里的 [Shot N] 和 At 时间也是锁定骨架。"
-    "每一段从 [Shot 1] 重新编号，第一镜不写时间。"
-    "后面每一镜紧跟简报里的 At MM:SS.mmm，这是这一段前面各镜的时长和，不是全集时间。"
+    "分镜栏里的起止秒也是锁定骨架，写成「分镜1（00:00.000-00:08.000）：」。"
+    "这是这一段前面各镜的时长和，不是全集时间。"
     "不要增删、合并或调换镜头，不要改镜号，不要改这些时间码，也不要自己发明切点。"
     "只在这些标题下写画面和对白。"
     "若这一段已经写了资产：，那一行由程序按分镜资产栏写成，格式与分镜相同。"
@@ -112,9 +111,9 @@ CRITIC_SYSTEM = "\n".join((
     '{"verdict":"accept 或 revise","issues":[{"target":"%s","severity":"blocking 或 note","detail":"一句话"}]}' % UNIT_NAME,
     "没有要改的地方时 verdict 为 accept，issues 为空数组。",
     "detail 只指出问题，不写替换后的单元。",
-    "评判标准只是机检技能：validate_prompt 的 H1–H12，加上时长不得缩短、画外音闭口必须紧跟画外音、画风锁、镜号锁。",
-    "有锁定画风时，每一段 subject_definitions 的第一行必须是同一句。缺这句、写成别的句子、或多写一种风格，都是 blocking。只出现在房间或道具主体上不算。",
-    "镜号和切点已经按分镜算好。不从 [Shot 1] 起、首镜带时间、切点不是预算的 At 时间、或多了少了镜头，都是 blocking。空着的 [Shot N]、subject_definitions 里没有 <Subject N>、或 overall_soundscape 是空的，也是 blocking。不要要求另写切点。",
+    "评判标准是万相封装结构（栏名、分镜起止秒、台词原文）、时长不得缩短、画外音闭口必须紧跟画外音、画风锁、镜号锁。不要再用 H1–H12 的英文四段和 <d> 去卡万相稿。",
+    "有锁定画风时，每一段「风格 / 情绪」的第一行必须是同一句。缺这句、写成别的句子、或多写一种风格，都是 blocking。只出现在房间或道具主体上不算。",
+    "分镜起止秒已经按分镜算好。不写成「分镜N（起-止）：」、切点不是预算时间、或多了少了镜头，都是 blocking。不要要求另写切点，也不要因为没有 <Subject N> 或音效栏为空就判失败。",
     "summary 和 retention_analysis 不是封装字段。缺了不算问题，不要要求补上。",
     "不要用写作技能审查。机检会在你之后再跑。单独的 WARN 不算失败。",
 ))
@@ -217,8 +216,21 @@ _BOARD_SPOKEN = re.compile(r"^(?:对白|旁白)\s*[:：]\s*(.+)$")
 _BOARD_DURATION = re.compile(r"^时长\s*[:：]\s*(\d+(?:\.\d+)?)")
 
 
+_WAN_FIELD_NAMES = (
+    "总体描述",
+    "参考素材引用",
+    "分镜",
+    "台词",
+    "音效 / BGM",
+    "音效/BGM",
+    "风格 / 情绪",
+    "风格/情绪",
+    "负向清单",
+)
+
 _H3_FIELD_MARK = re.compile(
-    r"(?m)^(?P<name>%s):[ \t]*(?P<rest>.*)$" % "|".join(H3_SECTIONS)
+    r"(?m)^(?P<name>%s)[ \t]*[:：][ \t]*(?P<rest>.*)$"
+    % "|".join(re.escape(name) for name in (H3_SECTIONS + _WAN_FIELD_NAMES))
 )
 
 
@@ -240,7 +252,10 @@ def _append_to_field(body, name, snippet):
 def _insert_field(body, name, snippet):
     section = "%s:\n%s" % (name, snippet)
     matches = list(_H3_FIELD_MARK.finditer(body))
+    anchors = ("音效 / BGM", "音效/BGM", "风格 / 情绪", "风格/情绪", "负向清单", "overall_soundscape")
+    if name == "台词":
+        anchors = ("音效 / BGM", "音效/BGM", "风格 / 情绪", "风格/情绪", "负向清单", "overall_soundscape")
     for match in matches:
-        if match.group("name") == "overall_soundscape":
+        if match.group("name") in anchors:
             return body[: match.start()] + section + "\n" + body[match.start() :]
     return body.rstrip() + "\n" + section

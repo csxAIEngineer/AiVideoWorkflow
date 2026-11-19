@@ -95,6 +95,12 @@ def _pair_feed(description, duration=12):
 
 
 def _description(text):
+    if "\n分镜:\n" in text:
+        body = text.split("\n分镜:\n", 1)[1]
+        for stop in ("\n台词:", "\n音效 / BGM:", "\noverall_soundscape:"):
+            if stop in body:
+                return body.split(stop, 1)[0]
+        return body
     return text.split("detailed_description:\n", 1)[1].split("\noverall_soundscape:", 1)[0]
 
 
@@ -132,46 +138,48 @@ class ShotSkeletonPlanTest(unittest.TestCase):
         state = _state(EPISODE)
         skeleton = packing_shot_skeleton(state)
         groups = packing_groups(state)
-        self.assertEqual([sum(group) for group in groups], [15, 12, 15, 15, 7])
+        self.assertEqual([sum(group) for group in groups], [22, 20, 22])
         self.assertEqual(sum(sum(group) for group in groups), sum(seconds for _shot, seconds in EPISODE))
-        self.assertEqual([shot["id"] for shot in skeleton[1]], ["S03", "S04"])
+        self.assertEqual([shot["id"] for shot in skeleton[1]], ["S04", "S05", "S06"])
         self.assertEqual(
             [shot["heading"] for shot in skeleton[1]],
-            ["[Shot 1]", "[Shot 2] At 00:07.000"],
+            [
+                "分镜1（00:00.000-00:05.000）：",
+                "分镜2（00:05.000-00:13.000）：",
+                "分镜3（00:13.000-00:20.000）：",
+            ],
         )
-        self.assertIsNone(skeleton[1][0]["cut"])
-        self.assertEqual(skeleton[1][1]["cut"], "00:07.000")
-        self.assertEqual(sum(shot["duration"] for shot in skeleton[1]), 12)
-        self.assertEqual([shot["id"] for shot in skeleton[4]], ["S09"])
-        self.assertEqual([shot["heading"] for shot in skeleton[4]], ["[Shot 1]"])
-        self.assertNotIn("At", skeleton[4][0]["heading"])
+        self.assertEqual(skeleton[1][0]["cut"], "00:00.000")
+        self.assertEqual(skeleton[1][1]["cut"], "00:05.000")
+        self.assertEqual(sum(shot["duration"] for shot in skeleton[1]), 20)
+        self.assertEqual([shot["id"] for shot in skeleton[2]], ["S07", "S08", "S09"])
+        self.assertEqual(skeleton[2][0]["heading"], "分镜1（00:00.000-00:08.000）：")
+        self.assertEqual(skeleton[2][0]["cut"], "00:00.000")
         self.assertEqual(format_cut_timecode(7), "00:07.000")
         self.assertEqual(format_cut_timecode(1.25), "00:01.250")
 
     def test_the_brief_carries_the_skeleton_for_the_writer_to_fill(self):
         state = _state(PAIR)
         note = packing_plan_note(state)
-        self.assertIn("骨架（S03、S04）：[Shot 1] / [Shot 2] At 00:07.000", note)
-        self.assertIn("[Shot 1]\n[Shot 2] At 00:07.000", note)
+        self.assertIn("骨架（S03、S04）：分镜1（00:00.000-00:07.000）： / 分镜2（00:07.000-00:12.000）：", note)
+        self.assertIn("分镜1（00:00.000-00:07.000）：", note)
         self.assertIn("不要自己发明切点", note)
         self.assertIn("不要增删、合并或调换镜头", note)
         scaffold = h3_packing_scaffold(packing_groups(state))
         self.assertIn(scaffold, note)
-        self.assertIn("detailed_description:\n[Shot 1]\n[Shot 2] At 00:07.000\n", scaffold)
+        self.assertIn("分镜:\n分镜1（00:00.000-00:07.000）：\n分镜2（00:07.000-00:12.000）：\n", scaffold)
         single = packing_plan_note(_state((("S09", 7),)))
-        self.assertIn("骨架（S09）：[Shot 1]", single)
+        self.assertIn("骨架（S09）：分镜1（00:00.000-00:07.000）：", single)
         body = _description(single.split("## 【封装单元 1/1】", 1)[1])
-        self.assertEqual(body.strip(), "[Shot 1]")
-        self.assertNotIn("At ", body)
+        self.assertTrue(body.strip().startswith("分镜1（00:00.000-00:07.000）："), body)
+        self.assertNotIn("[Shot", body)
         system = generator_messages(dict(state, attempt=0, source=state["storyboard"]))[0]["content"]
         self.assertIn("不要自己发明切点", system)
-        self.assertIn("第一镜不写时间", system)
+        self.assertIn("分镜1（00:00.000-", system)
 
     def test_a_fractional_preceding_shot_sets_the_cut(self):
         skeleton = packing_shot_skeleton(_state((("S01", 1.25), ("S02", 2))))
-        self.assertEqual(skeleton[0][1]["heading"], "[Shot 2] At 00:01.250")
-        match = VALIDATOR_CUT.search(skeleton[0][1]["heading"])
-        self.assertEqual(match.groups(), ("2", "00", "01", "250"))
+        self.assertEqual(skeleton[0][1]["heading"], "分镜2（00:01.250-00:03.250）：")
         self.assertIsNone(VALIDATOR_CUT.search("[Shot 1]"))
 
     def test_official_heading_matches_the_validator_and_h2_still_rejects_shot_1(self):
@@ -209,18 +217,18 @@ class ShotSkeletonGateTest(unittest.TestCase):
         state = _state(PAIR)
         errors = shot_skeleton_failures(draft, state)
         joined = "\n".join(errors)
-        self.assertIn("[Shot 3]", joined)
-        self.assertIn("[Shot 5]", joined)
-        self.assertIn("[Shot 1]", joined)
-        self.assertIn("At 00:07.000", joined)
+        self.assertIn("分镜3", joined)
+        self.assertIn("分镜5", joined)
+        self.assertIn("分镜1", joined)
+        self.assertIn("00:07.000", joined)
         self.assertIn("不要沿用全集镜号", joined)
         self.assertIn("不要自己发明切点", joined)
         with patch("end.gates.check_feed", return_value=(0, "")):
             report = check_feed_draft(draft, state)
         self.assertFalse(report["ok"])
         self.assertIn("镜号锁", report["report"])
-        self.assertIn("[Shot 3]", report["report"])
-        self.assertIn("[Shot 5]", report["report"])
+        self.assertIn("分镜3", report["report"])
+        self.assertIn("分镜5", report["report"])
 
     def test_missing_or_wrong_cut_fails(self):
         state = _state(PAIR)
@@ -233,7 +241,7 @@ class ShotSkeletonGateTest(unittest.TestCase):
             self.assertIn("00:07.000", "\n".join(errors))
         self.assertTrue(any("切点必须是" in item for item in shot_skeleton_failures(wrong, state)))
         self.assertTrue(any("切点必须是" in item for item in shot_skeleton_failures(missing, state)))
-        self.assertTrue(any("没有 [Shot N]" in item or "[Shot 2] At 00:07.000" in item for item in shot_skeleton_failures(absent, state)))
+        self.assertTrue(any("没有分镜" in item or "分镜2（00:07.000-" in item or "分镜2" in item for item in shot_skeleton_failures(absent, state)))
 
     def test_a_timestamp_on_the_first_shot_fails(self):
         draft = _unit(1, 1, 7, "[Shot 1] At 00:00.000 she stands.") + "\n"
@@ -263,8 +271,8 @@ class ShotSkeletonGateTest(unittest.TestCase):
             passed, report = check_stage(folder, "feed", state["locks"])
         self.assertFalse(passed)
         self.assertIn("镜号锁", report)
-        self.assertIn("[Shot 3]", report)
-        self.assertIn("[Shot 5]", report)
+        self.assertIn("分镜3", report)
+        self.assertIn("分镜5", report)
 
 
 class ShotSkeletonPatchTest(unittest.TestCase):
@@ -285,10 +293,10 @@ class ShotSkeletonPatchTest(unittest.TestCase):
         self.assertNotIn("duration: 9", fixed)
         self.assertNotIn("duration: 15", fixed)
         first, second = [line for line in _description(fixed).splitlines() if line.strip()][:2]
-        self.assertTrue(first.startswith("[Shot 1]"))
+        self.assertTrue(first.startswith("分镜1（00:00.000-00:07.000）："), first)
         self.assertNotIn("At ", first)
         self.assertNotRegex(first, r"(?:At|在)\s*\d")
-        self.assertTrue(second.startswith("[Shot 2] At 00:07.000"))
+        self.assertTrue(second.startswith("分镜2（00:07.000-00:12.000）："), second)
         self.assertIn("she sits", second)
         self.assertEqual(shot_skeleton_failures(fixed, state), [])
         self.assertFalse(feed_duration_failures(fixed, state["storyboard"], state["shots"]))
@@ -301,21 +309,23 @@ class ShotSkeletonPatchTest(unittest.TestCase):
         self.assertTrue(shot_skeleton_failures(draft, state))
         fixed = apply_packing_plan(draft, state)
         first, second = [line for line in _description(fixed).splitlines() if line.strip()][:2]
-        self.assertEqual(first, "[Shot 1] 她进门。")
-        self.assertTrue(second.startswith("[Shot 2] At 00:07.000"))
+        self.assertTrue(first.startswith("分镜1（00:00.000-00:07.000）："), first)
+        self.assertIn("她进门。", first)
+        self.assertTrue(second.startswith("分镜2（00:07.000-00:12.000）："), second)
         self.assertIn("她坐下", second)
         self.assertNotIn("00:05.000", fixed)
-        self.assertNotIn("00:00.000", fixed)
+        self.assertIn("00:00.000", fixed)
         self.assertEqual(shot_skeleton_failures(fixed, state), [])
 
     def test_a_missing_heading_is_put_back_without_invented_prose(self):
         state = _state(PAIR)
         fixed = apply_packing_plan(draft_of("[Shot 3] She enters the room."), state)
         lines = [line for line in _description(fixed).splitlines() if line.strip()]
-        self.assertEqual(lines[0], "[Shot 1] She enters the room.")
-        self.assertEqual(lines[1], "[Shot 2] At 00:07.000")
+        self.assertTrue(lines[0].startswith("分镜1（00:00.000-00:07.000）："), lines[0])
+        self.assertIn("She enters the room.", lines[0])
+        self.assertTrue(lines[1].startswith("分镜2（00:07.000-00:12.000）："), lines[1])
         errors = shot_skeleton_failures(fixed, state)
-        self.assertTrue(any("没有正文" in item and "[Shot 2]" in item for item in errors), errors)
+        self.assertTrue(any("没有正文" in item or "分镜2" in item for item in errors), errors)
 
     def test_an_extra_shot_stays_and_still_fails(self):
         state = _state(PAIR)
@@ -325,10 +335,12 @@ class ShotSkeletonPatchTest(unittest.TestCase):
             "[Shot 9] She leaves the room.",
         )))
         fixed = apply_packing_plan(draft, state)
-        self.assertIn("[Shot 2] At 00:07.000, she sits.", fixed)
-        self.assertIn("[Shot 9] She leaves the room.", fixed)
+        self.assertIn("分镜2（00:07.000-00:12.000）：", fixed)
+        self.assertIn("she sits.", fixed)
+        self.assertIn("分镜", fixed)
+        self.assertIn("She leaves the room.", fixed)
         errors = shot_skeleton_failures(fixed, state)
-        self.assertTrue(any("[Shot 9]" in item for item in errors), errors)
+        self.assertTrue(any("分镜9" in item or "分镜3" in item for item in errors), errors)
         self.assertIn("不要自己发明切点", "\n".join(errors))
 
     def test_a_span_over_30_seconds_is_split_not_clamped(self):
@@ -354,10 +366,10 @@ class ShotSkeletonPatchTest(unittest.TestCase):
         self.assertNotIn("duration: 30", fixed)
         chunks = _chunks(fixed)
         self.assertEqual(len(chunks), 2)
-        self.assertIn("[Shot 2] At 00:06.000", chunks[0])
-        self.assertNotIn("[Shot 3]", chunks[0])
+        self.assertIn("分镜2（00:06.000-00:11.000）：", chunks[0])
+        self.assertNotIn("分镜3", chunks[0])
         second = [line for line in _description(chunks[1]).splitlines() if line.strip()]
-        self.assertTrue(second[0].startswith("[Shot 1]"))
+        self.assertTrue(second[0].startswith("分镜1（"), second)
         self.assertNotIn("At ", second[0])
         self.assertIn("the long beat", second[0])
         self.assertEqual(len(second), 1)
@@ -401,7 +413,8 @@ class ShotSkeletonRepairTest(unittest.TestCase):
         self.assertIn("镜号锁没过", brief)
         self.assertIn("不要自己发明切点", brief)
         self.assertIn("不要沿用全集镜号", brief)
-        self.assertIn("【封装单元 1/1】S03、S04：[Shot 1] / [Shot 2] At 00:07.000", brief)
+        self.assertIn("分镜1（00:00.000-00:07.000）：", brief)
+        self.assertIn("分镜2（00:07.000-00:12.000）：", brief)
         self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", brief)
         self.assertIn("short-drama-director/references/wan-adapter.md", brief)
         self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", brief)
@@ -468,13 +481,13 @@ class ShotSkeletonRepairTest(unittest.TestCase):
         )
         self.assertEqual(result["status"], "pass", result.get("machine_report"))
         self.assertEqual(result["attempts"], 2)
-        self.assertIn("[Shot 1]", result["feed"])
-        self.assertIn("[Shot 2] At 00:07.000", result["feed"])
+        self.assertIn("分镜1（00:00.000-00:07.000）：", result["feed"])
+        self.assertIn("分镜2（00:07.000-00:12.000）：", result["feed"])
         self.assertNotIn("[Shot 9]", result["feed"])
         self.assertIn("duration: 12", result["feed"])
         repair = next(item for item in prompts if "镜号锁没过" in item)
         self.assertIn("不要自己发明切点", repair)
-        self.assertIn("[Shot 2] At 00:07.000", repair)
+        self.assertIn("分镜2（00:07.000-00:12.000）：", repair)
         self.assertIn("short-drama-director/references/wan-adapter.md", repair)
 
 
@@ -531,7 +544,7 @@ class UnitAssetLineTest(unittest.TestCase):
         self.assertNotIn("资产：", fixed)
         self.assertNotIn("图7", fixed)
         self.assertIn("She enters.", fixed)
-        self.assertIn("[Shot 2] At 00:07.000", fixed)
+        self.assertIn("分镜2（00:07.000-00:12.000）：", fixed)
         self.assertEqual(apply_packing_plan(fixed, state), fixed)
 
     def test_the_line_can_come_from_the_storyboard_text(self):

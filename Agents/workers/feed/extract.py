@@ -13,6 +13,12 @@ from end.product_names import (
     unit_heading,
 )
 
+from Agents.workers.feed.wan_format import (
+    WAN_FIELD_LINE,
+    WAN_SECTIONS,
+    canonical_wan_name,
+    render_wan_unit,
+)
 from Agents.workers.feed.common import (
     H3_OMITTED,
     H3_SECTIONS,
@@ -409,7 +415,8 @@ def _split_blocks(text):
 
 
 def _parse_one_block(block):
-    sections = {name: [] for name in H3_SECTIONS}
+    names = tuple(H3_SECTIONS) + tuple(WAN_SECTIONS)
+    sections = {name: [] for name in names}
     current = None
     loose = []
     duration = ""
@@ -422,11 +429,21 @@ def _parse_one_block(block):
                 duration = duration_line.group(2).strip()
                 continue
         field = _H3_FIELD_LINE.match(line)
-        if field:
-            current = field.group(1)
+        wan = WAN_FIELD_LINE.match(line.strip()) if not field else None
+        if field or wan:
+            if field:
+                current = field.group(1)
+                rest = field.group(2).strip()
+            else:
+                current = canonical_wan_name(wan.group("name"))
+                rest = (wan.group("rest") or "").strip()
             if current in H3_OMITTED:
                 continue
-            rest = field.group(2).strip()
+            if not current:
+                current = None
+                continue
+            if current not in sections:
+                sections[current] = []
             if rest:
                 sections[current].append(rest)
             continue
@@ -436,20 +453,23 @@ def _parse_one_block(block):
             sections[current].append(line)
         else:
             loose.append(line)
-    bodies = {name: "\n".join(sections[name]).strip() for name in H3_SECTIONS}
+    bodies = {name: "\n".join(sections[name]).strip() for name in sections}
     extra = "\n".join(loose).strip()
     if extra:
-        if bodies["detailed_description"]:
+        if bodies.get("分镜"):
+            bodies["分镜"] = extra + "\n" + bodies["分镜"]
+        elif bodies.get("detailed_description"):
             bodies["detailed_description"] = extra + "\n" + bodies["detailed_description"]
         else:
-            bodies["detailed_description"] = extra
+            bodies["分镜"] = extra
     return {"duration": duration, "sections": bodies}
 
 
 def _merge_parent(unit, parent):
     sections = {}
     own = unit.get("sections") or {}
-    for name in H3_SECTIONS:
+    names = tuple(H3_SECTIONS) + tuple(WAN_SECTIONS)
+    for name in names:
         body = str(own.get(name) or "").strip()
         if body:
             sections[name] = body
@@ -564,7 +584,12 @@ def _units_from_merged_markdown(text):
     if len(heads) < 2 or heads[0].start() == 0:
         return None
     preamble = raw[: heads[0].start()]
-    if "subject_definitions" not in preamble and "detailed_description" not in preamble:
+    if (
+        "subject_definitions" not in preamble
+        and "detailed_description" not in preamble
+        and "总体描述" not in preamble
+        and "分镜" not in preamble
+    ):
         return None
     parent = _parse_one_block(preamble)["sections"]
     units = [_parse_one_block(block) for block in _marked_slices(raw, heads)]
@@ -596,20 +621,22 @@ def _render_h3_units(units, groups):
     total = len(units)
     blocks = []
     for index, unit in enumerate(units, 1):
-        lines = [unit_heading(index, total)]
-        if planned is not None:
-            lines.append("duration: %s" % runner.format_seconds(planned[index - 1]))
-        elif unit.get("duration"):
-            shown = _shown_duration(unit.get("duration"), runner)
-            if shown:
-                lines.append("duration: %s" % shown)
         sections = unit.get("sections") or {}
-        for name in H3_SECTIONS:
-            body = str(sections.get(name) or "").strip()
-            lines.append("%s:" % name)
-            if body:
-                lines.append(body)
-        blocks.append("\n".join(lines))
+        duration = None
+        if planned is not None:
+            duration = runner.format_seconds(planned[index - 1])
+        elif unit.get("duration"):
+            duration = _shown_duration(unit.get("duration"), runner)
+        shots = None
+        if groups and index - 1 < len(groups):
+            from Agents.workers.feed.skeleton import _unit_shots
+            shots = _unit_shots(groups[index - 1])
+        blocks.append(render_wan_unit(
+            unit_heading(index, total),
+            duration,
+            sections,
+            shots=shots,
+        ).rstrip())
     if not blocks:
         return ""
     return "\n\n".join(blocks).strip() + "\n"

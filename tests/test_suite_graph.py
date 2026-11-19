@@ -225,12 +225,12 @@ class SuiteGraphTest(unittest.TestCase):
         self.assertLess(files.index(adapter), files.index(seven))
         self.assertEqual(pack_cohorts(files)[0], [adapter])
         prompt = merge_prompt("feed", brief)
-        self.assertIn("<d>[Chinese]", prompt)
-        self.assertIn("四段英文正文", prompt)
+        self.assertIn("万相官方公式", prompt)
+        self.assertIn("总体描述:", prompt)
+        self.assertNotIn("<d>[Chinese]", prompt)
+        self.assertNotIn("四段英文正文", prompt)
         self.assertIn("不要写 summary 或 retention_analysis", prompt)
-        from end.product_names import H3_SUBJECT_SOUND_RULE
-
-        self.assertIn(H3_SUBJECT_SOUND_RULE, prompt)
+        self.assertNotIn("四段英文正文", prompt)
         self.assertNotIn("summary:", prompt)
         self.assertNotIn("retention_analysis:", prompt)
         seedance = "\n".join(("阶段：P4", "模型：2.5", "任务：提示词封装"))

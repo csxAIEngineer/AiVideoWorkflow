@@ -1929,14 +1929,15 @@ class MachineAndMountTest(unittest.TestCase):
 
         h3 = stage_instruction("feed", {"model": "h3"})
         self.assertNotIn("写七段", h3)
-        self.assertIn("subject_definitions:", h3)
-        self.assertIn("四段正文一律英文", h3)
+        self.assertIn("总体描述:", h3)
+        self.assertIn("万相官方公式", h3)
         self.assertIn("不要写 summary 或 retention_analysis", h3)
         from end.product_names import H3_SUBJECT_SOUND_RULE
 
-        self.assertIn(H3_SUBJECT_SOUND_RULE, h3)
+        self.assertNotIn(H3_SUBJECT_SOUND_RULE, h3)
         self.assertNotIn("retention_analysis:", h3)
-        self.assertIn("<d>[Chinese]", h3)
+        self.assertNotIn("<d>[Chinese]", h3)
+        self.assertIn("不要字幕、不要水印、不要复杂文字", h3)
         seedance = stage_instruction("feed", {"model": "2.5"})
         self.assertIn("下面写七段", seedance)
         self.assertNotIn("<d>[Chinese]", seedance)
