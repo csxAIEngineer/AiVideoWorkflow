@@ -987,7 +987,48 @@ class ProjectApiTest(unittest.TestCase):
         self.assertEqual(set(put_urls), {clip_url, film_url})
         self.assertEqual(len(put_urls), 2)
 
-
+    def test_projects_list_returns_menu_summaries_without_uploading_clips(self):
+        project_id = "c11d00000002"
+        make_project(project_id, status="done", stage="成片已生成", video_file="joined.mp4")
+        clip_dir = project_dir(project_id) / "outputs" / "clips"
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        (clip_dir / "S01.mp4").write_bytes(b"clip-bytes")
+        (project_dir(project_id) / "outputs" / "joined.mp4").write_bytes(b"film-bytes")
+        self._use_cos()
+        self._quiet_view()
+        calls = []
+        with patch("end.image_store.store.urllib.request.urlopen", self._cos_open(calls)):
+            listed = self.rpc("projects.list")["result"]
+        self.assertEqual(len(listed), 1)
+        item = listed[0]
+        self.assertEqual(item["id"], project_id)
+        self.assertEqual(item["title"], "雨夜")
+        self.assertEqual(item["brief"], "雨夜")
+        self.assertEqual(item["status"], "done")
+        self.assertEqual(item["stage"], "成片已生成")
+        self.assertEqual(item["progress"]["phase"], "done")
+        for key in (
+            "messages",
+            "script",
+            "storyboard",
+            "image_prompts",
+            "assets",
+            "shots",
+            "clips",
+            "images",
+            "nodes",
+            "traces",
+            "video_url",
+            "video_download_url",
+            "events",
+            "tasks",
+            "materials",
+            "semantic",
+            "deliverables",
+        ):
+            self.assertNotIn(key, item)
+        put_urls = [req.full_url for req in calls if req.get_method() == "PUT"]
+        self.assertEqual(put_urls, [])
 
 
 if __name__ == "__main__":

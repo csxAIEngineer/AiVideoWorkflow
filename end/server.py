@@ -399,6 +399,25 @@ def _shown_messages(project):
     return messages
 
 
+def menu_view(project):
+    """History menu row only. Does not load clips, film, or assemble the project."""
+    return {
+        "id": project["id"],
+        "brief": project.get("brief", ""),
+        "title": project.get("title") or project.get("brief", "")[:24],
+        "status": project.get("status"),
+        "stage": project.get("stage", ""),
+        "error": project.get("error"),
+        "created_at": project.get("created_at"),
+        "started_at": project.get("started_at") or project.get("created_at"),
+        "updated_at": project.get("updated_at"),
+        "finished_at": project.get("finished_at"),
+        "debug_llm": project_debug_llm(project),
+        "debug_stop": normalize_debug_stop((project.get("progress") or {}).get("debug_stop")),
+        "progress": attach_crew(project),
+    }
+
+
 def public_view(project):
     from end.trace import list_traces, trace_enabled
 
@@ -3163,7 +3182,7 @@ def rpc_config(_params):
 
 
 def rpc_list_projects(_params):
-    return [public_view(item) for item in list_projects()]
+    return [menu_view(item) for item in list_projects()]
 
 
 def rpc_get_project(params):
