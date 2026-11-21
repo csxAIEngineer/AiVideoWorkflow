@@ -37,6 +37,25 @@ UNIT = "\n".join((
     "none.",
 ))
 UNIT_2 = UNIT.replace("1/1", "2/2").replace("等我。", "走吧。")
+WAN_UNIT = "\n".join((
+    "## 【封装单元 1/1】",
+    "duration: 8",
+    "总体描述:",
+    "雨夜客厅，女主独自等待。",
+    "参考素材引用:",
+    "<Subject 1> (Female Protagonist): a woman in a pink dress.",
+    "<Subject 2> (Environment): the female protagonist waits in a modern apartment living room.",
+    "分镜:",
+    "分镜1（00:00.000-00:08.000）：女主坐在客厅里。",
+    "台词:",
+    "女主说：\"等我。\"",
+    "音效 / BGM:",
+    "雨声。",
+    "风格 / 情绪:",
+    "冷色写实",
+    "负向清单:",
+    "不要字幕、不要水印、不要复杂文字",
+))
 PLACEHOLDER = "按这张资产图演这一镜"
 H3_CAPTION_LOCK = (
     "The frame shows the scene and the performers. "
@@ -451,3 +470,44 @@ class HandoffTest(unittest.TestCase):
         _assets, shots = collect_steps(spec)
         self.assertEqual(shots[0]["images"], ["A1"])
         self.assertIn("<Picture 1>", shots[0]["prompt"])
+
+    def test_wan_feed_binds_subject_stills_and_keeps_official_fields(self):
+        spec = {
+            "feed": WAN_UNIT,
+            "assets": [
+                {"id": "图1", "title": "客厅母版", "subject_kind": "location", "prompt": "客厅"},
+                {"id": "图2", "title": "客厅九宫格", "subject_kind": "location", "prompt": "九宫格"},
+                {"id": "图3", "title": "女主角色四格", "subject_kind": "character", "prompt": "女主"},
+            ],
+            "shots": [{
+                "id": "S01",
+                "duration": 4,
+                "prompt": PLACEHOLDER,
+                "images": ["A1"],
+                "dialogue": "",
+            }],
+        }
+        bound = apply_feed_binding(spec)
+        self.assertIn("<Subject 1> (图3)", bound["feed"])
+        self.assertIn("<Subject 2> (图1)", bound["feed"])
+        self.assertIn("总体描述:", bound["feed"])
+        self.assertIn("参考素材引用:", bound["feed"])
+        self.assertIn("分镜1（00:00.000-00:08.000）", bound["feed"])
+        self.assertIn("女主说：\"等我。\"", bound["feed"])
+        self.assertNotIn("subject_definitions:", bound["feed"])
+        self.assertNotIn("detailed_description:", bound["feed"])
+        self.assertEqual(bound["shots"][0]["images"][0], "图3")
+        self.assertIn("图1", bound["shots"][0]["images"])
+        self.assertIn("参考素材引用:", bound["shots"][0]["prompt"])
+        again = apply_feed_binding(bound)
+        self.assertEqual(again["feed"], bound["feed"])
+        self.assertEqual(again["shots"][0]["images"], bound["shots"][0]["images"])
+        seedance = "【画幅风格】竖屏\n【时间轴分镜】0-4秒 她回头。\n"
+        kept = apply_feed_binding({
+            "feed": seedance,
+            "assets": spec["assets"],
+            "shots": [{"id": "S01", "duration": 4, "prompt": PLACEHOLDER, "images": []}],
+        })
+        self.assertEqual(kept["feed"], seedance)
+        self.assertNotIn("总体描述:", kept["feed"])
+        self.assertNotIn("subject_definitions:", kept["feed"])

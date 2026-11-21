@@ -142,6 +142,20 @@ class ShortDramaSkillTest(unittest.TestCase):
         prompt = build_system_prompt(pack, brief=LOCKED)
         self.assertIn("本片画幅以简报为准：16:9", prompt)
 
+    def test_p5_pack_leads_with_the_wan_adapter_not_h3(self):
+        pack = load_skill_pack(context=LOCKED, stage="P5")
+        self.assertIn("short-drama-director/references/wan-adapter.md", pack)
+        self.assertNotIn("# short-drama-director/references/h3-adapter.md", pack)
+        self.assertLess(
+            pack.index("# short-drama-director/references/wan-adapter.md"),
+            pack.index("# sd-qc-engine/SKILL.md"),
+        )
+        self.assertNotIn("# short-drama-director/SKILL.md", pack)
+        seedance = LOCKED.replace("模型：MiniMax H3", "模型：2.5")
+        seedance_pack = load_skill_pack(context=seedance, stage="P5")
+        self.assertNotIn("short-drama-director/references/wan-adapter.md", seedance_pack)
+        self.assertNotIn("# short-drama-director/references/h3-adapter.md", seedance_pack)
+
     def test_a_missing_subskill_is_an_error(self):
         module = _slice_module()
         with patch.object(module, "resolve_files", return_value=["short-drama-director/missing-stage.md"]):

@@ -172,8 +172,13 @@ class SuiteGraphTest(unittest.TestCase):
             "",
             "任务：独立质检",
         ))
-        self.assertIn("short-drama-director/references/h3-adapter.md", suite_files("qc", qc))
-        self.assertEqual(suite_files("qc", qc)[-1], "short-drama-director/references/h3-adapter.md")
+        qc_files = suite_files("qc", qc)
+        adapter = "short-drama-director/references/wan-adapter.md"
+        self.assertEqual(qc_files[0], adapter)
+        self.assertNotIn("short-drama-director/references/h3-adapter.md", qc_files)
+        seedance = "\n".join(("阶段：P5", "模型：2.5", "任务：独立质检"))
+        self.assertNotIn(adapter, suite_files("qc", seedance))
+        self.assertNotIn("short-drama-director/references/h3-adapter.md", suite_files("qc", seedance))
 
     def test_each_model_call_is_written_to_the_prompt_log_once(self):
         from AI.agent.model import LLMModel

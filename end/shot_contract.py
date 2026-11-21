@@ -8,7 +8,7 @@ It does not extract frames, upload stills, or write run state.
 import os
 from pathlib import Path
 
-from end.board_shots import _h3_fields
+from end.board_shots import _h3_fields, _wan_fields
 from end.product_names import UNIT_CLAIM, UNIT_HEAD_ANY
 from end.render_loop import (
     H3_MAX_REFERENCE_IMAGES,
@@ -99,7 +99,7 @@ def feed_fields(prompt):
             total = int(claim.group(3))
             unit = "%s/%s" % (index, total)
     fields = _h3_fields(text) or {}
-    return {
+    payload = {
         "heading": heading,
         "title": title,
         "unit": unit,
@@ -110,6 +110,13 @@ def feed_fields(prompt):
         "overall_soundscape": str(fields.get("overall_soundscape") or ""),
         "non_diegetic_music": str(fields.get("non_diegetic_music") or ""),
     }
+    wan = _wan_fields(text)
+    if wan:
+        from Agents.workers.feed.wan_format import WAN_SECTIONS
+
+        for name in WAN_SECTIONS:
+            payload[name] = str(wan.get(name) or "")
+    return payload
 
 
 def _image_source(sources, index):
