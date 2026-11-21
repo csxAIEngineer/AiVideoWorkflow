@@ -24,7 +24,6 @@ from Agents.workers.feed.common import (
     shot_duration_list,
 )
 from Agents.workers.feed.style import (
-    _STYLE_WRITERS,
     agreed_style,
     inject_style_lock,
     style_lock_line,
@@ -46,7 +45,6 @@ from Agents.workers.feed.extract import (
     restore_h3_scaffold,
 )
 from Agents.workers.feed.skeleton import (
-    _SKELETON_WRITERS,
     _field_parts,
     _unit_shots,
     inject_shot_skeleton,
@@ -218,6 +216,12 @@ _DIALOGUE_WRITERS = (
 
 
 _H3_UNIT_WRITER = "short-drama-director/references/wan-adapter.md"
+
+
+_WAN_PACKING_WRITERS = (
+    "sd-feed-engine/SKILL.md",
+    "short-drama-director/references/wan-adapter.md",
+)
 
 
 _SHOT_BOUNDARY = re.compile(r"(?=\[Shot\s+\d+\])")
@@ -709,15 +713,19 @@ def packing_repair_targets(machine_report, h3=False):
     duration = any(mark in errors for mark in ("时长被压缩", "不能钳成", "必须把这一镜拆开"))
     dialogue = "对白被压缩" in errors
     if duration:
-        found.extend(_UNIT_WRITERS)
         if h3:
-            found.append(_H3_UNIT_WRITER)
+            found.extend(_WAN_PACKING_WRITERS)
+        else:
+            found.extend(_UNIT_WRITERS)
     if dialogue:
-        found.extend(_DIALOGUE_WRITERS)
+        if h3:
+            found.extend(_WAN_PACKING_WRITERS)
+        else:
+            found.extend(_DIALOGUE_WRITERS)
     if h3 and "画风锁" in errors:
-        found.extend(_STYLE_WRITERS)
+        found.extend(_WAN_PACKING_WRITERS)
     if h3 and "镜号锁" in errors:
-        found.extend(_SKELETON_WRITERS)
+        found.extend(_WAN_PACKING_WRITERS)
     ordered = []
     seen = set()
     for relative in found:

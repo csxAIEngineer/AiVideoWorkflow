@@ -544,6 +544,35 @@ class PackingPlanTest(unittest.TestCase):
             self.assertIn("分镜:", chunk)
             self.assertIn("台词:", chunk)
 
+    def test_wan_packing_repair_names_only_the_mounted_writers(self):
+        skill = "sd-feed-engine/SKILL.md"
+        adapter = "short-drama-director/references/wan-adapter.md"
+        leftovers = (
+            "sd-feed-engine/references/feed-mode-and-gates.md",
+            "sd-feed-engine/references/asset-mapping-and-rules.md",
+            "short-drama-director/references/model-adapters.md",
+            "short-drama-director/references/segment-splicing.md",
+            "short-drama-director/references/prompt-feeding-checklist.md",
+        )
+        mounted = [skill, adapter]
+        for errors in (
+            ["时长被压缩：分镜合计 56s，封装声明 6s。"],
+            ["对白被压缩：封装稿缺少「别改了」。"],
+            ["画风锁：第一行不是锁定句"],
+            ["镜号锁：切点不是骨架时间"],
+        ):
+            found = packing_repair_targets({"errors": errors}, h3=True)
+            self.assertEqual(found, mounted)
+            for leftover in leftovers:
+                self.assertNotIn(leftover, found)
+        self.assertEqual(
+            packing_repair_targets({"errors": ["时长被压缩：分镜合计 56s，封装声明 6s。"]}, h3=False),
+            [
+                "sd-feed-engine/references/feed-mode-and-gates.md",
+                "short-drama-director/references/prompt-feeding-checklist.md",
+            ],
+        )
+
     def test_duration_and_dialogue_failures_rerun_the_packing_writers(self):
         h3_state = {
             "attempt": 1,

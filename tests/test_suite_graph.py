@@ -224,11 +224,21 @@ class SuiteGraphTest(unittest.TestCase):
         ))
         files = suite_files("feed", brief)
         adapter = "short-drama-director/references/wan-adapter.md"
-        seven = "short-drama-director/references/model-adapters.md"
-        self.assertEqual(files[0], adapter)
+        skill = "sd-feed-engine/SKILL.md"
+        leftovers = (
+            "sd-feed-engine/references/feed-mode-and-gates.md",
+            "sd-feed-engine/references/asset-mapping-and-rules.md",
+            "short-drama-director/references/model-adapters.md",
+            "short-drama-director/references/segment-splicing.md",
+            "short-drama-director/references/prompt-feeding-checklist.md",
+        )
+        self.assertEqual(files, [adapter, skill])
+        for leftover in leftovers:
+            self.assertNotIn(leftover, files)
         self.assertNotIn("short-drama-director/references/h3-adapter.md", files)
-        self.assertLess(files.index(adapter), files.index(seven))
         self.assertEqual(pack_cohorts(files)[0], [adapter])
+        only = brief.replace("任务：提示词封装", "只加载：sd-feed-engine/\n任务：提示词封装")
+        self.assertEqual(suite_files("feed", only), [adapter, skill])
         prompt = merge_prompt("feed", brief)
         self.assertIn("万相官方公式", prompt)
         self.assertIn("总体描述:", prompt)
@@ -240,6 +250,9 @@ class SuiteGraphTest(unittest.TestCase):
         self.assertNotIn("retention_analysis:", prompt)
         seedance = "\n".join(("阶段：P4", "模型：2.5", "任务：提示词封装"))
         self.assertNotIn("<d>[Chinese]", merge_prompt("feed", seedance))
+        seedance_files = suite_files("feed", seedance)
+        self.assertNotIn(adapter, seedance_files)
+        self.assertEqual(seedance_files, [skill, *leftovers])
 
     def test_skill_prompt_is_one_file_without_the_director(self):
         prompt = skill_node_prompt("sd-storyboard-engine/SKILL.md")

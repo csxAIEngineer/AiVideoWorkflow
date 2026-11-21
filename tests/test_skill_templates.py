@@ -133,11 +133,13 @@ class ShortDramaSkillTest(unittest.TestCase):
     def test_p4_pack_includes_the_wan_adapter_and_not_the_whole_skill(self):
         pack = load_skill_pack(context=LOCKED, stage="P4")
         self.assertIn("short-drama-director/references/wan-adapter.md", pack)
+        self.assertIn("# sd-feed-engine/SKILL.md", pack)
         self.assertNotIn("# short-drama-director/references/h3-adapter.md", pack)
-        self.assertLess(
-            pack.index("# short-drama-director/references/wan-adapter.md"),
-            pack.index("# short-drama-director/references/model-adapters.md"),
-        )
+        self.assertNotIn("# short-drama-director/references/model-adapters.md", pack)
+        self.assertNotIn("# sd-feed-engine/references/feed-mode-and-gates.md", pack)
+        self.assertNotIn("# sd-feed-engine/references/asset-mapping-and-rules.md", pack)
+        self.assertNotIn("# short-drama-director/references/segment-splicing.md", pack)
+        self.assertNotIn("# short-drama-director/references/prompt-feeding-checklist.md", pack)
         self.assertNotIn("# short-drama-director/SKILL.md", pack)
         prompt = build_system_prompt(pack, brief=LOCKED)
         self.assertIn("本片画幅以简报为准：16:9", prompt)

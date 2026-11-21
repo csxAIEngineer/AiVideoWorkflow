@@ -105,6 +105,10 @@ COMBAT_FILES = {
 
 def resolve_files(stage, track="1", combat="none", model="2.5", source="1", previs=False):
     files = list(STAGE_FILES.get(stage.upper(), STAGE_FILES["P3"]))
+    if model.lower() == "h3" and stage.upper() == "P4":
+        # Wan packing keeps the engine skill and the adapter only.
+        # Duration, shot skeleton, asset lines, and D-lock are program-owned.
+        files = ["sd-feed-engine/SKILL.md"]
     if source in ("3", "4") and stage.upper() in ("P0", "P1"):
         files.extend([
             "sd-recon-engine/SKILL.md",
