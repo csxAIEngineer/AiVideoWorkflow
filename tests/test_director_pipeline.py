@@ -177,6 +177,15 @@ class LockMachineTest(unittest.TestCase):
         missing = prepare_locks(_base_locks(), "雨夜")
         self.assertEqual(pending_question(missing)["id"], "duration")
 
+    def test_delivery_format_is_not_a_lock(self):
+        locks = _base_locks()
+        locks["delivery"] = ""
+        self.assertEqual(pending_question(locks)["id"], "duration")
+        filled = prepare_locks(locks, "时长：10秒")
+        self.assertEqual(filled["duration_seconds"], 10)
+        self.assertEqual(pending_question(filled)["id"], "style")
+        self.assertNotIn("交付：", lock_brief(filled))
+
     def test_empty_video_model_is_wan_and_the_next_question_is_aspect(self):
         chosen = blank_locks()
         chosen["track"] = "1"
@@ -1988,6 +1997,36 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertNotIn("独立质检", failed["stage"])
         self.assertNotIn("独立质检", failed["message"]["content"])
 
+    def test_finish_does_not_ask_for_an_offline_board(self):
+        folder = Path(tempfile.mkdtemp())
+        (folder / "_内部_").mkdir()
+        locks = _base_locks(delivery="1")
+        project = {
+            "template": "short-drama-director",
+            "model": "qwen3.8-flash",
+            "title": "雨夜",
+            "progress": {
+                "pipeline": {
+                    "action": "finish",
+                    "current": "seam",
+                    "accepted": ["script", "asset", "storyboard", "feed", "seam"],
+                    "passed": True,
+                }
+            },
+        }
+        calls = []
+
+        def writer(brief, skill_pack, debug_dir=None, model=None, template=None, trace_prompts=None):
+            calls.append(brief or "")
+            return {"text": "看板说明"}
+
+        with patch("end.stage_runner.check_feed", return_value=(0, "PASSED")):
+            ready = execute(project, folder, locks, writer, lambda *args, **kwargs: "")
+        self.assertEqual(ready["progress"]["phase"], "prompts_ready")
+        self.assertFalse(any("任务：离线看板" in call for call in calls))
+        self.assertFalse((folder / "_内部_" / "看板说明.md").is_file())
+        self.assertFalse((folder / "board.html").is_file())
+
 
 class DeliveryTest(unittest.TestCase):
     def test_public_package_is_at_most_three_and_skips_internal(self):
@@ -1998,7 +2037,8 @@ class DeliveryTest(unittest.TestCase):
         locks = _base_locks(delivery="3", material_mode="M1")
         names = publish(folder, locks, "雨夜", "资产提示", "分镜提示", "素材形态：M1\n\n## 段1\n故事板提示词（1 格）\n第 1 格：人在门口\n")
         self.assertLessEqual(len(names), 3)
-        self.assertEqual(names, ["project.md", "board.html", "雨夜-预演故事板.md"])
+        self.assertEqual(names, ["project.md", "雨夜-预演故事板.md"])
+        self.assertFalse((folder / "board.html").is_file())
         self.assertEqual(list_deliverables(folder), names)
         self.assertTrue(all("_内部_" not in name for name in names))
         text = (folder / "project.md").read_text(encoding="utf-8")
@@ -2018,7 +2058,8 @@ class PageTest(unittest.TestCase):
     def test_page_stops_on_gates_and_renders_seam_and_style(self):
         app = (ROOT / "front" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "front" / "styles.css").read_text(encoding="utf-8")
-        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接", "离线看板"]', app)
+        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接"]', app)
+        self.assertNotIn("离线看板", app)
         self.assertIn('kind === "multi"', app)
         self.assertIn('type = "checkbox"', app)
         self.assertIn('kind === "cards"', app)

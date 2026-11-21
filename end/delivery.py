@@ -1,4 +1,4 @@
-"""Public delivery is at most the main document, the board, and the previs board."""
+"""Public delivery is the main document and, when present, the previs board."""
 
 import json
 import re
@@ -56,7 +56,7 @@ def compile_board(markdown_path, html_path):
 
 
 def publish(folder, locks, title, image_prompts, feed, previs_text=""):
-    """Write the body, compile the board only when delivery asks for it, and list at most three files."""
+    """Write the body and list the public files. The offline board is no longer a deliverable."""
     folder = Path(folder)
     locks = locks or {}
     mode = locks.get("material_mode") or "M1"
@@ -69,16 +69,7 @@ def publish(folder, locks, title, image_prompts, feed, previs_text=""):
         feed,
     )
     main_path = write_main(folder, markdown)
-    delivery = str(locks.get("delivery") or "")
-    names = []
-    if delivery in ("2", "3"):
-        names.append(main_path.name)
-    if delivery in ("1", "3"):
-        html_path = folder / "board.html"
-        compile_board(main_path, html_path)
-        names.append(html_path.name)
-    elif (folder / "board.html").is_file():
-        (folder / "board.html").unlink()
+    names = [main_path.name]
     previs_path = None
     if str(previs_text or "").strip():
         body = previs_text.strip()

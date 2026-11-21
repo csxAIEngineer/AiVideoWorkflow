@@ -241,7 +241,7 @@ def _ready_for_duration(locks):
         return False
     if locks.get("model") == "2.5" and not locks.get("reference_mode"):
         return False
-    return bool(locks.get("aspect") and locks.get("delivery"))
+    return bool(locks.get("aspect"))
 
 
 def prepare_locks(locks, demand="", material_text="", has_images=False):
@@ -329,13 +329,6 @@ def pending_question(locks, cards=None):
             "single",
             "只锁成片。角色、场景、道具、九宫格、故事板整板写 16:9。不要默认竖屏。",
             ASPECTS,
-        )
-    if locks.get("delivery") not in ("1", "2", "3"):
-        return _question(
-            "delivery",
-            "single",
-            "必须由用户选定。markdown 是正文，看板由它编译。",
-            DELIVERY_OPTIONS,
         )
     if not locks.get("duration_seconds"):
         return _question(
@@ -497,7 +490,6 @@ def lock_brief(locks):
         "来源：%s" % (locks.get("source") or ""),
         model_line,
         "成片画幅：%s" % (locks.get("aspect") or ""),
-        "交付：%s" % (locks.get("delivery") or ""),
         "成片时长秒：%s" % (locks.get("duration_seconds") or ""),
         "段缝：%s" % ("、".join(locks.get("seams") or []) or "单段"),
         "画风正文：%s" % (locks.get("style_look") or ""),

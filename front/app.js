@@ -65,7 +65,7 @@ let draftMaterials = [];
 let seamKept = new Set();
 const MAX_MATERIALS = 8;
 
-const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接", "离线看板"];
+const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接"];
 const CREW_FALLBACK = [
   { id: "script", name: "编剧" },
   { id: "asset", name: "资产" },

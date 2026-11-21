@@ -4455,8 +4455,6 @@ def _side_note(project, folder, locks, write_model, task_line, filename, label, 
 def _done(project, folder, locks, pipeline, write_model):
     if advisory_qc_enabled():
         _side_note(project, folder, locks, write_model, "任务：独立质检", "质检.md", "独立质检", "qc")
-    if str((locks or {}).get("delivery") or "") in ("1", "3"):
-        _side_note(project, folder, locks, write_model, "任务：离线看板", "看板说明.md", "离线看板", "board")
     return _finish(folder, locks, pipeline)
 
 

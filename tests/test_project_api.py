@@ -346,6 +346,29 @@ class ProjectApiTest(unittest.TestCase):
         self.assertNotEqual(read_project(project_id)["status"], "building")
         gate_for(project_id).resume()
 
+    def test_resume_without_an_offline_board_stays_at_prompts(self):
+        project_id = "c0ffee00000b"
+        make_project(
+            project_id,
+            status="paused",
+            progress={"percent": 100, "phase": "paused", "paused_from": "writing", "message": "已暂停"},
+        )
+        folder = project_dir(project_id)
+        (folder / "spec.json").write_text(
+            json.dumps({"title": "雨夜", "script": "写完的剧本", "shots": []}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (folder / "project.md").write_text("素材形态：M1\n", encoding="utf-8")
+        self.assertFalse((folder / "board.html").is_file())
+        with patch("end.server.execute_render") as execute, patch("end.server.submit_agent_task") as submit:
+            resume_render(read_project(project_id))
+        execute.assert_not_called()
+        submit.assert_not_called()
+        saved = read_project(project_id)
+        self.assertEqual(saved["status"], "done")
+        self.assertEqual((saved.get("progress") or {}).get("phase"), "prompts_ready")
+        gate_for(project_id).resume()
+
     def test_chinese_asset_replacement_uploads_and_stores_the_public_url(self):
         project_id = "c0de1c000006"
         make_project(project_id)
