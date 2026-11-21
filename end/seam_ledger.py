@@ -829,7 +829,9 @@ def fold_seam_entries(entries, units):
 
     ``shot_id``, ``prev_id``, ``scene_relation``, and the official submit
     fields are program-owned. The first unit's ``d_lock`` is ``none``.
-    A later ``d_lock`` is kept only when it is 1–4. A ① row's
+    A later ``d_lock`` is kept only when it is 1–4. A later unit that
+    is not itself 1–2 seconds defaults to ②, and an illegal ③ on it
+    is rewritten to ②. A ① or ④ on a long unit is kept. A ① row's
     ``start_size`` is locked to the previous unit's ``end_size`` when that
     end sits on the ladder. 景别 values that sit on the ladder (or a
     ladder word plus 镜头/景别) are kept; any other size is left so the
@@ -874,6 +876,11 @@ def fold_seam_entries(entries, units):
                 row[key] = model.get(key)
             else:
                 row[key] = _text(model.get(key))
+        if index > 0 and not _allows_empty_lock(unit):
+            if row["d_lock"] == "3":
+                row["empty_use"] = ""
+            if row["d_lock"] in ("", "3"):
+                row["d_lock"] = "2"
         built.append(row)
     applied = apply_submit_params(built, rows)
     for index, row in enumerate(applied):
@@ -898,6 +905,12 @@ def _duration(shot):
         return float(shot.get("duration"))
     except (TypeError, ValueError):
         return None
+
+
+def _allows_empty_lock(unit):
+    """③ is only for a packed unit whose own duration is 1–2 seconds."""
+    duration = _duration(unit)
+    return duration is not None and 1 <= duration <= 2
 
 
 def check_seam_ledger(ledger, units):

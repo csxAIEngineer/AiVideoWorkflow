@@ -57,6 +57,7 @@ GENERATOR_SYSTEM = "\n".join((
     "审查员只交报告，不会替你改账。机检核对条数、id、D 锁、景别、可截计划和官方 video_mode。",
     "怎么判 ①②③④，以技能原文为准。拿不准就按分流表，不要把 ① 当成唯一默认。剧情段默认 ②。",
     "第一个封装单元 d_lock 写 none。每个后面的单元恰好一条入缝。",
+    "单元时长由程序从封装单元写入，不要改。不是 1 到 2 秒的空镜单元不得写 ③，程序会改回 ②。① 和 ④ 仍可按规程选。",
     "video_mode 只能是 first_frame 或 reference。不要写 text，不要写 first_last_frame，不要写 end_image。一次调用不能混用首帧和参考图。",
     "第一个封装单元没有上一段，video_mode 用 reference。后面的单元在动作连续、剧情连续，或因单场超过 30 秒拆开时用 first_frame，first_frame_source 写 previous_tail，这一发不要带参考图。其余用 reference，即使 images 是空的也不要改成 text。",
     "动作连续写 action_continuous。剧情连续是一句话被拆开、一镜到底，或 plot_continuous。同场景但事件已断开、剧情段、换场、时间跳、地点跳、空镜都不是连续。",
@@ -230,13 +231,19 @@ def format_seam_skeleton(state):
         return ""
     entries = seam_skeleton_entries(state)
     shown = []
+    by_id = {str(unit.get("id")): unit for unit in units}
     for entry in entries:
         row = {key: entry.get(key, "") for key in SEAM_SLOT_KEYS}
+        unit = by_id.get(str(entry.get("shot_id") or "")) or {}
+        if "duration" in unit:
+            row["duration"] = unit.get("duration")
         shown.append(row)
     return "\n".join((
         "当前段缝骨架如下。一条封装单元一行，顺序固定。",
         "只填或修改这些槽里的值。不要另写一套包装，不要删行，不要改 shot_id，不要丢掉槽名。",
         "shot_id、prev_id、scene_relation、video_mode、first_frame_source、images、end_image 由程序按连续关系写回。",
+        "单元时长由程序从封装单元写入，不要改。",
+        "不是 1 到 2 秒的空镜单元不得写 ③，程序会改回 ②。① 和 ④ 仍可按规程选。",
         "scene_relation 只能是：%s。" % "、".join(SCENE_RELATIONS),
         "起镜景别 start_size 和末镜景别 end_size 只能是：%s。" % "、".join(SIZE_LADDER),
         "不在景别阶梯上的值必须改成其中之一，不要自造景别。",

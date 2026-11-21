@@ -1282,6 +1282,7 @@ class SeamEmptyShotSkillTest(unittest.TestCase):
         self.assertIn("原词", critic)
         self.assertIn("duration", generator)
         self.assertIn("duration", critic)
+        self.assertIn("程序会改回 ②", generator)
         self.assertTrue(
             any(token in generator for token in ("1 或 2", "1–2", "1-2", "1 到 2")),
             generator,
