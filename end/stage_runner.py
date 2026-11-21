@@ -4235,7 +4235,7 @@ def _finish(folder, locks, pipeline):
     spec = _load_spec(folder)
     feed_path = folder / "_内部_" / "feed.md"
     if feed_path.is_file():
-        code, report = check_prompt(feed_path, locks.get("model") or "h3", locks.get("track") or "1")
+        code, report = check_feed(feed_path, locks.get("model") or "h3", locks.get("material_mode") or "M1", locks.get("track") or "1")
         if code != 0:
             failed = dict(pipeline or {})
             failed["check"] = "machine"

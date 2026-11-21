@@ -242,7 +242,7 @@ class QueueTest(unittest.TestCase):
 
         with patch("end.server.call_deepseek", side_effect=writer), patch(
             "end.stage_runner.check_feed", return_value=(0, "")
-        ), patch("end.stage_runner.check_prompt", return_value=(0, "")), patch(
+        ), patch(
             "end.server.resume_paused"
         ) as resume:
             view = public_view(read_project(project_id))

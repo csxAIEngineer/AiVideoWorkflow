@@ -1966,7 +1966,7 @@ class MachineAndMountTest(unittest.TestCase):
             calls.append(brief or "")
             return {"text": "质检意见"}
 
-        with patch("end.stage_runner.check_prompt", return_value=(0, "PASSED")):
+        with patch("end.stage_runner.check_feed", return_value=(0, "PASSED")):
             ready = execute(project, folder, locks, writer, lambda *args, **kwargs: "")
         self.assertEqual(ready["progress"]["phase"], "prompts_ready")
         self.assertFalse(any("任务：独立质检" in call for call in calls))
@@ -1975,12 +1975,12 @@ class MachineAndMountTest(unittest.TestCase):
         calls.clear()
         with patch.dict("os.environ", {"AIVIDEO_ADVISORY_QC": "1"}):
             self.assertTrue(advisory_qc_enabled())
-            with patch("end.stage_runner.check_prompt", return_value=(0, "PASSED")):
+            with patch("end.stage_runner.check_feed", return_value=(0, "PASSED")):
                 execute(project, folder, locks, writer, lambda *args, **kwargs: "")
         self.assertTrue(any("任务：独立质检" in call for call in calls))
         self.assertIn("质检意见", (internal / "质检.md").read_text(encoding="utf-8"))
 
-        with patch("end.stage_runner.check_prompt", return_value=(1, "[-] FAIL: H1 缺段")):
+        with patch("end.stage_runner.check_feed", return_value=(1, "[-] FAIL: H1 缺段")):
             failed = execute(project, folder, locks, writer, lambda *args, **kwargs: "")
         self.assertEqual(failed["stage"], "投喂机检")
         self.assertEqual(failed["progress"]["phase"], "gate_machine")

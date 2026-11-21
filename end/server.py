@@ -1475,9 +1475,14 @@ def _sync_spec_field(folder, stage, text):
 def _recheck_after_rules(folder, locks, pipeline, path, title):
     stage = str(pipeline.get("current") or "")
     if str(pipeline.get("check") or "") == "machine" and stage == "feed":
-        from end.stage_runner import check_prompt
+        from end.stage_runner import check_feed
 
-        code, report = check_prompt(path, (locks or {}).get("model") or "h3", (locks or {}).get("track") or "1")
+        code, report = check_feed(
+            path,
+            (locks or {}).get("model") or "h3",
+            (locks or {}).get("material_mode") or "M1",
+            (locks or {}).get("track") or "1",
+        )
         return code == 0, report or ""
     from end.stage_runner import check_stage
 

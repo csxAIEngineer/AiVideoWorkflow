@@ -341,7 +341,7 @@ class RuleBeforeModelTest(unittest.TestCase):
             return True, ""
 
         with patch("end.stage_runner.check_stage", check), patch(
-            "end.stage_runner.check_prompt", return_value=(0, "PASSED")
+            "end.stage_runner.check_feed", return_value=(0, "PASSED")
         ), patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"):
             run_project("p-rule-fix")
         saved = read_project("p-rule-fix")
@@ -364,14 +364,14 @@ class RuleBeforeModelTest(unittest.TestCase):
             calls.append("ai")
             raise AssertionError("投喂机检已被规则修好")
 
-        def check_prompt(path, model, track):
-            del model, track
+        def check_feed(path, model, mode, track):
+            del model, mode, track
             text = Path(path).read_text(encoding="utf-8")
             if "## 【封装单元" not in text and "## 【投喂单元" not in text:
                 return 1, _MISSING
             return 0, "PASSED"
 
-        with patch("end.stage_runner.check_prompt", check_prompt), patch(
+        with patch("end.stage_runner.check_feed", check_feed), patch(
             "end.server.call_deepseek", writer
         ), patch("end.server.load_skill_pack", return_value="pack"):
             run_project("p-rule-machine")
@@ -439,7 +439,7 @@ class RuleBeforeModelTest(unittest.TestCase):
             return True, ""
 
         with patch("end.stage_runner.check_stage", check), patch(
-            "end.stage_runner.check_prompt", return_value=(0, "PASSED")
+            "end.stage_runner.check_feed", return_value=(0, "PASSED")
         ), patch("end.server.template_policy", return_value="drama_still"), patch(
             "end.server.call_deepseek", writer
         ), patch("end.server.load_skill_pack", return_value="pack"):
