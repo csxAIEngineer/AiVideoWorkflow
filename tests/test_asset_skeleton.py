@@ -250,6 +250,27 @@ class AssetSkeletonContractTest(unittest.TestCase):
         self.assertNotIn(("无", "道具"), none_titles)
         self.assertNotIn(("无", "角色"), none_titles)
 
+    def test_absent_appearance_notes_are_skipped_but_names_with_wu_are_kept(self):
+        script = """## EP001-SC01｜外·红毯边·日（0s - 8s）
+
+出场：无（特写）
+
+## EP001-SC02｜外·红毯·日（8s - 16s）
+
+出场：无
+
+## EP001-SC03｜外·红毯·日（16s - 30s）
+
+出场：无头怪物、顾深
+"""
+        titles = [(item["title"], item["kind"]) for item in extract_asset_catalog(script)]
+        self.assertNotIn(("无（特写）", "角色"), titles)
+        self.assertNotIn(("无", "角色"), titles)
+        self.assertIn(("无头怪物", "角色"), titles)
+        self.assertIn(("顾深", "角色"), titles)
+        self.assertEqual(titles[0], ("无头怪物", "角色"))
+
+
     def test_script_without_cast_fails_closed_and_does_not_lock_scenes_only(self):
         script = """# 第001集｜皮肤卫士
 

@@ -6,7 +6,7 @@ from Agents.workers.script_skeleton import parse_script_scenes
 
 _CAST_LINE = re.compile(r"^出场\s*[:：]\s*(.*)$")
 _PROP_LINE = re.compile(r"^道具\s*[:：]\s*(.*)$")
-_SKIP_PROP = re.compile(r"^(无|没有|无道具)$")
+_SKIP_PROP = re.compile(r"^(无|没有|无道具)(?:[（(][^）)]*[）)])?$")
 _PROP_MARK = re.compile(
     r"(凝胶|药膏|药盒|药品|药管|支装|包装|瓶子?|药|盒|管|产品|枪)"
 )
