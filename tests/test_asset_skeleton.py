@@ -270,6 +270,27 @@ class AssetSkeletonContractTest(unittest.TestCase):
         self.assertIn(("顾深", "角色"), titles)
         self.assertEqual(titles[0], ("无头怪物", "角色"))
 
+    def test_absent_notes_with_slash_in_parentheses_are_skipped(self):
+        script = """## EP001-SC00｜视觉隐喻/闪前·红毯局部（0s - 3s）
+
+出场：无（仅道具/环境）
+道具：红毯、白花
+
+## EP001-SC01｜内·民政局门口·日（3s - 18s）
+
+出场：沈棠、顾深
+道具：结婚证
+"""
+        titles = [(item["title"], item["kind"]) for item in extract_asset_catalog(script)]
+        self.assertNotIn(("无（仅道具", "角色"), titles)
+        self.assertNotIn(("环境）", "角色"), titles)
+        self.assertNotIn(("无（仅道具/环境）", "角色"), titles)
+        self.assertIn(("沈棠", "角色"), titles)
+        self.assertIn(("顾深", "角色"), titles)
+        self.assertIn(("红毯", "道具"), titles)
+        self.assertIn(("白花", "道具"), titles)
+        self.assertIn(("结婚证", "道具"), titles)
+        self.assertEqual(titles[0], ("沈棠", "角色"))
 
     def test_script_without_cast_fails_closed_and_does_not_lock_scenes_only(self):
         script = """# 第001集｜皮肤卫士

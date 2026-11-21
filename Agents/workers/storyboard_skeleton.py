@@ -2,7 +2,7 @@
 
 import re
 
-from Agents.workers.asset_skeleton import _place_name, _PROP_LINE, _SKIP_PROP, extract_asset_catalog
+from Agents.workers.asset_skeleton import _place_name, _PROP_LINE, _SKIP_PROP, _split_cast_names, extract_asset_catalog
 from Agents.workers.script_skeleton import parse_script_scenes
 from end.locks import pack_limit
 
@@ -207,15 +207,13 @@ def _parse_scene_body(scene_id, heading, body):
             continue
         match = _CAST_LINE.match(line)
         if match:
-            for name in re.split(r"[、,，;；/]+", match.group(1)):
-                name = name.strip()
-                if name and name not in cast:
+            for name in _split_cast_names(match.group(1)):
+                if name and not _SKIP_PROP.match(name) and name not in cast:
                     cast.append(name)
             continue
         prop_match = _PROP_LINE.match(line)
         if prop_match:
-            for name in re.split(r"[、,，;；/]+", prop_match.group(1)):
-                name = name.strip()
+            for name in _split_cast_names(prop_match.group(1)):
                 if not name or _SKIP_PROP.match(name) or name in props:
                     continue
                 props.append(name)

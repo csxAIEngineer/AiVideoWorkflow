@@ -7,6 +7,35 @@ from Agents.workers.script_skeleton import parse_script_scenes
 _CAST_LINE = re.compile(r"^出场\s*[:：]\s*(.*)$")
 _PROP_LINE = re.compile(r"^道具\s*[:：]\s*(.*)$")
 _SKIP_PROP = re.compile(r"^(无|没有|无道具)(?:[（(][^）)]*[）)])?$")
+
+def _split_cast_names(raw):
+    """Split a 出场/道具 list without cutting inside parentheses."""
+    text = str(raw or "").strip()
+    if not text or _SKIP_PROP.match(text):
+        return []
+    parts = []
+    buf = []
+    depth = 0
+    for char in text:
+        if char in "（(":
+            depth += 1
+            buf.append(char)
+        elif char in "）)":
+            depth = max(0, depth - 1)
+            buf.append(char)
+        elif depth == 0 and char in "、,，;；/":
+            name = "".join(buf).strip()
+            if name:
+                parts.append(name)
+            buf = []
+        else:
+            buf.append(char)
+    name = "".join(buf).strip()
+    if name:
+        parts.append(name)
+    return parts
+
+
 _PROP_MARK = re.compile(
     r"(凝胶|药膏|药盒|药品|药管|支装|包装|瓶子?|药|盒|管|产品|枪)"
 )
@@ -108,8 +137,7 @@ def _cast_items(script):
         if not match and not prop_only:
             continue
         raw = (match or prop_only).group(1)
-        for name in re.split(r"[、,，;；/]+", raw):
-            name = name.strip()
+        for name in _split_cast_names(raw):
             if not name or name == "【填写】" or _SKIP_PROP.match(name) or name in seen:
                 continue
             seen.add(name)
