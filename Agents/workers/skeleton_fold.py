@@ -12,6 +12,7 @@ _FIELDS = {
     "asset": "image_prompts",
     "script": "script",
     "storyboard": "storyboard",
+    "feed": "feed",
 }
 _SLOT_LINE = re.compile(r"^(格\d+|整板)\s*[:：]\s*(.*)$")
 _ROW_CELL = {
@@ -46,13 +47,18 @@ def fold_stage_draft(task, brief, partials):
     Skill-document notes that do not carry slots are ignored.
     """
     task = str(task or "").strip()
+    notes = [_note_as_markdown(item) for item in (partials or [])]
+    if task == "feed":
+        skeleton = _feed_skeleton_from_brief(brief)
+        if not skeleton.strip():
+            return ""
+        return _fold_feed(skeleton, notes)
     mark = _MARKERS.get(task)
     if not mark:
         return ""
     skeleton = _skeleton_from_brief(brief, mark)
     if not skeleton.strip():
         return ""
-    notes = [_note_as_markdown(item) for item in (partials or [])]
     if task == "asset":
         return _fold_asset(skeleton, notes)
     if task == "script":
@@ -529,3 +535,384 @@ def _storyboard_sections(skeleton):
     if current is not None:
         found.append((current, "\n".join(buf)))
     return found if started else []
+
+
+_LABEL_LINE = re.compile(r"^(.+?)\s*[:：]\s*(.*)$")
+LEFTOVER_LABEL_NOTE = "可能只是标签没对上"
+
+
+def unmatched_specialist_partials(task, folded, partials):
+    """Specialist bodies (or leftover lines) that were not stamped into the fold.
+
+    Label mismatch is the expected case: the body is still useful, but the
+    slot name did not match the skeleton.
+    """
+    del task  # the folded draft already reflects this task's slot names
+    folded_lines = _folded_line_index(folded)
+    leftovers = []
+    for item in partials or []:
+        skill = ""
+        if isinstance(item, dict):
+            skill = str(item.get("skill") or "")
+        unused = _unused_note_text(_note_as_markdown(item), folded_lines)
+        if unused:
+            leftovers.append({"skill": skill, "text": unused})
+    return leftovers
+
+
+def fold_has_empty_slots(folded, task=""):
+    """True when the folded skeleton still has an unfilled slot."""
+    text = str(folded or "")
+    if "【填写" in text:
+        return True
+    if str(task or "") == "feed" or _feed_units(text):
+        return _feed_has_empty_slots(text)
+    return False
+
+
+def leftover_merge_blocks(folded, leftovers):
+    """User-facing note so merge maps unmatched bodies into empty slots."""
+    blocks = [
+        "已经按对上的标签盖进骨架。下面没盖上的专员正文可能只是标签没对上，"
+        "请映射到还空着的槽，不要改已经盖上的锁栏。",
+    ]
+    if str(folded or "").strip():
+        blocks.extend(["", "已盖上的骨架：", str(folded).rstrip()])
+    if leftovers:
+        blocks.extend(["", "没盖上的专员正文（可能只是标签没对上）："])
+        for item in leftovers:
+            skill = str(item.get("skill") or "")
+            body = str(item.get("text") or "").strip()
+            if not body:
+                continue
+            if skill:
+                blocks.extend(["", "## %s" % skill, body])
+            else:
+                blocks.extend(["", body])
+    return "\n".join(blocks)
+
+
+def apply_merge_to_empty_slots(task, folded, merge_raw):
+    """Keep already-stamped fold slots; copy merge fills only into empty ones."""
+    task = str(task or "").strip()
+    if not str(folded or "").strip():
+        return merge_raw
+    merge_text = _draft_from_merge_raw(task, merge_raw)
+    if task == "storyboard":
+        draft = _fill_empty_storyboard_slots(folded, merge_text)
+        return folded_merge_output(task, draft)
+    if task == "feed":
+        if not _feed_units(merge_text):
+            # Informal or JSON merge bodies stay intact for apply_packing_plan.
+            return merge_raw
+        draft = _fold_feed(folded, [merge_text])
+        return folded_merge_output(task, draft)
+    return merge_raw
+
+
+def _folded_line_index(folded):
+    found = set()
+    for line in str(folded or "").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        found.add(raw)
+        match = _LABEL_LINE.match(raw)
+        if match:
+            found.add("%s：%s" % (match.group(1).strip(), match.group(2).strip()))
+    return found
+
+
+def _unused_note_text(note, folded_lines):
+    unused = []
+    for line in str(note or "").splitlines():
+        raw = line.strip()
+        if not raw:
+            if unused and unused[-1] != "":
+                unused.append("")
+            continue
+        match = _LABEL_LINE.match(raw)
+        normalized = "%s：%s" % (match.group(1).strip(), match.group(2).strip()) if match else raw
+        if raw in folded_lines or normalized in folded_lines:
+            continue
+        unused.append(line.rstrip())
+    return "\n".join(unused).strip()
+
+
+def _draft_from_merge_raw(task, raw):
+    text = str(raw or "").strip()
+    data = _json_object(text)
+    field = _FIELDS.get(task)
+    if isinstance(data, dict):
+        if field:
+            value = data.get(field)
+            if isinstance(value, str) and value.strip():
+                return value
+        for key in ("storyboard", "feed", "script", "image_prompts", "text"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return text
+
+
+def _fill_empty_storyboard_slots(folded, merge_text):
+    fills = {}
+    current = None
+    for line in str(merge_text or "").splitlines():
+        heading = _STORY_HEAD.match(line.strip())
+        if heading:
+            current = heading.group(1).strip()
+            continue
+        if not current:
+            continue
+        field = _STORY_FILL.match(line.strip())
+        if field and _filled(field.group(2)):
+            fills[(current, field.group(1))] = field.group(2).strip()
+    sections = _storyboard_sections(folded)
+    if not sections:
+        return str(folded or "")
+    blocks = []
+    for shot_id, body in sections:
+        lines = []
+        for line in str(body or "").splitlines():
+            field = _STORY_FILL.match(line.strip())
+            key = (shot_id, field.group(1)) if field else None
+            if key and not _filled(field.group(2)) and key in fills:
+                lines.append("%s：%s" % (field.group(1), fills[key]))
+            else:
+                lines.append(line)
+        blocks.append("\n".join(lines).strip())
+    return "\n\n".join(block for block in blocks if block) + "\n"
+
+
+_FEED_UNIT_HEAD = re.compile(r"^#{0,6}\s*【封装单元\s*(\d+)\s*/\s*(\d+)】")
+_FEED_SKELETON_MARKS = (
+    "万相 3.0 的封装骨架已经按",
+    "当前骨架如下。",
+)
+
+
+def _feed_skeleton_from_brief(brief):
+    text = str(brief or "")
+    start = -1
+    for mark in _FEED_SKELETON_MARKS:
+        start = text.find(mark)
+        if start >= 0:
+            break
+    if start < 0:
+        start = text.find("## 【封装单元")
+        if start < 0:
+            start = text.find("【封装单元")
+    if start < 0:
+        return ""
+    rest = text[start:]
+    for mark in ("\n各节点正文：", "\n对白和旁白必须逐字出现"):
+        cut = rest.find(mark)
+        if cut >= 0:
+            rest = rest[:cut]
+    return rest.strip() + "\n"
+
+
+def _fold_feed(skeleton, notes):
+    units = _feed_units(skeleton)
+    if not units:
+        return ""
+    fills = _feed_fills(notes, default_unit=units[0]["index"] if len(units) == 1 else None)
+    parts = []
+    prefix = units[0].get("prefix") or ""
+    if prefix.strip():
+        parts.append(prefix.rstrip())
+    for unit in units:
+        parts.append(_render_feed_unit(unit, fills).rstrip())
+    return "\n\n".join(part for part in parts if part) + "\n"
+
+
+def _feed_has_empty_slots(text):
+    for unit in _feed_units(text):
+        for name, _header, body in unit["fields"]:
+            if _wan_field_empty(name, body):
+                return True
+    return False
+
+
+def _feed_units(text):
+    raw = str(text or "")
+    if not raw.strip():
+        return []
+    lines = raw.splitlines()
+    starts = [index for index, line in enumerate(lines) if _FEED_UNIT_HEAD.match(line.strip())]
+    if not starts:
+        return []
+    found = []
+    for offset, start in enumerate(starts):
+        end = starts[offset + 1] if offset + 1 < len(starts) else len(lines)
+        heading = lines[start].strip()
+        match = _FEED_UNIT_HEAD.match(heading)
+        prefix = "\n".join(lines[:start]) if offset == 0 else ""
+        body_lines = lines[start:end]
+        found.append({
+            "index": int(match.group(1)),
+            "prefix": prefix,
+            "lines": body_lines,
+            "fields": _wan_field_list(body_lines),
+        })
+    return found
+
+
+def _wan_field_list(lines):
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name
+
+    fields = []
+    current = None
+    header = ""
+    body = []
+    for line in lines:
+        match = WAN_FIELD_LINE.match(line.strip())
+        if match:
+            if current is not None:
+                fields.append((current, header, "\n".join(body).strip("\n")))
+            current = canonical_wan_name(match.group("name"))
+            header = line
+            rest = match.group("rest") or ""
+            body = [rest] if rest.strip() else []
+            continue
+        if current is not None:
+            body.append(line)
+    if current is not None:
+        fields.append((current, header, "\n".join(body).strip("\n")))
+    return fields
+
+
+def _wan_field_empty(name, body):
+    from Agents.workers.feed.wan_format import WAN_NEGATIVE_LINE, WAN_SHOT_HEADING
+
+    text = str(body or "").strip()
+    if not text or text.startswith("【填写"):
+        return True
+    if name == "负向清单":
+        return False
+    if name == "分镜":
+        for line in text.splitlines():
+            raw = line.strip()
+            if not raw:
+                continue
+            if not WAN_SHOT_HEADING.match(raw):
+                return False
+        return True
+    return False
+
+
+
+def _foreign_field_header(line):
+    """A labeled line that is not an official Wan field, so it is not part of the current fill."""
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, WAN_SHOT_HEADING
+
+    raw = str(line or "").strip()
+    if not raw or WAN_FIELD_LINE.match(raw) or WAN_SHOT_HEADING.match(raw):
+        return False
+    match = _LABEL_LINE.match(raw)
+    if not match:
+        return False
+    name = match.group(1).strip()
+    if name.endswith("说") or name in ("画外音", "旁白", "VO"):
+        return False
+    if "，" in name or "。" in name or '"' in name or "“" in name or "”" in name:
+        return False
+    return 1 <= len(name) <= 24
+
+def _feed_fills(notes, default_unit=None):
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name
+
+    fills = {}
+
+    def store(unit, field, chunks):
+        if unit is None or not field:
+            return
+        text = "\n".join(chunks).strip("\n").strip()
+        if text and not _wan_field_empty(field, text):
+            fills.setdefault((unit, field), text)
+
+    for note in notes or []:
+        current_unit = default_unit
+        current_field = None
+        body = []
+        for line in str(note or "").splitlines():
+            heading = _FEED_UNIT_HEAD.match(line.strip())
+            if heading:
+                store(current_unit, current_field, body)
+                current_unit = int(heading.group(1))
+                current_field = None
+                body = []
+                continue
+            match = WAN_FIELD_LINE.match(line.strip())
+            if match:
+                store(current_unit, current_field, body)
+                current_field = canonical_wan_name(match.group("name"))
+                rest = match.group("rest") or ""
+                body = [rest] if rest.strip() else []
+                if current_unit is None:
+                    current_unit = default_unit
+                continue
+            if current_field is not None and _foreign_field_header(line):
+                store(current_unit, current_field, body)
+                current_field = None
+                body = []
+                continue
+            if current_field is not None:
+                body.append(line)
+        store(current_unit, current_field, body)
+    return fills
+
+
+def _render_feed_unit(unit, fills):
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name
+
+    lines = list(unit["lines"])
+    skip_body_of = set()
+    out = []
+    current = None
+    for line in lines:
+        match = WAN_FIELD_LINE.match(line.strip())
+        if match:
+            current = canonical_wan_name(match.group("name"))
+            body = _field_body_from_unit(unit, current)
+            fill = fills.get((unit["index"], current))
+            if fill and _wan_field_empty(current, body):
+                out.append(_with_field_body(line, fill))
+                skip_body_of.add(current)
+                continue
+            out.append(line)
+            continue
+        if current in skip_body_of:
+            # Keep locked 分镜 headings even when the field was empty of prose
+            # and a fill was stamped after the header.
+            from Agents.workers.feed.wan_format import WAN_SHOT_HEADING, WAN_NEGATIVE_LINE
+            raw = line.strip()
+            if current == "分镜" and WAN_SHOT_HEADING.match(raw):
+                out.append(line)
+            elif current == "负向清单" and raw == WAN_NEGATIVE_LINE:
+                out.append(line)
+            continue
+        out.append(line)
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _field_body_from_unit(unit, name):
+    for field, _header, body in unit["fields"]:
+        if field == name:
+            return body
+    return ""
+
+
+def _with_field_body(header_line, fill):
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE
+
+    match = WAN_FIELD_LINE.match(header_line.strip())
+    rest = (match.group("rest") or "").strip() if match else ""
+    if rest:
+        indent = header_line[:len(header_line) - len(header_line.lstrip())]
+        raw = header_line.strip()
+        punct = "：" if "：" in raw.split(match.group("name"), 1)[-1][:2] or "：" in raw else ":"
+        written = raw.split("：", 1)[0] if "：" in raw else raw.split(":", 1)[0]
+        return "%s%s%s%s" % (indent, written, punct, fill)
+    return header_line.rstrip() + "\n" + fill

@@ -292,15 +292,27 @@ def _merge_node(task, model, kind):
 
     def node(state):
         _mark(state, "merge", "进行中")
+        folded = ""
+        leftovers = []
         if task != "asset":
-            from Agents.workers.skeleton_fold import fold_stage_draft, folded_merge_output
+            from Agents.workers.skeleton_fold import (
+                apply_merge_to_empty_slots,
+                fold_has_empty_slots,
+                fold_stage_draft,
+                folded_merge_output,
+                leftover_merge_blocks,
+                unmatched_specialist_partials,
+            )
             folded = fold_stage_draft(task, state.get("brief") or "", state.get("partials") or [])
-            if str(folded or "").strip():
+            leftovers = unmatched_specialist_partials(task, folded, state.get("partials") or [])
+            if str(folded or "").strip() and (not leftovers or not fold_has_empty_slots(folded, task)):
                 _mark(state, "merge", "完成")
                 return {"output": folded_merge_output(task, folded)}
         system = merge_prompt(task, state.get("brief") or "")
         try:
             user = _merge_user(state.get("brief") or "", state.get("partials") or [])
+            if leftovers and str(folded or "").strip():
+                user = "%s\n\n%s" % (user, leftover_merge_blocks(folded, leftovers))
             messages = [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -354,6 +366,9 @@ def _merge_node(task, model, kind):
             )
             if not str(raw or "").strip():
                 raise RuntimeError(_empty_body_error(state.get("model")))
+            if str(folded or "").strip() and task != "asset":
+                from Agents.workers.skeleton_fold import apply_merge_to_empty_slots
+                raw = apply_merge_to_empty_slots(task, folded, raw)
         except Exception:
             _mark(state, "merge", "失败")
             raise
