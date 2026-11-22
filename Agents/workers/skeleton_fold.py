@@ -14,6 +14,24 @@ _FIELDS = {
     "storyboard": "storyboard",
 }
 _SLOT_LINE = re.compile(r"^(格\d+|整板)\s*[:：]\s*(.*)$")
+_ROW_CELL = {
+    "第一行左": "格1",
+    "第一行中": "格2",
+    "第一行右": "格3",
+    "第二行左": "格4",
+    "第二行中": "格5",
+    "第二行右": "格6",
+    "第三行左": "格7",
+    "第三行中": "格8",
+    "第三行右": "格9",
+}
+_ROW_CELL_LINE = re.compile(
+    r"^(%s)\s*[:：]\s*(.*)$" % "|".join(_ROW_CELL)
+)
+_SECTION_HEAD = re.compile(r"^【(场景定位|场景画面描写)】(.*)$")
+_SCENE_TITLE_LINE = re.compile(r"场景名称\s*[:：]\s*(.+)$")
+_SCENE_TITLE_VALUE = re.compile(r"^(.+?)（资产图编号：(图\s*\d+)）\s*$")
+_KIND_LINE = re.compile(r"^种类：(.+)$")
 _SCRIPT_LIST_HEAD = re.compile(r"^-\s+(?:#{2,6}\s+)?(.+?)$")
 _SCRIPT_CAST = re.compile(r"^出场\s*[:：]\s*(.*)$")
 _STORY_HEAD = re.compile(r"^#{2,6}\s+(\S+)\s*$")
@@ -186,20 +204,172 @@ def _filled(value):
     return True
 
 
-def _fold_asset(skeleton, notes):
+
+def _scene_slot_index(pieces):
+    """Map skeleton 图号 and 场景名称 to master/grid partners."""
+    by_scene = {}
+    kinds = {}
+    titles = {}
+    for asset_id, body in pieces:
+        kind = ""
+        title = ""
+        for line in str(body or "").splitlines():
+            match = _KIND_LINE.match(line.strip())
+            if match:
+                kind = match.group(1).strip()
+            found = _scene_title_and_id(line)
+            if found:
+                title, _figure = found
+        kinds[asset_id] = kind
+        if title:
+            titles[asset_id] = title
+            by_scene.setdefault(title, {})[kind] = asset_id
+    return {"by_scene": by_scene, "kinds": kinds, "titles": titles}
+
+
+def _scene_title_and_id(line):
+    match = _SCENE_TITLE_LINE.search(str(line or "").strip())
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    parsed = _SCENE_TITLE_VALUE.match(raw)
+    if parsed:
+        from Agents.workers.asset_skeleton import _canonical_id
+
+        return parsed.group(1).strip(), _canonical_id(parsed.group(2))
+    return raw, ""
+
+
+def _asset_fills_from_note(note, index):
     from Agents.workers.asset_skeleton import _asset_pieces
 
     fills = {}
-    for note in notes:
-        for asset_id, body in _asset_pieces(note):
-            for line in str(body or "").splitlines():
-                match = _SLOT_LINE.match(line.strip())
-                if not match or not _filled(match.group(2)):
-                    continue
-                fills[(asset_id, match.group(1))] = match.group(2).strip()
+    cards = _asset_pieces(note)
+    blocks = cards or _template_scene_blocks(note, index)
+    for asset_id, body in blocks:
+        for slot, value in _slot_fills_from_body(body).items():
+            for key in _resolve_slot_targets(asset_id, slot, index):
+                fills[key] = value
+    return fills
+
+
+def _template_scene_blocks(note, index):
+    text = str(note or "").strip()
+    if not text:
+        return []
+    parts = [part for part in re.split(r"(?=【场景定位】)", text) if part.strip()]
+    if not parts:
+        parts = [text]
+    blocks = []
+    for part in parts:
+        asset_id = _figure_id_in_text(part)
+        if not asset_id:
+            asset_id = _scene_asset_id(_scene_title_in_text(part), index)
+        if not asset_id:
+            asset_id = _lone_scene_asset_id(index)
+        if asset_id:
+            blocks.append((asset_id, part))
+    return blocks
+
+
+def _figure_id_in_text(text):
+    from Agents.workers.asset_skeleton import _canonical_id
+
+    match = re.search(r"资产图编号：\s*(图\s*\d+)", str(text or ""))
+    if match:
+        return _canonical_id(match.group(1))
+    return ""
+
+
+def _scene_title_in_text(text):
+    for line in str(text or "").splitlines():
+        found = _scene_title_and_id(line)
+        if found and found[0]:
+            return found[0]
+    return ""
+
+
+def _scene_asset_id(title, index):
+    scene = (index or {}).get("by_scene", {}).get(title) or {}
+    return scene.get("九宫格") or scene.get("场景母版") or ""
+
+
+def _lone_scene_asset_id(index):
+    scenes = list(((index or {}).get("by_scene") or {}).values())
+    if len(scenes) != 1:
+        return ""
+    return scenes[0].get("九宫格") or scenes[0].get("场景母版") or ""
+
+
+def _resolve_slot_targets(asset_id, slot, index):
+    index = index or {}
+    kind = index.get("kinds", {}).get(asset_id)
+    title = index.get("titles", {}).get(asset_id)
+    scene = index.get("by_scene", {}).get(title) or {}
+    if slot == "整板" and kind == "九宫格" and scene.get("场景母版"):
+        return [(scene["场景母版"], "整板")]
+    if slot.startswith("格") and kind == "场景母版" and scene.get("九宫格"):
+        return [(scene["九宫格"], slot)]
+    return [(asset_id, slot)]
+
+
+def _slot_fills_from_body(body):
+    official = {}
+    cells = {}
+    sections = {"场景定位": [], "场景画面描写": []}
+    current = None
+    for line in str(body or "").splitlines():
+        stripped = line.strip()
+        match = _SLOT_LINE.match(stripped)
+        if match and _filled(match.group(2)):
+            official[match.group(1)] = match.group(2).strip()
+            current = None
+            continue
+        cell = _ROW_CELL_LINE.match(stripped)
+        if cell and _filled(cell.group(2)):
+            cells[_ROW_CELL[cell.group(1)]] = cell.group(2).strip()
+            current = None
+            continue
+        section = _SECTION_HEAD.match(stripped)
+        if section:
+            current = section.group(1)
+            rest = section.group(2).strip()
+            if rest:
+                sections[current].append(rest)
+            continue
+        if current and stripped.startswith("【"):
+            current = None
+            continue
+        if current and stripped:
+            sections[current].append(stripped)
+    fills = dict(cells)
+    if "整板" not in official:
+        board = _master_board_text(sections)
+        if board:
+            fills["整板"] = board
+    fills.update(official)
+    return fills
+
+
+def _master_board_text(sections):
+    parts = []
+    for name in ("场景定位", "场景画面描写"):
+        text = re.sub(r"\s+", " ", " ".join(sections.get(name) or [])).strip()
+        if text:
+            parts.append("【%s】%s" % (name, text))
+    return " ".join(parts)
+
+
+def _fold_asset(skeleton, notes):
+    from Agents.workers.asset_skeleton import _asset_pieces
+
     pieces = _asset_pieces(skeleton)
     if not pieces:
         return ""
+    index = _scene_slot_index(pieces)
+    fills = {}
+    for note in notes:
+        fills.update(_asset_fills_from_note(note, index))
     blocks = []
     for asset_id, body in pieces:
         lines = []

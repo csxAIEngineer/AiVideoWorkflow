@@ -3,6 +3,7 @@
 import json
 import unittest
 
+from Agents.workers.asset_skeleton import asset_skeleton_failures, format_asset_skeleton
 from Agents.workers.script_skeleton import format_script_skeleton
 from Agents.workers.skeleton_fold import fold_stage_draft
 from Agents.workers.storyboard_skeleton import format_storyboard_skeleton
@@ -164,6 +165,65 @@ class SkeletonFoldTest(unittest.TestCase):
         self.assertIn("格3：【景别】舞台方向的", fig26)
         self.assertEqual(fig26.count("【填写】"), 6)
         self.assertIn("格1：【填写】", draft.split("#### 图1 · 沈棠（角色）", 1)[1].split("#### 图2", 1)[0])
+
+    def test_asset_fold_fills_scene_master_and_grid_from_template_labels(self):
+        skeleton = {
+            "script": "## EP001-SC01｜内·酒店宴会厅·日\n\n出场：沈棠\n",
+            "assets": [
+                {
+                    "id": "图1",
+                    "title": "酒店宴会厅",
+                    "kind": "场景母版",
+                    "grid": "整板",
+                    "slots": ["整板"],
+                },
+                {
+                    "id": "图2",
+                    "title": "酒店宴会厅",
+                    "kind": "九宫格",
+                    "grid": "九宫格",
+                    "slots": ["格%s" % number for number in range(1, 10)],
+                },
+            ],
+        }
+        note = (
+            "【场景定位】场景名称：酒店宴会厅（资产图编号：图2）。"
+            "时代/地域：当代都市。建筑类型：高档酒店宴会厅。"
+            "空间类型：室内半封闭空间。时间段/天气：婚礼日间，室内暖光。\n"
+            "【场景画面描写】整体画面：高档酒店宴会厅入口及仪式区，暖色吊灯低饱和，红毯铺入主舞台。\n"
+            "第一行左：宴会厅入口全景，红毯铺入仪式区。\n"
+            "第一行中：主桌侧向中景，灯光低饱和。\n"
+            "第一行右：舞台方向全景，背景是金色幕布。\n"
+            "第二行左：签到台特写，花艺与名册。\n"
+            "第二行中：宾客席过道，椅背系白色缎带。\n"
+            "第二行右：香槟塔近景，玻璃反光。\n"
+            "第三行左：高位俯瞰全场布局。\n"
+            "第三行中：舞台侧面，司仪位置与台阶。\n"
+            "第三行右：窗口侧光，纱帘与午后光斑。\n"
+        )
+        draft = fold_stage_draft("asset", "任务：资产锁定\n\n" + format_asset_skeleton(skeleton), [
+            {"skill": "sd-asset-engine/references/scene-grid-template.md", "text": note},
+        ])
+        fig1 = draft.split("#### 图1 · 酒店宴会厅（母版）", 1)[1].split("#### 图2", 1)[0]
+        fig2 = draft.split("#### 图2 · 酒店宴会厅（九宫格）", 1)[1]
+        self.assertIn("整板：", fig1)
+        self.assertIn("高档酒店宴会厅入口及仪式区", fig1)
+        self.assertIn("室内半封闭空间", fig1)
+        self.assertNotIn("【填写】", fig1)
+        self.assertIn("格1：宴会厅入口全景，红毯铺入仪式区。", fig2)
+        self.assertIn("格2：主桌侧向中景，灯光低饱和。", fig2)
+        self.assertIn("格3：舞台方向全景，背景是金色幕布。", fig2)
+        self.assertIn("格4：签到台特写，花艺与名册。", fig2)
+        self.assertIn("格5：宾客席过道，椅背系白色缎带。", fig2)
+        self.assertIn("格6：香槟塔近景，玻璃反光。", fig2)
+        self.assertIn("格7：高位俯瞰全场布局。", fig2)
+        self.assertIn("格8：舞台侧面，司仪位置与台阶。", fig2)
+        self.assertIn("格9：窗口侧光，纱帘与午后光斑。", fig2)
+        self.assertNotIn("【填写】", fig2)
+        self.assertNotIn(
+            "填写槽仍是【填写】，资产稿未填完",
+            asset_skeleton_failures(draft, skeleton),
+        )
 
     def test_script_fold_uses_specialist_fills_and_keeps_empty_slots(self):
         brief = "\n".join((
