@@ -313,7 +313,7 @@ class SkeletonFoldTest(unittest.TestCase):
 
 
 class SuiteFoldWiringTest(unittest.TestCase):
-    def test_asset_suite_publishes_folded_draft_even_if_merge_copies_skeleton(self):
+    def test_asset_suite_publishes_merge_model_output_even_if_fold_would_fill(self):
         from AI.qwen_api.suite_graph import run_suite
 
         brief = "\n".join((
@@ -328,10 +328,42 @@ class SuiteFoldWiringTest(unittest.TestCase):
             "",
             ASSET_SKELETON.strip(),
         ))
+        merged = """#### 图1 · 沈棠（角色）
+种类：角色
+格位：四格
+格1：【面部特写】约25岁女性，脸型鹅蛋脸偏长。
+格2：【正面全身·无脸】白色A字拖尾婚纱。
+格3：【侧面全身·无脸】侧身站立，展现婚纱背部。
+格4：【背面全身·无脸】拖尾铺展。
+
+#### 图2 · 顾深（角色）
+种类：角色
+格位：四格
+格1：【填写】
+格2：【填写】
+格3：【填写】
+格4：【填写】
+
+#### 图13 · 红毯（道具）
+种类：道具
+格位：四格
+格1：【正面视图】鲜红色天鹅绒材质。
+格2：【45°侧视图】展示红毯厚度与柔软度。
+格3：【顶部俯视图】纹理均匀。
+格4：【关键细节特写】角落有一朵白花脱落痕迹。
+
+#### 图25 · 婚礼现场（母版）
+种类：场景母版
+格位：整板
+场景名称：婚礼现场（资产图编号：图25）
+整板固定 16:9。
+整板：【场景定位】高档酒店宴会厅入口及仪式区。
+"""
 
         class AssetModel(object):
             def __init__(self):
                 self.merge_called = False
+                self.merge_user = ""
 
             def complete(self, messages, model, max_tokens, timeout, kind=None, effort=None):
                 system = messages[0]["content"]
@@ -342,7 +374,8 @@ class SuiteFoldWiringTest(unittest.TestCase):
 
                 if "你是汇总节点" in system:
                     self.merge_called = True
-                    return Reply(json.dumps({"image_prompts": ASSET_SKELETON}, ensure_ascii=False))
+                    self.merge_user = messages[-1]["content"]
+                    return Reply(json.dumps({"image_prompts": merged}, ensure_ascii=False))
                 if "character-portrait-templates.md" in system and "prop-template.md" in system:
                     return Reply(json.dumps({"text": CHARACTER_NOTE + "\n\n" + PROP_NOTE}, ensure_ascii=False))
                 if "character-portrait-templates.md" in system:
@@ -356,12 +389,112 @@ class SuiteFoldWiringTest(unittest.TestCase):
         model = AssetModel()
         result = run_suite("asset", brief, model)
         draft = result["image_prompts"]
+        self.assertTrue(model.merge_called)
+        self.assertIn("格1：【面部特写】约25岁女性，脸型鹅蛋脸偏长。", model.merge_user)
+        self.assertEqual(draft.strip(), merged.strip())
         self.assertIn("格1：【面部特写】约25岁女性，脸型鹅蛋脸偏长。", draft)
         self.assertIn("格1：【正面视图】鲜红色天鹅绒材质。", draft)
         self.assertIn("整板：【场景定位】高档酒店宴会厅入口及仪式区。", draft)
         fig2 = draft.split("#### 图2 · 顾深（角色）", 1)[1].split("#### 图13", 1)[0]
         self.assertEqual(fig2.count("【填写】"), 4)
-        self.assertFalse(model.merge_called)
+
+
+    def test_asset_suite_sends_specialist_bodies_to_merge_even_if_fold_is_nonempty(self):
+        """Asset merge matches origin/dev-server: never skip the merge model for assets.
+
+        A partial fold (scene slots filled, character written as ①②③④ / 正面视图)
+        must still send specialist bodies through the merge model. The published
+        draft is the merge model's skeleton fill, not the partial fold.
+        """
+        from AI.qwen_api.suite_graph import run_suite
+
+        brief = "\n".join((
+            "阶段：P2",
+            "赛道：1",
+            "来源：1",
+            "动作档：R2",
+            "模型：h3",
+            "素材形态：M1",
+            "任务：资产锁定",
+            "只写资产提示词，放在 image_prompts。每条以「#### 图N · 名称」开头。",
+            "",
+            ASSET_SKELETON.strip(),
+        ))
+        character_note = (
+            "图1 沈棠\n"
+            "① 正面特写：约25岁女性，脸型鹅蛋脸偏长。\n"
+            "② 正面视图：白色A字拖尾婚纱。\n"
+            "③ 侧面视图：侧身站立，展现婚纱背部。\n"
+            "④ 背面视图：拖尾铺展。\n"
+        )
+        merged = """#### 图1 · 沈棠（角色）
+种类：角色
+格位：四格
+格1：约25岁女性，脸型鹅蛋脸偏长。
+格2：白色A字拖尾婚纱。
+格3：侧身站立，展现婚纱背部。
+格4：拖尾铺展。
+
+#### 图2 · 顾深（角色）
+种类：角色
+格位：四格
+格1：【填写】
+格2：【填写】
+格3：【填写】
+格4：【填写】
+
+#### 图13 · 红毯（道具）
+种类：道具
+格位：四格
+格1：【填写】
+格2：【填写】
+格3：【填写】
+格4：【填写】
+
+#### 图25 · 婚礼现场（母版）
+种类：场景母版
+格位：整板
+场景名称：婚礼现场（资产图编号：图25）
+整板固定 16:9。
+整板：高档酒店宴会厅入口及仪式区。
+"""
+
+        class AssetModel(object):
+            def __init__(self):
+                self.merge_called = False
+                self.merge_user = ""
+
+            def complete(self, messages, model, max_tokens, timeout, kind=None, effort=None):
+                system = messages[0]["content"]
+
+                class Reply(object):
+                    def __init__(self, content):
+                        self.content = content
+
+                if "你是汇总节点" in system:
+                    self.merge_called = True
+                    self.merge_user = messages[-1]["content"]
+                    return Reply(json.dumps({"image_prompts": merged}, ensure_ascii=False))
+                if "character-portrait-templates.md" in system:
+                    return Reply(json.dumps({"text": character_note}, ensure_ascii=False))
+                if "prop-template.md" in system:
+                    return Reply(json.dumps({"text": ""}, ensure_ascii=False))
+                if "scene-grid-template.md" in system:
+                    return Reply(SCENE_NOTE)
+                return Reply(SKILL_DUMP)
+
+        model = AssetModel()
+        result = run_suite("asset", brief, model)
+        draft = result["image_prompts"]
+        self.assertTrue(model.merge_called)
+        self.assertIn("① 正面特写：约25岁女性，脸型鹅蛋脸偏长。", model.merge_user)
+        self.assertIn("【场景定位】高档酒店宴会厅入口及仪式区。", model.merge_user)
+        self.assertEqual(draft.strip(), merged.strip())
+        fig1 = draft.split("#### 图1 · 沈棠（角色）", 1)[1].split("#### 图2", 1)[0]
+        self.assertIn("格1：约25岁女性，脸型鹅蛋脸偏长。", fig1)
+        self.assertNotIn("【填写】", fig1)
+        fig2 = draft.split("#### 图2 · 顾深（角色）", 1)[1].split("#### 图13", 1)[0]
+        self.assertEqual(fig2.count("【填写】"), 4)
 
 
 class GeneratorFoldWiringTest(unittest.TestCase):

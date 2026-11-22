@@ -459,12 +459,8 @@ class AssetBriefSliceGraphTest(unittest.TestCase):
 
         model = AssetModel()
         result = run_suite("asset", brief, model)
-        # Specialists in this test do not fill slots; the program folds the
-        # empty skeleton and does not publish the merge model's copy.
-        self.assertIn("#### 图1 · 女主（角色）", result["image_prompts"])
-        self.assertIn("#### 图8 · 产品展示区（九宫格）", result["image_prompts"])
-        self.assertIn("【填写】", result["image_prompts"])
-        self.assertNotEqual(result["image_prompts"], "资产正文")
+        # Like origin/dev-server, asset merge publishes the merge model's body.
+        self.assertEqual(result["image_prompts"], "资产正文")
         portrait = model.users["portrait"]
         self.assertIn("#### 图1 · 女主（角色）", portrait)
         self.assertIn("#### 图4 · 精芙美松凝胶（道具）", portrait)
@@ -480,11 +476,10 @@ class AssetBriefSliceGraphTest(unittest.TestCase):
         self.assertIn("#### 图5 · 卧室（母版）", spatial)
         self.assertNotIn("#### 图1 · 女主（角色）", spatial)
         self.assertNotIn("【填写】", spatial)
-        if "merge" in model.users:
-            merge = model.users["merge"]
-            self.assertIn("#### 图1 · 女主（角色）", merge)
-            self.assertIn("#### 图8 · 产品展示区（九宫格）", merge)
-            self.assertIn("【填写】", merge)
+        merge = model.users["merge"]
+        self.assertIn("#### 图1 · 女主（角色）", merge)
+        self.assertIn("#### 图8 · 产品展示区（九宫格）", merge)
+        self.assertIn("【填写】", merge)
 
 
 

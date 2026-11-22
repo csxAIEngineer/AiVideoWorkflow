@@ -292,11 +292,12 @@ def _merge_node(task, model, kind):
 
     def node(state):
         _mark(state, "merge", "进行中")
-        from Agents.workers.skeleton_fold import fold_stage_draft, folded_merge_output
-        folded = fold_stage_draft(task, state.get("brief") or "", state.get("partials") or [])
-        if str(folded or "").strip():
-            _mark(state, "merge", "完成")
-            return {"output": folded_merge_output(task, folded)}
+        if task != "asset":
+            from Agents.workers.skeleton_fold import fold_stage_draft, folded_merge_output
+            folded = fold_stage_draft(task, state.get("brief") or "", state.get("partials") or [])
+            if str(folded or "").strip():
+                _mark(state, "merge", "完成")
+                return {"output": folded_merge_output(task, folded)}
         system = merge_prompt(task, state.get("brief") or "")
         try:
             user = _merge_user(state.get("brief") or "", state.get("partials") or [])
