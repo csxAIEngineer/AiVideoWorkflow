@@ -565,7 +565,7 @@ def restore_trace(folder, trace_id, locks, only):
     else:
         accepted = []
         nxt = ""
-    return {
+    plan = {
         "id": number,
         "stage": stage,
         "label": str(record.get("label") or ""),
@@ -574,4 +574,19 @@ def restore_trace(folder, trace_id, locks, only):
         "action": "write" if nxt else "wait",
         "next": nxt,
         "write_label": _WRITE_LABEL.get(nxt, "下一段"),
+        "passed": True,
+        "report": "",
     }
+    if stage in stages and stage != "vision":
+        from end.stage_runner import check_stage
+
+        passed, report = check_stage(folder, stage, locks, "")
+        if not passed:
+            plan["accepted"] = stages[: stages.index(stage)]
+            plan["current"] = stage
+            plan["action"] = "wait"
+            plan["next"] = ""
+            plan["write_label"] = ""
+            plan["passed"] = False
+            plan["report"] = report or ""
+    return plan

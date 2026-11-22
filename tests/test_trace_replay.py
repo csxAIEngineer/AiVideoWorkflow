@@ -11,6 +11,19 @@ from end.script_review import set_reviewer
 from end.stage_runner import execute
 from end.trace import begin_trace, finish_trace, list_traces, restore_trace
 
+_PASSING_ASSET = "\n".join((
+    "#### 图1 · 林浅",
+    "通过块不要动",
+    "16:9",
+    "全图共 4 格",
+    "五官 10 项锁定",
+    "声纹",
+    "≤8 词",
+    "fifth panel",
+    "different face",
+))
+_PASSING_SCRIPT = "出场：林浅\n林浅在雨夜车站等一班车。"
+
 
 def setUpModule():
     from tests.offline_guard import install
@@ -65,6 +78,7 @@ class TraceReplayTest(unittest.TestCase):
         folder = Path(tempfile.mkdtemp())
         internal = folder / "_内部_"
         internal.mkdir()
+        (internal / "剧本.md").write_text(_PASSING_SCRIPT + "\n", encoding="utf-8")
         (internal / "分镜.md").write_text("旧分镜", encoding="utf-8")
         (internal / "previs.md").write_text("旧预演", encoding="utf-8")
         (internal / "feed.md").write_text("旧投喂", encoding="utf-8")
@@ -72,7 +86,7 @@ class TraceReplayTest(unittest.TestCase):
         (folder / "spec.json").write_text(
             json.dumps(
                 {
-                    "script": "旧剧本",
+                    "script": _PASSING_SCRIPT,
                     "image_prompts": "旧资产",
                     "storyboard": "旧分镜",
                     "previs": "旧预演",
@@ -86,10 +100,10 @@ class TraceReplayTest(unittest.TestCase):
         with patch.dict(os.environ, {"AIVIDEO_DEBUG_TRACE": "1", "AIVIDEO_DEBUG_PROMPT": "0"}):
             first = begin_trace(folder, "asset", False, "第一稿")
             Path(first).write_text(json.dumps({"prompt": "第一提示"}) + "\n", encoding="utf-8")
-            finish_trace(folder, {"image_prompts": "第一资产", "assets": []})
+            finish_trace(folder, {"image_prompts": _PASSING_ASSET, "assets": []})
             second = begin_trace(folder, "asset", True, "返修简报")
             Path(second).write_text(json.dumps({"prompt": "完整提示词"}) + "\n", encoding="utf-8")
-            saved = finish_trace(folder, {"image_prompts": "新资产图块", "assets": [{"id": "A1"}]})
+            saved = finish_trace(folder, {"image_prompts": _PASSING_ASSET, "assets": [{"id": "图1"}]})
             rows = list_traces(folder)
         self.assertEqual(saved["label"], "资产返修 2")
         self.assertEqual(saved["attempt"], 2)
@@ -103,15 +117,15 @@ class TraceReplayTest(unittest.TestCase):
         self.assertEqual(plan["next"], "storyboard")
         self.assertIn("asset", plan["accepted"])
         self.assertNotIn("storyboard", plan["accepted"])
-        self.assertEqual((internal / "assets.md").read_text(encoding="utf-8").strip(), "新资产图块")
+        self.assertEqual((internal / "assets.md").read_text(encoding="utf-8").strip(), _PASSING_ASSET)
         self.assertFalse((internal / "分镜.md").exists())
         self.assertFalse((internal / "previs.md").exists())
         self.assertFalse((internal / "feed.md").exists())
         self.assertFalse((folder / "feed.md").exists())
         spec = json.loads((folder / "spec.json").read_text(encoding="utf-8"))
-        self.assertEqual(spec["image_prompts"], "新资产图块")
-        self.assertEqual(spec["assets"], [{"id": "A1"}])
-        self.assertEqual(spec["script"], "旧剧本")
+        self.assertEqual(spec["image_prompts"], _PASSING_ASSET)
+        self.assertEqual(spec["assets"], [{"id": "图1"}])
+        self.assertEqual(spec["script"], _PASSING_SCRIPT)
         self.assertNotIn("storyboard", spec)
         self.assertNotIn("feed", spec)
         self.assertNotIn("shots", spec)
@@ -124,10 +138,11 @@ class TraceReplayTest(unittest.TestCase):
             begin_trace(folder, "feed", False, "投喂简报")
             finish_trace(folder, {"feed": "投喂正文", "shots": []})
         plan = restore_trace(folder, "1", {}, "")
-        self.assertEqual(plan["action"], "write")
-        self.assertEqual(plan["current"], "seam")
-        self.assertEqual(plan["next"], "seam")
-        self.assertIn("feed", plan["accepted"])
+        self.assertEqual(plan["action"], "wait")
+        self.assertEqual(plan["current"], "feed")
+        self.assertEqual(plan["next"], "")
+        self.assertFalse(plan["passed"])
+        self.assertNotIn("feed", plan["accepted"])
         self.assertNotIn("seam", plan["accepted"])
         self.assertEqual((folder / "_内部_" / "feed.md").read_text(encoding="utf-8").strip(), "投喂正文")
 
@@ -238,15 +253,16 @@ class TraceReplayTest(unittest.TestCase):
             folder = db.project_dir(project["id"])
             internal = folder / "_内部_"
             internal.mkdir(parents=True, exist_ok=True)
+            (internal / "剧本.md").write_text(_PASSING_SCRIPT + "\n", encoding="utf-8")
             (internal / "assets.md").write_text("旧资产\n", encoding="utf-8")
             (internal / "分镜.md").write_text("旧分镜\n", encoding="utf-8")
             (folder / "spec.json").write_text(
-                json.dumps({"script": "旧剧本", "image_prompts": "旧资产", "storyboard": "旧分镜"}),
+                json.dumps({"script": _PASSING_SCRIPT, "image_prompts": "旧资产", "storyboard": "旧分镜"}),
                 encoding="utf-8",
             )
             with patch.dict(os.environ, {"AIVIDEO_DEBUG_TRACE": "1"}):
                 begin_trace(folder, "asset", True, "返修简报")
-                saved = finish_trace(folder, {"image_prompts": "恢复的资产", "assets": [{"id": "A1"}]})
+                saved = finish_trace(folder, {"image_prompts": _PASSING_ASSET, "assets": [{"id": "图1"}]})
                 with patch("end.server.submit_agent_task") as submit:
                     view = rpc_replay({"id": project["id"], "trace_id": saved["id"]})
             self.assertEqual(submit.call_args.args[0].kind, "write")
@@ -256,10 +272,99 @@ class TraceReplayTest(unittest.TestCase):
             self.assertIn("asset", view["progress"]["pipeline"]["accepted"])
             self.assertNotIn("storyboard", view["progress"]["pipeline"]["accepted"])
             self.assertIn("已恢复", view["messages"][-1]["content"])
-            self.assertEqual((internal / "assets.md").read_text(encoding="utf-8").strip(), "恢复的资产")
+            self.assertEqual((internal / "assets.md").read_text(encoding="utf-8").strip(), _PASSING_ASSET)
             self.assertFalse((internal / "分镜.md").exists())
-            self.assertEqual(view["image_prompts"], "恢复的资产")
+            self.assertEqual(view["image_prompts"], _PASSING_ASSET)
             self.assertEqual(view["storyboard"], "")
+        finally:
+            conn = db._CONN
+            db.DATA, db.DB_PATH, db._CONN = old
+            if conn is not None and conn is not old[2]:
+                conn.close()
+            tmp.cleanup()
+
+    def test_replay_rpc_keeps_a_failed_storyboard_at_its_gate(self):
+        import end.db as db
+        from end.server import rpc_replay
+        from end.storyboard_contract import HOLD, note_hold, write_marker
+        from tests.test_director_pipeline import make_project
+
+        board = "\n".join((
+            "## S01",
+            "时长：8",
+            "资产：图1",
+            "对白：无",
+            "旁白：无",
+        ))
+        hold = "分镜未完成：S01 缺动作、景别机位"
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        old = (db.DATA, db.DB_PATH, db._CONN)
+        db.DATA = root / "projects"
+        db.DB_PATH = root / "api.db"
+        db._CONN = None
+        db.DATA.mkdir()
+        try:
+            project = make_project(
+                "abc123abc123",
+                status="gate",
+                stage="分镜门",
+                progress={
+                    "percent": 60,
+                    "phase": "gate_storyboard",
+                    "message": "分镜门",
+                    "pipeline": {
+                        "action": "wait",
+                        "current": "storyboard",
+                        "accepted": ["script", "asset"],
+                        "passed": False,
+                        "only": "",
+                        "report": hold,
+                        "check": "machine",
+                    },
+                },
+            )
+            folder = db.project_dir(project["id"])
+            internal = folder / "_内部_"
+            internal.mkdir(parents=True, exist_ok=True)
+            (internal / "分镜.md").write_text(board + "\n", encoding="utf-8")
+            (internal / "feed.md").write_text("旧封装\n", encoding="utf-8")
+            write_marker(folder)
+            note_hold(folder, hold)
+            (folder / "spec.json").write_text(
+                json.dumps(
+                    {
+                        "script": "旧剧本",
+                        "image_prompts": "旧资产",
+                        "assets": [{"id": "图1", "title": "沈棠"}],
+                        "storyboard": board,
+                        "storyboard_contract": "shot-prose-v1",
+                        "storyboard_hold": hold,
+                        "feed": "旧封装",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"AIVIDEO_DEBUG_TRACE": "1"}):
+                begin_trace(folder, "storyboard", False, "分镜简报")
+                saved = finish_trace(folder, {"storyboard": board})
+                with patch("end.server.submit_agent_task") as submit:
+                    view = rpc_replay({"id": project["id"], "trace_id": saved["id"]})
+            submit.assert_not_called()
+            pipeline = view["progress"]["pipeline"]
+            self.assertEqual(view["status"], "gate")
+            self.assertEqual(pipeline["current"], "storyboard")
+            self.assertEqual(pipeline["action"], "wait")
+            self.assertFalse(pipeline["passed"])
+            self.assertIn("asset", pipeline["accepted"])
+            self.assertNotIn("storyboard", pipeline["accepted"])
+            self.assertNotIn("feed", pipeline["accepted"])
+            self.assertIn("缺动作", pipeline.get("report") or view["progress"].get("message") or "")
+            self.assertEqual((internal / "分镜.md").read_text(encoding="utf-8").strip(), board)
+            self.assertTrue((internal / HOLD).is_file() or "缺动作" in (view["messages"][-1]["content"]))
+            self.assertNotIn("写封装稿", view["messages"][-1]["content"])
+            self.assertNotIn("接下来写", view["messages"][-1]["content"])
         finally:
             conn = db._CONN
             db.DATA, db.DB_PATH, db._CONN = old

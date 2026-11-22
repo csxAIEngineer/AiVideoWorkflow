@@ -3646,12 +3646,14 @@ def rpc_replay(params):
             pipeline["script_from"] = plan["script_from"]
         else:
             pipeline.pop("script_from", None)
-        pipeline["passed"] = True
-        pipeline["report"] = ""
-        pipeline["repair"] = ""
+        passed = bool(plan.get("passed", True))
+        report = str(plan.get("report") or "")
+        pipeline["passed"] = passed
+        pipeline["report"] = "" if passed else report
+        pipeline["repair"] = "" if passed else report
         pipeline["retry_write"] = False
         pipeline["repairs"] = 0
-        pipeline["check"] = ""
+        pipeline["check"] = "" if passed else "machine"
         pipeline["revise_note"] = ""
         kept_progress = fresh.get("progress") or {}
         if plan.get("action") == "write":
@@ -3681,7 +3683,7 @@ def rpc_replay(params):
             submit_agent_task(Task("write", fresh["id"], {"debug_llm": bool(kept_progress.get("debug_llm"))}))
         else:
             gate_stage = plan.get("stage") if plan.get("stage") in _GATE_PHASE else "script"
-            reply, options = _gate_copy(gate_stage, True, "", 0)
+            reply, options = _gate_copy(gate_stage, passed, report, 0, has_draft=True)
             messages.append(
                 {
                     "role": "assistant",

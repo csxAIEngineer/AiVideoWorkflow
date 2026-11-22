@@ -16,6 +16,7 @@ from end.seam_ledger import (
     check_seam_ledger,
     continues_from_previous,
     drop_packing,
+    fold_seam_entries,
     invalid_scene_relation_error,
     map_submit_params,
     normalize_entry_ids,
@@ -1258,6 +1259,160 @@ class SeamBriefScopeTest(unittest.TestCase):
         return UnitOrderTest()._timed_feed((11, 14, 9))
 
 
+
+
+class FoldSubmitParamsTest(unittest.TestCase):
+    def test_fold_stamps_packed_stills_so_reference_params_match(self):
+        units = [
+            {"id": "封装单元 1/2", "duration": 24, "images": ["图1", "图2", "图3"]},
+            {"id": "封装单元 2/2", "duration": 26, "images": ["图7", "图8", "图9"]},
+        ]
+        folded = fold_seam_entries([
+            _entry(units[0]["id"], "", "none", images=[]),
+            _entry(units[1]["id"], units[0]["id"], "2", images=[]),
+        ], units)
+        self.assertEqual(folded[0]["video_mode"], "reference")
+        self.assertEqual(folded[0]["first_frame_source"], "none")
+        self.assertEqual(folded[0]["images"], ["图1", "图2", "图3"])
+        self.assertEqual(folded[1]["video_mode"], "reference")
+        self.assertEqual(folded[1]["first_frame_source"], "none")
+        self.assertEqual(folded[1]["images"], ["图7", "图8", "图9"])
+        report = check_seam_ledger({"entries": folded}, units)
+        self.assertNotIn("提交参数和连续关系不一致", report["report"])
+        self.assertEqual(report["errors"], [], report["report"])
+
+    def test_empty_official_stills_stay_empty(self):
+        units = [
+            {"id": "封装单元 1/1", "duration": 12, "images": []},
+        ]
+        folded = fold_seam_entries([
+            _entry(units[0]["id"], "", "none", images=["图9"]),
+        ], units)
+        self.assertEqual(folded[0]["video_mode"], "reference")
+        self.assertEqual(folded[0]["images"], [])
+
+    def test_dropping_a_covered_character_still_fails_the_gate(self):
+        units = [
+            {"id": "封装单元 1/2", "duration": 24, "images": ["图1", "图2"]},
+            {"id": "封装单元 2/2", "duration": 26, "images": ["图1", "图7", "图8", "图9"]},
+        ]
+        folded = fold_seam_entries([
+            _entry(units[0]["id"], "", "none"),
+            _entry(units[1]["id"], units[0]["id"], "2"),
+        ], units)
+        dropped = [dict(item) for item in folded]
+        dropped[1]["images"] = ["图7", "图8", "图9"]
+        report = check_seam_ledger({"entries": dropped}, units)
+        self.assertFalse(report["ok"])
+        self.assertIn("图1", report["report"])
+        self.assertIn(units[1]["id"], report["report"])
+
+
+class PackedUnitStillListsTest(unittest.TestCase):
+    def test_mislabeled_packed_shots_do_not_one_to_one_cover_units(self):
+        columns = [
+            ("S01", 8, ["图1", "图2", "图3"]),
+            ("S02", 7, ["图1", "图2", "图3"]),
+            ("S03", 9, ["图1", "图2", "图16"]),
+            ("S04", 10, ["图7", "图8", "图9"]),
+            ("S05", 10, ["图7", "图8", "图9"]),
+            ("S06", 6, ["图7", "图8", "图23"]),
+        ]
+        board = "\n\n".join(
+            "\n".join((
+                "## %s" % shot_id,
+                "时长：%s" % duration,
+                "资产：%s" % "，".join(images),
+                "对白：无",
+                "旁白：无",
+            ))
+            for shot_id, duration, images in columns
+        )
+        unit1_refs = ["图1", "图2", "图3", "图16"]
+        unit2_refs = ["图7", "图8", "图9", "图23"]
+        feed = "\n\n".join((
+            _wan_packed_unit(1, 2, 24, unit1_refs + ["图99"], "红毯与交易"),
+            _wan_packed_unit(2, 2, 26, unit2_refs + ["图99"], "宴会厅主桌"),
+        ))
+        spec = {
+            "storyboard": board,
+            "feed": feed,
+            "shots": [
+                {"id": "S01", "prompt": "误标成封装单元 1 的镜头"},
+                {"id": "S02", "prompt": "误标成封装单元 2 的镜头"},
+            ],
+        }
+        units = packed_units(spec)
+        self.assertEqual([unit["id"] for unit in units], ["封装单元 1/2", "封装单元 2/2"])
+        self.assertEqual(units[0]["images"], unit1_refs)
+        self.assertEqual(units[1]["images"], unit2_refs)
+        self.assertNotEqual(units[1]["images"], ["图1", "图2", "图3"])
+        self.assertNotIn("图99", units[0]["images"])
+        self.assertNotIn("图99", units[1]["images"])
+        folded = fold_seam_entries([
+            _entry(units[0]["id"], "", "none", images=[]),
+            _entry(units[1]["id"], units[0]["id"], "2", images=[]),
+        ], units)
+        self.assertEqual(folded[1]["images"], unit2_refs)
+        report = check_seam_ledger({"entries": folded}, units)
+        self.assertNotIn("提交参数和连续关系不一致", report["report"])
+        self.assertEqual(report["errors"], [], report["report"])
+
+    def test_feed_reference_line_binds_when_the_board_cannot_be_grouped(self):
+        board = "\n\n".join(
+            "\n".join((
+                "## %s" % shot_id,
+                "资产：%s" % "，".join(images),
+                "对白：无",
+                "旁白：无",
+            ))
+            for shot_id, images in (
+                ("S01", ["图1", "图2", "图3"]),
+                ("S02", ["图1", "图2", "图3"]),
+                ("S03", ["图1", "图2", "图16"]),
+                ("S04", ["图7", "图8", "图9"]),
+                ("S05", ["图7", "图8", "图9"]),
+                ("S06", ["图7", "图8", "图23"]),
+            )
+        )
+        unit1_refs = ["图1", "图2", "图3", "图16"]
+        unit2_refs = ["图7", "图8", "图9", "图23"]
+        feed = "\n\n".join((
+            _wan_packed_unit(1, 2, 24, unit1_refs, "红毯与交易"),
+            _wan_packed_unit(2, 2, 26, unit2_refs, "宴会厅主桌"),
+        ))
+        units = packed_units({
+            "storyboard": board,
+            "feed": feed,
+            "shots": [
+                {"id": "S01", "prompt": "误标成封装单元 1 的镜头"},
+                {"id": "S02", "prompt": "误标成封装单元 2 的镜头"},
+            ],
+        })
+        self.assertEqual(units[0]["images"], unit1_refs)
+        self.assertEqual(units[1]["images"], unit2_refs)
+        self.assertNotEqual(units[1]["images"], ["图1", "图2", "图3"])
+
+
+def _wan_packed_unit(index, total, seconds, refs, body):
+    return "\n".join((
+        "## 【封装单元 %s/%s】" % (index, total),
+        "duration: %s" % seconds,
+        "总体描述:",
+        body,
+        "参考素材引用:",
+        ", ".join(refs),
+        "分镜:",
+        "分镜1（00:00.000-00:08.000）： 场面。",
+        "台词:",
+        "无",
+        "音效 / BGM:",
+        "现场",
+        "风格 / 情绪:",
+        "平静",
+        "负向清单:",
+        "不要字幕、不要水印、不要复杂文字",
+    ))
 
 
 class SeamEmptyShotSkillTest(unittest.TestCase):
