@@ -932,10 +932,18 @@ def _fill_empty_storyboard_slots(folded, merge_text):
     return "\n\n".join(block for block in blocks if block) + "\n"
 
 
-_FEED_UNIT_HEAD = re.compile(r"^#{0,6}\s*【封装单元\s*(\d+)\s*/\s*(\d+)】")
+_FEED_UNIT_HEAD = re.compile(
+    r"^#{0,6}\s*【封装单元\s*(\d+)\s*/\s*(\d+)】(?:\s*·\s*段\S+)?\s*$"
+)
 _FEED_SKELETON_MARKS = (
     "万相 3.0 的封装骨架已经按",
     "当前骨架如下。",
+)
+_FEED_SKELETON_CUTS = (
+    "\n各节点正文：",
+    "\n对白和旁白必须逐字出现",
+    "\n改完的封装稿放在",
+    "\n上一阶段正文",
 )
 
 
@@ -953,11 +961,37 @@ def _feed_skeleton_from_brief(brief):
     if start < 0:
         return ""
     rest = text[start:]
-    for mark in ("\n各节点正文：", "\n对白和旁白必须逐字出现"):
+    for mark in _FEED_SKELETON_CUTS:
         cut = rest.find(mark)
         if cut >= 0:
             rest = rest[:cut]
-    return rest.strip() + "\n"
+    return _locked_feed_skeleton(rest)
+
+
+def _locked_feed_skeleton(text):
+    """Keep the first locked unit set; drop later packing-plan or draft copies."""
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    units = _feed_units(raw)
+    if not units:
+        return raw.strip() + "\n"
+    heading = _FEED_UNIT_HEAD.match((units[0].get("lines") or [""])[0].strip())
+    total = int(heading.group(2)) if heading else 0
+    kept = [units[0]]
+    for unit in units[1:]:
+        if total and len(kept) >= total:
+            break
+        if unit["index"] != kept[-1]["index"] + 1:
+            break
+        kept.append(unit)
+    parts = []
+    prefix = kept[0].get("prefix") or ""
+    if prefix.strip():
+        parts.append(prefix.rstrip())
+    for unit in kept:
+        parts.append("\n".join(unit["lines"]).rstrip())
+    return "\n\n".join(part for part in parts if part) + "\n"
 
 
 def _fold_feed(skeleton, notes):

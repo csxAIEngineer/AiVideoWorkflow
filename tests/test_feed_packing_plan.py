@@ -699,6 +699,100 @@ class PackingPlanTest(unittest.TestCase):
         self.assertNotIn("short-drama-director/references/segment-splicing.md", repair_nodes)
         self.assertEqual(repair.count("director"), 1)
 
+    def test_apply_packing_plan_does_not_dump_extra_wan_units_into_the_last_segment(self):
+        """A two-group Wan draft that still carries leftover units stays two clean units.
+
+        Extra 分镜, 总体描述, and 参考素材引用 must not be appended onto unit 2.
+        """
+        def unit(index, total, overall, assets, shots):
+            lines = [
+                "## 【封装单元 %s/%s】" % (index, total),
+                "duration: 30",
+                "总体描述:",
+                overall,
+                "参考素材引用:",
+                assets,
+                "分镜:",
+            ]
+            start = 0
+            for number, (seconds, body) in enumerate(shots, 1):
+                end = start + seconds
+                lines.append(
+                    "分镜%s（%02d:%02d.000-%02d:%02d.000）："
+                    % (number, start // 60, start % 60, end // 60, end % 60)
+                )
+                lines.append(body)
+                start = end
+            lines.extend(("台词:", "负向清单:", "不要字幕"))
+            return "\n".join(lines)
+
+        first_shots = (
+            (12, "第一镜画面"),
+            (6, "第二镜画面"),
+            (6, "第三镜画面"),
+            (6, "第四镜画面"),
+        )
+        second_shots = (
+            (5, "第五镜画面"),
+            (7, "第六镜画面"),
+            (6, "第七镜画面"),
+            (6, "第八镜画面"),
+            (6, "第九镜画面"),
+        )
+        draft = "\n\n".join((
+            unit(1, 2, "单元一总体", "单元一素材", first_shots),
+            unit(2, 2, "单元二总体", "单元二素材", second_shots),
+            unit(1, 2, "旧单元一总体", "旧单元一素材", (
+                (12, "旧第一镜"),
+                (6, "旧第二镜"),
+                (6, "旧第三镜"),
+                (6, "旧第四镜"),
+            )),
+            unit(2, 2, "旧单元二总体", "旧单元二素材", (
+                (5, "旧第五镜"),
+                (7, "旧第六镜"),
+                (6, "旧第七镜"),
+                (6, "旧第八镜"),
+                (6, "旧第九镜"),
+            )),
+        )) + "\n"
+        durations = [12, 6, 6, 6, 5, 7, 6, 6, 6]
+        state = {
+            "storyboard": "\n".join(
+                "## S%02d\n时长：%s" % (index, seconds)
+                for index, seconds in enumerate(durations, 1)
+            ),
+            "shots": [
+                {"id": "S%02d" % index, "duration": seconds}
+                for index, seconds in enumerate(durations, 1)
+            ],
+            "locks": {"model": "h3", "material_mode": "M1", "track": "1"},
+        }
+        result = apply_packing_plan(draft, state)
+        chunks = _unit_chunks(result)
+        self.assertEqual(len(chunks), 2, result)
+        self.assertEqual(_declared(result), [30, 30])
+        first, second = chunks
+        self.assertIn("第一镜画面", first)
+        self.assertIn("第四镜画面", first)
+        self.assertIn("单元一总体", first)
+        self.assertIn("单元一素材", first)
+        self.assertNotIn("第五镜画面", first)
+        self.assertNotIn("旧单元", first)
+        self.assertIn("第五镜画面", second)
+        self.assertIn("第九镜画面", second)
+        self.assertIn("单元二总体", second)
+        self.assertIn("单元二素材", second)
+        self.assertNotIn("第一镜画面", second)
+        self.assertNotIn("第四镜画面", second)
+        self.assertNotIn("旧单元", second)
+        self.assertNotIn("旧第一镜", second)
+        self.assertNotIn("旧第五镜", second)
+        self.assertEqual(second.count("分镜1（"), 1)
+        self.assertEqual(second.count("分镜5（00:24.000-00:30.000）："), 1)
+        self.assertEqual(result.count("单元二总体"), 1)
+        self.assertEqual(result.count("单元一总体"), 1)
+
 
 STYLE = "冷白窗光"
 LOCK = "画面风格：" + STYLE

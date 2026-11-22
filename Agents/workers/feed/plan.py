@@ -316,8 +316,11 @@ def _assign_source_units(sources, groups):
     if not groups:
         return buckets
     if not shot_mode:
+        # Wan 分镜 units are one piece each. Extra units are leftovers, not
+        # overflow shots, so they must not be appended onto the last group.
         for index, item in enumerate(flat):
-            buckets[min(index, len(groups) - 1)].append(item)
+            if index < len(groups):
+                buckets[index].append(item)
         return buckets
     cursor = 0
     last = len(groups) - 1
