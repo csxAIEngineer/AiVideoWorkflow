@@ -485,35 +485,140 @@ def _script_body(locked, written):
     return "出场：%s\n%s" % (locked_cast or "【填写】", body)
 
 
-def _fold_storyboard(skeleton, notes):
+_STORY_NOTE_FIELDS = ("动作", "景别机位", "画面层", "旁白", "声景")
+_STORY_NOTE_LINE = re.compile(
+    r"^(动作|景别机位|画面层|旁白|声景)\s*[:：]\s*(.*)$"
+)
+_STORY_PREFIX_LINE = re.compile(
+    r"^(\S+)\s+(动作|景别机位|画面层|旁白|声景)\s*[:：]\s*(.*)$"
+)
+
+
+def _canonical_story_shot_id(name, shot_ids):
+    raw = str(name or "").strip()
+    if raw in shot_ids:
+        return raw
+    return ""
+
+
+def _store_story_fill(fills, shot_id, name, value):
+    if not shot_id or name not in _STORY_NOTE_FIELDS or not _filled(value):
+        return
+    fills.setdefault((shot_id, name), str(value).strip())
+
+
+def _next_open_story_shot(shot_ids, start, already, fills, field):
+    for index in range(start, len(shot_ids)):
+        shot_id = shot_ids[index]
+        if _filled(already.get((shot_id, field))) or _filled(fills.get((shot_id, field))):
+            continue
+        return index, shot_id
+    return None, None
+
+
+def _storyboard_already_filled(sections):
+    already = {}
+    for shot_id, body in sections:
+        for name, value in _storyboard_field_map(body).items():
+            if _filled(value):
+                already[(shot_id, name)] = value
+    return already
+
+
+def _storyboard_note_fills(notes, shot_ids, already=None):
+    """Map specialist or refill lines onto shot slots. First filled value wins."""
     fills = {}
-    for note in notes:
+    already = already or {}
+    shot_ids = list(shot_ids or [])
+    for note in notes or []:
         current = None
+        explicit = False
+        seq_index = 0
+        block_fields = set()
         for line in str(note or "").splitlines():
-            heading = _STORY_HEAD.match(line.strip())
+            stripped = line.strip()
+            heading = _STORY_HEAD.match(stripped)
             if heading:
-                current = heading.group(1).strip()
+                shot_id = _canonical_story_shot_id(heading.group(1).strip(), shot_ids)
+                if shot_id:
+                    current = shot_id
+                    explicit = True
+                    block_fields = set()
+                    seq_index = shot_ids.index(shot_id) + 1
+                else:
+                    current = None
+                    explicit = False
+                    seq_index = 0
+                    block_fields = set()
                 continue
-            if not current:
+            prefixed = _STORY_PREFIX_LINE.match(stripped)
+            if prefixed:
+                shot_id = _canonical_story_shot_id(prefixed.group(1), shot_ids)
+                if shot_id and _filled(prefixed.group(3)):
+                    _store_story_fill(fills, shot_id, prefixed.group(2), prefixed.group(3))
+                    seq_index = max(seq_index, shot_ids.index(shot_id) + 1)
+                    current = None
+                    explicit = False
+                    block_fields = set()
                 continue
-            field = _STORY_FILL.match(line.strip())
-            if field and _filled(field.group(2)):
-                fills[(current, field.group(1))] = field.group(2).strip()
+            field = _STORY_NOTE_LINE.match(stripped)
+            if not field or not _filled(field.group(2)):
+                continue
+            name = field.group(1)
+            if not explicit:
+                if current is None or name in block_fields:
+                    index, shot_id = _next_open_story_shot(
+                        shot_ids, seq_index, already, fills, name,
+                    )
+                    current = shot_id
+                    block_fields = set()
+                    if index is not None:
+                        seq_index = index + 1
+            if current:
+                _store_story_fill(fills, current, name, field.group(2))
+                block_fields.add(name)
+    return fills
+
+
+def _apply_storyboard_fills(skeleton, fills):
+    sections = _storyboard_sections(skeleton)
+    if not sections:
+        return str(skeleton or "")
+    blocks = []
+    for shot_id, body in sections:
+        current_fields = _storyboard_field_map(body)
+        lines = list(str(body or "").splitlines()) or ["## %s" % shot_id]
+        insert_at = 1 if lines and _STORY_HEAD.match(lines[0].strip()) else 0
+        for name in _STORY_NOTE_FIELDS:
+            key = (shot_id, name)
+            if key not in fills or not _filled(fills[key]):
+                continue
+            if _filled(current_fields.get(name)):
+                continue
+            replaced = False
+            for index, line in enumerate(lines):
+                match = _STORY_SLOT_LINE.match(line.strip())
+                if match and match.group(1) == name and not _filled(match.group(2)):
+                    indent = line[:len(line) - len(line.lstrip())]
+                    lines[index] = "%s%s：%s" % (indent, name, fills[key])
+                    replaced = True
+                    break
+            if not replaced:
+                lines.insert(insert_at, "%s：%s" % (name, fills[key]))
+            insert_at += 1
+            current_fields[name] = fills[key]
+        blocks.append("\n".join(lines).strip())
+    return "\n\n".join(block for block in blocks if block) + "\n"
+
+
+def _fold_storyboard(skeleton, notes):
     sections = _storyboard_sections(skeleton)
     if not sections:
         return ""
-    blocks = []
-    for shot_id, body in sections:
-        lines = []
-        for line in str(body or "").splitlines():
-            field = _STORY_FILL.match(line.strip())
-            key = (shot_id, field.group(1)) if field else None
-            if key in fills:
-                lines.append("%s：%s" % (field.group(1), fills[key]))
-            else:
-                lines.append(line)
-        blocks.append("\n".join(lines).strip())
-    return "\n\n".join(block for block in blocks if block) + "\n"
+    shot_ids = [shot_id for shot_id, _body in sections]
+    already = _storyboard_already_filled(sections)
+    fills = _storyboard_note_fills(notes, shot_ids, already)
+    return _apply_storyboard_fills(skeleton, fills)
 
 
 def _storyboard_sections(skeleton):
@@ -688,58 +793,28 @@ def _feed_missing_slots(folded):
     return missing
 
 
+def _expand_picture_layer_fills(fills):
+    from Agents.workers.storyboard_skeleton import _split_picture_layer
+
+    for (shot_id, name), value in list(fills.items()):
+        if name != "画面层" or not _filled(value):
+            continue
+        action, camera = _split_picture_layer(value)
+        if action:
+            fills.setdefault((shot_id, "动作"), action)
+        if camera:
+            fills.setdefault((shot_id, "景别机位"), camera)
+
+
 def _stamp_storyboard_missing_slots(folded, refill_text):
-    fills = {}
-    current = None
-    for line in str(refill_text or "").splitlines():
-        heading = _STORY_HEAD.match(line.strip())
-        if heading:
-            current = heading.group(1).strip()
-            continue
-        if not current:
-            continue
-        match = _STORY_SLOT_LINE.match(line.strip())
-        if not match or not _filled(match.group(2)):
-            continue
-        name = match.group(1)
-        if name == "画面层":
-            from Agents.workers.storyboard_skeleton import _split_picture_layer
-            action, camera = _split_picture_layer(match.group(2).strip())
-            if action:
-                fills.setdefault((current, "动作"), action)
-            if camera:
-                fills.setdefault((current, "景别机位"), camera)
-            continue
-        if name in _STORY_CONTRACT_FIELDS or name in _STORY_OPTIONAL_FILL:
-            fills.setdefault((current, name), match.group(2).strip())
     sections = _storyboard_sections(folded)
     if not sections:
         return str(folded or "")
-    blocks = []
-    for shot_id, body in sections:
-        current_fields = _storyboard_field_map(body)
-        lines = list(str(body or "").splitlines()) or ["## %s" % shot_id]
-        insert_at = 1 if lines and _STORY_HEAD.match(lines[0].strip()) else 0
-        for name in _STORY_CONTRACT_FIELDS + _STORY_OPTIONAL_FILL:
-            key = (shot_id, name)
-            if key not in fills or not _filled(fills[key]):
-                continue
-            if _filled(current_fields.get(name)):
-                continue
-            replaced = False
-            for index, line in enumerate(lines):
-                match = _STORY_SLOT_LINE.match(line.strip())
-                if match and match.group(1) == name and not _filled(match.group(2)):
-                    indent = line[:len(line) - len(line.lstrip())]
-                    lines[index] = "%s%s：%s" % (indent, name, fills[key])
-                    replaced = True
-                    break
-            if not replaced:
-                lines.insert(insert_at, "%s：%s" % (name, fills[key]))
-            insert_at += 1
-            current_fields[name] = fills[key]
-        blocks.append("\n".join(lines).strip())
-    return "\n".join(block for block in blocks if block) + "\n"
+    shot_ids = [shot_id for shot_id, _body in sections]
+    already = _storyboard_already_filled(sections)
+    fills = _storyboard_note_fills([refill_text], shot_ids, already)
+    _expand_picture_layer_fills(fills)
+    return _apply_storyboard_fills(folded, fills)
 
 
 def leftover_merge_blocks(folded, leftovers):

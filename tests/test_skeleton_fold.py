@@ -624,6 +624,141 @@ class SuiteFoldWiringTest(unittest.TestCase):
         self.assertNotIn("缺景别机位", report or "")
 
 
+    def test_storyboard_refill_stamps_missing_action_and_camera_without_shot_headings(self):
+        """Refill accepts ## S01 fields, S01 动作： one-liners, and headerless blocks.
+
+        Already-filled 动作/景别机位/旁白 and 时长/资产/对白 are not rewritten.
+        """
+        from AI.qwen_api.suite_graph import run_suite
+        from Agents.workers.storyboard_skeleton import restore_storyboard_locks
+        from end.storyboard_contract import project_shots
+
+        skeleton_obj = {
+            "duration_lock": 15,
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "assets": ["图1"],
+                    "dialogue": "顾深：好。",
+                    "action_beats": ["整理领结"],
+                    "music_beat": "无",
+                    "sound_beat": "心跳",
+                    "scene_heading": "EP001-SC01｜内·婚礼现场·日（0s - 15s）",
+                },
+                {
+                    "id": "S02",
+                    "duration": 5,
+                    "assets": ["图25"],
+                    "dialogue": "无",
+                    "scene_heading": "EP001-SC02｜内·民政局大厅·上午（15s - 35s）",
+                },
+                {
+                    "id": "S03",
+                    "duration": 5,
+                    "assets": ["图2"],
+                    "dialogue": "沈棠：走吧。",
+                    "scene_heading": "EP001-SC02｜内·民政局大厅·上午（15s - 35s）",
+                },
+            ],
+        }
+        skeleton = format_storyboard_skeleton(skeleton_obj)
+        brief = "\n".join((
+            "阶段：P3",
+            "赛道：1",
+            "来源：1",
+            "动作档：R2",
+            "模型：h3",
+            "素材形态：M1",
+            "只加载：sd-storyboard-engine/SKILL.md",
+            "任务：分镜",
+            "",
+            skeleton,
+        ))
+        stamped = "近景，顾深低头整理领结，手指发抖。"
+        rewritten = "把已经盖上的动作改掉了。"
+        s02_action = "顾深站在民政局大厅门口。"
+        s02_camera = "中景"
+        s03_action = "沈棠转身离开。"
+        s03_camera = "全景"
+        note = "\n".join((
+            "## S01",
+            "画面层：%s" % stamped,
+            "旁白：无",
+            "",
+            "## S02",
+            "旁白：无",
+            "",
+            "## S03",
+            "旁白：无",
+        ))
+
+        class StoryboardModel(object):
+            def __init__(self):
+                self.merge_called = False
+                self.refill_called = False
+                self.refill_user = ""
+
+            def complete(self, messages, model, max_tokens, timeout, kind=None, effort=None):
+                system = messages[0]["content"]
+
+                class Reply(object):
+                    def __init__(self, content):
+                        self.content = content
+
+                if "你是汇总节点" in system:
+                    self.merge_called = True
+                    return Reply(json.dumps({"storyboard": "时长：99"}, ensure_ascii=False))
+                if "只返回漏掉的内容" in system or "只补还空着的槽" in system:
+                    self.refill_called = True
+                    self.refill_user = messages[-1]["content"]
+                    return Reply(json.dumps({
+                        "storyboard": "\n".join((
+                            "## S01",
+                            "动作：%s" % rewritten,
+                            "时长：99",
+                            "对白：改掉的对白",
+                            "",
+                            "S02 动作：%s" % s02_action,
+                            "S02 景别机位：%s" % s02_camera,
+                            "",
+                            "动作：%s" % s03_action,
+                            "景别机位：%s" % s03_camera,
+                        )) + "\n",
+                    }, ensure_ascii=False))
+                return Reply(json.dumps({"text": note}, ensure_ascii=False))
+
+        model = StoryboardModel()
+        result = run_suite("storyboard", brief, model)
+        draft = result["storyboard"]
+        self.assertFalse(model.merge_called)
+        self.assertTrue(model.refill_called)
+        self.assertIn("S02 动作", model.refill_user)
+        self.assertIn("S02 景别机位", model.refill_user)
+        self.assertIn("S03 动作", model.refill_user)
+        self.assertIn("S03 景别机位", model.refill_user)
+        self.assertNotIn("S01 动作", model.refill_user)
+        self.assertNotIn("S01 景别机位", model.refill_user)
+        self.assertIn("画面层：%s" % stamped, draft)
+        self.assertNotIn(rewritten, draft)
+        self.assertNotIn("时长：99", draft)
+        self.assertNotIn("改掉的对白", draft)
+        self.assertIn("时长：5", draft)
+        self.assertIn("资产：图1", draft)
+        self.assertIn("对白：顾深：好。", draft)
+        self.assertIn("对白：沈棠：走吧。", draft)
+        s02 = draft.split("## S02", 1)[1].split("## S03", 1)[0]
+        s03 = draft.split("## S03", 1)[1]
+        self.assertIn("动作：%s" % s02_action, s02)
+        self.assertIn("景别机位：%s" % s02_camera, s02)
+        self.assertIn("动作：%s" % s03_action, s03)
+        self.assertIn("景别机位：%s" % s03_camera, s03)
+        restored = restore_storyboard_locks(draft, skeleton_obj)
+        _shots, report = project_shots(restored, ["图1", "图25", "图2"])
+        self.assertNotIn("缺动作", report or "")
+        self.assertNotIn("缺景别机位", report or "")
+
+
 class GeneratorFoldWiringTest(unittest.TestCase):
     def test_asset_generator_publishes_folded_draft_even_if_director_copies_skeleton(self):
         from Agents.workers.generator import run_generator
@@ -832,6 +967,281 @@ class GeneratorFoldWiringTest(unittest.TestCase):
         self.assertIn("时长：5", draft)
         self.assertIn("资产：图1", draft)
         self.assertIn("对白：顾深：好。", draft)
+
+
+    def test_storyboard_fold_stamps_action_and_camera_without_shot_headings(self):
+        """Filled 动作/景别机位 stamp even without ## Sxx or 画面层.
+
+        Skill-path heads start a new S01, S02, … sequence. First filled value wins.
+        """
+        from Agents.workers.generator import run_generator
+        from Agents.workers.storyboard_skeleton import restore_storyboard_locks
+        from end.storyboard_contract import project_shots
+
+        skeleton_obj = {
+            "duration_lock": 10,
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "assets": ["图1"],
+                    "dialogue": "顾深：好。",
+                    "action_beats": ["整理领结"],
+                    "music_beat": "无",
+                    "sound_beat": "心跳",
+                    "scene_heading": "EP001-SC01｜内·婚礼现场·日（0s - 15s）",
+                },
+                {
+                    "id": "S02",
+                    "duration": 5,
+                    "assets": ["图25"],
+                    "dialogue": "无",
+                    "scene_heading": "EP001-SC02｜内·民政局大厅·上午（15s - 35s）",
+                },
+            ],
+        }
+        skeleton = format_storyboard_skeleton(skeleton_obj)
+        brief = "任务：分镜\n\n" + skeleton
+        s01_action = "顾深低头整理领结，手指发抖。"
+        s01_camera = "近景"
+        s02_action = "顾深站在民政局大厅门口。"
+        s02_camera = "中景"
+        later_action = "把已经盖上的动作改掉了。"
+        later_camera = "特写"
+        calls = []
+
+        def complete(role, messages):
+            calls.append(role)
+            if role != "specialist":
+                raise AssertionError("refill was called even though 动作 and 景别机位 were already written")
+            return json.dumps({
+                "text": "\n".join((
+                    "## short-drama-director/references/acting-direction.md",
+                    "动作：%s" % s01_action,
+                    "景别机位：%s" % s01_camera,
+                    "旁白：无",
+                    "",
+                    "动作：%s" % s02_action,
+                    "景别机位：%s" % s02_camera,
+                    "旁白：无",
+                    "",
+                    "## short-drama-director/references/camera-language.md",
+                    "动作：%s" % later_action,
+                    "景别机位：%s" % later_camera,
+                    "旁白：把已经盖上的旁白改掉了。",
+                )),
+            }, ensure_ascii=False)
+
+        produced = run_generator(
+            "storyboard",
+            brief,
+            role="生成员",
+            complete=complete,
+            files=["sd-storyboard-engine/SKILL.md"],
+        )
+        self.assertEqual(calls, ["specialist"])
+        draft = json.loads(produced["raw"])["storyboard"]
+        s01 = draft.split("## S01", 1)[1].split("## S02", 1)[0]
+        s02 = draft.split("## S02", 1)[1]
+        self.assertIn("动作：%s" % s01_action, s01)
+        self.assertIn("景别机位：%s" % s01_camera, s01)
+        self.assertIn("旁白：无", s01)
+        self.assertNotIn(later_action, s01)
+        self.assertNotIn(later_camera, s01)
+        self.assertIn("动作：%s" % s02_action, s02)
+        self.assertIn("景别机位：%s" % s02_camera, s02)
+        self.assertNotIn(later_action, draft)
+        self.assertIn("时长：5", s01)
+        self.assertIn("资产：图1", s01)
+        self.assertIn("对白：顾深：好。", s01)
+        self.assertIn("动作要点：整理领结", s01)
+        restored = restore_storyboard_locks(draft, skeleton_obj)
+        _shots, report = project_shots(restored, ["图1", "图25"])
+        self.assertNotIn("缺动作", report or "")
+        self.assertNotIn("缺景别机位", report or "")
+
+
+    def test_storyboard_fold_does_not_treat_action_notes_as_action(self):
+        """动作要点 is not 动作. 站位、朝向、光线 is not 景别机位."""
+        from Agents.workers.generator import run_generator
+
+        skeleton_obj = {
+            "duration_lock": 10,
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "assets": ["图1"],
+                    "dialogue": "顾深：好。",
+                    "action_beats": ["整理领结"],
+                    "music_beat": "无",
+                    "sound_beat": "心跳",
+                    "scene_heading": "EP001-SC01｜内·婚礼现场·日（0s - 15s）",
+                },
+            ],
+        }
+        skeleton = format_storyboard_skeleton(skeleton_obj)
+        brief = "任务：分镜\n\n" + skeleton
+        action_note = "整理领结时不要抬肘"
+        staging_note = "门口左侧，面向镜头，顶光"
+        calls = []
+
+        def complete(role, messages):
+            calls.append(role)
+            if role != "specialist":
+                complete.user = messages[-1]["content"]
+                return json.dumps({
+                    "storyboard": "\n".join((
+                        "## S01",
+                        "动作：补问写出的动作。",
+                        "景别机位：近景",
+                    )),
+                }, ensure_ascii=False)
+            return json.dumps({
+                "text": "\n".join((
+                    "## short-drama-director/references/acting-direction.md",
+                    "动作要点：%s" % action_note,
+                    "站位、朝向、光线：%s" % staging_note,
+                )),
+            }, ensure_ascii=False)
+
+        complete.user = ""
+        produced = run_generator(
+            "storyboard",
+            brief,
+            role="生成员",
+            complete=complete,
+            files=["sd-storyboard-engine/SKILL.md"],
+        )
+        self.assertIn("specialist", calls)
+        self.assertEqual(len([role for role in calls if role != "specialist"]), 1)
+        self.assertIn("S01 动作", complete.user)
+        self.assertIn("S01 景别机位", complete.user)
+        draft = json.loads(produced["raw"])["storyboard"]
+        self.assertIn("动作要点：整理领结", draft)
+        self.assertNotIn("动作要点：%s" % action_note, draft)
+        self.assertNotIn("动作：%s" % action_note, draft)
+        self.assertNotIn("景别机位：%s" % staging_note, draft)
+        self.assertIn("时长：5", draft)
+        self.assertIn("资产：图1", draft)
+        self.assertIn("对白：顾深：好。", draft)
+
+
+    def test_storyboard_refill_stamps_missing_action_and_camera_without_shot_headings(self):
+        """Refill accepts ## S01 fields, S01 动作： one-liners, and headerless blocks.
+
+        Already-filled 动作/景别机位/旁白 and 时长/资产/对白 are not rewritten.
+        """
+        from Agents.workers.generator import run_generator
+        from Agents.workers.storyboard_skeleton import restore_storyboard_locks
+        from end.storyboard_contract import project_shots
+
+        skeleton_obj = {
+            "duration_lock": 15,
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "assets": ["图1"],
+                    "dialogue": "顾深：好。",
+                    "action_beats": ["整理领结"],
+                    "music_beat": "无",
+                    "sound_beat": "心跳",
+                    "scene_heading": "EP001-SC01｜内·婚礼现场·日（0s - 15s）",
+                },
+                {
+                    "id": "S02",
+                    "duration": 5,
+                    "assets": ["图25"],
+                    "dialogue": "无",
+                    "scene_heading": "EP001-SC02｜内·民政局大厅·上午（15s - 35s）",
+                },
+                {
+                    "id": "S03",
+                    "duration": 5,
+                    "assets": ["图2"],
+                    "dialogue": "沈棠：走吧。",
+                    "scene_heading": "EP001-SC02｜内·民政局大厅·上午（15s - 35s）",
+                },
+            ],
+        }
+        skeleton = format_storyboard_skeleton(skeleton_obj)
+        brief = "任务：分镜\n\n" + skeleton
+        stamped = "近景，顾深低头整理领结，手指发抖。"
+        rewritten = "把已经盖上的动作改掉了。"
+        s02_action = "顾深站在民政局大厅门口。"
+        s02_camera = "中景"
+        s03_action = "沈棠转身离开。"
+        s03_camera = "全景"
+        calls = []
+
+        def complete(role, messages):
+            calls.append(role)
+            if role != "specialist":
+                complete.user = messages[-1]["content"]
+                return json.dumps({
+                    "storyboard": "\n".join((
+                        "## S01",
+                        "动作：%s" % rewritten,
+                        "时长：99",
+                        "对白：改掉的对白",
+                        "",
+                        "S02 动作：%s" % s02_action,
+                        "S02 景别机位：%s" % s02_camera,
+                        "",
+                        "动作：%s" % s03_action,
+                        "景别机位：%s" % s03_camera,
+                    )) + "\n",
+                }, ensure_ascii=False)
+            return json.dumps({
+                "text": "\n".join((
+                    "## S01",
+                    "画面层：%s" % stamped,
+                    "旁白：无",
+                    "",
+                    "## S02",
+                    "旁白：无",
+                    "",
+                    "## S03",
+                    "旁白：无",
+                )),
+            }, ensure_ascii=False)
+
+        complete.user = ""
+        produced = run_generator(
+            "storyboard",
+            brief,
+            role="生成员",
+            complete=complete,
+            files=["sd-storyboard-engine/SKILL.md"],
+        )
+        self.assertEqual(calls.count("specialist"), 1)
+        self.assertEqual(len([role for role in calls if role != "specialist"]), 1)
+        self.assertIn("S02 动作", complete.user)
+        self.assertIn("S02 景别机位", complete.user)
+        self.assertIn("S03 动作", complete.user)
+        self.assertIn("S03 景别机位", complete.user)
+        self.assertNotIn("S01 动作", complete.user)
+        self.assertNotIn("S01 景别机位", complete.user)
+        draft = json.loads(produced["raw"])["storyboard"]
+        self.assertIn("画面层：%s" % stamped, draft)
+        self.assertNotIn(rewritten, draft)
+        self.assertNotIn("时长：99", draft)
+        self.assertNotIn("改掉的对白", draft)
+        self.assertIn("时长：5", draft)
+        self.assertIn("资产：图1", draft)
+        self.assertIn("对白：顾深：好。", draft)
+        self.assertIn("对白：沈棠：走吧。", draft)
+        s02 = draft.split("## S02", 1)[1].split("## S03", 1)[0]
+        s03 = draft.split("## S03", 1)[1]
+        self.assertIn("动作：%s" % s02_action, s02)
+        self.assertIn("景别机位：%s" % s02_camera, s02)
+        self.assertIn("动作：%s" % s03_action, s03)
+        self.assertIn("景别机位：%s" % s03_camera, s03)
+        restored = restore_storyboard_locks(draft, skeleton_obj)
+        _shots, report = project_shots(restored, ["图1", "图25", "图2"])
+        self.assertNotIn("缺动作", report or "")
+        self.assertNotIn("缺景别机位", report or "")
 
 
     def test_packing_partial_fold_refills_only_missing_wan_fields(self):
