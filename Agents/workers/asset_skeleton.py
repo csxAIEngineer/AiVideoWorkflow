@@ -6,7 +6,13 @@ from Agents.workers.script_skeleton import parse_script_scenes
 
 _CAST_LINE = re.compile(r"^出场\s*[:：]\s*(.*)$")
 _PROP_LINE = re.compile(r"^道具\s*[:：]\s*(.*)$")
-_SKIP_PROP = re.compile(r"^(无|没有|无道具)(?:[（(][^）)]*[）)])?$")
+_SKIP_PROP = re.compile(
+    r"^(?:"
+    r"(?:无|没有|无道具)(?:[（(][^）)]*[）)])?"
+    r"|(?:无|没有)(?:人|角色|任何.*)"
+    r"|(?:无|没有).*?(?:人物|环境|仅(?:道具|环境))"
+    r")$"
+)
 
 def _split_cast_names(raw):
     """Split a 出场/道具 list without cutting inside parentheses."""
