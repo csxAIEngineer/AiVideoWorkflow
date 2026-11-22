@@ -90,6 +90,16 @@ def _asset_brief():
     return "任务：资产锁定\n\n" + ASSET_SKELETON
 
 
+
+def _packing_shot_state(rows):
+    return {
+        "storyboard": "\n".join("## %s\n时长：%s" % pair for pair in rows),
+        "shots": [{"id": shot_id, "duration": seconds} for shot_id, seconds in rows],
+        "locks": {"model": "h3", "material_mode": "M1", "track": "1"},
+    }
+
+
+
 class SkeletonFoldTest(unittest.TestCase):
     def test_asset_fold_uses_specialist_fills_and_keeps_empty_slots(self):
         draft = fold_stage_draft("asset", _asset_brief(), [
@@ -1470,6 +1480,263 @@ class GeneratorFoldWiringTest(unittest.TestCase):
         self.assertIn(mapped, draft)
         self.assertIn("duration: 10", draft)
         self.assertIn("## 【封装单元 1/1】", draft)
+
+
+
+    def test_packing_fold_stamps_shot_bodies_into_locked_headings(self):
+        """Specialist 分镜 headings land on the locked lines; empty copies are not kept."""
+        from Agents.workers.feed import shot_skeleton_failures
+        from Agents.workers.generator import run_generator
+
+        heading1 = "分镜1（00:00.000-00:05.000）："
+        heading2 = "分镜2（00:05.000-00:12.000）："
+        body1 = "安那停下脚步，回头望向李敬。"
+        body2 = "硬切转场至现代博物馆展厅。"
+        style_lock = "画面风格：电影感，冷色调灯光。"
+        asset_line = "资产：图1、图2"
+        skeleton = "\n".join((
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "不要改 ## 标题，不要改 duration，不要调换字段顺序。",
+            "",
+            "## 【封装单元 1/1】",
+            "duration: 12",
+            asset_line,
+            "总体描述:",
+            "参考素材引用:",
+            "分镜:",
+            heading1,
+            heading2,
+            "台词:",
+            "音效 / BGM:",
+            "风格 / 情绪:",
+            style_lock,
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        brief = "任务：提示词封装\n\n" + skeleton
+        calls = []
+
+        def complete(role, messages):
+            calls.append(role)
+            if role != "specialist":
+                raise AssertionError("refill was called even though 分镜 and other official fields were filled")
+            return json.dumps({
+                "text": "\n".join((
+                    "## 【封装单元 1/1】",
+                    "duration: 99",
+                    "资产：图99",
+                    "总体描述:",
+                    "安那与李敬在城墙外分别。",
+                    "参考素材引用:",
+                    "图1、图2",
+                    "分镜:",
+                    heading1,
+                    body1,
+                    heading2,
+                    body2,
+                    "台词:",
+                    '安那说："我走了。"',
+                    "音效 / BGM:",
+                    "风雪声",
+                    "风格 / 情绪:",
+                    "不要这句风格",
+                    "负向清单:",
+                    "不要改这条负向清单",
+                )),
+            }, ensure_ascii=False)
+
+        produced = run_generator(
+            "feed",
+            brief,
+            role="生成员",
+            complete=complete,
+            files=["short-drama-director/references/wan-adapter.md"],
+        )
+        self.assertEqual(calls, ["specialist"])
+        draft = json.loads(produced["raw"])["feed"]
+        self.assertEqual(draft.count(heading1), 1)
+        self.assertEqual(draft.count(heading2), 1)
+        fenjing = draft.split("分镜:", 1)[1].split("台词:", 1)[0]
+        self.assertIn(body1, fenjing)
+        self.assertIn(body2, fenjing)
+        self.assertLess(fenjing.find(heading1), fenjing.find(body1))
+        self.assertLess(fenjing.find(body1), fenjing.find(heading2))
+        self.assertLess(fenjing.find(heading2), fenjing.find(body2))
+        self.assertIn("duration: 12", draft)
+        self.assertNotIn("duration: 99", draft)
+        self.assertIn(asset_line, draft)
+        self.assertNotIn("资产：图99", draft)
+        self.assertIn(style_lock, draft)
+        self.assertNotIn("不要这句风格", draft)
+        self.assertIn("不要字幕、不要水印、不要复杂文字", draft)
+        self.assertNotIn("不要改这条负向清单", draft)
+        self.assertEqual(
+            shot_skeleton_failures(draft, _packing_shot_state((("S01", 5), ("S02", 7)))),
+            [],
+        )
+
+
+    def test_packing_fold_does_not_rewrite_filled_shots(self):
+        """Already-filled 分镜 bodies stay verbatim when the specialist rewrites them."""
+        from Agents.workers.feed import shot_skeleton_failures
+        from Agents.workers.generator import run_generator
+
+        heading1 = "分镜1（00:00.000-00:05.000）："
+        heading2 = "分镜2（00:05.000-00:12.000）："
+        body1 = "安那停下脚步，回头望向李敬。"
+        body2 = "硬切转场至现代博物馆展厅。"
+        rewritten1 = "把已经盖上的分镜1改掉了。"
+        rewritten2 = "把已经盖上的分镜2改掉了。"
+        style_lock = "画面风格：电影感，冷色调灯光。"
+        asset_line = "资产：图1、图2"
+        skeleton = "\n".join((
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "不要改 ## 标题，不要改 duration，不要调换字段顺序。",
+            "",
+            "## 【封装单元 1/1】",
+            "duration: 12",
+            asset_line,
+            "总体描述:",
+            "安那与李敬在城墙外分别。",
+            "参考素材引用:",
+            "图1、图2",
+            "分镜:",
+            heading1,
+            body1,
+            heading2,
+            body2,
+            "台词:",
+            '安那说："我走了。"',
+            "音效 / BGM:",
+            "风雪声",
+            "风格 / 情绪:",
+            style_lock,
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        brief = "任务：提示词封装\n\n" + skeleton
+
+        def complete(role, messages):
+            if role != "specialist":
+                raise AssertionError("refill was called even though no Wan field was empty")
+            return json.dumps({
+                "text": "\n".join((
+                    "## 【封装单元 1/1】",
+                    "duration: 99",
+                    "资产：图99",
+                    "分镜:",
+                    heading1,
+                    rewritten1,
+                    heading2,
+                    rewritten2,
+                    "台词:",
+                    '安那说："把已经盖上的台词改掉了。"',
+                )),
+            }, ensure_ascii=False)
+
+        produced = run_generator(
+            "feed",
+            brief,
+            role="生成员",
+            complete=complete,
+            files=["short-drama-director/references/wan-adapter.md"],
+        )
+        draft = json.loads(produced["raw"])["feed"]
+        fenjing = draft.split("分镜:", 1)[1].split("台词:", 1)[0]
+        self.assertEqual(fenjing.count(heading1), 1)
+        self.assertEqual(fenjing.count(heading2), 1)
+        self.assertIn(body1, fenjing)
+        self.assertIn(body2, fenjing)
+        self.assertNotIn(rewritten1, draft)
+        self.assertNotIn(rewritten2, draft)
+        self.assertIn('安那说："我走了。"', draft)
+        self.assertNotIn("把已经盖上的台词改掉了", draft)
+        self.assertIn("duration: 12", draft)
+        self.assertIn(asset_line, draft)
+        self.assertIn(style_lock, draft)
+        self.assertEqual(
+            shot_skeleton_failures(draft, _packing_shot_state((("S01", 5), ("S02", 7)))),
+            [],
+        )
+
+
+    def test_packing_fold_drops_trailing_empty_duplicate_shot_headings(self):
+        """A draft that already has filled shots plus trailing empty copies is cleaned."""
+        from Agents.workers.feed import shot_skeleton_failures
+        from Agents.workers.generator import run_generator
+
+        heading1 = "分镜1（00:00.000-00:05.000）："
+        heading2 = "分镜2（00:05.000-00:12.000）："
+        body1 = "安那停下脚步，回头望向李敬。"
+        body2 = "硬切转场至现代博物馆展厅。"
+        style_lock = "画面风格：电影感，冷色调灯光。"
+        asset_line = "资产：图1、图2"
+        skeleton = "\n".join((
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "不要改 ## 标题，不要改 duration，不要调换字段顺序。",
+            "",
+            "## 【封装单元 1/1】",
+            "duration: 12",
+            asset_line,
+            "总体描述:",
+            "安那与李敬在城墙外分别。",
+            "参考素材引用:",
+            "图1、图2",
+            "分镜:",
+            heading1,
+            body1,
+            heading2,
+            body2,
+            heading1,
+            heading2,
+            "台词:",
+            '安那说："我走了。"',
+            "音效 / BGM:",
+            "风雪声",
+            "风格 / 情绪:",
+            style_lock,
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        brief = "任务：提示词封装\n\n" + skeleton
+
+        def complete(role, messages):
+            if role != "specialist":
+                raise AssertionError("refill was called even though no Wan field was empty")
+            return json.dumps({
+                "text": "\n".join((
+                    "## 【封装单元 1/1】",
+                    "分镜:",
+                    heading1,
+                    "把已经盖上的分镜1改掉了。",
+                    heading2,
+                    "把已经盖上的分镜2改掉了。",
+                )),
+            }, ensure_ascii=False)
+
+        produced = run_generator(
+            "feed",
+            brief,
+            role="生成员",
+            complete=complete,
+            files=["short-drama-director/references/wan-adapter.md"],
+        )
+        draft = json.loads(produced["raw"])["feed"]
+        fenjing = draft.split("分镜:", 1)[1].split("台词:", 1)[0]
+        self.assertEqual(fenjing.count(heading1), 1)
+        self.assertEqual(fenjing.count(heading2), 1)
+        self.assertIn(body1, fenjing)
+        self.assertIn(body2, fenjing)
+        self.assertNotIn("把已经盖上的分镜1改掉了", draft)
+        self.assertNotIn("把已经盖上的分镜2改掉了", draft)
+        self.assertIn("duration: 12", draft)
+        self.assertIn(asset_line, draft)
+        self.assertIn(style_lock, draft)
+        self.assertEqual(
+            shot_skeleton_failures(draft, _packing_shot_state((("S01", 5), ("S02", 7)))),
+            [],
+        )
+
 
 
 

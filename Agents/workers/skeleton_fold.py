@@ -1111,8 +1111,109 @@ def _feed_fills(notes, default_unit=None):
     return fills
 
 
+def _parse_wan_shot_blocks(text):
+    """Leading prose plus official 分镜 headings, each with the body under it."""
+    from Agents.workers.feed.wan_format import WAN_SHOT_HEADING
+
+    leading = []
+    shots = []
+    current = None
+
+    def flush():
+        nonlocal current
+        if current is None:
+            return
+        current["body"] = "\n".join(current.pop("body_lines")).strip("\n").strip()
+        shots.append(current)
+        current = None
+
+    for line in str(text or "").splitlines():
+        match = WAN_SHOT_HEADING.match(line.strip())
+        if match:
+            flush()
+            tail = (match.group("tail") or "").strip()
+            current = {
+                "num": int(match.group("num")),
+                "start": match.group("start"),
+                "end": match.group("end"),
+                "body_lines": [tail] if tail else [],
+            }
+            continue
+        if current is None:
+            leading.append(line)
+        else:
+            current["body_lines"].append(line)
+    flush()
+    return "\n".join(leading).strip(), shots
+
+
+def _locked_wan_shots(body):
+    """First occurrence of each locked 分镜 number, with its start-end times."""
+    locked = []
+    seen = set()
+    for shot in _parse_wan_shot_blocks(body)[1]:
+        if shot["num"] in seen:
+            continue
+        seen.add(shot["num"])
+        locked.append((shot["num"], shot["start"], shot["end"]))
+    return locked
+
+
+def _first_nonempty_shot_bodies(text):
+    leading, shots = _parse_wan_shot_blocks(text)
+    bodies = {}
+    for shot in shots:
+        body = str(shot.get("body") or "").strip()
+        if shot["num"] not in bodies:
+            bodies[shot["num"]] = body
+        elif not str(bodies[shot["num"]] or "").strip() and body:
+            bodies[shot["num"]] = body
+    return leading, bodies
+
+
+def _render_locked_shot_field(locked, bodies):
+    lines = []
+    for number, start, end in locked:
+        lines.append("分镜%s（%s-%s）：" % (number, start, end))
+        body = str(bodies.get(number) or "").strip()
+        if body:
+            lines.append(body)
+    return "\n".join(lines)
+
+
+def _normalize_wan_shot_field(skeleton_body, current_body=None, fill=None, apply_fill=False):
+    """Stamp or keep bodies on locked headings; drop trailing empty copies."""
+    locked = _locked_wan_shots(skeleton_body)
+    source = current_body if current_body is not None else skeleton_body
+    if not locked:
+        if apply_fill:
+            return str(skeleton_body or "").strip("\n")
+        return str(source or "").strip("\n")
+    _leading, bodies = _first_nonempty_shot_bodies(source)
+    kept = {
+        number: body
+        for number, body in bodies.items()
+        if str(body or "").strip() and any(number == item[0] for item in locked)
+    }
+    if apply_fill and fill:
+        fill_leading, fill_bodies = _first_nonempty_shot_bodies(fill)
+        fill_has_headings = bool(_parse_wan_shot_blocks(fill)[1])
+        for number, _start, _end in locked:
+            if str(kept.get(number) or "").strip():
+                continue
+            if fill_has_headings:
+                body = str(fill_bodies.get(number) or "").strip()
+                if body:
+                    kept[number] = body
+            elif len(locked) == 1:
+                prose = str(fill_leading or fill or "").strip()
+                if prose:
+                    kept[number] = prose
+    return _render_locked_shot_field(locked, kept)
+
+
 def _render_feed_unit(unit, fills):
-    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name, WAN_NEGATIVE_LINE
 
     lines = list(unit["lines"])
     skip_body_of = set()
@@ -1124,6 +1225,12 @@ def _render_feed_unit(unit, fills):
             current = canonical_wan_name(match.group("name"))
             body = _field_body_from_unit(unit, current)
             fill = fills.get((unit["index"], current))
+            if current == "分镜":
+                apply_fill = bool(fill) and _wan_field_empty(current, body)
+                normalized = _normalize_wan_shot_field(body, body, fill, apply_fill)
+                out.append(_with_field_body(_wan_header_only(line), normalized) if normalized else _wan_header_only(line))
+                skip_body_of.add(current)
+                continue
             if fill and _wan_field_empty(current, body):
                 out.append(_with_field_body(line, fill))
                 skip_body_of.add(current)
@@ -1131,17 +1238,25 @@ def _render_feed_unit(unit, fills):
             out.append(line)
             continue
         if current in skip_body_of:
-            # Keep locked 分镜 headings even when the field was empty of prose
-            # and a fill was stamped after the header.
-            from Agents.workers.feed.wan_format import WAN_SHOT_HEADING, WAN_NEGATIVE_LINE
+            # Locked 分镜 headings are already rendered onto the field header.
             raw = line.strip()
-            if current == "分镜" and WAN_SHOT_HEADING.match(raw):
-                out.append(line)
-            elif current == "负向清单" and raw == WAN_NEGATIVE_LINE:
+            if current == "负向清单" and raw == WAN_NEGATIVE_LINE:
                 out.append(line)
             continue
         out.append(line)
     return "\n".join(out).rstrip() + "\n"
+
+
+def _wan_header_only(header_line):
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE
+
+    raw = str(header_line or "")
+    match = WAN_FIELD_LINE.match(raw.strip())
+    if not match or not (match.group("rest") or "").strip():
+        return raw
+    indent = raw[:len(raw) - len(raw.lstrip())]
+    punct = "：" if "：" in raw.strip().split(match.group("name"), 1)[-1][:2] or "：" in raw else ":"
+    return "%s%s%s" % (indent, match.group("name"), punct)
 
 
 def _field_body_from_unit(unit, name):
