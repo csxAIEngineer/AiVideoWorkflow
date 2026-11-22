@@ -73,11 +73,25 @@ def _note_as_markdown(item):
     if not text:
         return ""
     data = _json_object(text)
-    if not isinstance(data, dict):
+    if isinstance(data, dict):
+        parts = _cards_from_payload(data)
+        if parts:
+            return "\n\n".join(parts)
+        for key in ("image_prompts", "script", "storyboard", "text", "feed"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
         return text
+    recovered = _cards_from_truncated_json(text)
+    if recovered:
+        return "\n\n".join(recovered)
+    return text
+
+
+def _cards_from_payload(data):
+    parts = []
     prompts = data.get("image_prompts")
     if isinstance(prompts, list):
-        parts = []
         for card in prompts:
             if isinstance(card, str) and card.strip():
                 parts.append(card.strip())
@@ -85,13 +99,71 @@ def _note_as_markdown(item):
                 block = str(card.get("prompt") or card.get("text") or "").strip()
                 if block:
                     parts.append(block)
-        if parts:
-            return "\n\n".join(parts)
-    for key in ("image_prompts", "script", "storyboard", "text", "feed"):
-        value = data.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return text
+    return parts
+
+
+def _cards_from_truncated_json(text):
+    """Keep complete and trailing partial card strings from a cut-off JSON note."""
+    raw = str(text or "")
+    if "{" not in raw or "image_prompts" not in raw:
+        return []
+    parts = []
+    for value in _json_string_values(raw):
+        if _looks_like_asset_card(value):
+            parts.append(value.strip())
+    return parts
+
+
+def _looks_like_asset_card(value):
+    text = str(value or "")
+    if "#### 图" in text or "整板：" in text or "整板:" in text:
+        return True
+    return bool(_SLOT_LINE.search(text))
+
+
+def _json_string_values(text):
+    """Decode JSON strings, including a final unterminated value after a token cap."""
+    found = []
+    raw = str(text or "")
+    i = 0
+    n = len(raw)
+    escapes = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
+    while i < n:
+        if raw[i] != '"':
+            i += 1
+            continue
+        i += 1
+        chunks = []
+        closed = False
+        while i < n:
+            ch = raw[i]
+            if ch == '"':
+                closed = True
+                i += 1
+                break
+            if ch != "\\":
+                chunks.append(ch)
+                i += 1
+                continue
+            if i + 1 >= n:
+                break
+            esc = raw[i + 1]
+            if esc in escapes:
+                chunks.append(escapes[esc])
+                i += 2
+                continue
+            if esc == "u" and i + 5 < n:
+                try:
+                    chunks.append(chr(int(raw[i + 2:i + 6], 16)))
+                except ValueError:
+                    break
+                i += 6
+                continue
+            break
+        found.append("".join(chunks))
+        if not closed:
+            break
+    return found
 
 
 def _json_object(raw):

@@ -107,6 +107,64 @@ class SkeletonFoldTest(unittest.TestCase):
         self.assertEqual(fig2.count("【填写】"), 4)
         self.assertNotIn("你是**资产锁定阶段的专精引擎**", draft)
 
+
+    def test_asset_fold_uses_truncated_scene_json_and_keeps_unwritten_slots(self):
+        skeleton = ASSET_SKELETON + """
+#### 图26 · 婚礼现场（九宫格）
+种类：九宫格
+格位：九宫格
+场景名称：婚礼现场（资产图编号：图26）
+整板固定 16:9。
+全图共 9 格，不多不少。
+【参考场景锁定模式】仅允许摄影机移动。
+格1：【填写】
+格2：【填写】
+格3：【填写】
+格4：【填写】
+格5：【填写】
+格6：【填写】
+格7：【填写】
+格8：【填写】
+格9：【填写】
+"""
+        complete_master = (
+            "#### 图25 · 婚礼现场（母版）\n"
+            "种类：场景母版\n"
+            "格位：整板\n"
+            "场景名称：婚礼现场（资产图编号：图25）\n"
+            "整板固定 16:9。\n"
+            "整板：【场景定位】高档酒店宴会厅入口及仪式区。"
+        )
+        partial_grid = (
+            "#### 图26 · 婚礼现场（九宫格）\n"
+            "种类：九宫格\n"
+            "格位：九宫格\n"
+            "场景名称：婚礼现场（资产图编号：图26）\n"
+            "整板固定 16:9。\n"
+            "全图共 9 格，不多不少。\n"
+            "【参考场景锁定模式】仅允许摄影机移动。\n"
+            "格1：【景别】宴会厅入口全景，红毯铺入仪式区。\n"
+            "格2：【景别】主桌侧向中景，灯光低饱和。\n"
+            "格3：【景别】舞台方向的"
+        )
+        opened = json.dumps(partial_grid, ensure_ascii=False)[:-1]
+        truncated = (
+            '{"text":"","image_prompts":['
+            '{"id":"图25","prompt":%s},'
+            '{"id":"图26","prompt":%s'
+        ) % (json.dumps(complete_master, ensure_ascii=False), opened)
+        self.assertRaises(json.JSONDecodeError, json.loads, truncated)
+        draft = fold_stage_draft("asset", "任务：资产锁定\n\n" + skeleton, [
+            {"skill": "sd-asset-engine/references/scene-grid-template.md", "text": truncated},
+        ])
+        self.assertIn("整板：【场景定位】高档酒店宴会厅入口及仪式区。", draft)
+        fig26 = draft.split("#### 图26 · 婚礼现场（九宫格）", 1)[1]
+        self.assertIn("格1：【景别】宴会厅入口全景，红毯铺入仪式区。", fig26)
+        self.assertIn("格2：【景别】主桌侧向中景，灯光低饱和。", fig26)
+        self.assertIn("格3：【景别】舞台方向的", fig26)
+        self.assertEqual(fig26.count("【填写】"), 6)
+        self.assertIn("格1：【填写】", draft.split("#### 图1 · 沈棠（角色）", 1)[1].split("#### 图2", 1)[0])
+
     def test_script_fold_uses_specialist_fills_and_keeps_empty_slots(self):
         brief = "\n".join((
             "任务：剧本",
