@@ -497,11 +497,13 @@ class SuiteFoldWiringTest(unittest.TestCase):
         self.assertEqual(fig2.count("【填写】"), 4)
 
 
-    def test_storyboard_suite_sends_unmatched_labels_to_merge(self):
-        """Suite merge keeps the same leftover contract as the worker generator."""
+    def test_storyboard_suite_refills_only_missing_action_and_camera(self):
+        """Suite keeps the same missing-slot refill contract as the worker generator."""
         from AI.qwen_api.suite_graph import run_suite
+        from Agents.workers.storyboard_skeleton import restore_storyboard_locks
+        from end.storyboard_contract import project_shots
 
-        skeleton = format_storyboard_skeleton({
+        skeleton_obj = {
             "duration_lock": 10,
             "shots": [
                 {
@@ -522,7 +524,8 @@ class SuiteFoldWiringTest(unittest.TestCase):
                     "scene_heading": "EP001-SC02｜内·民政局大厅·上午（15s - 35s）",
                 },
             ],
-        })
+        }
+        skeleton = format_storyboard_skeleton(skeleton_obj)
         brief = "\n".join((
             "阶段：P3",
             "赛道：1",
@@ -537,8 +540,9 @@ class SuiteFoldWiringTest(unittest.TestCase):
         ))
         stamped = "近景，顾深低头整理领结，手指发抖。"
         leftover = "画面内容：中景，顾深站在民政局大厅门口。"
-        rewritten = "远景，把已经盖上的画面层改掉了。"
-        mapped = "中景，顾深站在民政局大厅门口。"
+        rewritten = "把已经盖上的动作改掉了。"
+        action_fill = "顾深站在民政局大厅门口。"
+        camera_fill = "中景"
         note = "\n".join((
             "## S01",
             "画面层：%s" % stamped,
@@ -547,12 +551,15 @@ class SuiteFoldWiringTest(unittest.TestCase):
             "",
             "## S02",
             leftover,
+            "旁白：无",
         ))
 
         class StoryboardModel(object):
             def __init__(self):
                 self.merge_called = False
-                self.merge_user = ""
+                self.refill_called = False
+                self.refill_system = ""
+                self.refill_user = ""
 
             def complete(self, messages, model, max_tokens, timeout, kind=None, effort=None):
                 system = messages[0]["content"]
@@ -563,18 +570,26 @@ class SuiteFoldWiringTest(unittest.TestCase):
 
                 if "你是汇总节点" in system:
                     self.merge_called = True
-                    self.merge_user = messages[-1]["content"]
                     return Reply(json.dumps({
                         "storyboard": "\n".join((
                             "## S01",
-                            "画面层：%s" % rewritten,
-                            "旁白：无",
-                            "声景：心跳与婚礼进行曲叠在一起。",
+                            "动作：%s" % rewritten,
+                            "时长：99",
+                        )) + "\n",
+                    }, ensure_ascii=False))
+                if "只返回漏掉的内容" in system or "只补还空着的槽" in system:
+                    self.refill_called = True
+                    self.refill_system = system
+                    self.refill_user = messages[-1]["content"]
+                    return Reply(json.dumps({
+                        "storyboard": "\n".join((
+                            "## S01",
+                            "动作：%s" % rewritten,
+                            "时长：99",
                             "",
                             "## S02",
-                            "画面层：%s" % mapped,
-                            "旁白：无",
-                            "声景：大厅回声。",
+                            "动作：%s" % action_fill,
+                            "景别机位：%s" % camera_fill,
                         )) + "\n",
                     }, ensure_ascii=False))
                 return Reply(json.dumps({"text": note}, ensure_ascii=False))
@@ -582,13 +597,31 @@ class SuiteFoldWiringTest(unittest.TestCase):
         model = StoryboardModel()
         result = run_suite("storyboard", brief, model)
         draft = result["storyboard"]
-        self.assertTrue(model.merge_called)
-        self.assertIn(leftover, model.merge_user)
-        self.assertIn("标签没对上", model.merge_user)
+        self.assertFalse(model.merge_called)
+        self.assertTrue(model.refill_called)
+        self.assertNotIn("你是汇总节点", model.refill_system)
+        self.assertIn("S02 动作", model.refill_user)
+        self.assertIn("S02 景别机位", model.refill_user)
+        self.assertNotIn("S01 动作", model.refill_user)
+        self.assertNotIn("S01 景别机位", model.refill_user)
+        self.assertIn("只返回漏掉的内容", model.refill_user)
+        self.assertIn("故事一致性", model.refill_user)
+        self.assertIn("人物一致性", model.refill_user)
+        self.assertIn("逻辑合理", model.refill_user)
+        self.assertIn(leftover, model.refill_user)
         self.assertIn("画面层：%s" % stamped, draft)
         self.assertNotIn(rewritten, draft)
+        self.assertNotIn("时长：99", draft)
+        self.assertIn("时长：5", draft)
+        self.assertIn("资产：图1", draft)
+        self.assertIn("对白：顾深：好。", draft)
         s02 = draft.split("## S02", 1)[1]
-        self.assertIn(mapped, s02)
+        self.assertIn("动作：%s" % action_fill, s02)
+        self.assertIn("景别机位：%s" % camera_fill, s02)
+        restored = restore_storyboard_locks(draft, skeleton_obj)
+        _shots, report = project_shots(restored, ["图1", "图25"])
+        self.assertNotIn("缺动作", report or "")
+        self.assertNotIn("缺景别机位", report or "")
 
 
 class GeneratorFoldWiringTest(unittest.TestCase):
@@ -630,16 +663,18 @@ class GeneratorFoldWiringTest(unittest.TestCase):
         self.assertIn("格1：【正面视图】鲜红色天鹅绒材质。", draft)
         self.assertNotIn("director", calls)
 
-    def test_storyboard_partial_fold_sends_unmatched_labels_to_merge(self):
-        """A nonempty partial fold plus unmatched specialist body still merges.
+    def test_storyboard_partial_fold_refills_only_missing_action_and_camera(self):
+        """A nonempty partial fold asks the model only for empty 动作/景别机位.
 
-        Specialists may write 画面内容 while the skeleton wants 画面层. The
-        leftover body goes to the director, marked as a possible 标签没对上,
-        and already-stamped slots survive a merge rewrite.
+        Unmatched specialist labels are reference, not a whole-draft merge.
+        Already-filled 时长/资产/对白 stay verbatim. The refill must keep
+        故事一致性, 人物一致性, and 逻辑合理 once stamped.
         """
         from Agents.workers.generator import run_generator
+        from Agents.workers.storyboard_skeleton import restore_storyboard_locks
+        from end.storyboard_contract import project_shots
 
-        skeleton = format_storyboard_skeleton({
+        skeleton_obj = {
             "duration_lock": 10,
             "shots": [
                 {
@@ -660,29 +695,30 @@ class GeneratorFoldWiringTest(unittest.TestCase):
                     "scene_heading": "EP001-SC02｜内·民政局大厅·上午（15s - 35s）",
                 },
             ],
-        })
+        }
+        skeleton = format_storyboard_skeleton(skeleton_obj)
         brief = "任务：分镜\n\n" + skeleton
         stamped = "近景，顾深低头整理领结，手指发抖。"
         leftover = "画面内容：中景，顾深站在民政局大厅门口。"
-        rewritten = "远景，把已经盖上的画面层改掉了。"
-        mapped = "中景，顾深站在民政局大厅门口。"
+        rewritten = "把已经盖上的动作改掉了。"
+        action_fill = "顾深站在民政局大厅门口。"
+        camera_fill = "中景"
         calls = []
 
         def complete(role, messages):
             calls.append(role)
-            if role == "director":
+            if role != "specialist":
+                complete.system = messages[0]["content"]
                 complete.user = messages[-1]["content"]
                 return json.dumps({
                     "storyboard": "\n".join((
                         "## S01",
-                        "画面层：%s" % rewritten,
-                        "旁白：无",
-                        "声景：心跳与婚礼进行曲叠在一起。",
+                        "动作：%s" % rewritten,
+                        "时长：99",
                         "",
                         "## S02",
-                        "画面层：%s" % mapped,
-                        "旁白：无",
-                        "声景：大厅回声。",
+                        "动作：%s" % action_fill,
+                        "景别机位：%s" % camera_fill,
                     )) + "\n",
                 }, ensure_ascii=False)
             return json.dumps({
@@ -694,9 +730,11 @@ class GeneratorFoldWiringTest(unittest.TestCase):
                     "",
                     "## S02",
                     leftover,
+                    "旁白：无",
                 )),
             }, ensure_ascii=False)
 
+        complete.system = ""
         complete.user = ""
         produced = run_generator(
             "storyboard",
@@ -705,23 +743,102 @@ class GeneratorFoldWiringTest(unittest.TestCase):
             complete=complete,
             files=["sd-storyboard-engine/SKILL.md"],
         )
-        self.assertIn("director", calls)
+        self.assertEqual(calls.count("specialist"), 1)
+        self.assertEqual(len([role for role in calls if role != "specialist"]), 1)
+        self.assertNotIn("你是汇总节点", complete.system)
+        self.assertNotIn("请按槽汇编成这一阶段的稿", complete.user)
+        self.assertIn("S02 动作", complete.user)
+        self.assertIn("S02 景别机位", complete.user)
+        self.assertNotIn("S01 动作", complete.user)
+        self.assertNotIn("S01 景别机位", complete.user)
+        self.assertIn("只返回漏掉的内容", complete.user)
+        self.assertIn("故事一致性", complete.user)
+        self.assertIn("人物一致性", complete.user)
+        self.assertIn("逻辑合理", complete.user)
         self.assertIn(leftover, complete.user)
-        self.assertIn("标签没对上", complete.user)
         draft = json.loads(produced["raw"])["storyboard"]
         self.assertIn("画面层：%s" % stamped, draft)
         self.assertNotIn(rewritten, draft)
+        self.assertNotIn("时长：99", draft)
+        self.assertIn("时长：5", draft)
+        self.assertIn("资产：图1", draft)
+        self.assertIn("对白：顾深：好。", draft)
         s02 = draft.split("## S02", 1)[1]
-        self.assertIn(mapped, s02)
+        self.assertIn("动作：%s" % action_fill, s02)
+        self.assertIn("景别机位：%s" % camera_fill, s02)
+        restored = restore_storyboard_locks(draft, skeleton_obj)
+        _shots, report = project_shots(restored, ["图1", "图25"])
+        self.assertNotIn("缺动作", report or "")
+        self.assertNotIn("缺景别机位", report or "")
 
 
+    def test_storyboard_full_fold_skips_refill_even_with_unmatched_labels(self):
+        """When every 动作 and 景别机位 is already covered, do not call refill."""
+        from Agents.workers.generator import run_generator
 
-    def test_packing_partial_fold_sends_unmatched_labels_to_merge(self):
-        """Wan packing keeps the leftover-to-merge contract.
+        skeleton = format_storyboard_skeleton({
+            "duration_lock": 10,
+            "shots": [
+                {
+                    "id": "S01",
+                    "duration": 5,
+                    "assets": ["图1"],
+                    "dialogue": "顾深：好。",
+                    "scene_heading": "EP001-SC01｜内·婚礼现场·日（0s - 15s）",
+                },
+                {
+                    "id": "S02",
+                    "duration": 5,
+                    "assets": ["图25"],
+                    "dialogue": "无",
+                    "scene_heading": "EP001-SC02｜内·民政局大厅·上午（15s - 35s）",
+                },
+            ],
+        })
+        brief = "任务：分镜\n\n" + skeleton
+        s01 = "近景，顾深低头整理领结，手指发抖。"
+        s02 = "中景，顾深站在民政局大厅门口。"
+        leftover = "动作要点：顾深站定。"
+        calls = []
 
-        Official fields that match the skeleton are stamped first. Unmatched
-        specialist labels still go to the director, marked as a possible
-        标签没对上, and already-stamped lock fields survive a merge rewrite.
+        def complete(role, messages):
+            calls.append(role)
+            if role != "specialist":
+                raise AssertionError("refill was called even though no contract slot was empty")
+            return json.dumps({
+                "text": "\n".join((
+                    "## S01",
+                    "画面层：%s" % s01,
+                    "旁白：无",
+                    "",
+                    "## S02",
+                    "画面层：%s" % s02,
+                    "旁白：无",
+                    leftover,
+                )),
+            }, ensure_ascii=False)
+
+        produced = run_generator(
+            "storyboard",
+            brief,
+            role="生成员",
+            complete=complete,
+            files=["sd-storyboard-engine/SKILL.md"],
+        )
+        self.assertEqual(calls, ["specialist"])
+        draft = json.loads(produced["raw"])["storyboard"]
+        self.assertIn("画面层：%s" % s01, draft)
+        self.assertIn("画面层：%s" % s02, draft)
+        self.assertIn("时长：5", draft)
+        self.assertIn("资产：图1", draft)
+        self.assertIn("对白：顾深：好。", draft)
+
+
+    def test_packing_partial_fold_refills_only_missing_wan_fields(self):
+        """Wan packing asks the model only for official fields still empty after fold.
+
+        Already-stamped 台词, duration, and 负向清单 stay verbatim. Unmatched
+        specialist labels are reference, not a whole-draft merge rewrite.
         """
         from Agents.workers.generator import run_generator
 
@@ -761,24 +878,19 @@ class GeneratorFoldWiringTest(unittest.TestCase):
 
         def complete(role, messages):
             calls.append(role)
-            if role == "director":
+            if role != "specialist":
+                complete.system = messages[0]["content"]
                 complete.user = messages[-1]["content"]
                 return json.dumps({
                     "feed": "\n".join((
                         "## 【封装单元 1/1】",
-                        "duration: 10",
+                        "duration: 99",
                         "总体描述:",
                         mapped,
-                        "参考素材引用:",
-                        "分镜:",
-                        "分镜1（00:00.000-00:05.000）：",
-                        "分镜2（00:05.000-00:10.000）：",
                         "台词:",
                         rewritten,
-                        "音效 / BGM:",
-                        "风格 / 情绪:",
                         "负向清单:",
-                        "不要字幕、不要水印、不要复杂文字",
+                        "不要改这条负向清单",
                     )) + "\n",
                 }, ensure_ascii=False)
             return json.dumps({
@@ -790,6 +902,7 @@ class GeneratorFoldWiringTest(unittest.TestCase):
                 )),
             }, ensure_ascii=False)
 
+        complete.system = ""
         complete.user = ""
         produced = run_generator(
             "feed",
@@ -798,17 +911,156 @@ class GeneratorFoldWiringTest(unittest.TestCase):
             complete=complete,
             files=["short-drama-director/references/wan-adapter.md"],
         )
-        self.assertIn("director", calls)
+        self.assertEqual(calls.count("specialist"), 1)
+        self.assertEqual(len([role for role in calls if role != "specialist"]), 1)
+        self.assertNotIn("你是汇总节点", complete.system)
+        self.assertNotIn("请汇总成这一阶段的一份稿", complete.user)
+        self.assertIn("单元1 总体描述", complete.user)
+        self.assertIn("单元1 分镜", complete.user)
+        self.assertIn("单元1 音效 / BGM", complete.user)
+        self.assertIn("单元1 风格 / 情绪", complete.user)
+        self.assertNotIn("单元1 台词", complete.user)
+        self.assertNotIn("单元1 负向清单", complete.user)
+        self.assertIn("只返回漏掉的内容", complete.user)
+        self.assertIn("故事一致性", complete.user)
+        self.assertIn("人物一致性", complete.user)
+        self.assertIn("逻辑合理", complete.user)
         self.assertIn(leftover, complete.user)
-        self.assertIn("标签没对上", complete.user)
         draft = json.loads(produced["raw"])["feed"]
         self.assertIn(stamped, draft)
         self.assertNotIn(rewritten, draft)
         self.assertIn(mapped, draft)
-        # Official Wan fields stay in the published packing draft.
+        self.assertIn("duration: 10", draft)
+        self.assertNotIn("duration: 99", draft)
+        self.assertIn("不要字幕、不要水印、不要复杂文字", draft)
+        self.assertNotIn("不要改这条负向清单", draft)
         self.assertIn("总体描述:", draft)
         self.assertIn("台词:", draft)
         self.assertIn("负向清单:", draft)
+
+
+
+    def test_packing_full_fold_skips_refill_even_with_unmatched_labels(self):
+        """When every official Wan field is already filled, do not call refill."""
+        from Agents.workers.generator import run_generator
+
+        skeleton = "\n".join((
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "不要改 ## 标题，不要改 duration，不要调换字段顺序。",
+            "",
+            "## 【封装单元 1/1】",
+            "duration: 10",
+            "总体描述:",
+            "近景，顾深低头整理领结。",
+            "参考素材引用:",
+            "图1",
+            "分镜:",
+            "分镜1（00:00.000-00:10.000）：",
+                    "顾深整理领结。",
+            "台词:",
+            '顾深说："好。"',
+            "音效 / BGM:",
+            "心跳",
+            "风格 / 情绪:",
+            "紧张",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        brief = "任务：提示词封装\n\n" + skeleton
+        leftover = "画面内容：近景，顾深低头整理领结。"
+        calls = []
+
+        def complete(role, messages):
+            calls.append(role)
+            if role != "specialist":
+                raise AssertionError("refill was called even though no Wan field was empty")
+            return json.dumps({
+                "text": "\n".join((
+                    "## 【封装单元 1/1】",
+                    "总体描述:",
+                    "近景，顾深低头整理领结。",
+                    "参考素材引用:",
+                    "图1",
+                    "分镜:",
+                    "分镜1（00:00.000-00:10.000）：",
+                    "顾深整理领结。",
+                    "台词:",
+                    '顾深说："好。"',
+                    "音效 / BGM:",
+                    "心跳",
+                    "风格 / 情绪:",
+                    "紧张",
+                    leftover,
+                )),
+            }, ensure_ascii=False)
+
+        produced = run_generator(
+            "feed",
+            brief,
+            role="生成员",
+            complete=complete,
+            files=["short-drama-director/references/wan-adapter.md"],
+        )
+        self.assertEqual(calls, ["specialist"])
+        draft = json.loads(produced["raw"])["feed"]
+        self.assertIn("近景，顾深低头整理领结。", draft)
+        self.assertIn('顾深说："好。"', draft)
+        self.assertIn("duration: 10", draft)
+
+
+    def test_packing_refill_stamps_missing_fields_without_unit_header(self):
+        """The refill may return only the missing field bodies, with no unit title."""
+        from Agents.workers.generator import run_generator
+
+        skeleton = "\n".join((
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "不要改 ## 标题，不要改 duration，不要调换字段顺序。",
+            "",
+            "## 【封装单元 1/1】",
+            "duration: 10",
+            "总体描述:",
+            "参考素材引用:",
+            "分镜:",
+            "分镜1（00:00.000-00:05.000）：",
+            "台词:",
+            "音效 / BGM:",
+            "风格 / 情绪:",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        brief = "任务：提示词封装\n\n" + skeleton
+        stamped = '顾深说："好。"'
+        mapped = "近景，顾深低头整理领结，手指发抖。"
+
+        def complete(role, messages):
+            if role != "specialist":
+                return json.dumps({
+                    "feed": "\n".join((
+                        "总体描述:",
+                        mapped,
+                    )) + "\n",
+                }, ensure_ascii=False)
+            return json.dumps({
+                "text": "\n".join((
+                    "## 【封装单元 1/1】",
+                    "台词:",
+                    stamped,
+                )),
+            }, ensure_ascii=False)
+
+        produced = run_generator(
+            "feed",
+            brief,
+            role="生成员",
+            complete=complete,
+            files=["short-drama-director/references/wan-adapter.md"],
+        )
+        draft = json.loads(produced["raw"])["feed"]
+        self.assertIn(stamped, draft)
+        self.assertIn(mapped, draft)
+        self.assertIn("duration: 10", draft)
+        self.assertIn("## 【封装单元 1/1】", draft)
+
 
 
 if __name__ == "__main__":

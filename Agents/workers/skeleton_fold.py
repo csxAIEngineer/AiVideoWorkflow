@@ -570,6 +570,178 @@ def fold_has_empty_slots(folded, task=""):
     return False
 
 
+_STORY_CONTRACT_FIELDS = ("动作", "景别机位")
+_STORY_OPTIONAL_FILL = ("旁白",)
+_STORY_SLOT_LINE = re.compile(
+    r"^(动作|景别机位|时长|资产|对白|旁白|画面层|声景)\s*[:：]\s*(.*)$"
+)
+_REFILL_SYSTEM = (
+    "只补还空着的槽。只返回漏掉的内容，不要重写已经盖上的栏，不要另写一份完整稿。"
+    "填上去之后必须满足故事一致性、人物一致性、逻辑合理。"
+)
+
+
+def missing_contract_slots(task, folded):
+    """Official slots the gate still needs after fold, as ``(unit, field)`` pairs.
+
+    Storyboard expands a filled 画面层 into 动作/景别机位 before checking.
+    Packing lists official Wan fields that are still empty.
+    """
+    task = str(task or "").strip()
+    if task == "storyboard":
+        return _storyboard_missing_slots(folded)
+    if task == "feed":
+        return _feed_missing_slots(folded)
+    return []
+
+
+def missing_slot_refill_system(task=""):
+    """System prompt for a missing-slot refill, not a whole-draft merge."""
+    del task
+    return _REFILL_SYSTEM
+
+
+def missing_slot_refill_prompt(task, folded, missing, leftovers=None):
+    """Ask the model to return only the missing slot contents."""
+    del task
+    blocks = ["漏掉的槽："]
+    for unit, field in missing or []:
+        blocks.append("%s %s" % (unit, field))
+    blocks.extend([
+        "",
+        "只返回漏掉的内容，不要重写已经盖上的栏。",
+        "填上去之后必须满足故事一致性、人物一致性、逻辑合理。",
+    ])
+    leftover_blocks = []
+    for item in leftovers or []:
+        if isinstance(item, dict):
+            body = str(item.get("text") or "").strip()
+            skill = str(item.get("skill") or "")
+        else:
+            body = str(item or "").strip()
+            skill = ""
+        if not body:
+            continue
+        if skill:
+            leftover_blocks.extend(["", "## %s" % skill, body])
+        else:
+            leftover_blocks.extend(["", body])
+    if leftover_blocks:
+        blocks.extend(["", "可参考的专员正文（可能只是标签没对上）："] + leftover_blocks)
+    if str(folded or "").strip():
+        blocks.extend(["", "已盖上的骨架：", str(folded).rstrip()])
+    return "\n".join(blocks)
+
+
+def apply_missing_slot_refill(task, folded, refill_raw):
+    """Stamp refill values into empty contract slots; keep already-filled locks."""
+    task = str(task or "").strip()
+    if not str(folded or "").strip():
+        return refill_raw
+    refill_text = _draft_from_merge_raw(task, refill_raw)
+    if task == "storyboard":
+        draft = _stamp_storyboard_missing_slots(folded, refill_text)
+        return folded_merge_output(task, draft)
+    if task == "feed":
+        draft = _fold_feed(folded, [refill_text])
+        return folded_merge_output(task, draft or folded)
+    return folded
+
+
+def _storyboard_field_map(body):
+    fields = {}
+    for line in str(body or "").splitlines():
+        match = _STORY_SLOT_LINE.match(line.strip())
+        if match and match.group(1) not in fields:
+            fields[match.group(1)] = match.group(2).strip()
+    layer = fields.get("画面层")
+    if _filled(layer):
+        from Agents.workers.storyboard_skeleton import _split_picture_layer
+        action, camera = _split_picture_layer(layer)
+        if action and not _filled(fields.get("动作")):
+            fields["动作"] = action
+        if camera and not _filled(fields.get("景别机位")):
+            fields["景别机位"] = camera
+    return fields
+
+
+def _storyboard_missing_slots(folded):
+    missing = []
+    for shot_id, body in _storyboard_sections(folded):
+        fields = _storyboard_field_map(body)
+        for name in _STORY_CONTRACT_FIELDS:
+            if not _filled(fields.get(name)):
+                missing.append((shot_id, name))
+        for name in _STORY_OPTIONAL_FILL:
+            if name in fields and not _filled(fields.get(name)):
+                missing.append((shot_id, name))
+    return missing
+
+
+def _feed_missing_slots(folded):
+    missing = []
+    for unit in _feed_units(folded):
+        label = "单元%s" % unit["index"]
+        for name, _header, body in unit["fields"]:
+            if _wan_field_empty(name, body):
+                missing.append((label, name))
+    return missing
+
+
+def _stamp_storyboard_missing_slots(folded, refill_text):
+    fills = {}
+    current = None
+    for line in str(refill_text or "").splitlines():
+        heading = _STORY_HEAD.match(line.strip())
+        if heading:
+            current = heading.group(1).strip()
+            continue
+        if not current:
+            continue
+        match = _STORY_SLOT_LINE.match(line.strip())
+        if not match or not _filled(match.group(2)):
+            continue
+        name = match.group(1)
+        if name == "画面层":
+            from Agents.workers.storyboard_skeleton import _split_picture_layer
+            action, camera = _split_picture_layer(match.group(2).strip())
+            if action:
+                fills.setdefault((current, "动作"), action)
+            if camera:
+                fills.setdefault((current, "景别机位"), camera)
+            continue
+        if name in _STORY_CONTRACT_FIELDS or name in _STORY_OPTIONAL_FILL:
+            fills.setdefault((current, name), match.group(2).strip())
+    sections = _storyboard_sections(folded)
+    if not sections:
+        return str(folded or "")
+    blocks = []
+    for shot_id, body in sections:
+        current_fields = _storyboard_field_map(body)
+        lines = list(str(body or "").splitlines()) or ["## %s" % shot_id]
+        insert_at = 1 if lines and _STORY_HEAD.match(lines[0].strip()) else 0
+        for name in _STORY_CONTRACT_FIELDS + _STORY_OPTIONAL_FILL:
+            key = (shot_id, name)
+            if key not in fills or not _filled(fills[key]):
+                continue
+            if _filled(current_fields.get(name)):
+                continue
+            replaced = False
+            for index, line in enumerate(lines):
+                match = _STORY_SLOT_LINE.match(line.strip())
+                if match and match.group(1) == name and not _filled(match.group(2)):
+                    indent = line[:len(line) - len(line.lstrip())]
+                    lines[index] = "%s%s：%s" % (indent, name, fills[key])
+                    replaced = True
+                    break
+            if not replaced:
+                lines.insert(insert_at, "%s：%s" % (name, fills[key]))
+            insert_at += 1
+            current_fields[name] = fills[key]
+        blocks.append("\n".join(lines).strip())
+    return "\n".join(block for block in blocks if block) + "\n"
+
+
 def leftover_merge_blocks(folded, leftovers):
     """User-facing note so merge maps unmatched bodies into empty slots."""
     blocks = [
