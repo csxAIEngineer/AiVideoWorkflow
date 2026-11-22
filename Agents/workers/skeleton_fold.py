@@ -1077,7 +1077,10 @@ def _wan_field_empty(name, body):
             raw = line.strip()
             if not raw:
                 continue
-            if not WAN_SHOT_HEADING.match(raw):
+            match = WAN_SHOT_HEADING.match(raw)
+            if not match:
+                return False
+            if (match.group("tail") or "").strip():
                 return False
         return True
     return False

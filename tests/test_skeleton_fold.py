@@ -1903,5 +1903,66 @@ class PackingRepairFoldTest(unittest.TestCase):
 
 
 
+class PackingSameLineShotFoldTest(unittest.TestCase):
+    def test_packing_fold_stamps_same_line_shot_bodies_into_locked_headings(self):
+        """Same-line 分镜 bodies are stamped onto locked headings; a bare heading stays empty."""
+        from Agents.workers.feed import shot_skeleton_failures
+
+        heading1 = "分镜1（00:00.000-00:13.000）："
+        heading2 = "分镜2（00:13.000-00:25.000）："
+        heading3 = "分镜3（00:25.000-00:30.000）："
+        body1 = "广角镜头。冷白光束如刀锋般扫过残破的唐代纸页。"
+        body2 = "近景微推。林悦的手指悬停在触控屏上方。"
+        skeleton = "\n".join((
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "不要改 ## 标题，不要改 duration，不要调换字段顺序。",
+            "",
+            "## 【封装单元 1/1】",
+            "duration: 30",
+            "总体描述:",
+            "参考素材引用:",
+            "分镜:",
+            heading1,
+            heading2,
+            heading3,
+            "台词:",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        brief = "任务：提示词封装\n\n" + skeleton
+        specialist = "\n".join((
+            "## 【封装单元 1/1】",
+            "总体描述:",
+            "林悦在实验室看到朱砂印。",
+            "分镜:",
+            heading1 + body1,
+            heading2 + body2,
+            heading3,
+            "台词:",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        ))
+        draft = fold_stage_draft("feed", brief, [specialist])
+        fenjing = draft.split("分镜:", 1)[1].split("台词:", 1)[0]
+        self.assertEqual(fenjing.count(heading1), 1)
+        self.assertEqual(fenjing.count(heading2), 1)
+        self.assertEqual(fenjing.count(heading3), 1)
+        self.assertIn(body1, fenjing)
+        self.assertIn(body2, fenjing)
+        self.assertLess(fenjing.find(heading1), fenjing.find(body1))
+        self.assertLess(fenjing.find(body1), fenjing.find(heading2))
+        self.assertLess(fenjing.find(heading2), fenjing.find(body2))
+        self.assertLess(fenjing.find(body2), fenjing.find(heading3))
+        self.assertEqual(fenjing.split(heading3, 1)[1].strip(), "")
+        failures = shot_skeleton_failures(
+            draft,
+            _packing_shot_state((("S01", 13), ("S02", 12), ("S03", 5))),
+        )
+        self.assertTrue(any("[Shot 3] 没有正文" in item for item in failures), failures)
+        self.assertFalse(any("[Shot 1] 没有正文" in item for item in failures), failures)
+        self.assertFalse(any("[Shot 2] 没有正文" in item for item in failures), failures)
+
+
+
 if __name__ == "__main__":
     unittest.main()
