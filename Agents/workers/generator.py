@@ -61,6 +61,10 @@ def run_generator(
         ])
         notes[relative] = _node_text(raw)
     ordered = [{"skill": relative, "text": notes.get(relative) or ""} for relative in chosen]
+    from Agents.workers.skeleton_fold import fold_stage_draft, folded_merge_output
+    folded = fold_stage_draft(task, brief, ordered)
+    if str(folded or "").strip():
+        return {"raw": folded_merge_output(task, folded), "partials": ordered}
     include_notes = (not repairing) or bool(selected)
     raw = complete("director", [
         {"role": "system", "content": _director_system(role, merge_prompt(task, _routing_context(task, brief)))},
