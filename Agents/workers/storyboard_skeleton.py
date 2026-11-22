@@ -522,7 +522,7 @@ def _empty_shot(shot_id, duration):
     }
 
 
-from end.storyboard_contract import _blocks, _duration, format_asset_line, parse_asset_line
+from end.storyboard_contract import _HEADING, _blocks, _canonical_id, _duration, format_asset_line, parse_asset_line
 
 
 def restore_storyboard_locks(text, skeleton):
@@ -532,6 +532,7 @@ def restore_storyboard_locks(text, skeleton):
     if not shots:
         return str(text or "")
     existing = {block["id"]: block for block in _blocks(text)}
+    layers = _picture_layers(text)
     blocks = []
     for shot in shots:
         fields = dict((existing.get(shot["id"]) or {}).get("fields") or {})
@@ -546,8 +547,50 @@ def restore_storyboard_locks(text, skeleton):
             fields["对白"] = "无"
         if shot.get("narration"):
             fields["旁白"] = shot["narration"]
+        _apply_picture_layer(fields, layers.get(shot["id"]) or "")
         blocks.append(_render_shot(shot["id"], fields, shot))
     return "\n\n".join(blocks).strip() + "\n"
+
+
+_PICTURE_LINE = re.compile(r"^画面层\s*[:：]\s*(.*)$")
+_FILLED_SLOT = re.compile(r"^【填写")
+
+
+def _picture_layers(text):
+    found = {}
+    current = None
+    for line in str(text or "").splitlines():
+        heading = _HEADING.match(line.strip())
+        if heading:
+            current = _canonical_id(heading.group(1))
+            continue
+        if not current:
+            continue
+        match = _PICTURE_LINE.match(line.strip())
+        if match and current not in found:
+            found[current] = match.group(1).strip()
+    return found
+
+
+def _apply_picture_layer(fields, layer):
+    action, camera = _split_picture_layer(layer)
+    if action and not str(fields.get("动作") or "").strip():
+        fields["动作"] = action
+    if camera and not str(fields.get("景别机位") or "").strip():
+        fields["景别机位"] = camera
+
+
+def _split_picture_layer(text):
+    """Map one 画面层 slot onto 动作 and 景别机位. Empty or unfilled slots stay empty."""
+    layer = str(text or "").strip()
+    if not layer or _FILLED_SLOT.match(layer):
+        return "", ""
+    from end.seam_ledger import SIZE_LADDER
+    for size in sorted(SIZE_LADDER, key=len, reverse=True):
+        if layer.startswith(size):
+            rest = layer[len(size):].lstrip("，,、。；;：: ")
+            return rest, size
+    return layer, ""
 
 
 def storyboard_skeleton_failures(text, skeleton):
