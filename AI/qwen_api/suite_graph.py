@@ -292,14 +292,48 @@ def _merge_node(task, model, kind):
 
     def node(state):
         _mark(state, "merge", "进行中")
-        system = merge_prompt(task, state.get("brief") or "")
-        try:
+        folded = ""
+        leftovers = []
+        refill_missing = []
+        if task != "asset":
+            from Agents.workers.skeleton_fold import (
+                apply_merge_to_empty_slots,
+                apply_missing_slot_refill,
+                fold_has_empty_slots,
+                fold_stage_draft,
+                folded_merge_output,
+                leftover_merge_blocks,
+                missing_contract_slots,
+                missing_slot_refill_prompt,
+                missing_slot_refill_system,
+                unmatched_specialist_partials,
+            )
+            folded = fold_stage_draft(task, state.get("brief") or "", state.get("partials") or [])
+            leftovers = unmatched_specialist_partials(task, folded, state.get("partials") or [])
+            if task in ("storyboard", "feed") and str(folded or "").strip():
+                refill_missing = missing_contract_slots(task, folded)
+                if not refill_missing:
+                    _mark(state, "merge", "完成")
+                    return {"output": folded_merge_output(task, folded)}
+            elif str(folded or "").strip() and (not leftovers or not fold_has_empty_slots(folded, task)):
+                _mark(state, "merge", "完成")
+                return {"output": folded_merge_output(task, folded)}
+        if refill_missing:
+            system = missing_slot_refill_system(task)
+            user = missing_slot_refill_prompt(
+                task, folded, refill_missing, leftovers,
+            )
+        else:
+            system = merge_prompt(task, state.get("brief") or "")
             user = _merge_user(state.get("brief") or "", state.get("partials") or [])
+            if leftovers and str(folded or "").strip():
+                user = "%s\n\n%s" % (user, leftover_merge_blocks(folded, leftovers))
+        try:
             messages = [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ]
-            if task == "storyboard":
+            if task == "storyboard" and not refill_missing:
                 mark = user.rfind("每一格都要答完六问")
                 p45 = ""
                 for item in state.get("partials") or []:
@@ -348,6 +382,11 @@ def _merge_node(task, model, kind):
             )
             if not str(raw or "").strip():
                 raise RuntimeError(_empty_body_error(state.get("model")))
+            if refill_missing:
+                raw = apply_missing_slot_refill(task, folded, raw)
+            elif str(folded or "").strip() and task != "asset":
+                from Agents.workers.skeleton_fold import apply_merge_to_empty_slots
+                raw = apply_merge_to_empty_slots(task, folded, raw)
         except Exception:
             _mark(state, "merge", "失败")
             raise

@@ -306,7 +306,7 @@ class AutoAdvanceTest(unittest.TestCase):
             return True, ""
 
         with patch("end.stage_runner.check_stage", check), patch(
-            "end.stage_runner.check_prompt", return_value=(0, "PASSED")
+            "end.stage_runner.check_feed", return_value=(0, "PASSED")
         ), patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"):
             run_project("p-chain")
             saved = read_project("p-chain")
@@ -402,14 +402,14 @@ class AutoAdvanceTest(unittest.TestCase):
         def check(folder, stage, locks, title=""):
             return True, ""
 
-        def check_prompt(*_args, **_kwargs):
+        def check_feed(*_args, **_kwargs):
             checks["n"] += 1
             if checks["n"] == 1:
                 return 1, "FAIL: H1 缺段"
             return 0, "PASSED"
 
         with patch("end.stage_runner.check_stage", check), patch(
-            "end.stage_runner.check_prompt", check_prompt
+            "end.stage_runner.check_feed", check_feed
         ), patch("end.server.call_deepseek", writer), patch("end.server.load_skill_pack", return_value="pack"):
             run_project("p-machine")
         saved = read_project("p-machine")

@@ -1342,6 +1342,8 @@ _WAN_SLOT_LABELS = {
 _WAN_META_SPEAKERS = frozenset((
     "资产", "时长", "镜号", "画面", "景别", "运镜", "出场", "道具", "地点",
     "场景", "备注", "负向清单", "音效", "BGM", "对白",
+    "总体描述", "参考素材引用", "分镜", "风格 / 情绪", "风格/情绪",
+    "音效 / BGM", "音效/BGM",
 ))
 
 
@@ -1426,6 +1428,9 @@ def _wan_dump_fields(line):
         return None
     if line == "无":
         return []
+    from Agents.workers.feed.wan_format import is_wan_shell_line
+    if is_wan_shell_line(line):
+        return None
     if "：" not in line:
         return None
     fields = []

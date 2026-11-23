@@ -159,6 +159,63 @@ def _drop_hidden_c31(code, report):
     return 0, kept
 
 
+def _wan_section_names(chunk):
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name
+
+    found = set()
+    for line in str(chunk or "").splitlines():
+        match = WAN_FIELD_LINE.match(line.strip())
+        if not match:
+            continue
+        name = canonical_wan_name(match.group("name"))
+        if name:
+            found.add(name)
+    return found
+
+
+def wan_structure_report(text):
+    """FAIL text when an H3-locked draft is not in the official Wan shell."""
+    from end.product_names import UNIT_CLAIM, UNIT_HEAD_ANY
+    from Agents.workers.feed.wan_format import WAN_SECTIONS
+
+    raw = str(text or "")
+    heads = list(UNIT_HEAD_ANY.finditer(raw))
+    required = list(WAN_SECTIONS)
+    missing_units = []
+    if heads:
+        for index, head in enumerate(heads):
+            end = heads[index + 1].start() if index + 1 < len(heads) else len(raw)
+            chunk = raw[head.start():end]
+            found = _wan_section_names(chunk)
+            missed = [name for name in required if name not in found]
+            if missed:
+                claim = UNIT_CLAIM.match(head.group(0))
+                number = int(claim.group(2)) if claim else index + 1
+                missing_units.append((number, missed))
+        if not missing_units:
+            return ""
+    elif _wan_section_names(raw):
+        missed = [name for name in required if name not in _wan_section_names(raw)]
+        if not missed:
+            return ""
+        missing_units.append((1, missed))
+    else:
+        return (
+            "[-] FAIL: 封装稿必须按万相 3.0 官方公式写（总体描述、参考素材引用、分镜、台词、音效 / BGM、风格 / 情绪、负向清单）。"
+            "不要再写成 H3 四段英文字段或 <d>。"
+        )
+    lines = [
+        "[-] FAIL: 封装稿必须按万相 3.0 官方公式写（总体描述、参考素材引用、分镜、台词、音效 / BGM、风格 / 情绪、负向清单）。"
+        "不要再写成 H3 四段英文字段或 <d>。"
+    ]
+    for number, missed in missing_units:
+        lines.append(
+            "[-] FAIL: [段%s] 这一段不是万相结构，缺 %s。"
+            % (number, "、".join(missed))
+        )
+    return "\n".join(lines)
+
+
 def check_feed(path, model, mode, track):
     text = ""
     try:
@@ -166,6 +223,20 @@ def check_feed(path, model, mode, track):
     except OSError:
         text = ""
     if feed_uses_h3(text, model):
+        from Agents.workers.feed.wan_format import is_wan_shaped
+
+        wan = is_wan_shaped(text)
+        h3 = _ref2va_heading(text)
+        if wan and not h3:
+            structure = wan_structure_report(text)
+            if structure:
+                return 1, structure
+            from end.prompt_gate import feed_unit_mismatch
+
+            mismatch = feed_unit_mismatch(text)
+            if mismatch:
+                return 1, mismatch
+            return 0, ""
         text = _prepare_h3_feed(path, text)
         structure = h3_structure_report(text)
         if structure:

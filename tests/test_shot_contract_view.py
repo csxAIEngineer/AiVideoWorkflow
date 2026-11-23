@@ -116,6 +116,38 @@ class ShotContractViewTest(unittest.TestCase):
             "分镜资产",
         )
 
+    def test_wan_feed_rows_use_official_section_names(self):
+        shot = {
+            "feed": {
+                "heading": "## 【封装单元 1/1】",
+                "title": "【封装单元 1/1】",
+                "unit": "1/1",
+                "总体描述": "雨夜客厅，女主独自等待。",
+                "参考素材引用": "<Subject 1> (图3) 女主",
+                "分镜": "分镜1（00:00.000-00:08.000）：女主坐在客厅里。",
+                "台词": "女主说：\"等我。\"",
+                "音效 / BGM": "雨声。",
+                "风格 / 情绪": "冷色写实",
+                "负向清单": "不要字幕、不要水印、不要复杂文字",
+            }
+        }
+        rows = view_eval("view.feedRows(shot)", shot)
+        self.assertEqual([row["key"] for row in rows], [
+            "title",
+            "总体描述",
+            "参考素材引用",
+            "分镜",
+            "台词",
+            "音效 / BGM",
+            "风格 / 情绪",
+            "负向清单",
+        ])
+        by_key = {row["key"]: row for row in rows}
+        self.assertEqual(by_key["总体描述"]["text"], "雨夜客厅，女主独自等待。")
+        self.assertEqual(by_key["台词"]["text"], "女主说：\"等我。\"")
+        self.assertFalse(by_key["参考素材引用"]["empty"])
+        self.assertNotIn("subject_definitions", by_key)
+
     def test_reference_note_is_a_prediction(self):
         shots = [{"id": "S02"}, {"id": "S03"}]
         pending = {

@@ -102,7 +102,7 @@ from end.locks import (
     wants_render,
     write_locks,
 )
-from end.prompt_gate import build_board, feed_text, project_markdown, validate_feed
+from end.prompt_gate import feed_text, project_markdown, validate_feed
 from end.repair_units import choice_action, next_asset_question
 from end.stage_runner import (
     _PERCENT,
@@ -1494,9 +1494,14 @@ def _sync_spec_field(folder, stage, text):
 def _recheck_after_rules(folder, locks, pipeline, path, title):
     stage = str(pipeline.get("current") or "")
     if str(pipeline.get("check") or "") == "machine" and stage == "feed":
-        from end.stage_runner import check_prompt
+        from end.stage_runner import check_feed
 
-        code, report = check_prompt(path, (locks or {}).get("model") or "h3", (locks or {}).get("track") or "1")
+        code, report = check_feed(
+            path,
+            (locks or {}).get("model") or "h3",
+            (locks or {}).get("material_mode") or "M1",
+            (locks or {}).get("track") or "1",
+        )
         return code == 0, report or ""
     from end.stage_runner import check_stage
 
@@ -2153,13 +2158,6 @@ def _run_project(project_id, debug_llm=False):
             code, report = validate_feed(feed_path, aspect)
             if code != 0:
                 raise RuntimeError("%s：%s" % (MACHINE_BLOCKED, (report or "")[-800:]))
-        remember(
-            read_project(project_id) or project,
-            "writing",
-            "看板",
-            progress={"percent": 92, "phase": "writing", "message": "看板", "debug_llm": debug},
-        )
-        build_board(markdown_path, project_dir(project_id) / "board.html")
         fresh = read_project(project_id)
         if fresh is None or _yield_if_paused(project_id):
             return
@@ -2505,11 +2503,11 @@ def resume_render(project):
         if alive and handoff in ("writer", "render"):
             return _resume_in_place(fresh, paused_from if handoff == "writer" else "rendering")
         spec = load_spec(project_id)
-        board_ready = bool(spec) and (folder / "board.html").is_file()
+        prompts_ready = bool(spec)
         explicit = paused_from in ("rendering", "building")
         action = "render"
         if not explicit:
-            action = "ready" if board_ready else "rewrite"
+            action = "ready" if prompts_ready else "rewrite"
         elif not spec:
             mark_user_pause(folder, project_id, "已暂停")
             raise RuntimeError("提示词还没写完，不能继续出片")
@@ -3667,12 +3665,14 @@ def rpc_replay(params):
             pipeline["script_from"] = plan["script_from"]
         else:
             pipeline.pop("script_from", None)
-        pipeline["passed"] = True
-        pipeline["report"] = ""
-        pipeline["repair"] = ""
+        passed = bool(plan.get("passed", True))
+        report = str(plan.get("report") or "")
+        pipeline["passed"] = passed
+        pipeline["report"] = "" if passed else report
+        pipeline["repair"] = "" if passed else report
         pipeline["retry_write"] = False
         pipeline["repairs"] = 0
-        pipeline["check"] = ""
+        pipeline["check"] = "" if passed else "machine"
         pipeline["revise_note"] = ""
         kept_progress = fresh.get("progress") or {}
         if plan.get("action") == "write":
@@ -3702,7 +3702,7 @@ def rpc_replay(params):
             submit_agent_task(Task("write", fresh["id"], {"debug_llm": bool(kept_progress.get("debug_llm"))}))
         else:
             gate_stage = plan.get("stage") if plan.get("stage") in _GATE_PHASE else "script"
-            reply, options = _gate_copy(gate_stage, True, "", 0)
+            reply, options = _gate_copy(gate_stage, passed, report, 0, has_draft=True)
             messages.append(
                 {
                     "role": "assistant",

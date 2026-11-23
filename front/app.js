@@ -65,7 +65,7 @@ let draftMaterials = [];
 let seamKept = new Set();
 const MAX_MATERIALS = 8;
 
-const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接", "离线看板"];
+const JOB_STEPS = ["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接"];
 const CREW_FALLBACK = [
   { id: "script", name: "编剧" },
   { id: "asset", name: "资产" },
@@ -213,7 +213,6 @@ function statusText(project) {
 
 function writeStep(project) {
   const message = ((project.progress && project.progress.message) || project.stage || "");
-  if (message.indexOf("看板") >= 0) return 8;
   if (message.indexOf("分镜衔接") >= 0) return 7;
   if (message.indexOf("质检") >= 0 || message.indexOf("机检") >= 0) return 6;
   if (message.indexOf("投喂") >= 0 || message.indexOf("封装") >= 0) return 5;
@@ -265,7 +264,7 @@ function jobIndex(project) {
     const mapped = { recon: 1, script: 2, asset: 3, storyboard: 4, feed: 5, check: 6, seam: 7 }[autoStageKey(project)];
     if (mapped != null) return mapped;
   }
-  if (phase === "prompts_ready" || project.has_board) return JOB_STEPS.length;
+  if (phase === "prompts_ready") return JOB_STEPS.length;
   if (project.status === "done" || project.status === "building" || project.status === "rendering") return JOB_STEPS.length;
   if (project.status === "writing") return writeStep(project);
   if (project.status === "drilling" || phase === "aspect_wait") return 0;

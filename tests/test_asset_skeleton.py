@@ -250,6 +250,70 @@ class AssetSkeletonContractTest(unittest.TestCase):
         self.assertNotIn(("无", "道具"), none_titles)
         self.assertNotIn(("无", "角色"), none_titles)
 
+    def test_absent_appearance_notes_are_skipped_but_names_with_wu_are_kept(self):
+        script = """## EP001-SC01｜外·红毯边·日（0s - 8s）
+
+出场：无（特写）
+
+## EP001-SC02｜外·红毯·日（8s - 16s）
+
+出场：无
+
+## EP001-SC03｜外·红毯·日（16s - 30s）
+
+出场：无头怪物、顾深
+"""
+        titles = [(item["title"], item["kind"]) for item in extract_asset_catalog(script)]
+        self.assertNotIn(("无（特写）", "角色"), titles)
+        self.assertNotIn(("无", "角色"), titles)
+        self.assertIn(("无头怪物", "角色"), titles)
+        self.assertIn(("顾深", "角色"), titles)
+        self.assertEqual(titles[0], ("无头怪物", "角色"))
+
+    def test_absent_notes_with_slash_in_parentheses_are_skipped(self):
+        script = """## EP001-SC00｜视觉隐喻/闪前·红毯局部（0s - 3s）
+
+出场：无（仅道具/环境）
+道具：红毯、白花
+
+## EP001-SC01｜内·民政局门口·日（3s - 18s）
+
+出场：沈棠、顾深
+道具：结婚证
+"""
+        titles = [(item["title"], item["kind"]) for item in extract_asset_catalog(script)]
+        self.assertNotIn(("无（仅道具", "角色"), titles)
+        self.assertNotIn(("环境）", "角色"), titles)
+        self.assertNotIn(("无（仅道具/环境）", "角色"), titles)
+        self.assertIn(("沈棠", "角色"), titles)
+        self.assertIn(("顾深", "角色"), titles)
+        self.assertIn(("红毯", "道具"), titles)
+        self.assertIn(("白花", "道具"), titles)
+        self.assertIn(("结婚证", "道具"), titles)
+        self.assertEqual(titles[0], ("沈棠", "角色"))
+
+    def test_absent_clause_notes_are_skipped_whole(self):
+        script = """## EP001-SC01｜内·婚礼现场红毯·日（0s - 15s）
+
+出场：无具体人物，仅环境
+道具：红地毯、白色绢花
+
+## EP001-SC02｜内·民政局办事窗口·上午（15s - 35s）
+
+出场：沈棠、顾深
+道具：结婚证
+"""
+        titles = [(item["title"], item["kind"]) for item in extract_asset_catalog(script)]
+        self.assertNotIn(("无具体人物", "角色"), titles)
+        self.assertNotIn(("仅环境", "角色"), titles)
+        self.assertNotIn(("无具体人物，仅环境", "角色"), titles)
+        self.assertIn(("沈棠", "角色"), titles)
+        self.assertIn(("顾深", "角色"), titles)
+        self.assertIn(("红地毯", "道具"), titles)
+        self.assertIn(("白色绢花", "道具"), titles)
+        self.assertIn(("结婚证", "道具"), titles)
+        self.assertEqual(titles[0], ("沈棠", "角色"))
+
     def test_script_without_cast_fails_closed_and_does_not_lock_scenes_only(self):
         script = """# 第001集｜皮肤卫士
 

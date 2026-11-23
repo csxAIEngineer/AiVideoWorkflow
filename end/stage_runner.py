@@ -793,14 +793,15 @@ _INSTRUCTION = {
     )),
     "feed": "\n".join((
         "只写%s，放在 feed。feed 必须是字符串。" % DRAFT_NAME,
-        "%s。每一段只写四段英文正文。" % HEADING_RULE,
+        "%s。当前视频模型走万相 3.0，按万相官方公式写，不要再写成 H3 四段英文字段。" % HEADING_RULE,
         "不要使用七段式栏名（【画幅风格】【场景资产】【核心人物】【站位声明】【时间轴分镜】【音效】【强制禁止项】）。",
         "不要写 summary 或 retention_analysis。",
-        H3_SUBJECT_SOUND_RULE,
-        "字段名必须带冒号并且单独成行，顺序固定：subject_definitions:、detailed_description:、overall_soundscape:、non_diegetic_music:。",
-        "四段正文一律英文。只有对白和画面内文字保留中文。对白写成 <d>[Chinese] 原文</d>。",
-        "每个%s单独计时。[Shot 1] 不要写时间戳。从 [Shot 2] 起写成 [Shot 2] At 00:04.000, the camera cuts to …，只在本单元内递增，最后一刀不超过 %s 秒。不要写成 At 00:04.000 [Shot 2]。下一段不要再从 At 00:00 接在上一段后面。" % (UNIT_NAME, pack_limit()),
-        "每个 Subject 必须对应 assets.md 里已经有的图。没有关键帧资产就不要写 Picture。",
+        "字段名必须单独成行并带冒号，顺序固定：总体描述:、参考素材引用:、分镜:、台词:、音效 / BGM:、风格 / 情绪:、负向清单:。",
+        "不要改这些栏名，不要写回 subject_definitions、detailed_description、overall_soundscape、non_diegetic_music。",
+        "不要使用 <d> 或 [Chinese]。台词写成角色说：\"原文\"，无对白写无台词。不要把情绪或情节写进台词行。",
+        "每个%s单独计时。分镜写成「分镜1（00:00.000-00:08.000）：」，起止秒在本单元内首尾相接，最后一刀不超过 %s 秒。不要再写成 [Shot 1] 或 At 00:04.000。下一段不要再从上一单元的时钟接着写。" % (UNIT_NAME, pack_limit()),
+        "负向清单只写官方已有的项，以及用户或锁已经提出的排除：不要字幕、不要水印、不要复杂文字。",
+        "参考素材必须对应 assets.md 里已经有的图。没有关键帧资产就不要编造。",
         "不要写接口 JSON，不要写 segments 对象。画面写正面有什么。",
     )),
 }
@@ -921,7 +922,7 @@ def mount_header(stage, locks, carried, only):
 
 
 def stage_instruction(stage, locks=None, known_ids=None):
-    """H3 feed is four English sections. Seedance keeps the seven-section sheet."""
+    """Wan 3.0 feed uses the official formula. Seedance keeps the seven-section sheet."""
     if stage == "storyboard":
         return storyboard_instruction(known_ids)
     if stage != "feed":
@@ -4234,7 +4235,7 @@ def _finish(folder, locks, pipeline):
     spec = _load_spec(folder)
     feed_path = folder / "_内部_" / "feed.md"
     if feed_path.is_file():
-        code, report = check_prompt(feed_path, locks.get("model") or "h3", locks.get("track") or "1")
+        code, report = check_feed(feed_path, locks.get("model") or "h3", locks.get("material_mode") or "M1", locks.get("track") or "1")
         if code != 0:
             failed = dict(pipeline or {})
             failed["check"] = "machine"
@@ -4454,8 +4455,6 @@ def _side_note(project, folder, locks, write_model, task_line, filename, label, 
 def _done(project, folder, locks, pipeline, write_model):
     if advisory_qc_enabled():
         _side_note(project, folder, locks, write_model, "任务：独立质检", "质检.md", "独立质检", "qc")
-    if str((locks or {}).get("delivery") or "") in ("1", "3"):
-        _side_note(project, folder, locks, write_model, "任务：离线看板", "看板说明.md", "离线看板", "board")
     return _finish(folder, locks, pipeline)
 
 

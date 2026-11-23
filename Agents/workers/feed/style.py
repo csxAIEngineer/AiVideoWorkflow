@@ -3,6 +3,11 @@
 import re
 from end.product_names import UNIT_HEAD_LINE
 
+from Agents.workers.feed.wan_format import (
+    WAN_FIELD_LINE,
+    canonical_wan_name,
+    is_wan_shaped,
+)
 from Agents.workers.feed.common import (
     _H3_FIELD_LINE,
     _H3_FIELD_NAMES,
@@ -36,7 +41,7 @@ _LIVE_ACTION_STYLE = re.compile(r"(?i)\blive-action\s+style\b|\blive action\s+st
 
 _STYLE_WRITERS = (
     "sd-feed-engine/references/feed-mode-and-gates.md",
-    "short-drama-director/references/h3-adapter.md",
+    "short-drama-director/references/wan-adapter.md",
     "short-drama-director/references/prompt-feeding-checklist.md",
 )
 
@@ -87,38 +92,56 @@ def style_lock_rule(style):
     if not line:
         return ""
     return "\n".join((
-        "本集画风已经锁定。程序会把下面这一句写进每一段 subject_definitions 的第一行。",
+        "本集画风已经锁定。程序会把下面这一句写进每一段「风格 / 情绪」的第一行。",
         "不要自己写画风，不要翻译，不要改字，不要删掉这句，也不要再写一种风格。",
         "只写在某一个房间或道具的主体上不算。",
         "锁定句：%s" % line,
     ))
 
 
-def _subject_body(block):
-    """``(header_index, inline_rest, body_lines, next_index)`` or None.
+def _style_header_name(line):
+    raw = str(line or "").strip()
+    wan = WAN_FIELD_LINE.match(raw)
+    if wan and canonical_wan_name(wan.group("name")) == "风格 / 情绪":
+        return "风格 / 情绪", (wan.group("rest") or "").strip()
+    field = _H3_FIELD_LINE.match(raw)
+    if field and field.group(1) == "subject_definitions":
+        return "subject_definitions", field.group(2).strip()
+    return None
 
-    ``body_lines`` keep their original endings. The span stops at the next
-    Ref2VA field, so the style sentence stays inside subject_definitions.
+
+def _is_next_section(line):
+    raw = str(line or "").strip()
+    wan = WAN_FIELD_LINE.match(raw)
+    if wan and canonical_wan_name(wan.group("name")):
+        return True
+    field = _H3_FIELD_LINE.match(raw)
+    return bool(field and field.group(1) in _H3_FIELD_NAMES)
+
+
+def _subject_body(block):
+    """``(header_index, inline_rest, body_lines, next_index, header_name)`` or None.
+
+    Prefer ``风格 / 情绪``. Fall back to leftover ``subject_definitions``.
     """
     lines = str(block or "").splitlines(keepends=True)
     header_at = None
     inline = ""
+    header_name = "风格 / 情绪"
     for index, raw_line in enumerate(lines):
-        core = raw_line.strip()
-        field = _H3_FIELD_LINE.match(core)
-        if field and field.group(1) == "subject_definitions":
+        found = _style_header_name(raw_line)
+        if found:
             header_at = index
-            inline = field.group(2).strip()
+            header_name, inline = found
             break
     if header_at is None:
         return None
     body_end = header_at + 1
     while body_end < len(lines):
-        field = _H3_FIELD_LINE.match(lines[body_end].strip())
-        if field and field.group(1) in _H3_FIELD_NAMES:
+        if _is_next_section(lines[body_end]):
             break
         body_end += 1
-    return header_at, inline, lines[header_at + 1:body_end], body_end, lines
+    return header_at, inline, lines[header_at + 1:body_end], body_end, lines, header_name
 
 
 def _first_body_line(inline, body_lines):
@@ -164,9 +187,9 @@ def style_lock_failures(text, style):
     """Fail a packed unit whose style line is missing, different, or extra.
 
     The pass condition is the exact lock sentence as the first line of
-    ``subject_definitions``. A style mention on a room or prop subject does
-    not pass. This is not a keyword search: "washed away" does not count as
-    the locked style, and it does not fail a unit that already has the sentence.
+    ``风格 / 情绪`` (or ``subject_definitions`` on a leftover H3 draft).
+    A style mention on a room or prop subject does not pass.
+    A word inside ordinary prose, such as "washed away", is not a style.
     """
     line = style_lock_line(style)
     if not line:
@@ -181,19 +204,19 @@ def style_lock_failures(text, style):
         parsed = _subject_body(block)
         first = ""
         if parsed is not None:
-            _header, inline, body_lines, _end, _lines = parsed
+            _header, inline, body_lines, _end, _lines, _name = parsed
             first = _first_body_line(inline, body_lines)
         if first != line:
             if first and _STYLE_SLOT.match(first):
                 errors.append(
                     "画风锁：%s 用了别的风格「%s」，不是锁定句「%s」。"
-                    "不要改写画风。subject_definitions 第一行必须是锁定句。"
+                    "不要改写画风。风格 / 情绪 第一行必须是锁定句。"
                     % (label, first, line)
                 )
             else:
                 errors.append(
                     "画风锁：%s 缺少锁定句「%s」。"
-                    "只写在房间或道具主体上不算。subject_definitions 第一行必须是这一句。"
+                    "只写在房间或道具主体上不算。风格 / 情绪 第一行必须是这一句。"
                     % (label, line)
                 )
         for hit in _style_phrase_hits(block, line):
@@ -222,7 +245,7 @@ def _inject_block(block, line):
     parsed = _subject_body(block)
     if parsed is None:
         return block
-    header_at, inline, body_lines, body_end, lines = parsed
+    header_at, inline, body_lines, body_end, lines, header_name = parsed
     if not inline and _first_body_line("", body_lines) == line:
         return block
     kept = []
@@ -243,7 +266,8 @@ def _inject_block(block, line):
         kept.append(_with_newline(raw_line))
     while kept and not kept[0].strip():
         kept.pop(0)
-    rebuilt = lines[:header_at] + ["subject_definitions:\n", line + "\n"] + kept + lines[body_end:]
+    heading = "风格 / 情绪:\n" if header_name != "subject_definitions" else "subject_definitions:\n"
+    rebuilt = lines[:header_at] + [heading, line + "\n"] + kept + lines[body_end:]
     return "".join(rebuilt)
 
 
@@ -255,7 +279,13 @@ def inject_style_lock(text, style):
     """
     line = style_lock_line(style)
     raw = str(text or "")
-    if not line or "subject_definitions" not in raw:
+    if not line:
+        return raw
+    if (
+        "subject_definitions" not in raw
+        and "风格 / 情绪" not in raw
+        and "风格/情绪" not in raw
+    ):
         return raw
     heads = list(UNIT_HEAD_LINE.finditer(raw))
     if not heads:

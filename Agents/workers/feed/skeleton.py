@@ -17,6 +17,13 @@ from Agents.workers.feed.common import (
     _style_units,
     _unit_label,
 )
+from Agents.workers.feed.wan_format import (
+    WAN_FIELD_LINE,
+    WAN_SECTIONS,
+    WAN_SHOT_HEADING,
+    canonical_wan_name,
+    is_wan_shaped,
+)
 from Agents.workers.feed.style import (
     _STYLE_WRITERS,
     _subject_body,
@@ -37,17 +44,22 @@ def format_cut_timecode(seconds):
 
 
 def _unit_shots(durations, ids=None):
-    """Local headings for one packed unit. Shot 1 has no cut time."""
+    """Local headings for one packed unit, as official Wan start-end 分镜 lines."""
+    from Agents.workers.feed.wan_format import wan_shot_heading
+
     shots = []
     elapsed = 0.0
     for index, raw in enumerate(durations or [], 1):
         seconds = float(raw)
-        cut = None if index == 1 else format_cut_timecode(elapsed)
+        start = elapsed
+        end = elapsed + seconds
         shot = {
             "local": index,
             "duration": seconds,
-            "cut": cut,
-            "heading": "[Shot 1]" if index == 1 else "[Shot %d] At %s" % (index, cut),
+            "start": start,
+            "end": end,
+            "cut": format_cut_timecode(start),
+            "heading": wan_shot_heading(index, start, end),
         }
         if ids is not None and index - 1 < len(ids):
             shot["id"] = ids[index - 1]
@@ -187,29 +199,44 @@ _EARLY_CLOCK = re.compile(
 )
 
 
+def _match_section(line):
+    raw = str(line or "").strip()
+    field = _H3_FIELD_LINE.match(raw)
+    if field:
+        return field.group(1), field.group(2)
+    field = WAN_FIELD_LINE.match(raw)
+    if field:
+        return canonical_wan_name(field.group("name")), field.group("rest")
+    return None
+
+
+def _known_section_names():
+    return set(_H3_FIELD_NAMES) | set(WAN_SECTIONS)
+
+
 def _field_parts(block, name):
     lines = str(block or "").splitlines(keepends=True)
     header_at = None
     inline = ""
     for index, raw_line in enumerate(lines):
-        field = _H3_FIELD_LINE.match(raw_line.strip())
-        if field and field.group(1) == name:
+        field = _match_section(raw_line)
+        if field and field[0] == name:
             header_at = index
-            inline = field.group(2).strip()
+            inline = str(field[1] or "").strip()
             break
     if header_at is None:
         return None
     body_end = header_at + 1
     while body_end < len(lines):
-        field = _H3_FIELD_LINE.match(lines[body_end].strip())
-        if field and field.group(1) in _H3_FIELD_NAMES:
+        field = _match_section(lines[body_end])
+        if field and field[0] in _known_section_names():
             break
         body_end += 1
     return header_at, inline, lines[header_at + 1:body_end], body_end, lines
 
 
 def _detailed_description_text(block):
-    parsed = _field_parts(block, "detailed_description")
+    parsed = _field_parts(block, "分镜") or _field_parts(block, "detailed_description")
     if parsed is None:
         return None
     _header, inline, body_lines, _end, _lines = parsed
@@ -221,15 +248,38 @@ def _detailed_description_text(block):
     return "\n".join(parts)
 
 
+_BARE_WAN_SHOT = re.compile(
+    r"^[ \t]*分镜\s*(?P<num>\d+)\s*[:：](?P<tail>.*)$"
+)
+
+
+def _heading_match(line):
+    raw = str(line or "")
+    wan = WAN_SHOT_HEADING.match(raw.strip())
+    if wan:
+        return (
+            int(wan.group("num")),
+            "（%s-%s）" % (wan.group("start"), wan.group("end")),
+            wan.group("tail") or "",
+        )
+    bare = _BARE_WAN_SHOT.match(raw.strip())
+    if bare:
+        return int(bare.group("num")), "", bare.group("tail") or ""
+    match = _SHOT_HEADING_LINE.match(raw)
+    if match:
+        return int(match.group(1)), match.group(2) or "", match.group(2) or ""
+    return None
+
+
 def _shot_headings(block):
     body = _detailed_description_text(block)
     if body is None:
         return []
     found = []
     for line in body.splitlines():
-        match = _SHOT_HEADING_LINE.match(line)
+        match = _heading_match(line)
         if match:
-            found.append((int(match.group(1)), match.group(2)))
+            found.append((match[0], match[1]))
     return found
 
 
@@ -240,7 +290,7 @@ def _definition_lines(block):
     parsed = _subject_body(block)
     if parsed is None:
         return []
-    _header, inline, body_lines, _end, _lines = parsed
+    _header, inline, body_lines, _end, _lines = parsed[:5]
     lines = []
     if inline:
         lines.append(inline)
@@ -297,13 +347,14 @@ def shot_skeleton_failures(text, state=None):
             break
         block = units[index]
         label = _unit_label(block, index + 1, total)
-        if _subject_tag_missing(block):
+        wan = is_wan_shaped(block)
+        if not wan and _subject_tag_missing(block):
             errors.append(
                 "镜号锁：%s 的 subject_definitions 没有 <Subject N>。"
                 "只有画面风格锁定句不算主体。把这一段的主体定义写回去，不要只留锁定句。"
                 % label
             )
-        if _soundscape_empty(block):
+        if not wan and _soundscape_empty(block):
             errors.append(
                 "镜号锁：%s 的 overall_soundscape 是空的。写上这一段的环境声，不要留空。"
                 % label
@@ -312,7 +363,7 @@ def shot_skeleton_failures(text, state=None):
         expected_numbers = [shot["local"] for shot in shots]
         found_numbers = [number for number, _tail in found]
         if found_numbers != expected_numbers:
-            shown = "、".join("[Shot %s]" % number for number in found_numbers) or "（没有 [Shot N]）"
+            shown = "、".join("分镜%s" % number for number in found_numbers) or "（没有分镜）"
             want = "、".join(shot["heading"] for shot in shots)
             errors.append(
                 "镜号锁：%s 的镜号是 %s，必须按这个本地骨架写：%s。"
@@ -321,21 +372,43 @@ def shot_skeleton_failures(text, state=None):
             )
             continue
         for shot, (_number, tail) in zip(shots, found):
-            if shot["local"] == 1:
-                if _EARLY_CLOCK.search(tail or ""):
+            want = "（%s-%s）" % (
+                format_cut_timecode(shot.get("start", 0.0)),
+                format_cut_timecode(
+                    shot.get("end", shot.get("start", 0.0) + float(shot.get("duration") or 0))
+                ),
+            )
+            if want in (tail or "") or want in (shot.get("heading") or "") and (tail or "").startswith("（"):
+                if want not in (tail or ""):
                     errors.append(
-                        "镜号锁：%s 的 [Shot 1] 不能带时间戳（写了 At 也不行，包括 At 00:00.000）。"
-                        "首镜没有切点。" % label
+                        "镜号锁：%s 的分镜%s 起止秒必须是 %s。"
+                        "不要自己改切点，也不要漏掉时间码。"
+                        % (label, shot["local"], want)
                     )
                 continue
-            match = _OFFICIAL_CUT.match(tail or "")
-            got = match.group(1) if match else ""
-            if got != shot["cut"]:
-                errors.append(
-                    "镜号锁：%s 的 [Shot %s] 切点必须是 At %s，紧跟在镜号后面。"
-                    "不要自己改切点，也不要漏掉时间码。"
-                    % (label, shot["local"], shot["cut"])
-                )
+            # Leftover H3 drafts still use At MM:SS.mmm after [Shot N].
+            if not wan:
+                if shot["local"] == 1:
+                    if _EARLY_CLOCK.search(tail or ""):
+                        errors.append(
+                            "镜号锁：%s 的 [Shot 1] 不能带时间戳（写了 At 也不行，包括 At 00:00.000）。"
+                            "首镜没有切点。" % label
+                        )
+                    continue
+                match = _OFFICIAL_CUT.match(tail or "")
+                got = match.group(1) if match else ""
+                if got != shot["cut"]:
+                    errors.append(
+                        "镜号锁：%s 的 [Shot %s] 切点必须是 At %s，紧跟在镜号后面。"
+                        "不要自己改切点，也不要漏掉时间码。"
+                        % (label, shot["local"], shot["cut"])
+                    )
+                continue
+            errors.append(
+                "镜号锁：%s 的分镜%s 起止秒必须是 %s。"
+                "不要自己改切点，也不要漏掉时间码。"
+                % (label, shot["local"], want)
+            )
         for number, prose in _shot_sections(block):
             if not str(prose or "").strip():
                 errors.append(
@@ -378,13 +451,13 @@ def _shot_sections(block):
     if body is None:
         return []
     lines = body.splitlines()
-    indexes = [index for index, line in enumerate(lines) if _SHOT_HEADING_LINE.match(line)]
+    indexes = [index for index, line in enumerate(lines) if _heading_match(line)]
     sections = []
     for pos, index in enumerate(indexes):
-        match = _SHOT_HEADING_LINE.match(lines[index])
+        match = _heading_match(lines[index])
         end = indexes[pos + 1] if pos + 1 < len(indexes) else len(lines)
-        prose = _heading_prose(match.group(2) or "", lines[index + 1:end])
-        sections.append((int(match.group(1)), prose))
+        prose = _heading_prose(match[2] if len(match) > 2 else match[1], lines[index + 1:end])
+        sections.append((match[0], prose))
     return sections
 
 
@@ -397,13 +470,14 @@ def _rewrite_shot_lines(lines, shots):
     stays a blob: it is not hung under ``[Shot 1]`` with empty later heads.
     """
     lines = list(lines)
-    indexes = [index for index, line in enumerate(lines) if _SHOT_HEADING_LINE.match(line)]
+    indexes = [index for index, line in enumerate(lines) if _heading_match(line)]
     paired = min(len(indexes), len(shots))
     for slot in range(paired):
         line_index = indexes[slot]
-        match = _SHOT_HEADING_LINE.match(lines[line_index])
+        match = _heading_match(lines[line_index])
         indent = re.match(r"[ \t]*", lines[line_index]).group(0)
-        prose = _strip_clock(match.group(2) or "", shots[slot]["local"] != 1)
+        tail = match[2] if len(match) > 2 else match[1]
+        prose = _strip_clock(tail or "", False)
         lines[line_index] = _join_heading(indent + shots[slot]["heading"], prose)
     if paired >= len(shots):
         return lines
@@ -429,7 +503,7 @@ def _replace_description(parsed, shots):
     for raw in body_lines:
         content.append(raw.rstrip("\r\n"))
     rewritten = _rewrite_shot_lines(content, shots)
-    new_lines = ["detailed_description:\n"]
+    new_lines = ["分镜:\n"]
     for line in rewritten:
         new_lines.append(line + "\n")
     return "".join(lines[:header_at] + new_lines + lines[body_end:])
@@ -438,7 +512,7 @@ def _replace_description(parsed, shots):
 def _insert_description(block, shots):
     snippet = "\n".join(shot["heading"] for shot in shots)
     trailing = "\n" if str(block).endswith("\n") else ""
-    placed = _insert_field(str(block).rstrip("\n"), "detailed_description", snippet)
+    placed = _insert_field(str(block).rstrip("\n"), "分镜", snippet)
     if trailing and not placed.endswith("\n"):
         placed += "\n"
     return placed
@@ -447,7 +521,7 @@ def _insert_description(block, shots):
 def _patch_unit_block(block, shots):
     if not shots:
         return block
-    parsed = _field_parts(block, "detailed_description")
+    parsed = _field_parts(block, "分镜") or _field_parts(block, "detailed_description")
     if parsed is None:
         if "subject_definitions" not in block and "overall_soundscape" not in block:
             return block
@@ -474,6 +548,7 @@ def inject_shot_skeleton(text, skeleton):
     if not heads:
         if len(skeleton) == 1 and (
             "subject_definitions" in raw or "detailed_description" in raw
+            or "分镜:" in raw or "分镜：" in raw
         ):
             return _patch_unit_block(raw, skeleton[0])
         return raw

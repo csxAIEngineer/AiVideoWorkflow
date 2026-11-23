@@ -121,7 +121,7 @@ def check_feed_draft(text, state=None):
     A warnings-only validator exit still passes. Duration shrink, a clamped
     over-limit span, deleted dialogue, a packed unit that misses the locked
     style sentence or carries a different one, and a unit whose local
-    ``[Shot N]`` headings or ``At MM:SS.mmm`` cuts disagree with the storyboard
+    ``分镜N（起-止）`` headings disagree with the storyboard
     skeleton are FAILs even when the validator only printed an info line.
     """
     state = state or {}

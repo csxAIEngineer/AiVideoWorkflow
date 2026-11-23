@@ -277,7 +277,51 @@ def _h3_fields(text):
     return fields
 
 
+def _wan_fields(text):
+    """Official Wan section bodies, or None when the unit is not Wan-shaped."""
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name
+
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    headers = []
+    offset = 0
+    for line in raw.splitlines(keepends=True):
+        core = line[:-1] if line.endswith("\n") else line
+        match = WAN_FIELD_LINE.match(core)
+        name = canonical_wan_name(match.group("name")) if match else ""
+        if name:
+            headers.append((name, offset, offset + len(line), (match.group("rest") or "").strip()))
+        offset += len(line)
+    if not headers:
+        return None
+    fields = {"__preamble": raw[: headers[0][1]].strip(), "__order": []}
+    for index, (name, _start, end, rest) in enumerate(headers):
+        stop = headers[index + 1][1] if index + 1 < len(headers) else len(raw)
+        body = raw[end:stop].strip()
+        if rest:
+            body = rest if not body else rest + "\n" + body
+        if name not in fields["__order"]:
+            fields["__order"].append(name)
+            fields[name] = body
+        elif body:
+            fields[name] = (fields[name] + "\n" + body).strip() if fields[name] else body
+    return fields
+
+
+def _join_wan(fields):
+    chunks = []
+    preamble = fields.get("__preamble") or ""
+    if preamble:
+        chunks.append(preamble)
+    for name in fields.get("__order") or []:
+        body = fields.get(name) or ""
+        chunks.append("%s:\n%s" % (name, body) if body else "%s:" % name)
+    return "\n".join(chunks).strip()
+
+
 def _source_text(unit):
+    wan = _wan_fields(unit)
+    if wan and str(wan.get("参考素材引用") or "").strip():
+        return wan["参考素材引用"]
     fields = _h3_fields(unit)
     if fields and str(fields.get("subject_definitions") or "").strip():
         return fields["subject_definitions"]
@@ -409,6 +453,18 @@ def bind_feed_unit(unit, assets):
     text = str(unit or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     rows = [item for item in (assets or []) if isinstance(item, dict)]
     ids = images_for_feed_unit(text, rows)
+    wan = _wan_fields(text)
+    if wan:
+        if "参考素材引用" in wan:
+            keep_pictures = bool(_frame_ids(text, rows))
+            body, _numbers = _rewrite_subjects(wan.get("参考素材引用") or "", rows, keep_pictures)
+            wan["参考素材引用"] = body
+            if not keep_pictures:
+                for name in wan.get("__order") or []:
+                    if name == "参考素材引用":
+                        continue
+                    wan[name] = _strip_pictures(wan.get(name) or "")
+        return _join_wan(wan), ids
     fields = _h3_fields(text)
     if not fields or "subject_definitions" not in fields:
         return text, ids

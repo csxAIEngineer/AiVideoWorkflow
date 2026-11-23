@@ -28,7 +28,8 @@ from Agents.workers.feed import (
 )
 from Agents.workers.generator import select_nodes
 from AI.skills.registry import suite_files
-from end.gates import H3_STRUCTURE_MARK, _H3_SECTIONS, h3_structure_report
+from end.gates import H3_STRUCTURE_MARK, _H3_SECTIONS, h3_structure_report, wan_structure_report
+from Agents.workers.feed.wan_format import WAN_SECTIONS
 from end.seam_ledger import packed_units
 from end.stage_runner import feed_duration_failures, group_shot_durations
 
@@ -195,17 +196,17 @@ class PackingPlanTest(unittest.TestCase):
         self.assertEqual(len(chunks), 2, result)
         self.assertEqual(_declared(result), [16, 18])
         self.assertNotIn("\nduration: 6\n", "\n" + result)
-        self.assertIn("[Shot 1]", chunks[0])
-        self.assertIn("[Shot 2]", chunks[0])
-        self.assertIn("At 00:06.000", chunks[0])
+        self.assertIn("分镜1", chunks[0])
+        self.assertIn("分镜2", chunks[0])
         self.assertIn("自语：杯子还是脏的。", chunks[0])
         self.assertIn("但习惯，不代表没事。", chunks[0])
         self.assertIn("男主（温和）：「别改了。」", chunks[0])
         self.assertNotIn("男主（温和）：「别改了。」", chunks[1])
         self.assertIn("我替她做了个决定。今晚，眼睛先下班。", chunks[1])
         self.assertIn("小君（带笑）：「怎么，一直看着我？」", chunks[1])
-        self.assertIn("\ndetailed_description:\n", chunks[1])
+        self.assertIn("分镜:", chunks[1])
         self.assertNotIn("overall_soundscape:\n<d>", result)
+        self.assertNotIn("<d>", result)
         for word in ("末态继承", "拼接节点", "换机位", "可变数据"):
             self.assertNotIn(word, result)
         errors = feed_duration_failures(result, board, state["shots"])
@@ -270,7 +271,8 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn(EXACT, prompts[0])
         self.assertEqual(_declared(result["feed"]), PLANNED)
         self.assertIn(LINE, result["feed"])
-        self.assertIn("<d>[Chinese] %s</d>" % EXACT, result["feed"])
+        self.assertIn(EXACT, result["feed"])
+        self.assertNotIn("<d>", result["feed"])
         repair = generator_messages({
             "attempt": 1,
             "draft": bad,
@@ -283,7 +285,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn("4+6+7+5+6=28", repair)
         self.assertIn(LINE, repair)
         self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", repair)
-        self.assertIn("short-drama-director/references/h3-adapter.md", repair)
+        self.assertIn("short-drama-director/references/wan-adapter.md", repair)
 
     def test_h3_brief_locks_headings_durations_and_section_lines(self):
         state = _state([LINE])
@@ -302,7 +304,9 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn("<s1>", H3_SUBJECT_SOUND_RULE)
         self.assertIn("[Shot 1]", H3_SUBJECT_SOUND_RULE)
         self.assertIn("overall_soundscape", H3_SUBJECT_SOUND_RULE)
-        self.assertIn(H3_SUBJECT_SOUND_RULE, note)
+        self.assertNotIn(H3_SUBJECT_SOUND_RULE, note)
+        self.assertIn("分镜1（", note)
+        self.assertIn("不要写 <d> 或 [Chinese]", note)
         self.assertNotIn("\nsummary:", scaffold)
         self.assertNotIn("\nretention_analysis:", scaffold)
         chunks = scaffold.split("## 【封装单元 ")
@@ -311,15 +315,15 @@ class PackingPlanTest(unittest.TestCase):
             block = "## 【封装单元 " + chunks[index]
             self.assertTrue(block.startswith("## 【封装单元 %s/2】" % index))
             self.assertIn("\nduration: %s\n" % seconds, block)
-            positions = [block.index("\n%s:" % name) for name in H3_SECTIONS]
+            positions = [block.index("\n%s:" % name) for name in WAN_SECTIONS]
             self.assertEqual(positions, sorted(positions))
-            for name in H3_SECTIONS:
+            for name in WAN_SECTIONS:
                 self.assertIn("\n%s:\n" % name, block + "\n")
         messages = generator_messages(dict(state, attempt=0, source=state["storyboard"]))
-        self.assertIn("不要自己发明 Ref2VA 版式", messages[0]["content"])
-        self.assertIn(H3_SUBJECT_SOUND_RULE, messages[0]["content"])
+        self.assertIn("不要自己发明 H3 四段英文字段", messages[0]["content"])
+        self.assertNotIn(H3_SUBJECT_SOUND_RULE, messages[0]["content"])
         self.assertIn("## 【封装单元 2/2】", messages[-1]["content"])
-        self.assertIn("\nnon_diegetic_music:", messages[-1]["content"])
+        self.assertIn("\n负向清单:", messages[-1]["content"])
         seedance = dict(state, locks={"model": "2.5"})
         seedance_note = packing_plan_note(seedance)
         self.assertIn("6+5+5+6+6=28", seedance_note)
@@ -364,7 +368,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertEqual(len(chunks), 2)
         for index, chunk in enumerate(chunks, 1):
             self.assertTrue(chunk.startswith("## 【封装单元 %s/2】" % index))
-            positions = [chunk.index("\n%s:\n" % name) for name in H3_SECTIONS]
+            positions = [chunk.index("\n%s:\n" % name) for name in WAN_SECTIONS]
             self.assertEqual(positions, sorted(positions))
             self.assertNotIn("summary-body-%s" % index, chunk)
             self.assertNotIn("summary:", chunk)
@@ -378,10 +382,11 @@ class PackingPlanTest(unittest.TestCase):
                     continue
                 self.assertNotIn("summary-body-%s" % other, chunk)
                 self.assertNotIn("beat %s." % other, chunk)
-        self.assertIn("<d>[Chinese] %s</d>" % LINE, restored)
+        self.assertIn(LINE, restored)
+        self.assertNotIn("<d>", restored)
         self.assertIn(MISSING, _unit_chunks(restored)[-1])
-        self.assertEqual(h3_structure_report(restored), "")
-        self.assertNotIn(H3_STRUCTURE_MARK, h3_structure_report(restored))
+        self.assertEqual(wan_structure_report(restored), "")
+        self.assertNotIn(H3_STRUCTURE_MARK, wan_structure_report(restored))
         wrapped = json.dumps({"feed": blob}, ensure_ascii=False)
         wrapped_restored = apply_packing_plan(wrapped, state)
         self.assertEqual(_unit_chunks(wrapped_restored), chunks)
@@ -420,15 +425,16 @@ class PackingPlanTest(unittest.TestCase):
         chunks = _unit_chunks(restored)
         self.assertEqual(len(chunks), 2, restored)
         self.assertEqual(_declared(restored), PLANNED)
-        self.assertEqual(h3_structure_report(restored), "")
+        self.assertEqual(wan_structure_report(restored), "")
         for index, chunk in enumerate(chunks, 1):
             self.assertIn("beat %s." % index, chunk)
-            self.assertIn("\nsubject_definitions:\n", chunk)
+            self.assertIn("参考素材引用:", chunk)
+            self.assertIn("<Subject 1> is a woman standing indoors.", chunk)
             self.assertNotIn("She waits by the door.", chunk)
             self.assertNotIn("retention_analysis:", chunk)
             self.assertNotIn("fully_preserved", chunk)
             self.assertIn("Room tone.", chunk)
-            self.assertIn("\nnon_diegetic_music:\n", chunk)
+            self.assertIn("音效 / BGM:", chunk)
             self.assertNotIn("## 【封装单元", chunk.split("\n", 1)[1])
 
     def test_omitted_sections_are_stripped_and_the_gate_still_runs(self):
@@ -465,9 +471,10 @@ class PackingPlanTest(unittest.TestCase):
         self.assertNotIn("She waits in unit", restored)
         self.assertNotIn("fully_preserved", restored)
         self.assertEqual(_declared(restored), PLANNED)
-        self.assertIn("<d>[Chinese] %s</d>" % EXACT, restored)
+        self.assertIn(EXACT, restored)
+        self.assertNotIn("<d>", restored)
         for chunk in _unit_chunks(restored):
-            positions = [chunk.index("\n%s:\n" % name) for name in H3_SECTIONS]
+            positions = [chunk.index("\n%s:\n" % name) for name in WAN_SECTIONS]
             self.assertEqual(positions, sorted(positions))
         mention = spoken.replace(
             "[Shot 1] She stands in unit 2.",
@@ -509,12 +516,10 @@ class PackingPlanTest(unittest.TestCase):
             "shots": [{"duration": 11}],
         })
         self.assertIn("She waits in the doorway.", kept)
-        self.assertIn("[Shot 1]", kept)
-        for name in H3_SECTIONS:
-            self.assertIn("\n%s:" % name, kept)
-        subject = kept.split("subject_definitions:\n", 1)[1].split("detailed_description:", 1)[0]
-        self.assertFalse(subject.strip(), kept)
-        self.assertEqual(h3_structure_report(kept), "")
+        self.assertIn("分镜1", kept)
+        for name in WAN_SECTIONS:
+            self.assertIn("%s:" % name, kept)
+        self.assertEqual(wan_structure_report(kept), "")
 
     def test_duration_and_spoken_lines_still_restore_on_a_markdown_draft(self):
         draft = _units(
@@ -528,14 +533,45 @@ class PackingPlanTest(unittest.TestCase):
         state["locks"] = {"model": "h3"}
         fixed = apply_packing_plan(draft, state)
         self.assertEqual(_declared(fixed), PLANNED)
-        self.assertIn("<d>[Chinese] %s</d>" % LINE, fixed)
+        self.assertIn(LINE, fixed)
+        self.assertNotIn("<d>", fixed)
+        self.assertNotIn("[Chinese]", fixed)
         self.assertIn(MISSING, _unit_chunks(fixed)[-1])
-        self.assertIn("\ndetailed_description:\n", fixed)
-        for name in H3_SECTIONS:
-            self.assertIn("\n%s:" % name, fixed)
+        self.assertIn("\n分镜:\n", fixed)
+        for name in WAN_SECTIONS:
+            self.assertIn("%s:" % name, fixed)
         for chunk in _unit_chunks(fixed):
-            subject = chunk.split("subject_definitions:\n", 1)[1].split("detailed_description:", 1)[0]
-            self.assertFalse(subject.strip(), chunk)
+            self.assertIn("分镜:", chunk)
+            self.assertIn("台词:", chunk)
+
+    def test_wan_packing_repair_names_only_the_mounted_writers(self):
+        skill = "sd-feed-engine/SKILL.md"
+        adapter = "short-drama-director/references/wan-adapter.md"
+        leftovers = (
+            "sd-feed-engine/references/feed-mode-and-gates.md",
+            "sd-feed-engine/references/asset-mapping-and-rules.md",
+            "short-drama-director/references/model-adapters.md",
+            "short-drama-director/references/segment-splicing.md",
+            "short-drama-director/references/prompt-feeding-checklist.md",
+        )
+        mounted = [skill, adapter]
+        for errors in (
+            ["时长被压缩：分镜合计 56s，封装声明 6s。"],
+            ["对白被压缩：封装稿缺少「别改了」。"],
+            ["画风锁：第一行不是锁定句"],
+            ["镜号锁：切点不是骨架时间"],
+        ):
+            found = packing_repair_targets({"errors": errors}, h3=True)
+            self.assertEqual(found, mounted)
+            for leftover in leftovers:
+                self.assertNotIn(leftover, found)
+        self.assertEqual(
+            packing_repair_targets({"errors": ["时长被压缩：分镜合计 56s，封装声明 6s。"]}, h3=False),
+            [
+                "sd-feed-engine/references/feed-mode-and-gates.md",
+                "short-drama-director/references/prompt-feeding-checklist.md",
+            ],
+        )
 
     def test_duration_and_dialogue_failures_rerun_the_packing_writers(self):
         h3_state = {
@@ -553,7 +589,7 @@ class PackingPlanTest(unittest.TestCase):
         duration_nodes = select_nodes(files, duration_brief, previous)
         self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", duration_nodes)
         self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", duration_nodes)
-        self.assertIn("short-drama-director/references/h3-adapter.md", duration_nodes)
+        self.assertIn("short-drama-director/references/wan-adapter.md", duration_nodes)
         self.assertNotIn("sd-feed-engine/SKILL.md", duration_nodes)
         self.assertNotIn("sd-feed-engine/references/asset-mapping-and-rules.md", duration_nodes)
         self.assertNotIn("short-drama-director/references/segment-splicing.md", duration_nodes)
@@ -567,7 +603,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn("sd-feed-engine/SKILL.md", dialogue_nodes)
         self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", dialogue_nodes)
         self.assertNotIn("sd-feed-engine/references/feed-mode-and-gates.md", dialogue_nodes)
-        self.assertNotIn("short-drama-director/references/h3-adapter.md", dialogue_nodes)
+        self.assertNotIn("short-drama-director/references/wan-adapter.md", dialogue_nodes)
         self.assertEqual(
             packing_repair_targets(dialogue_state["machine_report"], h3=False),
             [
@@ -649,7 +685,7 @@ class PackingPlanTest(unittest.TestCase):
         self.assertTrue(any("必须把这一镜拆开" in item for item in split_errors), split_errors)
         self.assertFalse(any("时长被压缩" in item for item in split_errors), split_errors)
         self.assertIn(
-            "short-drama-director/references/h3-adapter.md",
+            "short-drama-director/references/wan-adapter.md",
             packing_repair_targets({"errors": split_errors}, h3=True),
         )
         first_critic = calls.index("critic")
@@ -658,10 +694,104 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", repair_nodes)
         self.assertIn("sd-feed-engine/SKILL.md", repair_nodes)
         self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", repair_nodes)
-        self.assertIn("short-drama-director/references/h3-adapter.md", repair_nodes)
+        self.assertIn("short-drama-director/references/wan-adapter.md", repair_nodes)
         self.assertNotIn("sd-feed-engine/references/asset-mapping-and-rules.md", repair_nodes)
         self.assertNotIn("short-drama-director/references/segment-splicing.md", repair_nodes)
         self.assertEqual(repair.count("director"), 1)
+
+    def test_apply_packing_plan_does_not_dump_extra_wan_units_into_the_last_segment(self):
+        """A two-group Wan draft that still carries leftover units stays two clean units.
+
+        Extra 分镜, 总体描述, and 参考素材引用 must not be appended onto unit 2.
+        """
+        def unit(index, total, overall, assets, shots):
+            lines = [
+                "## 【封装单元 %s/%s】" % (index, total),
+                "duration: 30",
+                "总体描述:",
+                overall,
+                "参考素材引用:",
+                assets,
+                "分镜:",
+            ]
+            start = 0
+            for number, (seconds, body) in enumerate(shots, 1):
+                end = start + seconds
+                lines.append(
+                    "分镜%s（%02d:%02d.000-%02d:%02d.000）："
+                    % (number, start // 60, start % 60, end // 60, end % 60)
+                )
+                lines.append(body)
+                start = end
+            lines.extend(("台词:", "负向清单:", "不要字幕"))
+            return "\n".join(lines)
+
+        first_shots = (
+            (12, "第一镜画面"),
+            (6, "第二镜画面"),
+            (6, "第三镜画面"),
+            (6, "第四镜画面"),
+        )
+        second_shots = (
+            (5, "第五镜画面"),
+            (7, "第六镜画面"),
+            (6, "第七镜画面"),
+            (6, "第八镜画面"),
+            (6, "第九镜画面"),
+        )
+        draft = "\n\n".join((
+            unit(1, 2, "单元一总体", "单元一素材", first_shots),
+            unit(2, 2, "单元二总体", "单元二素材", second_shots),
+            unit(1, 2, "旧单元一总体", "旧单元一素材", (
+                (12, "旧第一镜"),
+                (6, "旧第二镜"),
+                (6, "旧第三镜"),
+                (6, "旧第四镜"),
+            )),
+            unit(2, 2, "旧单元二总体", "旧单元二素材", (
+                (5, "旧第五镜"),
+                (7, "旧第六镜"),
+                (6, "旧第七镜"),
+                (6, "旧第八镜"),
+                (6, "旧第九镜"),
+            )),
+        )) + "\n"
+        durations = [12, 6, 6, 6, 5, 7, 6, 6, 6]
+        state = {
+            "storyboard": "\n".join(
+                "## S%02d\n时长：%s" % (index, seconds)
+                for index, seconds in enumerate(durations, 1)
+            ),
+            "shots": [
+                {"id": "S%02d" % index, "duration": seconds}
+                for index, seconds in enumerate(durations, 1)
+            ],
+            "locks": {"model": "h3", "material_mode": "M1", "track": "1"},
+        }
+        result = apply_packing_plan(draft, state)
+        chunks = _unit_chunks(result)
+        self.assertEqual(len(chunks), 2, result)
+        self.assertEqual(_declared(result), [30, 30])
+        first, second = chunks
+        self.assertIn("第一镜画面", first)
+        self.assertIn("第四镜画面", first)
+        self.assertIn("单元一总体", first)
+        self.assertIn("单元一素材", first)
+        self.assertNotIn("第五镜画面", first)
+        self.assertNotIn("旧单元", first)
+        self.assertIn("第五镜画面", second)
+        self.assertIn("第九镜画面", second)
+        self.assertIn("单元二总体", second)
+        self.assertIn("单元二素材", second)
+        self.assertNotIn("第一镜画面", second)
+        self.assertNotIn("第四镜画面", second)
+        self.assertNotIn("旧单元", second)
+        self.assertNotIn("旧第一镜", second)
+        self.assertNotIn("旧第五镜", second)
+        self.assertEqual(second.count("分镜1（"), 1)
+        self.assertEqual(second.count("分镜5（00:24.000-00:30.000）："), 1)
+        self.assertEqual(result.count("单元二总体"), 1)
+        self.assertEqual(result.count("单元一总体"), 1)
 
 
 STYLE = "冷白窗光"
@@ -756,9 +886,12 @@ class SkeletonFoldTest(unittest.TestCase):
         self.assertIn("The door shuts.", chunks[2])
         for chunk in chunks:
             self.assertTrue(chunk.startswith("## 【封装单元"))
-            for name in H3_SECTIONS:
+            for name in WAN_SECTIONS:
                 self.assertIn("\n%s:" % name, chunk)
-            self.assertTrue(chunk.split("subject_definitions:\n", 1)[1].startswith(LOCK))
+            self.assertIn(LOCK, chunk)
+            self.assertTrue(
+                "风格 / 情绪:" in chunk and LOCK in chunk.split("风格 / 情绪:", 1)[1].split("负向清单:", 1)[0]
+            )
         self.assertIn("json_fields", apply_packing_plan.last_fold_source)
         self.assertIn("informal_feed", apply_packing_plan.last_fold_source)
 
@@ -772,22 +905,25 @@ class SkeletonFoldTest(unittest.TestCase):
         }, ensure_ascii=False)
         extracted = extract_feed(raw)
         self.assertFalse(extracted.lstrip().startswith("{"))
-        self.assertIn("subject_definitions:", extracted)
+        self.assertTrue("subject_definitions:" in extracted or "参考素材引用:" in extracted, extracted)
         folded = apply_packing_plan(raw, state)
         chunks = _unit_chunks(folded)
         self.assertEqual(len(chunks), 3, folded)
         self.assertIn("the woman in unit one.", chunks[0])
         self.assertIn("She wipes the glass in unit one.", chunks[0])
-        self.assertIn("[Shot 1]", chunks[0])
+        self.assertIn("分镜1", chunks[0])
         for chunk in chunks[1:]:
-            for name in H3_SECTIONS:
+            for name in WAN_SECTIONS:
                 self.assertIn("\n%s:" % name, chunk)
-            self.assertTrue(chunk.split("subject_definitions:\n", 1)[1].startswith(LOCK))
-            self.assertIn("[Shot 1]", chunk)
+            self.assertIn(LOCK, chunk)
+            self.assertTrue(
+                "风格 / 情绪:" in chunk and LOCK in chunk.split("风格 / 情绪:", 1)[1].split("负向清单:", 1)[0]
+            )
+            self.assertIn("分镜1", chunk)
             self.assertNotIn("unit one", chunk)
             self.assertNotIn("She wipes", chunk)
-            description = chunk.split("detailed_description:\n", 1)[1].split("overall_soundscape:", 1)[0]
-            self.assertEqual(description.strip(), "[Shot 1]")
+            description = chunk.split("\n分镜:\n", 1)[1].split("\n台词:", 1)[0]
+            self.assertTrue(description.strip().startswith("分镜1（"), description)
         self.assertIn("json_fields", apply_packing_plan.last_fold_source)
         self.assertIn("materialize", apply_packing_plan.last_fold_source)
 
@@ -824,14 +960,17 @@ class SkeletonFoldTest(unittest.TestCase):
         chunks = _unit_chunks(folded)
         self.assertEqual(len(chunks), 3, folded)
         for chunk in chunks:
-            for name in H3_SECTIONS:
+            for name in WAN_SECTIONS:
                 self.assertIn("\n%s:" % name, chunk)
-            self.assertTrue(chunk.split("subject_definitions:\n", 1)[1].startswith(LOCK))
-            self.assertIn("[Shot 1]", chunk)
+            self.assertIn(LOCK, chunk)
+            self.assertTrue(
+                "风格 / 情绪:" in chunk and LOCK in chunk.split("风格 / 情绪:", 1)[1].split("负向清单:", 1)[0]
+            )
+            self.assertIn("分镜1", chunk)
         self.assertIn("materialize", apply_packing_plan.last_fold_source)
-        description = chunks[2].split("detailed_description:\n", 1)[1].split("overall_soundscape:", 1)[0]
+        description = chunks[2].split("\n分镜:\n", 1)[1].split("\n台词:", 1)[0]
         self.assertNotIn("别改了", description)
-        self.assertEqual(description.strip(), "[Shot 1]")
+        self.assertTrue(description.strip().startswith("分镜1（"), description)
 
     def test_the_brief_shows_the_filled_skeleton_on_repair(self):
         state = _three_state()
@@ -852,8 +991,8 @@ class SkeletonFoldTest(unittest.TestCase):
         self.assertIn("保留已经填好的单元", brief)
         first = generator_messages(dict(state, attempt=0, draft=""))[-1]["content"]
         self.assertIn("不要输出 JSON", first)
-        self.assertIn("subject_definitions:\n%s" % LOCK, first)
-        self.assertIn("[Shot 1]", first)
+        self.assertIn("风格 / 情绪:\n%s" % LOCK, first)
+        self.assertIn("分镜1", first)
 
     def test_the_debug_log_names_a_json_fold(self):
         folder = Path(tempfile.mkdtemp())

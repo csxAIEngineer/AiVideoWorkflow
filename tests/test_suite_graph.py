@@ -172,8 +172,13 @@ class SuiteGraphTest(unittest.TestCase):
             "",
             "任务：独立质检",
         ))
-        self.assertIn("short-drama-director/references/h3-adapter.md", suite_files("qc", qc))
-        self.assertEqual(suite_files("qc", qc)[-1], "short-drama-director/references/h3-adapter.md")
+        qc_files = suite_files("qc", qc)
+        adapter = "short-drama-director/references/wan-adapter.md"
+        self.assertEqual(qc_files[0], adapter)
+        self.assertNotIn("short-drama-director/references/h3-adapter.md", qc_files)
+        seedance = "\n".join(("阶段：P5", "模型：2.5", "任务：独立质检"))
+        self.assertNotIn(adapter, suite_files("qc", seedance))
+        self.assertNotIn("short-drama-director/references/h3-adapter.md", suite_files("qc", seedance))
 
     def test_each_model_call_is_written_to_the_prompt_log_once(self):
         from AI.agent.model import LLMModel
@@ -206,7 +211,7 @@ class SuiteGraphTest(unittest.TestCase):
         finally:
             path.unlink()
 
-    def test_h3_feed_leads_with_the_adapter(self):
+    def test_wan_feed_leads_with_the_adapter(self):
         brief = "\n".join((
             "阶段：P4",
             "赛道：1",
@@ -218,22 +223,36 @@ class SuiteGraphTest(unittest.TestCase):
             "任务：提示词封装",
         ))
         files = suite_files("feed", brief)
-        adapter = "short-drama-director/references/h3-adapter.md"
-        seven = "short-drama-director/references/model-adapters.md"
-        self.assertEqual(files[0], adapter)
-        self.assertLess(files.index(adapter), files.index(seven))
+        adapter = "short-drama-director/references/wan-adapter.md"
+        skill = "sd-feed-engine/SKILL.md"
+        leftovers = (
+            "sd-feed-engine/references/feed-mode-and-gates.md",
+            "sd-feed-engine/references/asset-mapping-and-rules.md",
+            "short-drama-director/references/model-adapters.md",
+            "short-drama-director/references/segment-splicing.md",
+            "short-drama-director/references/prompt-feeding-checklist.md",
+        )
+        self.assertEqual(files, [adapter, skill])
+        for leftover in leftovers:
+            self.assertNotIn(leftover, files)
+        self.assertNotIn("short-drama-director/references/h3-adapter.md", files)
         self.assertEqual(pack_cohorts(files)[0], [adapter])
+        only = brief.replace("任务：提示词封装", "只加载：sd-feed-engine/\n任务：提示词封装")
+        self.assertEqual(suite_files("feed", only), [adapter, skill])
         prompt = merge_prompt("feed", brief)
-        self.assertIn("<d>[Chinese]", prompt)
-        self.assertIn("四段英文正文", prompt)
+        self.assertIn("万相官方公式", prompt)
+        self.assertIn("总体描述:", prompt)
+        self.assertNotIn("<d>[Chinese]", prompt)
+        self.assertNotIn("四段英文正文", prompt)
         self.assertIn("不要写 summary 或 retention_analysis", prompt)
-        from end.product_names import H3_SUBJECT_SOUND_RULE
-
-        self.assertIn(H3_SUBJECT_SOUND_RULE, prompt)
+        self.assertNotIn("四段英文正文", prompt)
         self.assertNotIn("summary:", prompt)
         self.assertNotIn("retention_analysis:", prompt)
         seedance = "\n".join(("阶段：P4", "模型：2.5", "任务：提示词封装"))
         self.assertNotIn("<d>[Chinese]", merge_prompt("feed", seedance))
+        seedance_files = suite_files("feed", seedance)
+        self.assertNotIn(adapter, seedance_files)
+        self.assertEqual(seedance_files, [skill, *leftovers])
 
     def test_skill_prompt_is_one_file_without_the_director(self):
         prompt = skill_node_prompt("sd-storyboard-engine/SKILL.md")
@@ -440,6 +459,7 @@ class AssetBriefSliceGraphTest(unittest.TestCase):
 
         model = AssetModel()
         result = run_suite("asset", brief, model)
+        # Like origin/dev-server, asset merge publishes the merge model's body.
         self.assertEqual(result["image_prompts"], "资产正文")
         portrait = model.users["portrait"]
         self.assertIn("#### 图1 · 女主（角色）", portrait)

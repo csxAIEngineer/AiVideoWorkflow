@@ -89,7 +89,7 @@ POST /api/v1/services/aigc/video-generation/video-synthesis
 | 档 | resolution | 模型 |
 |---|---|---|
 | `preview` | `480P` | `wan3.0-video` |
-| `generate` | `720P` | `wan3.0-video` |
+| `generate` | `480P` | `wan3.0-video` |
 | `minimax` | `768P`，并保留 `watermark: false` 与 `preset: fast` | 仍登记为 `minimax-h3`，路线不指向它 |
 
 请求体字段是 `resolution`、`ratio`、`duration`。`duration` 为 2–30，或 `-1`。`prompt_extend` 不默认写上。带图时 `ratio` 仍是 `adaptive`。官方说明见 https://platform.qianwenai.com/docs/developer-guides/video-generation/wan30-video 。

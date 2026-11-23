@@ -105,6 +105,10 @@ COMBAT_FILES = {
 
 def resolve_files(stage, track="1", combat="none", model="2.5", source="1", previs=False):
     files = list(STAGE_FILES.get(stage.upper(), STAGE_FILES["P3"]))
+    if model.lower() == "h3" and stage.upper() == "P4":
+        # Wan packing keeps the engine skill and the adapter only.
+        # Duration, shot skeleton, asset lines, and D-lock are program-owned.
+        files = ["sd-feed-engine/SKILL.md"]
     if source in ("3", "4") and stage.upper() in ("P0", "P1"):
         files.extend([
             "sd-recon-engine/SKILL.md",
@@ -127,12 +131,10 @@ def resolve_files(stage, track="1", combat="none", model="2.5", source="1", prev
         ])
     if stage.upper() in ("P3", "P4") and combat.upper() in COMBAT_FILES:
         files.extend(COMBAT_FILES[combat.upper()])
-    if model.lower() == "h3" and stage.upper() == "P4":
-        # Lead the feed specialists. The seven-section adapter is much larger
-        # and used to land in a later cohort, so drafts kept the Chinese sheet.
-        files.insert(0, "short-drama-director/references/h3-adapter.md")
-    elif model.lower() == "h3" and stage.upper() == "P5":
-        files.append("short-drama-director/references/h3-adapter.md")
+    if model.lower() == "h3" and stage.upper() in ("P4", "P5"):
+        # Live locks still say h3, but video is Wan 3.0. Lead feed and
+        # independent QC with the Wan adapter, not the H3 English shell.
+        files.insert(0, "short-drama-director/references/wan-adapter.md")
     if previs:
         files.append("sd-storyboard-engine/references/p45-previs-storyboard.md")
     # 去重保序

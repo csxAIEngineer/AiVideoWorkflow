@@ -263,6 +263,45 @@ class ShotContractTest(unittest.TestCase):
             "available": True,
         }])
 
+    def test_wan_packed_unit_exposes_official_feed_fields(self):
+        from end.shot_contract import feed_fields
+
+        unit = "\n".join((
+            "## 【封装单元 1/1】",
+            "duration: 8",
+            "总体描述:",
+            "雨夜客厅，女主独自等待。",
+            "参考素材引用:",
+            "<Subject 1> (Female Protagonist): a woman in a pink dress.",
+            "分镜:",
+            "分镜1（00:00.000-00:08.000）：女主坐在客厅里。",
+            "台词:",
+            "女主说：\"等我。\"",
+            "音效 / BGM:",
+            "雨声。",
+            "风格 / 情绪:",
+            "冷色写实",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        ))
+        fields = feed_fields(unit)
+        self.assertEqual(fields["heading"], "## 【封装单元 1/1】")
+        self.assertEqual(fields["unit"], "1/1")
+        self.assertEqual(fields["总体描述"], "雨夜客厅，女主独自等待。")
+        self.assertIn("<Subject 1>", fields["参考素材引用"])
+        self.assertIn("分镜1（00:00.000-00:08.000）", fields["分镜"])
+        self.assertIn("等我。", fields["台词"])
+        self.assertEqual(fields["音效 / BGM"], "雨声。")
+        self.assertEqual(fields["风格 / 情绪"], "冷色写实")
+        self.assertEqual(fields["负向清单"], "不要字幕、不要水印、不要复杂文字")
+        self.assertEqual(fields["subject_definitions"], "")
+        leftover = feed_fields(MATCH_UNIT)
+        self.assertEqual(
+            leftover["subject_definitions"],
+            "<Subject 1>: female protagonist under a street lamp",
+        )
+        self.assertNotIn("总体描述", leftover)
+
     def test_image_source_and_feed_fields_come_from_the_packed_unit(self):
         spec = {
             "assets": [

@@ -18,6 +18,19 @@
     { key: "non_diegetic_music", label: "音乐 non_diegetic_music" },
   ];
 
+  const WAN_FEED_FIELDS = [
+    { key: "title", label: "标题" },
+    { key: "总体描述", label: "总体描述" },
+    { key: "参考素材引用", label: "参考素材引用" },
+    { key: "分镜", label: "分镜" },
+    { key: "台词", label: "台词" },
+    { key: "音效 / BGM", label: "音效 / BGM" },
+    { key: "风格 / 情绪", label: "风格 / 情绪" },
+    { key: "负向清单", label: "负向清单" },
+  ];
+
+  const WAN_FEED_KEYS = WAN_FEED_FIELDS.slice(1).map((field) => field.key);
+
   function resolvedOf(shot) {
     const resolved = shot && shot.video_mode_resolved;
     return resolved && typeof resolved === "object" ? resolved : {};
@@ -134,7 +147,10 @@
 
   function feedRows(shot) {
     const feed = feedOf(shot) || {};
-    return FEED_FIELDS.map((field) => {
+    const fields = WAN_FEED_KEYS.some((key) => Object.prototype.hasOwnProperty.call(feed, key))
+      ? WAN_FEED_FIELDS
+      : FEED_FIELDS;
+    return fields.map((field) => {
       const raw = feed[field.key] != null ? String(feed[field.key]) : "";
       const text = raw.trim();
       return {

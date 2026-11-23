@@ -60,7 +60,12 @@ def _feed(bodies):
 
 
 def _first_subject_line(chunk):
-    body = chunk.split("subject_definitions:\n", 1)[1]
+    for marker in ("风格 / 情绪:\n", "风格/情绪:\n", "subject_definitions:\n"):
+        if marker in chunk:
+            body = chunk.split(marker, 1)[1]
+            break
+    else:
+        return ""
     for line in body.splitlines():
         if line.strip():
             return line.strip()
@@ -109,8 +114,8 @@ class StyleInjectionTest(unittest.TestCase):
         return {
             "script": SCRIPT,
             "locks": {"model": "h3", "style_look": FALLBACK, "style": FALLBACK},
-            "storyboard": "\n".join("## S0%s\n时长：8" % index for index in range(1, 6)),
-            "shots": [{"duration": 8} for _ in range(5)],
+            "storyboard": "\n".join("## S0%s\n时长：16" % index for index in range(1, 6)),
+            "shots": [{"duration": 16} for _ in range(5)],
         }
 
     def test_every_unit_receives_the_same_lock_when_the_model_omits_it(self):
@@ -127,9 +132,9 @@ class StyleInjectionTest(unittest.TestCase):
         self.assertEqual(len(chunks), 5)
         self.assertEqual({_first_subject_line(chunk) for chunk in chunks}, {LOCK})
         for chunk in chunks:
-            self.assertEqual(chunk.split("subject_definitions:\n", 1)[1].splitlines()[0], LOCK)
+            self.assertEqual(_first_subject_line(chunk), LOCK)
             self.assertIn("<Subject 1>:", chunk)
-            self.assertIn("duration: 8", chunk)
+            self.assertIn("duration: 16", chunk)
         self.assertNotIn("【画幅风格】", fixed)
         for word in WORKFLOW:
             self.assertNotIn(word, LOCK)
@@ -143,7 +148,7 @@ class StyleInjectionTest(unittest.TestCase):
             "画面风格：实拍\n<Subject 1>: a woman rendered in a live-action style.",
         )
         fixed = inject_style_lock(draft, INK)
-        self.assertTrue(fixed.split("subject_definitions:\n", 1)[1].startswith(LOCK + "\n"))
+        self.assertEqual(_first_subject_line(fixed), LOCK)
         self.assertNotIn("画面风格：实拍", fixed)
         self.assertIn("rendered in a live-action style", fixed)
         self.assertIn("<Subject 1>:", fixed)
@@ -260,7 +265,7 @@ class StyleBriefTest(unittest.TestCase):
         self.assertIn("程序会把下面这一句写进", brief)
         scaffold = h3_packing_scaffold(packing_groups(state), INK)
         self.assertIn(scaffold, packing_plan_note(state))
-        self.assertIn("subject_definitions:\n%s" % LOCK, scaffold)
+        self.assertIn("风格 / 情绪:\n%s" % LOCK, scaffold)
         self.assertNotIn("【画幅风格】", scaffold)
         critic = critic_messages(dict(state, draft=_feed([LOCK + "\n<Subject 1>: a woman."])))[-1]["content"]
         self.assertIn(LOCK, critic)
@@ -294,7 +299,7 @@ class StyleBriefTest(unittest.TestCase):
         self.assertIn("不要改写画风", brief)
         self.assertIn(LOCK, brief)
         self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", brief)
-        self.assertIn("short-drama-director/references/h3-adapter.md", brief)
+        self.assertIn("short-drama-director/references/wan-adapter.md", brief)
         self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", brief)
         self.assertNotIn("时长或对白没过", brief)
         self.assertNotIn("请写画风", brief)
@@ -302,7 +307,7 @@ class StyleBriefTest(unittest.TestCase):
             packing_repair_targets(state["machine_report"], h3=True),
             [
                 "sd-feed-engine/references/feed-mode-and-gates.md",
-                "short-drama-director/references/h3-adapter.md",
+                "short-drama-director/references/wan-adapter.md",
                 "short-drama-director/references/prompt-feeding-checklist.md",
             ],
         )
@@ -310,7 +315,7 @@ class StyleBriefTest(unittest.TestCase):
         files = suite_files("feed", "阶段：P4\n模型：h3\n" + brief)
         previous = [{"skill": relative, "text": "旧节点"} for relative in files]
         nodes = select_nodes(files, brief, previous)
-        self.assertIn("short-drama-director/references/h3-adapter.md", nodes)
+        self.assertIn("short-drama-director/references/wan-adapter.md", nodes)
         self.assertNotIn("sd-feed-engine/references/asset-mapping-and-rules.md", nodes)
 
 
@@ -362,7 +367,6 @@ class StyleLoopTest(unittest.TestCase):
         self.assertIn("duration: 8", result["feed"])
         repair = next(item for item in prompts if "不要改写画风" in item)
         self.assertIn(LOCK, repair)
-        self.assertIn("short-drama-director/references/h3-adapter.md", repair)
 
 
 if __name__ == "__main__":

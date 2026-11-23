@@ -130,16 +130,33 @@ class ShortDramaSkillTest(unittest.TestCase):
         bare = json_shape()
         self.assertIn("不要默认竖屏", bare)
 
-    def test_p4_pack_includes_the_h3_adapter_and_not_the_whole_skill(self):
+    def test_p4_pack_includes_the_wan_adapter_and_not_the_whole_skill(self):
         pack = load_skill_pack(context=LOCKED, stage="P4")
-        self.assertIn("short-drama-director/references/h3-adapter.md", pack)
-        self.assertLess(
-            pack.index("# short-drama-director/references/h3-adapter.md"),
-            pack.index("# short-drama-director/references/model-adapters.md"),
-        )
+        self.assertIn("short-drama-director/references/wan-adapter.md", pack)
+        self.assertIn("# sd-feed-engine/SKILL.md", pack)
+        self.assertNotIn("# short-drama-director/references/h3-adapter.md", pack)
+        self.assertNotIn("# short-drama-director/references/model-adapters.md", pack)
+        self.assertNotIn("# sd-feed-engine/references/feed-mode-and-gates.md", pack)
+        self.assertNotIn("# sd-feed-engine/references/asset-mapping-and-rules.md", pack)
+        self.assertNotIn("# short-drama-director/references/segment-splicing.md", pack)
+        self.assertNotIn("# short-drama-director/references/prompt-feeding-checklist.md", pack)
         self.assertNotIn("# short-drama-director/SKILL.md", pack)
         prompt = build_system_prompt(pack, brief=LOCKED)
         self.assertIn("本片画幅以简报为准：16:9", prompt)
+
+    def test_p5_pack_leads_with_the_wan_adapter_not_h3(self):
+        pack = load_skill_pack(context=LOCKED, stage="P5")
+        self.assertIn("short-drama-director/references/wan-adapter.md", pack)
+        self.assertNotIn("# short-drama-director/references/h3-adapter.md", pack)
+        self.assertLess(
+            pack.index("# short-drama-director/references/wan-adapter.md"),
+            pack.index("# sd-qc-engine/SKILL.md"),
+        )
+        self.assertNotIn("# short-drama-director/SKILL.md", pack)
+        seedance = LOCKED.replace("模型：MiniMax H3", "模型：2.5")
+        seedance_pack = load_skill_pack(context=seedance, stage="P5")
+        self.assertNotIn("short-drama-director/references/wan-adapter.md", seedance_pack)
+        self.assertNotIn("# short-drama-director/references/h3-adapter.md", seedance_pack)
 
     def test_a_missing_subskill_is_an_error(self):
         module = _slice_module()

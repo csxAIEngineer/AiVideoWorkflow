@@ -434,7 +434,47 @@ def _unit_duration(text):
         return None
 
 
+_REFERENCE_CITE = re.compile(r"^参考素材引用\s*[:：]\s*(.*)$")
+_REFERENCE_CITE_STOP = re.compile(
+    r"^(总体描述|分镜|台词|音效\s*/\s*BGM|风格\s*/\s*情绪|负向清单|duration|资产)\s*[:：]?"
+)
+
+
+def ids_from_reference_cite(text):
+    """Ids from a packed unit's ``参考素材引用`` field. ``None`` when the field is absent."""
+    lines = str(text or "").splitlines()
+    chunks = []
+    catching = False
+    for line in lines:
+        stripped = line.strip()
+        match = _REFERENCE_CITE.match(stripped)
+        if match:
+            catching = True
+            if match.group(1).strip():
+                chunks.append(match.group(1).strip())
+            continue
+        if not catching:
+            continue
+        if not stripped:
+            if chunks:
+                break
+            continue
+        if _REFERENCE_CITE_STOP.match(stripped):
+            break
+        chunks.append(stripped)
+        break
+    if not chunks:
+        return None
+    found = []
+    for part in re.split(r"[、,，\s]+", " ".join(chunks)):
+        text = str(part or "").strip()
+        if text and text not in found:
+            found.append(text)
+    return found or None
+
+
 def units_from_feed(feed):
+
     """One record per packed feed unit, in heading order. No video fields yet."""
     from end.prompt_gate import delivery_units
 
@@ -472,6 +512,42 @@ def _stored_row(stored, by_id, unit_id):
     return None
 
 
+def _duration_usable(shot):
+    try:
+        seconds = float((shot or {}).get("duration"))
+    except (TypeError, ValueError):
+        return False
+    return seconds > 0
+
+
+def _can_group_rows(rows):
+    return bool(rows) and all(_duration_usable(shot) for shot in rows)
+
+
+def _rows_from_manuscript(spec):
+    """Shot rows from 时长 and 资产栏, even when 动作 or 景别机位 are missing."""
+    text = (spec or {}).get("storyboard") or ""
+    if not _text(text):
+        return []
+    try:
+        from end.storyboard_contract import _blocks, _duration, storyboard_asset_ids
+    except ImportError:
+        return []
+    assets = storyboard_asset_ids(text)
+    rows = []
+    for block in _blocks(text):
+        shot_id = _text(block.get("id"))
+        if not shot_id:
+            continue
+        fields = block.get("fields") or {}
+        rows.append({
+            "id": shot_id,
+            "duration": _duration(fields.get("时长")),
+            "images": list(assets.get(shot_id) or []),
+        })
+    return rows
+
+
 def _board_rows(spec):
     """Storyboard shots packed into feed units. Unit ids are not shots."""
     rows = []
@@ -481,6 +557,11 @@ def _board_rows(spec):
         if _parsed_unit_id(shot.get("id")) is not None:
             continue
         rows.append(shot)
+    manuscript = _rows_from_manuscript(spec)
+    if _can_group_rows(manuscript) and (
+        not _can_group_rows(rows) or len(rows) != len(manuscript)
+    ):
+        return manuscript
     if any(_bound_images(shot) or shot.get("duration") not in (None, "") for shot in rows):
         return rows
     text = (spec or {}).get("storyboard") or ""
@@ -493,7 +574,7 @@ def _board_rows(spec):
     projected, report = project_shots(text, known_ids((spec or {}).get("assets")))
     if projected and not report:
         return projected
-    return rows
+    return manuscript or rows
 
 
 def _shot_slices(board, unit_count):
@@ -613,6 +694,8 @@ def packed_units(spec):
             images = list(unions[index])
         else:
             listed = asset_ids_from_text(row.get("prompt") or "")
+            if listed is None:
+                listed = ids_from_reference_cite(row.get("prompt") or "")
             if listed is not None:
                 images = cap_reference_ids(listed, row["id"])
             elif isinstance(saved, dict):
@@ -829,7 +912,9 @@ def fold_seam_entries(entries, units):
 
     ``shot_id``, ``prev_id``, ``scene_relation``, and the official submit
     fields are program-owned. The first unit's ``d_lock`` is ``none``.
-    A later ``d_lock`` is kept only when it is 1–4. A ① row's
+    A later ``d_lock`` is kept only when it is 1–4. A later unit that
+    is not itself 1–2 seconds defaults to ②, and an illegal ③ on it
+    is rewritten to ②. A ① or ④ on a long unit is kept. A ① row's
     ``start_size`` is locked to the previous unit's ``end_size`` when that
     end sits on the ladder. 景别 values that sit on the ladder (or a
     ladder word plus 镜头/景别) are kept; any other size is left so the
@@ -874,6 +959,11 @@ def fold_seam_entries(entries, units):
                 row[key] = model.get(key)
             else:
                 row[key] = _text(model.get(key))
+        if index > 0 and not _allows_empty_lock(unit):
+            if row["d_lock"] == "3":
+                row["empty_use"] = ""
+            if row["d_lock"] in ("", "3"):
+                row["d_lock"] = "2"
         built.append(row)
     applied = apply_submit_params(built, rows)
     for index, row in enumerate(applied):
@@ -898,6 +988,12 @@ def _duration(shot):
         return float(shot.get("duration"))
     except (TypeError, ValueError):
         return None
+
+
+def _allows_empty_lock(unit):
+    """③ is only for a packed unit whose own duration is 1–2 seconds."""
+    duration = _duration(unit)
+    return duration is not None and 1 <= duration <= 2
 
 
 def check_seam_ledger(ledger, units):
@@ -979,9 +1075,17 @@ def check_seam_ledger(ledger, units):
         # designed end frame the official params leave empty.
         if _is_extracted_tail(stored_end) and not official_end:
             stored_end = ""
-        if mode in VIDEO_MODES and (
+        stored_images = list(entry.get("images") or [])
+        official_images = list(official.get("images") or [])
+        if mode in VIDEO_MODES and stored_images != official_images:
+            expected = "、".join(official_images) or "（空）"
+            got = "、".join(stored_images) or "（空）"
+            errors.append(
+                "%s 的参考图应绑定本单元分镜资产栏的 %s，不能写成 %s"
+                % (shot_id, expected, got)
+            )
+        elif mode in VIDEO_MODES and (
             mode != official["video_mode"]
-            or list(entry.get("images") or []) != official["images"]
             or stored_end != official_end
             or _text(entry.get("first_frame_source") or "none") != official["first_frame_source"]
         ):

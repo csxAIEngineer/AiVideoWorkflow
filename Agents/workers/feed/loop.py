@@ -27,7 +27,6 @@ from Agents.workers.feed.common import (
     TASK,
 )
 from Agents.workers.feed.style import (
-    _STYLE_WRITERS,
     agreed_style,
     style_lock_line,
     style_lock_rule,
@@ -39,8 +38,8 @@ from Agents.workers.feed.extract import (
 )
 from Agents.workers.feed.plan import (
     _DIALOGUE_WRITERS,
-    _H3_UNIT_WRITER,
     _UNIT_WRITERS,
+    _WAN_PACKING_WRITERS,
     _generator_system,
     _h3_locked,
     _machine_text,
@@ -49,7 +48,6 @@ from Agents.workers.feed.plan import (
     packing_plan_note,
 )
 from Agents.workers.feed.skeleton import (
-    _SKELETON_WRITERS,
     format_shot_skeleton,
     packing_shot_skeleton,
 )
@@ -105,11 +103,15 @@ def generator_messages(state):
     h3 = _h3_locked(state)
     length = []
     if any(mark in errors for mark in ("时长被压缩", "不能钳成", "必须把这一镜拆开")):
-        length.extend(_UNIT_WRITERS)
         if h3:
-            length.append(_H3_UNIT_WRITER)
+            length.extend(_WAN_PACKING_WRITERS)
+        else:
+            length.extend(_UNIT_WRITERS)
     if "对白被压缩" in errors:
-        length.extend(_DIALOGUE_WRITERS)
+        if h3:
+            length.extend(_WAN_PACKING_WRITERS)
+        else:
+            length.extend(_DIALOGUE_WRITERS)
     length_paths = []
     seen = set()
     for relative in length:
@@ -130,7 +132,7 @@ def generator_messages(state):
             line or "（锁定句）",
             "删掉别处自拟的风格句，包括只写在房间或道具主体上的那句。",
             "重跑这些节点时只把锁定句补回去：",
-            *_STYLE_WRITERS,
+            *_WAN_PACKING_WRITERS,
         ))
     if h3 and "镜号锁" in errors:
         skeleton = packing_shot_skeleton(state)
@@ -141,7 +143,7 @@ def generator_messages(state):
             "每个 [Shot N] 下面都要有这一镜的正文。只有标题、没有画面，不算写完。不要把整段散文挂在 [Shot 1] 下面再补空标题。",
             format_shot_skeleton(skeleton) or "（这一段没有分镜骨架）",
             "重跑这些节点时只恢复这个骨架：",
-            *_SKELETON_WRITERS,
+            *_WAN_PACKING_WRITERS,
         ))
     return [system, {"role": "user", "content": user}]
 

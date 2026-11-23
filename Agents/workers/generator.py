@@ -61,16 +61,52 @@ def run_generator(
         ])
         notes[relative] = _node_text(raw)
     ordered = [{"skill": relative, "text": notes.get(relative) or ""} for relative in chosen]
+    from Agents.workers.skeleton_fold import (
+        apply_merge_to_empty_slots,
+        apply_missing_slot_refill,
+        fold_has_empty_slots,
+        fold_stage_draft,
+        folded_merge_output,
+        leftover_merge_blocks,
+        missing_contract_slots,
+        missing_slot_refill_prompt,
+        missing_slot_refill_system,
+        unmatched_specialist_partials,
+    )
+    folded = fold_stage_draft(task, brief, ordered)
+    leftovers = unmatched_specialist_partials(task, folded, ordered)
+    if task in ("storyboard", "feed") and str(folded or "").strip():
+        missing = missing_contract_slots(task, folded)
+        if not missing:
+            return {"raw": folded_merge_output(task, folded), "partials": ordered}
+        raw = complete("director", [
+            {"role": "system", "content": missing_slot_refill_system(task)},
+            {"role": "user", "content": missing_slot_refill_prompt(
+                task, folded, missing, leftovers,
+            )},
+        ])
+        raw = apply_missing_slot_refill(task, folded, raw)
+        return {"raw": raw or "", "partials": ordered}
+    skip_fold = str(folded or "").strip() and (
+        task == "asset" or not leftovers or not fold_has_empty_slots(folded, task)
+    )
+    if skip_fold:
+        return {"raw": folded_merge_output(task, folded), "partials": ordered}
     include_notes = (not repairing) or bool(selected)
+    user = _director_user(
+        brief,
+        ordered if include_notes else [],
+        repair_text if repairing else "",
+        task,
+    )
+    if leftovers and str(folded or "").strip():
+        user = "\n\n".join((user, leftover_merge_blocks(folded, leftovers)))
     raw = complete("director", [
         {"role": "system", "content": _director_system(role, merge_prompt(task, _routing_context(task, brief)))},
-        {"role": "user", "content": _director_user(
-            brief,
-            ordered if include_notes else [],
-            repair_text if repairing else "",
-            task,
-        )},
+        {"role": "user", "content": user},
     ])
+    if str(folded or "").strip() and task != "asset":
+        raw = apply_merge_to_empty_slots(task, folded, raw)
     return {"raw": raw or "", "partials": ordered}
 
 

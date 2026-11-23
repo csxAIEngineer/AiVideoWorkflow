@@ -177,6 +177,15 @@ class LockMachineTest(unittest.TestCase):
         missing = prepare_locks(_base_locks(), "雨夜")
         self.assertEqual(pending_question(missing)["id"], "duration")
 
+    def test_delivery_format_is_not_a_lock(self):
+        locks = _base_locks()
+        locks["delivery"] = ""
+        self.assertEqual(pending_question(locks)["id"], "duration")
+        filled = prepare_locks(locks, "时长：10秒")
+        self.assertEqual(filled["duration_seconds"], 10)
+        self.assertEqual(pending_question(filled)["id"], "style")
+        self.assertNotIn("交付：", lock_brief(filled))
+
     def test_empty_video_model_is_wan_and_the_next_question_is_aspect(self):
         chosen = blank_locks()
         chosen["track"] = "1"
@@ -937,7 +946,8 @@ class MachineAndMountTest(unittest.TestCase):
         feed = mount_header("feed", _base_locks(model="h3"), "", "feed")
         feed_pack = load_skill_pack(context=feed, stage="P4")
         self.assertIn("# sd-feed-engine/", feed_pack)
-        self.assertIn("# short-drama-director/references/h3-adapter.md", feed_pack)
+        self.assertIn("# short-drama-director/references/wan-adapter.md", feed_pack)
+        self.assertNotIn("# short-drama-director/references/h3-adapter.md", feed_pack)
         self.assertNotIn("# sd-storyboard-engine/", feed_pack)
         self.assertNotIn("# short-drama-director/SKILL.md", feed_pack)
 
@@ -1928,14 +1938,15 @@ class MachineAndMountTest(unittest.TestCase):
 
         h3 = stage_instruction("feed", {"model": "h3"})
         self.assertNotIn("写七段", h3)
-        self.assertIn("subject_definitions:", h3)
-        self.assertIn("四段正文一律英文", h3)
+        self.assertIn("总体描述:", h3)
+        self.assertIn("万相官方公式", h3)
         self.assertIn("不要写 summary 或 retention_analysis", h3)
         from end.product_names import H3_SUBJECT_SOUND_RULE
 
-        self.assertIn(H3_SUBJECT_SOUND_RULE, h3)
+        self.assertNotIn(H3_SUBJECT_SOUND_RULE, h3)
         self.assertNotIn("retention_analysis:", h3)
-        self.assertIn("<d>[Chinese]", h3)
+        self.assertNotIn("<d>[Chinese]", h3)
+        self.assertIn("不要字幕、不要水印、不要复杂文字", h3)
         seedance = stage_instruction("feed", {"model": "2.5"})
         self.assertIn("下面写七段", seedance)
         self.assertNotIn("<d>[Chinese]", seedance)
@@ -1964,7 +1975,7 @@ class MachineAndMountTest(unittest.TestCase):
             calls.append(brief or "")
             return {"text": "质检意见"}
 
-        with patch("end.stage_runner.check_prompt", return_value=(0, "PASSED")):
+        with patch("end.stage_runner.check_feed", return_value=(0, "PASSED")):
             ready = execute(project, folder, locks, writer, lambda *args, **kwargs: "")
         self.assertEqual(ready["progress"]["phase"], "prompts_ready")
         self.assertFalse(any("任务：独立质检" in call for call in calls))
@@ -1973,18 +1984,48 @@ class MachineAndMountTest(unittest.TestCase):
         calls.clear()
         with patch.dict("os.environ", {"AIVIDEO_ADVISORY_QC": "1"}):
             self.assertTrue(advisory_qc_enabled())
-            with patch("end.stage_runner.check_prompt", return_value=(0, "PASSED")):
+            with patch("end.stage_runner.check_feed", return_value=(0, "PASSED")):
                 execute(project, folder, locks, writer, lambda *args, **kwargs: "")
         self.assertTrue(any("任务：独立质检" in call for call in calls))
         self.assertIn("质检意见", (internal / "质检.md").read_text(encoding="utf-8"))
 
-        with patch("end.stage_runner.check_prompt", return_value=(1, "[-] FAIL: H1 缺段")):
+        with patch("end.stage_runner.check_feed", return_value=(1, "[-] FAIL: H1 缺段")):
             failed = execute(project, folder, locks, writer, lambda *args, **kwargs: "")
         self.assertEqual(failed["stage"], "投喂机检")
         self.assertEqual(failed["progress"]["phase"], "gate_machine")
         self.assertIn("投喂机检没过", failed["message"]["content"])
         self.assertNotIn("独立质检", failed["stage"])
         self.assertNotIn("独立质检", failed["message"]["content"])
+
+    def test_finish_does_not_ask_for_an_offline_board(self):
+        folder = Path(tempfile.mkdtemp())
+        (folder / "_内部_").mkdir()
+        locks = _base_locks(delivery="1")
+        project = {
+            "template": "short-drama-director",
+            "model": "qwen3.8-flash",
+            "title": "雨夜",
+            "progress": {
+                "pipeline": {
+                    "action": "finish",
+                    "current": "seam",
+                    "accepted": ["script", "asset", "storyboard", "feed", "seam"],
+                    "passed": True,
+                }
+            },
+        }
+        calls = []
+
+        def writer(brief, skill_pack, debug_dir=None, model=None, template=None, trace_prompts=None):
+            calls.append(brief or "")
+            return {"text": "看板说明"}
+
+        with patch("end.stage_runner.check_feed", return_value=(0, "PASSED")):
+            ready = execute(project, folder, locks, writer, lambda *args, **kwargs: "")
+        self.assertEqual(ready["progress"]["phase"], "prompts_ready")
+        self.assertFalse(any("任务：离线看板" in call for call in calls))
+        self.assertFalse((folder / "_内部_" / "看板说明.md").is_file())
+        self.assertFalse((folder / "board.html").is_file())
 
 
 class DeliveryTest(unittest.TestCase):
@@ -1996,7 +2037,8 @@ class DeliveryTest(unittest.TestCase):
         locks = _base_locks(delivery="3", material_mode="M1")
         names = publish(folder, locks, "雨夜", "资产提示", "分镜提示", "素材形态：M1\n\n## 段1\n故事板提示词（1 格）\n第 1 格：人在门口\n")
         self.assertLessEqual(len(names), 3)
-        self.assertEqual(names, ["project.md", "board.html", "雨夜-预演故事板.md"])
+        self.assertEqual(names, ["project.md", "雨夜-预演故事板.md"])
+        self.assertFalse((folder / "board.html").is_file())
         self.assertEqual(list_deliverables(folder), names)
         self.assertTrue(all("_内部_" not in name for name in names))
         text = (folder / "project.md").read_text(encoding="utf-8")
@@ -2016,7 +2058,8 @@ class PageTest(unittest.TestCase):
     def test_page_stops_on_gates_and_renders_seam_and_style(self):
         app = (ROOT / "front" / "app.js").read_text(encoding="utf-8")
         css = (ROOT / "front" / "styles.css").read_text(encoding="utf-8")
-        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接", "离线看板"]', app)
+        self.assertIn('["立项锁定", "赛道分流", "剧本", "资产锁定", "分镜", "提示词封装", "投喂机检", "分镜衔接"]', app)
+        self.assertNotIn("离线看板", app)
         self.assertIn('kind === "multi"', app)
         self.assertIn('type = "checkbox"', app)
         self.assertIn('kind === "cards"', app)

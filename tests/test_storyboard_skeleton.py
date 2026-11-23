@@ -200,6 +200,42 @@ class StoryboardSkeletonGuardTest(unittest.TestCase):
                 self.assertIn("对白：%s" % shot["dialogue"], restored)
         self.assertEqual(sum(_shot_durations(restored)), 60)
 
+    def test_restore_expands_picture_layer_into_action_and_camera(self):
+        skeleton = {
+            "duration_lock": 15,
+            "shots": [
+                {"id": "S01", "duration": 8, "assets": ["图1"], "dialogue": "无"},
+                {"id": "S02", "duration": 7, "assets": ["图2"], "dialogue": "顾深：好。"},
+            ],
+        }
+        folded = "\n".join((
+            "## S01",
+            "时长：8",
+            "资产：图1",
+            "对白：无",
+            "画面层：近景，顾深低头整理领结，手指发抖。",
+            "旁白：无",
+            "",
+            "## S02",
+            "时长：7",
+            "资产：图2",
+            "对白：顾深：好。",
+            "画面层：【填写】",
+            "旁白：【填写】",
+        ))
+        restored = restore_storyboard_locks(folded, skeleton)
+        first, second = restored.split("## S02", 1)
+        self.assertIn("动作：顾深低头整理领结，手指发抖。", first)
+        self.assertIn("景别机位：近景", first)
+        self.assertNotIn("画面层", first)
+        self.assertNotIn("动作：", second)
+        self.assertNotIn("景别机位：", second)
+        self.assertNotIn("画面层", restored)
+        from end.storyboard_contract import project_shots
+        _shots, report = project_shots(restored, ["图1", "图2"])
+        self.assertIn("S02 缺动作、景别机位", report)
+        self.assertNotIn("S01 缺", report)
+
     def test_official_loop_rejects_a_shorter_director_board(self):
         skeleton = self._skeleton()
 
