@@ -1964,5 +1964,193 @@ class PackingSameLineShotFoldTest(unittest.TestCase):
 
 
 
+
+class PackingShotAfterDialogueFoldTest(unittest.TestCase):
+    def test_packing_fold_stamps_shots_written_after_dialogue(self):
+        """台词 between shots still stamps later 分镜 bodies onto locked headings."""
+        from Agents.workers.feed import shot_skeleton_failures
+
+        heading1 = "分镜1（00:00.000-00:05.000）："
+        heading2 = "分镜2（00:05.000-00:12.000）："
+        body1 = "李敬站在城墙下，抬手指向安那。"
+        body2 = "安那停下脚步，回头望向李敬。"
+        line_a = '李敬说："等一下。"'
+        line_b = '安那说："我走了。"'
+        skeleton = "\n".join((
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "不要改 ## 标题，不要改 duration，不要调换字段顺序。",
+            "",
+            "## 【封装单元 1/1】",
+            "duration: 12",
+            "总体描述:",
+            "参考素材引用:",
+            "分镜:",
+            heading1,
+            heading2,
+            "台词:",
+            "音效 / BGM:",
+            "风格 / 情绪:",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        brief = "任务：提示词封装\n\n" + skeleton
+        specialist = "\n".join((
+            "## 【封装单元 1/1】",
+            "总体描述:",
+            "安那与李敬在城墙外分别。",
+            "分镜:",
+            heading1,
+            body1,
+            "台词:",
+            line_a,
+            heading2,
+            body2,
+            "台词:",
+            line_b,
+        ))
+        draft = fold_stage_draft("feed", brief, [specialist])
+        fenjing = draft.split("分镜:", 1)[1].split("台词:", 1)[0]
+        taici = draft.split("台词:", 1)[1].split("音效 / BGM:", 1)[0]
+        self.assertEqual(fenjing.count(heading1), 1)
+        self.assertEqual(fenjing.count(heading2), 1)
+        self.assertEqual(draft.count(heading2), 1)
+        self.assertIn(body1, fenjing)
+        self.assertIn(body2, fenjing)
+        self.assertLess(fenjing.find(heading1), fenjing.find(body1))
+        self.assertLess(fenjing.find(body1), fenjing.find(heading2))
+        self.assertLess(fenjing.find(heading2), fenjing.find(body2))
+        self.assertNotIn(heading2, taici)
+        self.assertNotIn(body2, taici)
+        self.assertIn(line_a, taici)
+        self.assertIn(line_b, taici)
+        failures = shot_skeleton_failures(
+            draft,
+            _packing_shot_state((("S01", 5), ("S02", 7))),
+        )
+        self.assertFalse(any("[Shot 2] 没有正文" in item for item in failures), failures)
+        self.assertFalse(any("[Shot 1] 没有正文" in item for item in failures), failures)
+
+    def test_packing_fold_recovers_leaked_shot_from_polluted_dialogue(self):
+        """Already-filled 分镜1 does not block recovering 分镜2 leaked under 台词."""
+        from Agents.workers.feed import shot_skeleton_failures
+
+        heading1 = "分镜1（00:00.000-00:05.000）："
+        heading2 = "分镜2（00:05.000-00:12.000）："
+        body1 = "李敬站在城墙下，抬手指向安那。"
+        body2 = "安那停下脚步，回头望向李敬。"
+        line_a = '李敬说："等一下。"'
+        line_b = '安那说："我走了。"'
+        skeleton = "\n".join((
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "不要改 ## 标题，不要改 duration，不要调换字段顺序。",
+            "",
+            "## 【封装单元 1/1】",
+            "duration: 12",
+            "总体描述:",
+            "安那与李敬在城墙外分别。",
+            "参考素材引用:",
+            "分镜:",
+            heading1,
+            body1,
+            heading2,
+            "台词:",
+            line_a,
+            heading2,
+            body2,
+            line_b,
+            "音效 / BGM:",
+            "风格 / 情绪:",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        brief = "任务：提示词封装\n\n" + skeleton
+        draft = fold_stage_draft("feed", brief, [])
+        fenjing = draft.split("分镜:", 1)[1].split("台词:", 1)[0]
+        taici = draft.split("台词:", 1)[1].split("音效 / BGM:", 1)[0]
+        self.assertEqual(fenjing.count(heading1), 1)
+        self.assertEqual(fenjing.count(heading2), 1)
+        self.assertEqual(draft.count(heading2), 1)
+        self.assertIn(body1, fenjing)
+        self.assertIn(body2, fenjing)
+        self.assertLess(fenjing.find(heading1), fenjing.find(body1))
+        self.assertLess(fenjing.find(body1), fenjing.find(heading2))
+        self.assertLess(fenjing.find(heading2), fenjing.find(body2))
+        self.assertNotIn(heading2, taici)
+        self.assertNotIn(body2, taici)
+        self.assertIn(line_a, taici)
+        self.assertIn(line_b, taici)
+        failures = shot_skeleton_failures(
+            draft,
+            _packing_shot_state((("S01", 5), ("S02", 7))),
+        )
+        self.assertFalse(any("[Shot 2] 没有正文" in item for item in failures), failures)
+        self.assertFalse(any("[Shot 1] 没有正文" in item for item in failures), failures)
+
+    def test_packing_fold_merges_later_note_into_empty_locked_shot(self):
+        """Specialist 1's truncated 分镜 fill does not block specialist 2's shot 2."""
+        from Agents.workers.feed import shot_skeleton_failures
+
+        heading1 = "分镜1（00:00.000-00:05.000）："
+        heading2 = "分镜2（00:05.000-00:12.000）："
+        body1 = "李敬站在城墙下，抬手指向安那。"
+        body2 = "安那停下脚步，回头望向李敬。"
+        rewritten1 = "把已经盖上的分镜1改掉了。"
+        line_a = '李敬说："等一下。"'
+        skeleton = "\n".join((
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "不要改 ## 标题，不要改 duration，不要调换字段顺序。",
+            "",
+            "## 【封装单元 1/1】",
+            "duration: 12",
+            "总体描述:",
+            "参考素材引用:",
+            "分镜:",
+            heading1,
+            heading2,
+            "台词:",
+            "音效 / BGM:",
+            "风格 / 情绪:",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        brief = "任务：提示词封装\n\n" + skeleton
+        specialist1 = "\n".join((
+            "## 【封装单元 1/1】",
+            "分镜:",
+            heading1,
+            body1,
+            "台词:",
+            line_a,
+        ))
+        specialist2 = "\n".join((
+            "## 【封装单元 1/1】",
+            "分镜:",
+            heading1,
+            rewritten1,
+            heading2 + body2,
+            "台词:",
+        ))
+        draft = fold_stage_draft("feed", brief, [specialist1, specialist2])
+        fenjing = draft.split("分镜:", 1)[1].split("台词:", 1)[0]
+        taici = draft.split("台词:", 1)[1].split("音效 / BGM:", 1)[0]
+        self.assertEqual(fenjing.count(heading1), 1)
+        self.assertEqual(fenjing.count(heading2), 1)
+        self.assertEqual(draft.count(heading2), 1)
+        self.assertIn(body1, fenjing)
+        self.assertIn(body2, fenjing)
+        self.assertNotIn(rewritten1, draft)
+        self.assertLess(fenjing.find(heading1), fenjing.find(body1))
+        self.assertLess(fenjing.find(body1), fenjing.find(heading2))
+        self.assertLess(fenjing.find(heading2), fenjing.find(body2))
+        self.assertNotIn(heading2, taici)
+        self.assertIn(line_a, taici)
+        failures = shot_skeleton_failures(
+            draft,
+            _packing_shot_state((("S01", 5), ("S02", 7))),
+        )
+        self.assertFalse(any("[Shot 2] 没有正文" in item for item in failures), failures)
+        self.assertFalse(any("[Shot 1] 没有正文" in item for item in failures), failures)
+
+
 if __name__ == "__main__":
     unittest.main()

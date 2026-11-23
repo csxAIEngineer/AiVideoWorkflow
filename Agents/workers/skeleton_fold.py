@@ -1104,15 +1104,136 @@ def _foreign_field_header(line):
         return False
     return 1 <= len(name) <= 24
 
+
+def _is_dialogue_line(line):
+    raw = str(line or "").strip()
+    if not raw:
+        return False
+    match = _LABEL_LINE.match(raw)
+    if not match:
+        return False
+    name = match.group(1).strip()
+    return name.endswith("说") or name in ("画外音", "旁白", "VO")
+
+
+def _split_leaked_shots_from_dialogue(text):
+    """Shot headings mixed into 台词, plus the dialogue lines around them."""
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, WAN_SHOT_HEADING, canonical_wan_name
+
+    dialogue = []
+    shots = []
+    current = None
+
+    def flush():
+        nonlocal current
+        if current is None:
+            return
+        picture = []
+        for line in current.pop("body_lines"):
+            if _is_dialogue_line(line):
+                dialogue.append(line.strip())
+                current["ended"] = True
+                continue
+            if current.get("ended"):
+                if str(line or "").strip():
+                    dialogue.append(line.strip())
+                continue
+            picture.append(line)
+        current["body"] = "\n".join(picture).strip("\n").strip()
+        shots.append(current)
+        current = None
+
+    for line in str(text or "").splitlines():
+        raw = line.strip()
+        field = WAN_FIELD_LINE.match(raw)
+        if field:
+            name = canonical_wan_name(field.group("name"))
+            if name == "台词":
+                flush()
+                rest = (field.group("rest") or "").strip()
+                if rest:
+                    dialogue.append(rest)
+                continue
+            if name and name != "分镜":
+                flush()
+                continue
+        match = WAN_SHOT_HEADING.match(raw)
+        if match:
+            flush()
+            tail = (match.group("tail") or "").strip()
+            current = {
+                "num": int(match.group("num")),
+                "start": match.group("start"),
+                "end": match.group("end"),
+                "body_lines": [tail] if tail else [],
+            }
+            continue
+        if current is not None:
+            current["body_lines"].append(line)
+        elif raw:
+            dialogue.append(raw)
+    flush()
+    bodies = {}
+    for shot in shots:
+        body = str(shot.get("body") or "").strip()
+        if shot["num"] not in bodies:
+            bodies[shot["num"]] = shot
+        elif body and not str(bodies[shot["num"]].get("body") or "").strip():
+            bodies[shot["num"]] = shot
+    return bodies, "\n".join(dialogue).strip()
+
+
+def _render_shot_fill(shots):
+    lines = []
+    for number in sorted(shots):
+        shot = shots[number]
+        lines.append("分镜%s（%s-%s）：" % (number, shot["start"], shot["end"]))
+        body = str(shot.get("body") or "").strip()
+        if body:
+            lines.append(body)
+    return "\n".join(lines)
+
+
 def _feed_fills(notes, default_unit=None):
     from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name
 
     fills = {}
+    shot_fills = {}
+    dialogue_parts = {}
+
+    def keep_shot(unit, shot):
+        if unit is None or not shot:
+            return
+        body = str(shot.get("body") or "").strip()
+        current = shot_fills.get((unit, shot["num"]))
+        if current is None:
+            shot_fills[(unit, shot["num"])] = shot
+            return
+        if not str(current.get("body") or "").strip() and body:
+            shot_fills[(unit, shot["num"])] = shot
 
     def store(unit, field, chunks):
         if unit is None or not field:
             return
         text = "\n".join(chunks).strip("\n").strip()
+        if field == "分镜":
+            leading, shots = _parse_wan_shot_blocks(text)
+            if shots:
+                for shot in shots:
+                    keep_shot(unit, shot)
+                return
+            if text and not _wan_field_empty(field, text):
+                fills.setdefault((unit, field), text)
+            return
+        if field == "台词":
+            leaked, dialogue = _split_leaked_shots_from_dialogue(text)
+            for shot in leaked.values():
+                keep_shot(unit, shot)
+            if dialogue:
+                parts = dialogue_parts.setdefault(unit, [])
+                if dialogue not in parts:
+                    parts.append(dialogue)
+            return
         if text and not _wan_field_empty(field, text):
             fills.setdefault((unit, field), text)
 
@@ -1145,6 +1266,23 @@ def _feed_fills(notes, default_unit=None):
             if current_field is not None:
                 body.append(line)
         store(current_unit, current_field, body)
+    units = sorted({unit for unit, _num in shot_fills} | set(dialogue_parts))
+    for unit in units:
+        shots = {
+            num: shot
+            for (shot_unit, num), shot in shot_fills.items()
+            if shot_unit == unit
+        }
+        if shots:
+            rendered = _render_shot_fill(shots)
+            existing = fills.get((unit, "分镜"))
+            if existing and not _parse_wan_shot_blocks(existing)[1]:
+                fills[(unit, "分镜")] = existing
+            else:
+                fills[(unit, "分镜")] = rendered
+        dialogue = "\n".join(dialogue_parts.get(unit) or []).strip()
+        if dialogue:
+            fills[(unit, "台词")] = dialogue
     return fills
 
 
@@ -1249,6 +1387,39 @@ def _normalize_wan_shot_field(skeleton_body, current_body=None, fill=None, apply
     return _render_locked_shot_field(locked, kept)
 
 
+def _merge_shot_sources(*texts):
+    """First nonempty body wins for each shot number; heading-less prose is kept if no shots."""
+    shots = {}
+    prose = ""
+    for text in texts:
+        if not str(text or "").strip():
+            continue
+        leaked, _dialogue = _split_leaked_shots_from_dialogue(text)
+        if leaked:
+            for number, shot in leaked.items():
+                body = str(shot.get("body") or "").strip()
+                current = shots.get(number)
+                if current is None:
+                    shots[number] = shot
+                elif body and not str(current.get("body") or "").strip():
+                    shots[number] = shot
+            continue
+        leading, parsed = _parse_wan_shot_blocks(text)
+        if parsed:
+            for shot in parsed:
+                body = str(shot.get("body") or "").strip()
+                current = shots.get(shot["num"])
+                if current is None:
+                    shots[shot["num"]] = shot
+                elif body and not str(current.get("body") or "").strip():
+                    shots[shot["num"]] = shot
+        elif not prose:
+            prose = str(leading or text or "").strip()
+    if shots:
+        return _render_shot_fill(shots)
+    return prose
+
+
 def _render_feed_unit(unit, fills):
     from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name, WAN_NEGATIVE_LINE
 
@@ -1263,11 +1434,20 @@ def _render_feed_unit(unit, fills):
             body = _field_body_from_unit(unit, current)
             fill = fills.get((unit["index"], current))
             if current == "分镜":
-                apply_fill = bool(fill) and _wan_field_empty(current, body)
-                normalized = _normalize_wan_shot_field(body, body, fill, apply_fill)
+                leaked, _dialogue = _split_leaked_shots_from_dialogue(_field_body_from_unit(unit, "台词"))
+                recovered = _render_shot_fill(leaked) if leaked else ""
+                combined = _merge_shot_sources(fill, recovered)
+                apply_fill = bool(combined)
+                normalized = _normalize_wan_shot_field(body, body, combined, apply_fill)
                 out.append(_with_field_body(_wan_header_only(line), normalized) if normalized else _wan_header_only(line))
                 skip_body_of.add(current)
                 continue
+            if current == "台词":
+                leaked, cleaned = _split_leaked_shots_from_dialogue(body)
+                if leaked:
+                    out.append(_with_field_body(_wan_header_only(line), cleaned) if cleaned else _wan_header_only(line))
+                    skip_body_of.add(current)
+                    continue
             if fill and _wan_field_empty(current, body):
                 out.append(_with_field_body(line, fill))
                 skip_body_of.add(current)
