@@ -1,8 +1,9 @@
-"""Local image files, plus Tencent COS when remote services must fetch the still."""
+"""Local image files, plus Tencent COS or Aliyun OSS when remote services must fetch the still."""
 
 import base64
 import email.utils
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -36,6 +37,14 @@ class ImageStore(object):
             return True
         base = _configured_public_base()
         return bool(base and (text == base or text.startswith(base + "/")))
+
+    def refresh_url(self, url):
+        """Return an address a browser or remote worker can open now."""
+        return str(url or "").strip()
+
+    def persistent_url(self, url):
+        """Stable address to remember. Access-only query strings are removed by stores that need it."""
+        return str(url or "").strip()
 
     def ensure_remote(self, project_id, filename, current_url="", source=None):
         """Keep an address a remote worker can open. Our own media host is published again."""
@@ -122,25 +131,242 @@ class LocalImageStore(ImageStore):
 
 
 class OssImageStore(ImageStore):
+    """PUT stills and clips to a private Aliyun OSS bucket and issue temporary GET URLs."""
+
+    def __init__(self, bucket=None, domain=None, root=None, access_key_id=None, access_key_secret=None):
+        self._bucket = bucket
+        self._domain = domain
+        self._root = root
+        self._access_key_id = access_key_id
+        self._access_key_secret = access_key_secret
+
+    def bucket(self):
+        if self._bucket is not None:
+            raw = self._bucket
+        else:
+            _load_dotenv()
+            raw = os.environ.get("AIVIDEO_OSS_BUCKET") or ""
+        name = str(raw).strip()
+        if not name:
+            raise ImageStoreError("未配置 AIVIDEO_OSS_BUCKET，不能把图片上传到 OSS")
+        return name
+
+    def domain(self):
+        if self._domain is not None:
+            raw = self._domain
+        else:
+            _load_dotenv()
+            raw = os.environ.get("AIVIDEO_OSS_DOMAIN") or ""
+        text = str(raw).strip().rstrip("/")
+        if not text:
+            raise ImageStoreError("未配置 AIVIDEO_OSS_DOMAIN，不能给出 OSS 图片地址")
+        if "://" not in text:
+            text = "https://" + text
+        lowered = text.lower()
+        if not (lowered.startswith("https://") or lowered.startswith("http://")):
+            raise ImageStoreError("AIVIDEO_OSS_DOMAIN 必须是 HTTP(S) 地址")
+        return text
+
+    def access_key_id(self):
+        if self._access_key_id is not None:
+            raw = self._access_key_id
+        else:
+            _load_dotenv()
+            raw = os.environ.get("AIVIDEO_OSS_ACCESS_KEY_ID") or ""
+        value = str(raw).strip()
+        if not value:
+            raise ImageStoreError("未配置 AIVIDEO_OSS_ACCESS_KEY_ID，不能把图片上传到 OSS")
+        return value
+
+    def access_key_secret(self):
+        if self._access_key_secret is not None:
+            raw = self._access_key_secret
+        else:
+            _load_dotenv()
+            raw = os.environ.get("AIVIDEO_OSS_ACCESS_KEY_SECRET") or ""
+        value = str(raw).strip()
+        if not value:
+            raise ImageStoreError("未配置 AIVIDEO_OSS_ACCESS_KEY_SECRET，不能把图片上传到 OSS")
+        return value
+
+    def root(self):
+        if self._root is not None:
+            return Path(self._root)
+        from end.db import DATA
+
+        return Path(DATA)
+
     def save(self, project_id, image_id, png_bytes):
-        del project_id, image_id, png_bytes
-        raise ImageStoreError("OSS 图片存储尚未接入")
+        project_id = _project_id(project_id)
+        image_id = _image_id(image_id)
+        if not png_bytes:
+            raise ImageStoreError("没有图片")
+        filename = image_id + ".png"
+        _write_local(self.root(), project_id, filename, png_bytes)
+        return self.publish(project_id, filename, png_bytes)
 
     def url(self, project_id, filename):
-        del project_id, filename
-        raise ImageStoreError("OSS 图片存储尚未接入")
+        project_id = _project_id(project_id)
+        filename = _filename(filename)
+        path = self.root() / project_id / "outputs" / "images" / filename
+        if not path.is_file():
+            raise ImageStoreError("本地没有这张图，不能上传到 OSS")
+        return self.publish(project_id, filename, path.read_bytes())
+
+    def publish(self, project_id, filename, payload):
+        project_id = _project_id(project_id)
+        filename = _filename(filename)
+        if not payload:
+            raise ImageStoreError("没有图片")
+        return self._put(self._object_key("images", project_id, filename), payload, _content_type(filename))
+
+    def clip_url(self, project_id, filename):
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        return self._access_url(self._object_key("clips", project_id, filename))
+
+    def video_url(self, project_id, filename):
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        return self._access_url(self._object_key("video", project_id, filename))
 
     def publish_clip(self, project_id, filename, payload):
-        del project_id, filename, payload
-        raise ImageStoreError("OSS 图片存储尚未接入")
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        if not payload:
+            raise ImageStoreError("没有这段视频")
+        return self._put(self._object_key("clips", project_id, filename), payload, _content_type(filename))
+
+    def publish_video(self, project_id, filename, payload):
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        if not payload:
+            raise ImageStoreError("没有这段视频")
+        return self._put(self._object_key("video", project_id, filename), payload, _content_type(filename))
 
     def ensure_clip(self, project_id, filename, source=None):
-        del project_id, filename, source
-        raise ImageStoreError("OSS 图片存储尚未接入")
+        return self._ensure_video_object(
+            project_id,
+            filename,
+            source=source,
+            folder="clips",
+            publish=self.publish_clip,
+        )
 
     def ensure_video(self, project_id, filename, source=None):
-        del project_id, filename, source
-        raise ImageStoreError("OSS 图片存储尚未接入")
+        return self._ensure_video_object(
+            project_id,
+            filename,
+            source=source,
+            folder="video",
+            publish=self.publish_video,
+        )
+
+    def ensure_remote(self, project_id, filename, current_url="", source=None):
+        current = str(current_url or "").strip()
+        if current and self._key_from_url(current):
+            return self.refresh_url(current)
+        if current and not self.owns_url(current):
+            return current
+        if source and Path(source).is_file():
+            return self.refresh_url(self.publish(project_id, filename, Path(source).read_bytes()))
+        return self.refresh_url(self.url(project_id, filename))
+
+    def refresh_url(self, url):
+        key = self._key_from_url(url)
+        if not key:
+            return str(url or "").strip()
+        return self._access_url(key)
+
+    def persistent_url(self, url):
+        key = self._key_from_url(url)
+        if not key:
+            return str(url or "").strip()
+        return self._canonical_url(key)
+
+    def _object_key(self, folder, project_id, filename):
+        return "projects/%s/%s/%s" % (project_id, folder, filename)
+
+    def _canonical_url(self, key):
+        return _http_object_url(self.domain(), key)
+
+    def _access_url(self, key):
+        return _oss_presign_get(
+            self.domain(),
+            self.bucket(),
+            key,
+            self.access_key_id(),
+            self.access_key_secret(),
+        )
+
+    def _key_from_url(self, url):
+        text = str(url or "").strip()
+        if not text:
+            return ""
+        parsed = urllib.parse.urlparse(text)
+        domain = urllib.parse.urlparse(self.domain())
+        if parsed.scheme.lower() not in ("http", "https"):
+            return ""
+        if parsed.netloc.lower() != domain.netloc.lower():
+            return ""
+        return urllib.parse.unquote(parsed.path.lstrip("/"))
+
+    def _put(self, key, payload, content_type):
+        bucket = self.bucket()
+        domain = self.domain()
+        access_key_id = self.access_key_id()
+        access_key_secret = self.access_key_secret()
+        _put_oss(
+            domain,
+            bucket,
+            key,
+            payload,
+            content_type,
+            access_key_id,
+            access_key_secret,
+        )
+        return self._canonical_url(key)
+
+    def _ensure_video_object(self, project_id, filename, source, folder, publish):
+        project_id = _project_id(project_id)
+        filename = _clip_filename(filename)
+        if source:
+            path = Path(source)
+        elif folder == "clips":
+            path = self.root() / project_id / "outputs" / "clips" / filename
+        else:
+            path = self.root() / project_id / "outputs" / filename
+        if not path.is_file():
+            raise ImageStoreError("本地没有这段视频，不能上传到 OSS")
+        key = self._object_key(folder, project_id, filename)
+        expected = self._canonical_url(key)
+        marker = path.with_name(path.name + ".oss.json")
+        stat = path.stat()
+        if marker.is_file():
+            try:
+                data = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = None
+            if (
+                isinstance(data, dict)
+                and self.persistent_url(data.get("url")) == expected
+                and int(data.get("size") or -1) == stat.st_size
+                and int(data.get("mtime") or -1) == int(stat.st_mtime)
+            ):
+                return self._access_url(key)
+        url = publish(project_id, filename, path.read_bytes())
+        marker.write_text(
+            json.dumps(
+                {
+                    "url": self.persistent_url(url) or expected,
+                    "size": path.stat().st_size,
+                    "mtime": int(path.stat().st_mtime),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return self.refresh_url(url) or self._access_url(key)
 
 
 class CosImageStore(ImageStore):
@@ -454,6 +680,131 @@ def _put_cos_once(domain, bucket, key, payload, content_type):
     # #endregion
     if status is None or status >= 300:
         raise ImageStoreError("COS 上传失败：HTTP %s %s" % (status, body[:180]))
+    return target
+
+
+
+def _oss_canonical_resource(bucket, key):
+    quoted = urllib.parse.quote(str(key).lstrip("/"), safe="/")
+    return "/%s/%s" % (bucket, quoted)
+
+
+def _oss_authorization(access_key_id, access_key_secret, method, content_md5, content_type, date, oss_headers, resource):
+    canonical_headers = ""
+    if oss_headers:
+        items = sorted((str(name).lower(), str(value).strip()) for name, value in oss_headers.items())
+        canonical_headers = "".join("%s:%s\n" % (name, value) for name, value in items)
+    string_to_sign = "%s\n%s\n%s\n%s\n%s%s" % (
+        method,
+        content_md5,
+        content_type,
+        date,
+        canonical_headers,
+        resource,
+    )
+    digest = hmac.new(
+        access_key_secret.encode("utf-8"),
+        string_to_sign.encode("utf-8"),
+        hashlib.sha1,
+    ).digest()
+    signature = base64.b64encode(digest).decode("ascii")
+    return "OSS %s:%s" % (access_key_id, signature)
+
+
+def _put_oss(domain, bucket, key, payload, content_type, access_key_id, access_key_secret):
+    """PUT one object with an OSS Authorization header. Transient failures are retried."""
+    last = None
+    for attempt in range(_COS_PUT_ATTEMPTS):
+        try:
+            return _put_oss_once(
+                domain,
+                bucket,
+                key,
+                payload,
+                content_type,
+                access_key_id,
+                access_key_secret,
+            )
+        except ImageStoreError as error:
+            last = error
+            if attempt + 1 >= _COS_PUT_ATTEMPTS or not _cos_put_retryable(error):
+                raise
+            time.sleep(_COS_PUT_BACKOFF[min(attempt, len(_COS_PUT_BACKOFF) - 1)])
+    raise last
+
+
+def _oss_url_expires():
+    raw = os.environ.get("AIVIDEO_OSS_URL_EXPIRES") or ""
+    try:
+        value = int(str(raw).strip() or "86400")
+    except ValueError:
+        value = 86400
+    return max(60, min(value, 7 * 24 * 3600))
+
+
+def _oss_presign_get(domain, bucket, key, access_key_id, access_key_secret, expires=None):
+    if expires is None:
+        expires = int(time.time()) + _oss_url_expires()
+    expires = int(expires)
+    resource = _oss_canonical_resource(bucket, key)
+    authorization = _oss_authorization(
+        access_key_id,
+        access_key_secret,
+        "GET",
+        "",
+        "",
+        str(expires),
+        None,
+        resource,
+    )
+    signature = authorization.split(":", 1)[1]
+    query = urllib.parse.urlencode(
+        {
+            "OSSAccessKeyId": access_key_id,
+            "Expires": str(expires),
+            "Signature": signature,
+        }
+    )
+    return "%s?%s" % (_http_object_url(domain, key), query)
+
+
+def _put_oss_once(domain, bucket, key, payload, content_type, access_key_id, access_key_secret):
+    digest = base64.b64encode(hashlib.md5(payload).digest()).decode("ascii")
+    date = email.utils.formatdate(usegmt=True)
+    resource = _oss_canonical_resource(bucket, key)
+    authorization = _oss_authorization(
+        access_key_id,
+        access_key_secret,
+        "PUT",
+        digest,
+        content_type,
+        date,
+        None,
+        resource,
+    )
+    target = _http_object_url(domain, key)
+    request = urllib.request.Request(target, data=payload, method="PUT")
+    request.add_header("Content-Type", content_type)
+    request.add_header("Content-MD5", digest)
+    request.add_header("Date", date)
+    request.add_header("Authorization", authorization)
+    status = None
+    body = ""
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            status = getattr(response, "status", 200)
+            body = response.read(180).decode("utf-8", "replace")
+    except urllib.error.HTTPError as error:
+        status = error.code
+        try:
+            body = error.read(180).decode("utf-8", "replace")
+        except Exception:
+            body = ""
+    except Exception as error:
+        status = None
+        body = str(error)[:180]
+    if status is None or status >= 300:
+        raise ImageStoreError("OSS 上传失败：HTTP %s %s" % (status, body[:180]))
     return target
 
 

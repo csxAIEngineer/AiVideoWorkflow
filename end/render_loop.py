@@ -443,6 +443,7 @@ def note_local_image(work_dir, project_id, asset_id, public_url=None):
         hosted = str(public_url or "").strip()
         if not _http_media_url(hosted):
             hosted = get_image_store().url(project_id, "%s.png" % asset_id)
+        hosted = get_image_store().persistent_url(hosted) or hosted
         canonical, _relative = output_paths(work_dir, asset_id, "image")
         hosted, published = ensure_reference_min_side(
             work_dir, project_id, asset_id, hosted, source=canonical
@@ -2771,7 +2772,7 @@ def dependent_image_url(ctx, asset):
     url = str(step.get("public_url") or "")
     if not url:
         raise RuntimeError("资产 %s 依赖的 %s 没有公网地址" % (asset["id"], parent_id))
-    return url
+    return get_image_store().refresh_url(url) or url
 
 
 def _cover_min_side(width, height, minimum=MIN_REFERENCE_SIDE):
@@ -3021,6 +3022,7 @@ def _publish_step_url(ctx, asset_id, step):
 
 
 def _remember_public_url(work_dir, project_id, asset_id, url):
+    url = get_image_store().persistent_url(url) or str(url or "").strip()
     with project_lock(project_id or str(Path(work_dir))):
         state = load_run_state(work_dir)
         step = (state.get("steps") or {}).get(asset_id)
@@ -3067,12 +3069,13 @@ def _reference_url(info, project_id=""):
     url = _http_media_url((info or {}).get("url"))
     filename = Path(str((info or {}).get("path") or "")).name
     store = get_image_store()
-    if url and not store.owns_url(url):
-        return url
     if (info or {}).get("local_override") and project_id and filename:
-        return store.ensure_remote(project_id, filename, url, source=(info or {}).get("path"))
+        hosted = store.ensure_remote(project_id, filename, url, source=(info or {}).get("path"))
+        return store.refresh_url(hosted) or hosted
+    if url and not store.owns_url(url):
+        return store.refresh_url(url) or url
     if url:
-        return url
+        return store.refresh_url(url) or url
     raise RuntimeError("参考图没有公网地址，出镜只接受 HTTP(S) 网址")
 
 

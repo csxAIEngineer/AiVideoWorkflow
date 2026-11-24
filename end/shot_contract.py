@@ -331,7 +331,12 @@ def _stored_image_url(steps, asset_id):
     step = (steps or {}).get(asset_id) or {}
     if not isinstance(step, dict) or step.get("kind") == "video":
         return None
-    return _http_media_url(step.get("public_url")) or None
+    url = _http_media_url(step.get("public_url")) or None
+    if not url:
+        return None
+    from end.image_store import get_image_store
+
+    return get_image_store().refresh_url(url) or url
 
 
 def _existing_tail_url(work_dir, project_id, image_or_shot_id):
@@ -349,6 +354,15 @@ def _existing_tail_url(work_dir, project_id, image_or_shot_id):
 
         try:
             return LocalImageStore().url(project_id, filename)
+        except (ImageStoreError, OSError):
+            pass
+    if kind == "oss":
+        from end.image_store import ImageStoreError, get_image_store
+
+        try:
+            store = get_image_store()
+            hosted = store.url(project_id, filename)
+            return store.refresh_url(hosted) or hosted
         except (ImageStoreError, OSError):
             pass
     try:

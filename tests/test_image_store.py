@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 from unittest.mock import patch
 
 from end.image_store import CosImageStore, ImageStoreError, LocalImageStore, OssImageStore, get_image_store
@@ -58,15 +58,292 @@ class ImageStoreTest(unittest.TestCase):
             store.url("fffdd6d6b188", "U1.png")
         self.assertIn("HTTP(S)", str(raised.exception))
 
-    def test_oss_is_not_connected(self):
-        store = get_image_store("oss")
-        self.assertIsInstance(store, OssImageStore)
+    def _oss_store(self, root="."):
+        return OssImageStore(
+            bucket="demo-bucket",
+            domain="https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/",
+            root=root,
+            access_key_id="LTAI_DEMO_KEY",
+            access_key_secret="demoSecret",
+        )
+
+    def _fake_ok_open(self, calls):
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            calls.append((request, timeout))
+            return _Response()
+
+        return fake_open
+
+    def test_oss_put_signs_with_access_key_and_returns_that_url(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = self._oss_store(root)
+        calls = []
+        payload = b"\x89PNG-still"
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            url = store.save("fffdd6d6b188", "U1", payload)
+        path = root / "fffdd6d6b188" / "outputs" / "images" / "U1.png"
+        self.assertEqual(path.read_bytes(), payload)
+        self.assertEqual(
+            url,
+            "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/projects/fffdd6d6b188/images/U1.png",
+        )
+        self.assertEqual(len(calls), 1)
+        request, timeout = calls[0]
+        self.assertEqual(request.get_method(), "PUT")
+        self.assertEqual(request.full_url, url)
+        self.assertEqual(request.data, payload)
+        self.assertEqual(request.get_header("Content-type"), "image/png")
+        self.assertTrue(request.get_header("Content-md5"))
+        self.assertTrue(request.get_header("Date"))
+        self.assertIsNone(request.get_header("X-oss-object-acl"))
+        authorization = request.get_header("Authorization")
+        self.assertTrue(authorization.startswith("OSS LTAI_DEMO_KEY:"))
+        expected = store_module._oss_authorization(
+            "LTAI_DEMO_KEY",
+            "demoSecret",
+            "PUT",
+            request.get_header("Content-md5"),
+            "image/png",
+            request.get_header("Date"),
+            None,
+            "/demo-bucket/projects/fffdd6d6b188/images/U1.png",
+        )
+        self.assertEqual(authorization, expected)
+        self.assertGreater(timeout, 0)
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            again = store.ensure_remote(
+                "fffdd6d6b188",
+                "U1.png",
+                "http://43.132.225.71:8787/media/projects/fffdd6d6b188/images/U1.png",
+                source=path,
+            )
+        self.assertEqual(store.persistent_url(again), url)
+        self._assert_oss_signed_get(store, again, "projects/fffdd6d6b188/images/U1.png")
+        self.assertEqual(len(calls), 2)
+
+    def test_oss_requires_bucket_domain_and_keys(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = OssImageStore(bucket="", domain="", root=root, access_key_id="id", access_key_secret="secret")
         with self.assertRaises(ImageStoreError) as raised:
             store.save("fffdd6d6b188", "U1", b"\x89PNG")
-        self.assertIn("尚未接入", str(raised.exception))
+        self.assertIn("AIVIDEO_OSS_BUCKET", str(raised.exception))
+        store = OssImageStore(
+            bucket="demo-bucket",
+            domain="",
+            root=root,
+            access_key_id="id",
+            access_key_secret="secret",
+        )
         with self.assertRaises(ImageStoreError) as raised:
-            store.url("fffdd6d6b188", "U1.png")
-        self.assertIn("尚未接入", str(raised.exception))
+            store.publish("fffdd6d6b188", "U1.png", b"\x89PNG")
+        self.assertIn("AIVIDEO_OSS_DOMAIN", str(raised.exception))
+        store = OssImageStore(
+            bucket="demo-bucket",
+            domain="https://demo-bucket.oss-cn-hangzhou.aliyuncs.com",
+            root=root,
+            access_key_id="",
+            access_key_secret="secret",
+        )
+        with self.assertRaises(ImageStoreError) as raised:
+            store.publish("fffdd6d6b188", "U1.png", b"\x89PNG")
+        self.assertIn("AIVIDEO_OSS_ACCESS_KEY_ID", str(raised.exception))
+        store = OssImageStore(
+            bucket="demo-bucket",
+            domain="https://demo-bucket.oss-cn-hangzhou.aliyuncs.com",
+            root=root,
+            access_key_id="id",
+            access_key_secret="",
+        )
+        with self.assertRaises(ImageStoreError) as raised:
+            store.publish("fffdd6d6b188", "U1.png", b"\x89PNG")
+        self.assertIn("AIVIDEO_OSS_ACCESS_KEY_SECRET", str(raised.exception))
+
+    def test_oss_http_error_is_reported(self):
+        store = self._oss_store(Path("."))
+
+        def fake_open(request, timeout=None):
+            raise store_module.urllib.error.HTTPError(request.full_url, 403, "Forbidden", None, None)
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open):
+            with self.assertRaises(ImageStoreError) as raised:
+                store.publish("fffdd6d6b188", "U1.png", b"\x89PNG")
+        self.assertIn("403", str(raised.exception))
+        self.assertIn("OSS 上传失败", str(raised.exception))
+
+    def test_oss_chinese_asset_id_is_uploaded(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = self._oss_store(root)
+        calls = []
+        payload = b"\x89PNG-still"
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            url = store.save("fffdd6d6b188", "图1", payload)
+        self.assertEqual(
+            url,
+            "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/projects/fffdd6d6b188/images/%E5%9B%BE1.png",
+        )
+        self.assertTrue(url.isascii())
+        request, timeout = calls[0]
+        self.assertEqual(request.full_url, url)
+        authorization = request.get_header("Authorization")
+        expected = store_module._oss_authorization(
+            "LTAI_DEMO_KEY",
+            "demoSecret",
+            "PUT",
+            request.get_header("Content-md5"),
+            "image/png",
+            request.get_header("Date"),
+            None,
+            "/demo-bucket/projects/fffdd6d6b188/images/%E5%9B%BE1.png",
+        )
+        self.assertEqual(authorization, expected)
+        self.assertGreater(timeout, 0)
+
+    def test_oss_put_retries_a_connection_reset_then_succeeds(self):
+        store = self._oss_store(Path("."))
+        calls = []
+
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            calls.append(request.full_url)
+            if len(calls) == 1:
+                raise store_module.urllib.error.URLError(OSError(54, "Connection reset by peer"))
+            return _Response()
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open), patch(
+            "end.image_store.store.time.sleep", lambda _seconds: None
+        ):
+            url = store.publish("fffdd6d6b188", "S03_tail.jpg", b"\xff\xd8tail")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(url.endswith("/projects/fffdd6d6b188/images/S03_tail.jpg"))
+        self.assertEqual(calls[0], calls[1])
+
+    def test_oss_http_403_is_not_retried(self):
+        store = self._oss_store(Path("."))
+        calls = []
+
+        def fake_open(request, timeout=None):
+            calls.append(request.full_url)
+            raise store_module.urllib.error.HTTPError(request.full_url, 403, "Forbidden", None, None)
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open), patch(
+            "end.image_store.store.time.sleep", lambda _seconds: None
+        ):
+            with self.assertRaises(ImageStoreError) as raised:
+                store.publish("fffdd6d6b188", "S03_tail.jpg", b"\xff\xd8tail")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("403", str(raised.exception))
+
+    def test_oss_publish_clip_puts_mp4_and_returns_the_domain_url(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = self._oss_store(root)
+        payload = b"\x00\x00\x00\x18ftypmp42clip"
+        calls = []
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            url = store.publish_clip("65d271c72399", "S01.mp4", payload)
+        self.assertEqual(
+            url,
+            "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/projects/65d271c72399/clips/S01.mp4",
+        )
+        request, timeout = calls[0]
+        self.assertEqual(request.get_method(), "PUT")
+        self.assertEqual(request.full_url, url)
+        self.assertEqual(request.data, payload)
+        self.assertEqual(request.get_header("Content-type"), "video/mp4")
+        self.assertTrue(request.get_header("Authorization").startswith("OSS LTAI_DEMO_KEY:"))
+        self.assertGreater(timeout, 0)
+
+    def test_oss_ensure_clip_uploads_once_then_reuses_the_published_url(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = self._oss_store(root)
+        payload = b"\x00\x00\x00\x18ftypmp42clip"
+        path = root / "65d271c72399" / "outputs" / "clips" / "S01.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        calls = []
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            first = store.ensure_clip("65d271c72399", "S01.mp4", source=path)
+            second = store.ensure_clip("65d271c72399", "S01.mp4", source=path)
+        canonical = "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/projects/65d271c72399/clips/S01.mp4"
+        self.assertEqual(store.persistent_url(first), canonical)
+        self.assertEqual(store.persistent_url(second), canonical)
+        self._assert_oss_signed_get(store, first, "projects/65d271c72399/clips/S01.mp4")
+        self._assert_oss_signed_get(store, second, "projects/65d271c72399/clips/S01.mp4")
+        self.assertEqual(len(calls), 1)
+        marker = path.with_name("S01.mp4.oss.json")
+        self.assertTrue(marker.is_file())
+        self.assertIn(canonical, marker.read_text(encoding="utf-8"))
+
+
+    def _assert_oss_signed_get(self, store, url, key, expires=1700000000):
+        parsed = urlparse(url)
+        self.assertEqual(parsed.scheme, "https")
+        self.assertEqual(parsed.netloc, "demo-bucket.oss-cn-hangzhou.aliyuncs.com")
+        self.assertEqual(parsed.path, "/" + quote(key, safe="/"))
+        params = {name: values[0] for name, values in parse_qs(parsed.query).items()}
+        self.assertEqual(params.get("OSSAccessKeyId"), "LTAI_DEMO_KEY")
+        self.assertTrue(params.get("Expires"))
+        self.assertTrue(params.get("Signature"))
+        expected = store_module._oss_presign_get(
+            store.domain(),
+            store.bucket(),
+            key,
+            "LTAI_DEMO_KEY",
+            "demoSecret",
+            int(params["Expires"]),
+        )
+        self.assertEqual(url, expected)
+
+    def test_oss_refresh_url_signs_a_private_object_and_keeps_the_canonical_address(self):
+        store = self._oss_store(Path("."))
+        canonical = "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/projects/fffdd6d6b188/images/U1.png"
+        with patch("end.image_store.store.time.time", lambda: 1700000000):
+            signed = store.refresh_url(canonical)
+        self._assert_oss_signed_get(store, signed, "projects/fffdd6d6b188/images/U1.png")
+        self.assertEqual(store.persistent_url(signed), canonical)
+        stale = canonical + "?OSSAccessKeyId=LTAI_DEMO_KEY&Expires=1&Signature=old"
+        self.assertEqual(store.persistent_url(stale), canonical)
+        with patch("end.image_store.store.time.time", lambda: 1700000000):
+            refreshed = store.refresh_url(stale)
+        self._assert_oss_signed_get(store, refreshed, "projects/fffdd6d6b188/images/U1.png")
+        self.assertEqual(store.refresh_url("https://cdn.example/a.png"), "https://cdn.example/a.png")
+
+    def test_oss_ensure_remote_resigns_an_existing_object_without_uploading(self):
+        store = self._oss_store(Path("."))
+        calls = []
+        canonical = "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/projects/fffdd6d6b188/images/U1.png"
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            url = store.ensure_remote("fffdd6d6b188", "U1.png", canonical)
+        self.assertEqual(calls, [])
+        self.assertEqual(store.persistent_url(url), canonical)
+        self._assert_oss_signed_get(store, url, "projects/fffdd6d6b188/images/U1.png")
 
     def test_default_store_is_local(self):
         saved = os.environ.pop("AIVIDEO_IMAGE_STORE", None)
