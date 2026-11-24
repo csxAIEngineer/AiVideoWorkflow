@@ -125,8 +125,18 @@
     if (node && node.parentNode) node.parentNode.removeChild(node);
   }
 
+  function isLeaveStopNotice(notice) {
+    if (!notice) return false;
+    if ((notice.message || "") === "已经离开剧本停点") return true;
+    return notice.kind === "accept" && notice.continue_state === "done";
+  }
+
   function publishOutside(projectId, notice) {
     if (!projectId || !notice) return;
+    if (isLeaveStopNotice(notice)) {
+      clearAcceptOutside(projectId);
+      return;
+    }
     outsideNotices.set(projectId, notice);
     const node = document.querySelector('.script-revision-outside[data-project-id="' + projectId + '"]');
     if (node) {
@@ -147,6 +157,10 @@
     if (!project || !project.id) return null;
     const notice = outsideNotices.get(project.id);
     if (!notice) return null;
+    if (isLeaveStopNotice(notice)) {
+      clearAcceptOutside(project.id);
+      return null;
+    }
     if (notice.review_state !== "done" && project.progress) notice.progress = project.progress;
     return buildOutside(project.id, notice);
   }
@@ -1558,7 +1572,7 @@
     if (!view || !view.continue_state || view.continue_state === "none") return null;
     if (view.continue_state === "pending") return { kind: "accept", continue_state: "pending", message: "已接受这一稿。下一段可能已经排上，尚未确认。" };
     if (view.continue_state === "queued") return { kind: "accept", continue_state: "queued", message: "下一段已在队列里" };
-    if (view.continue_state === "done") return { kind: "accept", continue_state: "done", message: "已经离开剧本停点" };
+    if (view.continue_state === "done") return null;
     if (view.continue_state === "failed") return { kind: "accept", continue_state: "failed", message: "下一段没有写完。不会自动重排，也不会出图。" };
     return null;
   }
