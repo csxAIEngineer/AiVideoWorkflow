@@ -9,7 +9,7 @@
       if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
     } catch (_error) {}
   </script>
-  <link rel="stylesheet" href="/styles.css?v=54" />
+  <link rel="stylesheet" href="/styles.css?v=59" />
 </head>
 <body>
   <aside id="app-menu" class="sidebar" aria-label="项目菜单">
@@ -121,15 +121,14 @@
         <section id="thread" class="thread hidden"></section>
           <form id="composer" class="composer">
           <div class="composer-main">
-            <div id="materials" class="materials hidden">
-              <div id="material-list" class="material-list"></div>
-              <label class="material-add">
-                <input id="material-file" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple />
-                <span>添加图素材</span>
-              </label>
-            </div>
-            <textarea id="brief" rows="1" placeholder="文字决定要拍成什么样：时长、广告、感觉、情节和结尾。用户没写的部分，用读图补上身份和场景。"></textarea>
+            <div id="brief" class="brief-input" role="textbox" aria-multiline="true" contenteditable="true" data-placeholder="文字决定要拍成什么样：时长、广告、感觉、情节和结尾。用户没写的部分，用读图补上身份和场景。"></div>
             <div class="composer-actions">
+              <div id="materials" class="materials hidden">
+                <label class="material-add">
+                  <input id="material-file" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple />
+                  <span>添加图素材</span>
+                </label>
+              </div>
               <button id="settings-toggle" class="settings-toggle" type="button" aria-expanded="false" aria-controls="composer-settings">设置</button>
               <button id="send" type="submit" aria-label="发送">↑</button>
             </div>
@@ -208,6 +207,6 @@
   <script src="/rpc.js?v=2"></script>
   <script src="/script-edit.js?v=2"></script>
   <script src="/shot-contract-view.js?v=2"></script>
-  <script src="/app.js?v=86"></script>
+  <script src="/app.js?v=94"></script>
 </body>
 </html>

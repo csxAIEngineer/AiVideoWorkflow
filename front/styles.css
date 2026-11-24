@@ -280,7 +280,7 @@ body {
   flex: 1;
 }
 
-.main.fresh { justify-content: center; }
+.main.fresh { justify-content: stretch; }
 
 .main.fresh .empty {
   flex: none;
@@ -905,6 +905,13 @@ a.download,
   gap: 8px;
 }
 
+.composer-actions .materials {
+  margin: 0 auto 0 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
 .settings-toggle {
   border: 1px solid var(--line);
   background: transparent;
@@ -969,51 +976,68 @@ a.download,
 
 .materials {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
-  margin: 4px 8px 6px 0;
+  margin: 0;
 }
 
-.material-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.material-card {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: start;
-}
-
-.material-card img {
-  width: 72px;
-  height: 72px;
-  object-fit: cover;
-  border-radius: 10px;
-  background: #f3f3f6;
-}
-
-.material-card textarea {
-  min-height: 72px;
-  max-height: 120px;
+.material-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  margin: 0 1px;
+  padding: 3px 6px 3px 3px;
   border: 1px solid #e3e3e8;
-  border-radius: 10px;
-  padding: 6px 8px;
-  font-size: 13px;
-  background: #fafafa;
+  border-radius: 999px;
+  background: #f6f6f8;
+  color: inherit;
+  cursor: grab;
+  user-select: none;
+  vertical-align: middle;
 }
 
-.material-card button {
+.material-label.is-dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.material-label.is-drop {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.material-label img {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  object-fit: cover;
+  background: #f3f3f6;
+  flex: none;
+  pointer-events: none;
+}
+
+.material-label-name {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.material-label-remove {
   border: 0;
   background: transparent;
   color: #9a9aa3;
   cursor: pointer;
-  padding: 4px;
+  padding: 0 2px;
+  font-size: 14px;
+  line-height: 1;
+  flex: none;
 }
 
-.material-card button:hover { color: #b42318; }
+.material-label-remove:hover { color: #b42318; }
 
 .material-add {
   display: inline-flex;
@@ -1120,7 +1144,6 @@ a.download,
   color: var(--accent);
 }
 
-.main.fresh .composer { margin: 0 auto 12vh; }
 
 textarea {
   width: 100%;
@@ -1137,6 +1160,32 @@ textarea {
 
 #brief {
   min-height: 4em;
+}
+
+.brief-input {
+  width: 100%;
+  min-height: 4em;
+  max-height: 160px;
+  overflow: auto;
+  outline: none;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.5;
+  padding: 8px 0;
+  background: transparent;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.brief-input.is-empty:before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.brief-input.is-disabled {
+  opacity: 0.6;
 }
 
 @media (max-width: 720px) {
@@ -1695,15 +1744,23 @@ html[data-theme="dark"] .contract-thumb .none {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
   background: transparent;
 }
 
 .chat-column .thread {
-  flex: 1 0 auto;
-  min-height: 120px;
-  overflow: visible;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 0 16px;
+}
+
+.chat-column .composer {
+  flex: none;
+  position: relative;
+  z-index: 2;
+  width: min(760px, calc(100% - 32px));
+  margin: auto auto 16px;
 }
 
 .chat-pin {
@@ -1848,6 +1905,8 @@ html[data-theme="dark"] .contract-thumb .none {
   width: clamp(560px, 46%, 880px);
   background: var(--paper);
   border-left: 1px solid var(--line);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .chat-toggle { display: none; }
@@ -1934,6 +1993,9 @@ html[data-theme="dark"] .contract-thumb .none {
 }
 
 .main.workflow .chat-column .thread {
+  flex: 1 0 auto;
+  min-height: 120px;
+  overflow: visible;
   padding: 16px 0 8px;
 }
 
@@ -1958,8 +2020,21 @@ html[data-theme="dark"] .contract-thumb .none {
 
 .main.fresh .chat-column {
   justify-content: center;
+  align-items: center;
   background: transparent;
   border: 0;
+}
+
+.main.fresh .chat-column .composer {
+  flex: none;
+  width: min(680px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 18px 20px 14px;
+}
+
+.main.fresh .brief-input {
+  min-height: 8.5em;
+  max-height: 240px;
 }
 
 .stage-bar {
@@ -2701,10 +2776,21 @@ html[data-theme="dark"] .doc-material img,
 html[data-theme="dark"] .still-grid img,
 html[data-theme="dark"] .wf-still,
 html[data-theme="dark"] .material-card img,
-html[data-theme="dark"] .material-strip img {
+html[data-theme="dark"] .material-strip img,
+html[data-theme="dark"] .material-label img {
   background: #1a1a1e;
   color: var(--muted);
   border-color: #2c2c31;
+}
+
+html[data-theme="dark"] .material-label {
+  background: #141416;
+  border-color: #34343a;
+  color: var(--text);
+}
+
+html[data-theme="dark"] .brief-input.is-empty:before {
+  color: var(--muted);
 }
 
 html[data-theme="dark"] .prompt-table td,

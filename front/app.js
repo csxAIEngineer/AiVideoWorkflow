@@ -62,6 +62,8 @@ let retouchDiffSelection = "";
 let seenRetouchError = "";
 const pointer = { mode: "" };
 let draftMaterials = [];
+let draftMaterialSeq = 0;
+let draggingMaterialId = "";
 let seamKept = new Set();
 const MAX_MATERIALS = 8;
 
@@ -410,8 +412,18 @@ document.querySelectorAll(".js-produce").forEach((button) => {
   button.addEventListener("click", () => postControl("render"));
 });
 
+function isVisionTrace(row) {
+  if (!row) return false;
+  if (String(row.stage || "") === "vision") return true;
+  return /^读图(?:\s+\d+)?$/.test(String(row.label || ""));
+}
+
+function visibleTraces(project) {
+  return ((project && project.traces) || []).filter((row) => !isVisionTrace(row));
+}
+
 function traceList(project) {
-  const rows = (project && project.traces) || [];
+  const rows = visibleTraces(project);
   if (!project || !project.debug_trace || !rows.length) return null;
   const box = document.createElement("div");
   box.className = "trace-list";
@@ -526,7 +538,12 @@ function clipList(project) {
   return block;
 }
 
+function showImageGallery(project) {
+  return false;
+}
+
 function imageGallery(project) {
+  if (!showImageGallery(project)) return null;
   const images = (project && project.images) || [];
   if (!images.length) return null;
   const block = document.createElement("section");
@@ -1457,11 +1474,58 @@ function choiceList(messageOrOptions) {
   return list;
 }
 
+function stripSuggestedAd(text) {
+  const kept = [];
+  const lineRe = /^\s*(?:\*\*)?建议的广告(?:\*\*)?\s*[：:]\s*.*$/;
+  const inlineRe = /\s*(?:\*\*)?建议的广告(?:\*\*)?\s*[：:]\s*.*$/;
+  String(text || "").split(/\r?\n/).forEach((raw) => {
+    if (lineRe.test(raw)) return;
+    const cleaned = raw.replace(inlineRe, "").replace(/\s+$/, "");
+    if (cleaned.trim()) kept.push(cleaned);
+  });
+  return kept.join("\n");
+}
+
+function officialMaterialMark(item) {
+  return (String((item && item.id) || "") + " " + String((item && item.title) || "")).trim();
+}
+
+function rewriteBriefMaterialTokens(text, materials) {
+  const items = materials || [];
+  if (!items.length) return String(text || "");
+  return String(text || "").replace(/【([^】]*)】/g, (all, inner) => {
+    const raw = String(inner || "").trim();
+    if (!raw) return all;
+    const folded = raw.toLowerCase();
+    const ext = /\.(png|jpe?g|webp)$/i;
+    const hits = [];
+    const seen = {};
+    items.forEach((item) => {
+      const mark = officialMaterialMark(item);
+      const title = String((item && item.title) || "");
+      const id = String((item && item.id) || "");
+      const names = [mark, id, title];
+      const stem = ext.test(raw) ? raw.replace(ext, "") : "";
+      const matched = names.some((name) => name && String(name).toLowerCase() === folded)
+        || (stem && title && stem.toLowerCase() === title.toLowerCase());
+      if (matched && mark && !seen[mark]) {
+        hits.push(mark);
+        seen[mark] = true;
+      }
+    });
+    return hits.length === 1 ? "【" + hits[0] + "】" : all;
+  });
+}
+
+function displayUserMessage(text, project) {
+  return rewriteBriefMaterialTokens(stripSuggestedAd(text), (project && project.materials) || []);
+}
+
 function messageBubble(role, text) {
   const node = document.createElement("div");
   if (role === "user") {
     node.className = "user";
-    node.textContent = text;
+    node.textContent = displayUserMessage(text, current);
     return node;
   }
   node.className = "assistant-reply";
@@ -1486,7 +1550,7 @@ function syncComposer() {
   const showInput = showOther || showBrief;
   briefEl.classList.toggle("hidden", !showInput);
   send.classList.toggle("hidden", !showInput);
-  briefEl.disabled = !showInput || sending;
+  setBriefDisabled(!showInput || sending);
   send.disabled = !showInput || sending;
   form.classList.toggle("bare", !showInput);
   const materials = document.querySelector("#materials");
@@ -1847,8 +1911,21 @@ function fillChatPin(progress, actions) {
   pin.classList.toggle("hidden", !filled);
 }
 
+function chatUsesWorkflowLayout() {
+  return typeof current !== "undefined" && current && typeof workflowMode === "function" && workflowMode(current);
+}
+
+function chatScroller() {
+  if (chatUsesWorkflowLayout() && typeof document !== "undefined" && document && document.querySelector) {
+    return document.querySelector("#chat-column") || thread;
+  }
+  return thread;
+}
+
 function threadAnchor() {
-  const top = thread.getBoundingClientRect().top;
+  const scroller = chatScroller() || thread;
+  if (!scroller || !thread) return null;
+  const top = scroller.getBoundingClientRect().top;
   const nodes = thread.querySelectorAll("[data-msg]");
   for (let index = 0; index < nodes.length; index += 1) {
     const rect = nodes[index].getBoundingClientRect();
@@ -1859,16 +1936,39 @@ function threadAnchor() {
   return null;
 }
 
+function threadFollowsLatest() {
+  const scroller = chatScroller();
+  if (!scroller) return true;
+  if (chatUsesWorkflowLayout()) return scroller.scrollTop <= 8;
+  return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 48;
+}
+
+function scrollThreadToLatest() {
+  const scroller = chatScroller();
+  if (!scroller) return;
+  const toTop = chatUsesWorkflowLayout();
+  const apply = function () {
+    if (!scroller) return;
+    scroller.scrollTop = toTop ? 0 : Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  };
+  apply();
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(apply);
+  }
+}
+
 function settleThread(opts, follow, anchor) {
+  const scroller = chatScroller();
+  if (!scroller) return;
   if (opts.scroll === "top" || opts.scroll === "bottom" || follow) {
-    thread.scrollTop = 0;
+    scrollThreadToLatest();
     return;
   }
   if (!anchor || !anchor.id) return;
   const node = thread.querySelector('[data-msg="' + anchor.id + '"]');
   if (!node) return;
-  const delta = node.getBoundingClientRect().top - thread.getBoundingClientRect().top - anchor.offset;
-  thread.scrollTop += delta;
+  const delta = node.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.offset;
+  scroller.scrollTop += delta;
 }
 
 function paintTranscript(options, full) {
@@ -1881,12 +1981,12 @@ function paintTranscript(options, full) {
   const sameProject = !!(current && paintTranscript.projectId === current.id);
   if (key && key === paintTranscript.key && sameProject && thread.childElementCount) {
     syncChoiceDisabled();
-    if (opts.scroll === "top" || opts.scroll === "bottom") thread.scrollTop = 0;
+    if (opts.scroll === "top" || opts.scroll === "bottom") scrollThreadToLatest();
     syncComposer();
     syncChatSpinner(current);
     return;
   }
-  const followLatest = thread.scrollTop <= 8;
+  const followLatest = threadFollowsLatest();
   const anchor = followLatest ? null : threadAnchor();
   seamKept = new Set(
     sanitizedSeamKept(sameProject ? checkedBefore.filter((box) => box.checked).map((box) => box.value) : [])
@@ -1911,7 +2011,13 @@ function paintTranscript(options, full) {
     if (running && message.role !== "user" && continueCue(message.content)) bubble.classList.add("aside");
     return bubble;
   }
-  if (messages.length) wrap.append(transcriptBubble(messages[messages.length - 1], messages.length - 1));
+  if (!full) {
+    if (messages.length) wrap.append(transcriptBubble(messages[messages.length - 1], messages.length - 1));
+  } else {
+    for (let index = 0; index < messages.length; index += 1) {
+      wrap.append(transcriptBubble(messages[index], index));
+    }
+  }
   if (current.status === "gate" && (current.progress || {}).phase === "gate_script" && current.script) {
     const gatePassed = ((current.progress || {}).pipeline || {}).passed !== false;
     const last = visibleMessages(current).slice(-1)[0] || {};
@@ -1941,18 +2047,36 @@ function paintTranscript(options, full) {
     if (durationBox) pinActions.push(durationBox);
     fillChatPin(showProgress ? progressPanel(current) : null, pinActions);
     syncChatSpinner(current);
-  } else {
-    pinActions.forEach((node) => wrap.append(node));
-    if (running) {
+    if (current.status === "drilling" && !current.can_reply) {
+      const thinking = document.createElement("p");
+      thinking.className = "stage";
+      thinking.textContent = current.stage || "正在想方向";
+      wrap.append(thinking);
+    }
+    if ((current.progress || {}).phase === "prompt_debug") {
       const note = document.createElement("p");
-      note.className = "stage auto-run";
-      note.textContent = running.text;
+      note.className = "debug-note";
+      note.textContent = "Debug 模式：提示词已经写好。不生图。";
       wrap.append(note);
     }
-    if (showProgress) wrap.append(progressPanel(current));
-    if (durationBox) wrap.append(durationBox);
+    for (let index = messages.length - 2; index >= 0; index -= 1) {
+      wrap.append(transcriptBubble(messages[index], index));
+    }
+    thread.append(wrap);
+    syncComposer();
+    const runKey = running ? running.key + ":" + running.attempt : "";
+    paintTranscript.runKey = runKey;
+    settleThread(opts, followLatest, anchor);
+    return;
   }
-  syncChatSpinner(current);
+  if (durationBox) pinActions.push(durationBox);
+  pinActions.forEach((node) => wrap.append(node));
+  if (running) {
+    const note = document.createElement("p");
+    note.className = "stage auto-run";
+    note.textContent = running.text;
+    wrap.append(note);
+  }
   if (current.status === "drilling" && !current.can_reply) {
     const thinking = document.createElement("p");
     thinking.className = "stage";
@@ -1965,17 +2089,8 @@ function paintTranscript(options, full) {
     note.textContent = "Debug 模式：提示词已经写好。不生图。";
     wrap.append(note);
   }
-  for (let index = messages.length - 2; index >= 0; index -= 1) {
-    wrap.append(transcriptBubble(messages[index], index));
-  }
-  if (!full) {
-    thread.append(wrap);
-    syncComposer();
-    const runKey = running ? running.key + ":" + running.attempt : "";
-    paintTranscript.runKey = runKey;
-    settleThread(opts, followLatest, anchor);
-    return;
-  }
+  if (showProgress) wrap.append(progressPanel(current));
+  syncChatSpinner(current);
   const assistant = document.createElement("div");
   assistant.className = "assistant";
   if (!inDrill(current) && (current.progress || {}).phase !== "lock_wait" && current.status !== "gate" && !running) {
@@ -2194,7 +2309,7 @@ newChat.addEventListener("click", async () => {
   otherOpen = false;
   resetRetouch();
   clearDraftMaterials();
-  briefEl.value = "";
+  setBriefValue("");
   const savedModel = localStorage.getItem("aivideo.model");
   if (modelEl && savedModel && [...modelEl.options].some((option) => option.value === savedModel)) {
     modelEl.value = savedModel;
@@ -2209,17 +2324,7 @@ newChat.addEventListener("click", async () => {
   briefEl.focus();
 });
 
-briefEl.addEventListener("input", () => {
-  briefEl.style.height = "auto";
-  briefEl.style.height = Math.min(briefEl.scrollHeight, 160) + "px";
-});
-
-briefEl.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    form.requestSubmit();
-  }
-});
+bindBriefComposer();
 
 function syncModelFoot() {
   if (!modelFoot || !modelEl) return;
@@ -2392,8 +2497,8 @@ if (templateEl) {
 
 function adoptProject(project, isNew) {
   otherOpen = false;
-  briefEl.value = "";
-  briefEl.style.height = "auto";
+  clearDraftMaterials();
+  setBriefValue("");
   if (isNew) projects.unshift(project);
   else {
     const listed = projects.find((item) => item.id === project.id);
@@ -2407,46 +2512,539 @@ function adoptProject(project, isNew) {
   watch();
 }
 
-function clearDraftMaterials() {
+function isRichBrief() {
+  return !!(briefEl && briefEl.getAttribute && briefEl.getAttribute("contenteditable") != null);
+}
+
+function resizeBrief() {
+  if (!briefEl) return;
+  briefEl.style.height = "auto";
+  briefEl.style.height = Math.min(briefEl.scrollHeight, 160) + "px";
+}
+
+function isEditableComposer(node) {
+  return !!(node && node.getAttribute && node.getAttribute("contenteditable") != null);
+}
+
+function briefIsEmpty(root) {
+  const editor = root || briefEl;
+  if (!editor) return true;
+  if (!isEditableComposer(editor)) return !String(editor.value || "").trim();
+  const snapshot = serializeComposer(editor);
+  return !snapshot.text.trim() && !snapshot.ids.length;
+}
+
+function syncBriefEmpty(root) {
+  const editor = root || briefEl;
+  if (!editor || !isEditableComposer(editor)) return;
+  editor.classList.toggle("is-empty", briefIsEmpty(editor));
+}
+
+function getBriefValue() {
+  if (!briefEl) return "";
+  if (isRichBrief()) return serializeComposer(briefEl).text;
+  return briefEl.value || "";
+}
+
+function setBriefValue(text) {
+  if (!briefEl) return;
+  if (isRichBrief()) {
+    briefEl.innerHTML = "";
+    const value = String(text || "");
+    if (value) briefEl.appendChild(document.createTextNode(value));
+    syncBriefEmpty();
+    resizeBrief();
+    return;
+  }
+  briefEl.value = text || "";
+}
+
+function setBriefDisabled(disabled) {
+  if (!briefEl) return;
+  if (isRichBrief()) {
+    briefEl.setAttribute("contenteditable", disabled ? "false" : "true");
+    briefEl.classList.toggle("is-disabled", !!disabled);
+    briefEl.setAttribute("aria-disabled", disabled ? "true" : "false");
+    return;
+  }
+  briefEl.disabled = !!disabled;
+}
+
+function isBriefDisabled() {
+  if (!briefEl) return true;
+  if (isRichBrief()) return briefEl.getAttribute("contenteditable") === "false";
+  return !!briefEl.disabled;
+}
+
+function isTitleChar(char) {
+  if (" _-—".indexOf(char) >= 0) return true;
+  if (char >= "\u4e00" && char <= "\u9fff") return true;
+  return /\p{L}|\p{N}/u.test(char);
+}
+
+function fileStem(filename) {
+  const base = String(filename || "").split(/[/\\]/).pop() || "";
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
+function materialTitle(filename, index) {
+  let kept = "";
+  const stem = fileStem(filename);
+  for (const char of stem) {
+    if (isTitleChar(char)) kept += char;
+  }
+  const text = kept.trim().split(/\s+/).filter(Boolean).join(" ").slice(0, 24).trim();
+  return text || ("素材" + index);
+}
+
+function materialFilename(item, fallback) {
+  return (item && item.file && item.file.name) || (item && item.filename) || (item && item.name) || fallback || "";
+}
+
+function materialMark(item, index, fallback) {
+  return "U" + index + " " + materialTitle(materialFilename(item, fallback), index);
+}
+
+function materialToken(item, index, fallback) {
+  return "【" + materialMark(item, index, fallback).replace(/[】]/g, "") + "】";
+}
+
+function refreshMaterialLabels(root) {
+  const editor = root || briefEl;
+  if (!editor || !editor.querySelectorAll) return;
+  const labels = editor.querySelectorAll(".material-label");
+  for (let i = 0; i < labels.length; i += 1) {
+    const index = i + 1;
+    const label = labels[i];
+    const id = label.dataset && label.dataset.id;
+    const item = draftMaterials.find((entry) => entry.id === id);
+    const filename = materialFilename(item, (label.dataset && label.dataset.filename) || "");
+    const mark = materialMark({ file: { name: filename } }, index);
+    if (label.dataset) {
+      if (!label.dataset.filename && filename) label.dataset.filename = filename;
+      label.dataset.name = mark;
+    }
+    const nameEl = label.querySelector && label.querySelector(".material-label-name");
+    if (nameEl) nameEl.textContent = mark;
+    label.setAttribute("aria-label", "图素材 " + mark + "，可拖拽到文字中");
+    label.title = mark;
+    const remove = label.querySelector && label.querySelector(".material-label-remove");
+    if (remove) remove.setAttribute("aria-label", "移除 " + mark);
+  }
+}
+
+function serializeComposer(root) {
+  const editor = root || briefEl;
+  const ids = [];
+  let text = "";
+  if (!editor) return { text: "", ids: ids };
+  function walk(node, isRoot) {
+    if (!node) return;
+    if (node.nodeType === 3) {
+      text += String(node.nodeValue || "").replace(/\u200B/g, "");
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    const cls = node.classList;
+    if (cls && cls.contains("material-label")) {
+      const id = node.dataset && node.dataset.id;
+      if (id) ids.push(id);
+      const item = draftMaterials.find((entry) => entry.id === id);
+      const filename = materialFilename(item, (node.dataset && node.dataset.filename) || "");
+      text += materialToken({ file: { name: filename } }, ids.length);
+      return;
+    }
+    if (node.tagName === "BR") {
+      text += "\n";
+      return;
+    }
+    const block = !isRoot && /^(DIV|P|LI)$/.test(node.tagName || "");
+    if (block && text && !text.endsWith("\n")) text += "\n";
+    const children = node.childNodes || node.children || [];
+    for (let i = 0; i < children.length; i += 1) walk(children[i], false);
+  }
+  walk(editor, true);
+  return { text: text, ids: ids };
+}
+
+function syncDraftMaterialsFromEditor(root) {
+  const editor = root || briefEl;
+  if (!editor) return draftMaterials.slice();
+  const ids = [];
+  const labels = editor.querySelectorAll ? editor.querySelectorAll(".material-label") : [];
+  for (let i = 0; i < labels.length; i += 1) {
+    const id = labels[i].dataset && labels[i].dataset.id;
+    if (id) ids.push(id);
+  }
+  const keep = {};
+  ids.forEach((id) => { keep[id] = true; });
+  draftMaterials.forEach((item) => {
+    if (!keep[item.id] && item.url) URL.revokeObjectURL(item.url);
+  });
+  const next = [];
+  ids.forEach((id) => {
+    const item = draftMaterials.find((entry) => entry.id === id);
+    if (item && !next.includes(item)) next.push(item);
+  });
+  draftMaterials = next;
+  return draftMaterials.slice();
+}
+
+function captureComposerSend(root) {
+  const editor = root || briefEl;
+  syncDraftMaterialsFromEditor(editor);
+  refreshMaterialLabels(editor);
+  const snapshot = serializeComposer(editor);
+  const materials = snapshot.ids.map((id) => draftMaterials.find((item) => item.id === id)).filter(Boolean).map(draftMaterialRecord);
+  return { text: snapshot.text, materials: materials, ids: snapshot.ids };
+}
+
+function rangeFromPoint(x, y) {
+  if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y);
+  if (document.caretPositionFromPoint) {
+    const pos = document.caretPositionFromPoint(x, y);
+    if (!pos) return null;
+    const range = document.createRange();
+    range.setStart(pos.offsetNode, pos.offset);
+    range.collapse(true);
+    return range;
+  }
+  return null;
+}
+
+function placeCaretAfter(node) {
+  if (!node || !document.createRange) return;
+  const selection = window.getSelection && window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.setStartAfter(node);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function editorSelectionRange(editor) {
+  const selection = window.getSelection && window.getSelection();
+  if (!selection || !selection.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  const container = range.commonAncestorContainer;
+  if (!editor || !editor.contains) return range;
+  if (editor === container || editor.contains(container)) return range;
+  return null;
+}
+
+function moveMaterialLabelToRange(label, range, root) {
+  const editor = root || (label && label.closest && label.closest("#brief")) || briefEl;
+  if (!label || !range || !editor) return false;
+  let container = range.commonAncestorContainer || range.startContainer;
+  if (container && container.nodeType === 3) container = container.parentNode;
+  if (!container || (editor !== container && editor.contains && !editor.contains(container))) return false;
+  if (label.contains && (label.contains(range.startContainer) || label === range.startContainer)) return false;
+  const start = range.startContainer;
+  const inside = start && start.nodeType === 1 && start.closest ? start.closest(".material-label") : (start && start.parentNode && start.parentNode.closest && start.parentNode.closest(".material-label"));
+  if (inside && inside !== label) {
+    const next = document.createRange();
+    next.setStartBefore(inside);
+    next.collapse(true);
+    range = next;
+  }
+  if (label.parentNode) label.parentNode.removeChild(label);
+  range.insertNode(label);
+  placeCaretAfter(label);
+  syncDraftMaterialsFromEditor(editor);
+  refreshMaterialLabels(editor);
+  syncBriefEmpty(editor);
+  return true;
+}
+
+function moveMaterialLabelBefore(label, refNode, root) {
+  const editor = root || (label && label.closest && label.closest("#brief")) || briefEl;
+  if (!label || !editor) return false;
+  if (label.parentNode) label.parentNode.removeChild(label);
+  if (refNode && refNode.parentNode) refNode.parentNode.insertBefore(label, refNode);
+  else editor.appendChild(label);
+  syncDraftMaterialsFromEditor(editor);
+  refreshMaterialLabels(editor);
+  syncBriefEmpty(editor);
+  return true;
+}
+
+function insertMaterialLabelAtCaret(item, root) {
+  const editor = root || briefEl;
+  if (!item || !editor) return null;
+  const label = buildMaterialLabel(item);
+  const range = editorSelectionRange(editor);
+  if (range) {
+    range.deleteContents && range.deleteContents();
+    range.insertNode(label);
+  } else {
+    editor.appendChild(label);
+  }
+  placeCaretAfter(label);
+  syncDraftMaterialsFromEditor(editor);
+  refreshMaterialLabels(editor);
+  syncBriefEmpty(editor);
+  resizeBrief();
+  return label;
+}
+
+function nextDraftMaterialId() {
+  draftMaterialSeq += 1;
+  return "m" + draftMaterialSeq;
+}
+
+function addDraftMaterial(file) {
+  const item = {
+    id: nextDraftMaterialId(),
+    file: file,
+    url: URL.createObjectURL(file),
+    narration: "",
+  };
+  draftMaterials.push(item);
+  return item;
+}
+
+function removeDraftMaterial(id, root) {
+  const editor = root || briefEl;
+  if (editor && editor.querySelectorAll) {
+    editor.querySelectorAll(".material-label").forEach((node) => {
+      if (node.dataset && node.dataset.id === id && node.parentNode) node.parentNode.removeChild(node);
+    });
+  }
+  draftMaterials = draftMaterials.filter((item) => {
+    if (item.id !== id) return true;
+    if (item.url) URL.revokeObjectURL(item.url);
+    return false;
+  });
+  refreshMaterialLabels(editor);
+  syncBriefEmpty(editor);
+}
+
+function draftMaterialRecord(item) {
+  return {
+    filename: (item && item.file && item.file.name) || "",
+    narration: (item && item.narration) || "",
+  };
+}
+
+function acceptDraftFiles(files) {
+  const picked = [...(files || [])];
+  const room = MAX_MATERIALS - draftMaterials.length;
+  const overflow = !room || picked.length > room;
+  let skipped = false;
+  const accepted = [];
+  picked.slice(0, Math.max(0, room)).forEach((file) => {
+    const named = /\.(png|jpe?g|webp)$/i.test(file.name || "");
+    const typed = /^image\/(png|jpeg|webp)$/.test(file.type || "");
+    if (!named && !typed) {
+      skipped = true;
+      return;
+    }
+    accepted.push(addDraftMaterial(file));
+  });
+  return { overflow: overflow, skipped: skipped, accepted: accepted };
+}
+
+function clearDraftMaterials(root) {
+  const editor = root || briefEl;
   draftMaterials.forEach((item) => {
     if (item.url) URL.revokeObjectURL(item.url);
   });
   draftMaterials = [];
-  renderDraftMaterials();
+  draggingMaterialId = "";
+  if (editor && editor.querySelectorAll) {
+    editor.querySelectorAll(".material-label").forEach((node) => {
+      if (node.parentNode) node.parentNode.removeChild(node);
+    });
+  }
+  syncBriefEmpty(editor);
 }
 
-function renderDraftMaterials() {
-  const list = document.querySelector("#material-list");
-  if (!list) return;
-  list.replaceChildren();
-  draftMaterials.forEach((item) => {
-    const card = document.createElement("article");
-    card.className = "material-card";
-    const img = document.createElement("img");
-    img.src = item.url;
-    img.alt = item.file.name || "图素材";
-    const field = document.createElement("textarea");
-    field.rows = 2;
-    field.placeholder = "这张图的旁白";
-    field.value = item.narration;
-    field.addEventListener("input", () => {
-      item.narration = field.value;
-    });
-    field.addEventListener("keydown", (event) => event.stopPropagation());
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.textContent = "移除";
-    remove.addEventListener("click", () => {
-      URL.revokeObjectURL(item.url);
-      draftMaterials = draftMaterials.filter((other) => other !== item);
-      renderDraftMaterials();
-    });
-    card.append(img, field, remove);
-    list.append(card);
+function buildMaterialLabel(item) {
+  const filename = (item.file && item.file.name) || "图片";
+  const label = document.createElement("span");
+  label.className = "material-label";
+  label.contentEditable = "false";
+  label.draggable = true;
+  label.dataset.id = item.id;
+  label.dataset.filename = filename;
+  label.dataset.name = filename;
+  label.setAttribute("aria-label", "图素材 " + filename + "，可拖拽到文字中");
+  label.title = filename;
+  const img = document.createElement("img");
+  img.src = item.url;
+  img.alt = "";
+  img.draggable = false;
+  const name = document.createElement("span");
+  name.className = "material-label-name";
+  name.textContent = filename;
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "material-label-remove";
+  remove.setAttribute("aria-label", "移除 " + filename);
+  remove.tabIndex = -1;
+  remove.textContent = "×";
+  remove.addEventListener("pointerdown", (event) => event.stopPropagation());
+  remove.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const editor = label.closest ? label.closest("#brief") : briefEl;
+    removeDraftMaterial(item.id, editor);
+    resizeBrief();
+  });
+  bindMaterialLabelDrag(label, item);
+  label.addEventListener("click", (event) => {
+    if (event.target.closest && event.target.closest(".material-label-remove")) return;
+    const rect = label.getBoundingClientRect ? label.getBoundingClientRect() : { left: 0, width: 0 };
+    const after = event.clientX == null || event.clientX > rect.left + rect.width / 2;
+    if (after) placeCaretAfter(label);
+    else if (document.createRange && window.getSelection) {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.setStartBefore(label);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  });
+  label.append(img, name, remove);
+  return label;
+}
+
+function bindMaterialLabelDrag(label, item) {
+  label.addEventListener("dragstart", (event) => {
+    draggingMaterialId = item.id;
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", item.id);
+    event.dataTransfer.setData("application/x-aivideo-material", item.id);
+    label.classList.add("is-dragging");
+    if (event.dataTransfer.setDragImage) event.dataTransfer.setDragImage(label, 16, 16);
+  });
+  label.addEventListener("dragend", () => {
+    draggingMaterialId = "";
+    label.classList.remove("is-dragging");
   });
 }
 
+function nodeBeforeCaret(range) {
+  if (!range || !range.collapsed && range.collapsed !== undefined && !range.collapsed) return null;
+  const node = range.startContainer;
+  const offset = range.startOffset || 0;
+  if (!node) return null;
+  if (node.nodeType === 3) {
+    const raw = String(node.nodeValue || "").replace(/\u200B/g, " ");
+    if (offset > 0 && raw.slice(0, offset).replace(/ /g, "").length) return null;
+    return previousElementSibling(node);
+  }
+  const children = node.childNodes || [];
+  if (offset > 0) return lastMeaningful(children[offset - 1]);
+  return previousElementSibling(node);
+}
+
+function nodeAfterCaret(range) {
+  if (!range) return null;
+  const node = range.startContainer;
+  const offset = range.startOffset || 0;
+  if (!node) return null;
+  if (node.nodeType === 3) {
+    const raw = String(node.nodeValue || "");
+    if (offset < raw.length && raw.slice(offset).replace(/\u200B/g, "").length) return null;
+    return nextElementSibling(node);
+  }
+  const children = node.childNodes || [];
+  if (offset < children.length) return firstMeaningful(children[offset]);
+  return nextElementSibling(node);
+}
+
+function lastMeaningful(node) {
+  let current = node;
+  while (current && current.nodeType === 3 && !String(current.nodeValue || "").replace(/\u200B/g, "").length) {
+    current = current.previousSibling;
+  }
+  if (current && current.classList && current.classList.contains("material-label")) return current;
+  return null;
+}
+
+function firstMeaningful(node) {
+  let current = node;
+  while (current && current.nodeType === 3 && !String(current.nodeValue || "").replace(/\u200B/g, "").length) {
+    current = current.nextSibling;
+  }
+  if (current && current.classList && current.classList.contains("material-label")) return current;
+  return null;
+}
+
+function previousElementSibling(node) {
+  let current = node && node.previousSibling;
+  return lastMeaningful(current);
+}
+
+function nextElementSibling(node) {
+  let current = node && node.nextSibling;
+  return firstMeaningful(current);
+}
+
+function removeAdjacentMaterialLabel(direction, root) {
+  const editor = root || briefEl;
+  const range = editorSelectionRange(editor);
+  if (!range) return false;
+  const label = direction < 0 ? nodeBeforeCaret(range) : nodeAfterCaret(range);
+  if (!label || !label.dataset || !label.dataset.id) return false;
+  removeDraftMaterial(label.dataset.id, editor);
+  resizeBrief();
+  return true;
+}
+
+function bindBriefComposer() {
+  if (!briefEl) return;
+  briefEl.addEventListener("input", () => {
+    if (isRichBrief()) {
+      syncDraftMaterialsFromEditor();
+      syncBriefEmpty();
+    }
+    resizeBrief();
+  });
+  briefEl.addEventListener("keydown", (event) => {
+    if (isRichBrief() && (event.key === "Backspace" || event.key === "Delete")) {
+      if (removeAdjacentMaterialLabel(event.key === "Backspace" ? -1 : 1)) {
+        event.preventDefault();
+        return;
+      }
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  if (!isRichBrief()) return;
+  briefEl.addEventListener("paste", (event) => {
+    event.preventDefault();
+    const text = (event.clipboardData && event.clipboardData.getData("text/plain")) || "";
+    if (text && document.execCommand) document.execCommand("insertText", false, text);
+  });
+  briefEl.addEventListener("dragover", (event) => {
+    if (!draggingMaterialId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  });
+  briefEl.addEventListener("drop", (event) => {
+    if (!draggingMaterialId) return;
+    event.preventDefault();
+    const label = briefEl.querySelector('.material-label[data-id="' + draggingMaterialId + '"]');
+    const range = rangeFromPoint(event.clientX, event.clientY);
+    if (label && range) moveMaterialLabelToRange(label, range, briefEl);
+    draggingMaterialId = "";
+  });
+  syncBriefEmpty();
+}
+
+function showMaterialStrip(project) {
+  return false;
+}
+
 function materialStrip(project) {
+  if (!showMaterialStrip(project)) return null;
   const items = (project && project.materials) || [];
   if (!items.length) return null;
   const block = document.createElement("div");
@@ -2485,9 +3083,10 @@ async function fileToBase64(file) {
 }
 
 async function startBrief(text) {
-  const brief = String(text || "").trim();
+  const snapshot = captureComposerSend();
+  const brief = String(text != null ? text : snapshot.text || "").trim();
   if (!brief || sending) return;
-  const materials = draftMaterials.slice();
+  const items = snapshot.ids.map((id) => draftMaterials.find((item) => item.id === id)).filter(Boolean);
   sending = true;
   syncComposer();
   try {
@@ -2502,14 +3101,12 @@ async function startBrief(text) {
       model: selectedModel(),
       template: selectedTemplate(),
     };
-    if (materials.length) {
+    if (items.length) {
       params.materials = [];
-      for (const item of materials) {
-        params.materials.push({
-          filename: (item.file && item.file.name) || "",
-          narration: item.narration || "",
-          data_base64: await fileToBase64(item.file),
-        });
+      for (const item of items) {
+        const row = draftMaterialRecord(item);
+        row.data_base64 = await fileToBase64(item.file);
+        params.materials.push(row);
       }
     }
     const project = await rpc("projects.create", params);
@@ -2559,29 +3156,19 @@ async function sendText(text) {
 const materialFile = document.querySelector("#material-file");
 if (materialFile) {
   materialFile.addEventListener("change", () => {
-    const picked = [...materialFile.files];
+    const result = acceptDraftFiles(materialFile.files);
     materialFile.value = "";
-    const room = MAX_MATERIALS - draftMaterials.length;
-    if (!room || picked.length > room) alert("一次最多 8 张图");
-    let skipped = false;
-    picked.slice(0, Math.max(0, room)).forEach((file) => {
-      const named = /\.(png|jpe?g|webp)$/i.test(file.name || "");
-      const typed = /^image\/(png|jpeg|webp)$/.test(file.type || "");
-      if (!named && !typed) {
-        skipped = true;
-        return;
-      }
-      draftMaterials.push({ file: file, url: URL.createObjectURL(file), narration: "" });
-    });
-    if (skipped) alert("只接受 png、jpeg、webp");
-    renderDraftMaterials();
+    if (result.overflow) alert("一次最多 8 张图");
+    if (result.skipped) alert("只接受 png、jpeg、webp");
+    result.accepted.forEach((item) => insertMaterialLabelAtCaret(item));
   });
 }
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (briefEl.disabled) return;
-  const text = briefEl.value.trim();
+  if (isBriefDisabled()) return;
+  const snapshot = isRichBrief() ? captureComposerSend() : { text: getBriefValue() };
+  const text = String(snapshot.text || "").trim();
   if (!text) return;
   if (current && current.can_reply) sendText(text);
   else startBrief(text);

@@ -55,7 +55,7 @@ class JobStepsTest(unittest.TestCase):
         job_index = app.split("function jobIndex(project)", 1)[1].split("\nfunction ", 1)[0]
         self.assertNotIn("has_board", job_index)
         self.assertNotIn("看板", job_index)
-        self.assertIn("/app.js?v=86", INDEX.read_text(encoding="utf-8"))
+        self.assertIn("/app.js?v=94", INDEX.read_text(encoding="utf-8"))
         self.assertNotIn("离线看板", FIXTURE.read_text(encoding="utf-8"))
 
         report = run_js(

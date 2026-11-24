@@ -37,8 +37,77 @@ def clean_reading(text):
     return "\n".join(lines)[:4000]
 
 
+_SUGGESTED_AD_LINE = re.compile(
+    r"^[ \t]*(?:\*\*)?建议的广告(?:\*\*)?[ \t]*[：:][ \t]*.*$"
+)
+_SUGGESTED_AD_INLINE = re.compile(
+    r"[ \t]*(?:\*\*)?建议的广告(?:\*\*)?[ \t]*[：:][ \t]*.*$"
+)
+_MATERIAL_TOKEN_RE = re.compile(r"【([^】]*)】")
+
+
+def strip_suggested_ad(text):
+    """Drop the labeled 建议的广告 field from a still reading."""
+    lines = []
+    for raw in str(text or "").splitlines():
+        if _SUGGESTED_AD_LINE.match(raw):
+            continue
+        cleaned = _SUGGESTED_AD_INLINE.sub("", raw)
+        if cleaned.strip():
+            lines.append(cleaned.rstrip())
+    return "\n".join(lines)
+
+
 def material_reading(item):
-    return clean_reading((item or {}).get("reading")) or UNREAD
+    return strip_suggested_ad(clean_reading((item or {}).get("reading"))) or UNREAD
+
+
+def official_material_mark(item):
+    item = item or {}
+    return ("%s %s" % (item.get("id") or "", item.get("title") or "")).strip()
+
+
+def rewrite_brief_material_tokens(brief, materials, files=None):
+    """Rewrite 【filename】 tokens in the user brief to 【U1 title】.
+
+    The writer and the stored opening message both use this brief, so the
+    mention must match the official upload id and title.
+    """
+    text = str(brief or "")
+    if not materials or "【" not in text:
+        return text
+    aliases = []
+    for index, item in enumerate(materials):
+        mark = official_material_mark(item)
+        names = {mark, str((item or {}).get("id") or ""), str((item or {}).get("title") or "")}
+        filename = str((item or {}).get("filename") or "")
+        if files and index < len(files) and isinstance(files[index], dict):
+            filename = str(files[index].get("filename") or filename)
+        name = Path(filename).name
+        stem = Path(name).stem if name else ""
+        if name:
+            names.add(name)
+        if stem:
+            names.add(stem)
+        aliases.append((mark, {entry.strip() for entry in names if entry and str(entry).strip()}))
+
+    def resolve(inner):
+        raw = (inner or "").strip()
+        if not raw:
+            return inner
+        folded = raw.casefold()
+        hits = []
+        seen = set()
+        for mark, names in aliases:
+            if raw == mark or any(entry.casefold() == folded for entry in names):
+                if mark and mark not in seen:
+                    hits.append(mark)
+                    seen.add(mark)
+        if len(hits) == 1:
+            return hits[0]
+        return inner
+
+    return _MATERIAL_TOKEN_RE.sub(lambda match: "【%s】" % resolve(match.group(1)), text)
 
 
 def new_material(index, narration, filename):
@@ -147,7 +216,6 @@ def enrich_brief(brief, items):
         "追问给出的选项是模型的话，不是用户意图。选项不得和读图冲突。用户点选这样的选项，不能当成他把汽车改成了摩托车。只有用户自己打出来的话，写明换掉载具或地点，才算改口。点选模型编的选项不算。",
         "用户明确改口之后，故事世界跟文字，产品外观仍跟图。例如用户写「不要海边，改到清晨的城市」，地点改成城市，车上路的仍是读图里的那辆 SUV，不是另一类车。上传图继续做 references。",
         "图上的旁白只做原句旁白，不负责给主体改名。",
-        "读图里的「这张图在建议什么广告」只用来起草第一问，不单独锁死剧情。",
         "素材读图写着「尚未读图」时，不要假装看见了画面里的职业、载具或城市。",
     ]
     for item in items:

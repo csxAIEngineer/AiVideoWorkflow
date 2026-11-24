@@ -109,6 +109,8 @@ class QwenVisionTests(unittest.TestCase):
         prompt = body["messages"][0]["content"][1]["text"]
         self.assertIn("主体种类", prompt)
         self.assertIn("不要编画面里没有的职业、载具或城市", prompt)
+        self.assertIn("不要写这张图适合拍什么广告", prompt)
+        self.assertNotIn("这张图在建议什么广告", prompt)
         self.assertNotIn("两轮车", prompt)
         item = {"id": "U1", "title": "海边", "narration": "上路吧", "reading": text}
         note = intake_note([item])

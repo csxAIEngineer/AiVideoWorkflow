@@ -82,6 +82,7 @@ from end.intake import (
     load_intake,
     merge_intake,
     new_material,
+    rewrite_brief_material_tokens,
     save_intake,
 )
 from end.image_node import prepare_image_node, video_nodes
@@ -3237,6 +3238,7 @@ def rpc_create_project(params):
         if folder.is_dir():
             shutil.rmtree(folder)
         raise RpcError(400, str(error))
+    brief = rewrite_brief_material_tokens(brief, materials, files)
     note = intake_note(materials)
     content = brief if not note else brief + "\n\n" + note
     project = {

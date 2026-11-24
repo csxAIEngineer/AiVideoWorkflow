@@ -168,7 +168,7 @@ class ProjectApiTest(unittest.TestCase):
         self.assertIn(b"/rpc.js", page)
         self.assertIn("Debug：只到意图解析".encode(), page)
         self.assertIn("Debug：只到提示词".encode(), page)
-        self.assertIn(b"/app.js?v=86", page)
+        self.assertIn(b"/app.js?v=94", page)
         self.assertIn(b"id=\"crew\"", page)
         status, script = self.request("GET", "/app.js")
         self.assertEqual(status, 200)
@@ -844,7 +844,48 @@ class ProjectApiTest(unittest.TestCase):
         self.assertIn("海边的汽车不能被说成两轮车", brief)
         self.assertIn('["U1"]', brief)
 
+    def test_opening_upload_rewrites_filename_token_in_the_brief(self):
+        png = tiny_png()
+
+        def keep(project):
+            write_project(project)
+
+        reading = (
+            "主体种类：猫咪。\n"
+            "**建议的广告**: 根据画面中放大的瞳孔和直视镜头的特写，这张图在建议宠物类广告，例如猫粮、猫罐头或猫咪相关用品。"
+        )
+        with patch("end.server.read_upload", return_value=reading), patch(
+            "end.server.start_drill", side_effect=keep
+        ):
+            payload = self.rpc(
+                "projects.create",
+                {
+                    "brief": "猫咪【菜花.jpg】测试，",
+                    "materials": [
+                        {
+                            "filename": "菜花.jpg",
+                            "narration": "",
+                            "data_base64": base64.b64encode(png).decode("ascii"),
+                        }
+                    ],
+                },
+            )["result"]
+        self.assertEqual(payload["brief"], "猫咪【U1 菜花】测试，")
+        content = payload["messages"][0]["content"]
+        self.assertTrue(content.startswith("猫咪【U1 菜花】测试，"))
+        self.assertNotIn("【菜花.jpg】", content)
+        self.assertNotIn("建议的广告", content)
+        self.assertIn("主体种类：猫咪。", content)
+        folder = project_dir(payload["id"])
+        saved = json.loads((folder / "intake.json").read_text(encoding="utf-8"))
+        self.assertIn("建议的广告", saved[0]["reading"])
+        brief = enrich_brief(payload["brief"], load_intake(folder))
+        self.assertIn("猫咪【U1 菜花】测试，", brief)
+        self.assertNotIn("【菜花.jpg】", brief)
+        self.assertNotIn("建议的广告", brief)
+
     def test_vision_failure_stops_before_drill(self):
+
         png = tiny_png()
         with patch("end.server.read_upload", side_effect=QwenVisionError("读图失败")), patch(
             "end.server.start_drill"
