@@ -208,7 +208,7 @@ class ImageStoreTest(unittest.TestCase):
             "image/png",
             request.get_header("Date"),
             None,
-            "/demo-bucket/projects/fffdd6d6b188/images/%E5%9B%BE1.png",
+            "/demo-bucket/projects/fffdd6d6b188/images/图1.png",
         )
         self.assertEqual(authorization, expected)
         self.assertGreater(timeout, 0)

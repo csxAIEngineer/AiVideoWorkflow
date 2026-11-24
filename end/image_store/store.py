@@ -685,8 +685,8 @@ def _put_cos_once(domain, bucket, key, payload, content_type):
 
 
 def _oss_canonical_resource(bucket, key):
-    quoted = urllib.parse.quote(str(key).lstrip("/"), safe="/")
-    return "/%s/%s" % (bucket, quoted)
+    # OSS signs the raw UTF-8 object name. The request URL is still percent-encoded.
+    return "/%s/%s" % (bucket, str(key).lstrip("/"))
 
 
 def _oss_authorization(access_key_id, access_key_secret, method, content_md5, content_type, date, oss_headers, resource):
