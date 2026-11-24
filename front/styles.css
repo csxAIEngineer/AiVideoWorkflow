@@ -1510,6 +1510,28 @@ a.download {
 
 .contract-empty { color: #8a5a2a; }
 
+.contract-video {
+  margin: 0 0 10px;
+}
+
+.contract-video video {
+  max-width: 100%;
+  max-height: 200px;
+  width: auto;
+  height: auto;
+  aspect-ratio: 9 / 16;
+  object-fit: contain;
+  border-radius: 10px;
+  background: #111;
+  display: block;
+}
+
+.contract-video-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .contract-thumbs {
   display: flex;
   flex-wrap: wrap;
@@ -1624,6 +1646,14 @@ html[data-theme="dark"] .contract-empty {
 html[data-theme="dark"] .contract-badge.warn {
   border-color: #5a4a38;
   background: #2a241c;
+}
+
+html[data-theme="dark"] .contract-video video {
+  background: #000;
+}
+
+html[data-theme="dark"] .contract-video-empty {
+  color: #b3b3bd;
 }
 
 html[data-theme="dark"] .contract-thumb .pic,
@@ -2260,14 +2290,26 @@ html[data-theme="dark"] .contract-thumb .none {
   margin-top: 8px;
 }
 
-.wf-node .wf-video-hold {
-  width: 100%;
-  height: auto;
-  aspect-ratio: 9 / 16;
-  border-radius: 10px;
-  background: #111;
+.wf-node .wf-output-status {
+  display: inline-flex;
+  align-items: center;
   margin-top: 8px;
-  display: block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  width: fit-content;
+}
+
+.wf-node .wf-output-status.is-ready {
+  color: #128a4e;
+  background: rgba(18, 138, 78, 0.12);
+}
+
+.wf-node .wf-output-status.is-pending {
+  color: #8a8a96;
+  background: rgba(197, 197, 206, 0.22);
 }
 
 .wf-upload-modes {
@@ -2751,6 +2793,16 @@ html[data-theme="dark"] .preview-stage video,
 html[data-theme="dark"] .wf-node video,
 html[data-theme="dark"] .clip-card video {
   background: #000;
+}
+
+html[data-theme="dark"] .wf-node .wf-output-status.is-ready {
+  color: #6dca96;
+  background: rgba(18, 138, 78, 0.22);
+}
+
+html[data-theme="dark"] .wf-node .wf-output-status.is-pending {
+  color: #b3b3bd;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 html[data-theme="dark"] .choice-tag { color: #141416; }

@@ -3075,16 +3075,49 @@ function renderNode(project, info) {
     body.className = "wf-read";
     body.textContent = readOnlyText(project, info.id, info.kind);
     node.append(body);
-    const url = info.kind === "film" ? (project.video_url || "") : info.kind === "shot" ? clipUrlFor(project, info.id) : "";
-    if (url) node.append(videoHold());
+    if (info.kind === "shot" || info.kind === "film") {
+      node.append(outputStatusLabel(project, info.kind, info.id));
+    }
   }
   return node;
 }
 
-function videoHold() {
-  const hold = document.createElement("span");
-  hold.className = "wf-video-hold";
-  return hold;
+function hasClipOutput(project, id) {
+  return !!clipUrlFor(project, id);
+}
+
+function hasFilmOutput(project) {
+  return !!(project && project.video_url);
+}
+
+function outputStatusText(project, kind, id) {
+  const ready = kind === "film" ? hasFilmOutput(project) : hasClipOutput(project, id);
+  return ready ? "已出片" : "未出片";
+}
+
+function outputStatusLabel(project, kind, id) {
+  const label = document.createElement("span");
+  const ready = kind === "film" ? hasFilmOutput(project) : hasClipOutput(project, id);
+  label.className = "wf-output-status " + (ready ? "is-ready" : "is-pending");
+  label.textContent = outputStatusText(project, kind, id);
+  return label;
+}
+
+function syncOutputStatus(node, project, kind, id) {
+  const video = node.querySelector("video");
+  if (video) video.remove();
+  const hold = node.querySelector(".wf-video-hold");
+  if (hold) hold.remove();
+  let label = node.querySelector(".wf-output-status");
+  if (!label) {
+    node.appendChild(outputStatusLabel(project, kind, id));
+    return;
+  }
+  const ready = kind === "film" ? hasFilmOutput(project) : hasClipOutput(project, id);
+  const nextClass = "wf-output-status " + (ready ? "is-ready" : "is-pending");
+  if (label.className !== nextClass) label.className = nextClass;
+  const text = outputStatusText(project, kind, id);
+  if (label.textContent !== text) label.textContent = text;
 }
 
 function makeVideo(url) {
@@ -3250,15 +3283,7 @@ function patchCanvas(project) {
       if (mark) mark.className = "wf-dot " + assetState(project, holder.dataset.asset);
     });
     if (kind === "shot" || kind === "film") {
-      const url = kind === "film" ? (project.video_url || "") : clipUrlFor(project, id);
-      const video = node.querySelector("video");
-      if (video) video.remove();
-      let hold = node.querySelector(".wf-video-hold");
-      if (url) {
-        if (!hold) node.appendChild(videoHold());
-      } else if (hold) {
-        hold.remove();
-      }
+      syncOutputStatus(node, project, kind, id);
     }
   });
   syncRetouchChrome();
@@ -3864,6 +3889,21 @@ function renderReferenceBlock(project, shot) {
   return box;
 }
 
+function renderContractVideo(project, shot) {
+  const box = document.createElement("div");
+  box.className = "contract-video";
+  const url = clipUrlFor(project, shot && shot.id);
+  if (url) {
+    box.append(makeVideo(url));
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "contract-video-empty";
+    empty.textContent = "未出片";
+    box.append(empty);
+  }
+  return box;
+}
+
 function renderContractColumn(project, shot) {
   const col = document.createElement("div");
   col.className = "contract-col";
@@ -3892,7 +3932,7 @@ function renderContractColumn(project, shot) {
     contractKey("实际参考图"),
     renderReferenceBlock(project, shot)
   );
-  col.append(head, note, kv);
+  col.append(head, note, renderContractVideo(project, shot), kv);
   return col;
 }
 
@@ -3958,7 +3998,7 @@ function syncContract(project) {
   const shots = project.shots || [];
   if (contractShotId && !shots.some((shot) => shot && shot.id === contractShotId)) contractShotId = "";
   const shot = shots.find((item) => item && item.id === contractShotId) || null;
-  const sig = (shot ? shot.id : "") + "\u0001" + ShotContractView.contractSig(shot);
+  const sig = (shot ? shot.id : "") + "\u0001" + ShotContractView.contractSig(shot) + "\u0001" + (shot ? (clipUrlFor(project, shot.id) || "") : "");
   const opened = !!shot;
   if (sig === syncContract.sig && panel.childElementCount) {
     markContractNodes();
