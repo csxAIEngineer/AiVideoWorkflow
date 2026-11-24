@@ -3076,9 +3076,15 @@ function renderNode(project, info) {
     body.textContent = readOnlyText(project, info.id, info.kind);
     node.append(body);
     const url = info.kind === "film" ? (project.video_url || "") : info.kind === "shot" ? clipUrlFor(project, info.id) : "";
-    if (url) node.append(makeVideo(url));
+    if (url) node.append(videoHold());
   }
   return node;
+}
+
+function videoHold() {
+  const hold = document.createElement("span");
+  hold.className = "wf-video-hold";
+  return hold;
 }
 
 function makeVideo(url) {
@@ -3245,13 +3251,13 @@ function patchCanvas(project) {
     });
     if (kind === "shot" || kind === "film") {
       const url = kind === "film" ? (project.video_url || "") : clipUrlFor(project, id);
-      let video = node.querySelector("video");
+      const video = node.querySelector("video");
+      if (video) video.remove();
+      let hold = node.querySelector(".wf-video-hold");
       if (url) {
-        if (!video) video = node.appendChild(makeVideo(url));
-        else if (video.dataset.url !== url) {
-          video.dataset.url = url;
-          video.src = url;
-        }
+        if (!hold) node.appendChild(videoHold());
+      } else if (hold) {
+        hold.remove();
       }
     }
   });

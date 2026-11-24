@@ -2260,6 +2260,16 @@ html[data-theme="dark"] .contract-thumb .none {
   margin-top: 8px;
 }
 
+.wf-node .wf-video-hold {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 9 / 16;
+  border-radius: 10px;
+  background: #111;
+  margin-top: 8px;
+  display: block;
+}
+
 .wf-upload-modes {
   display: flex;
   flex-wrap: wrap;
