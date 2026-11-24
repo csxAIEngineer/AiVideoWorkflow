@@ -3716,20 +3716,6 @@ function mediaName(value) {
   return parts[parts.length - 1] || "尾帧";
 }
 
-function shotThumbUrl(project, shot) {
-  const ids = (shot && shot.images) || [];
-  for (let index = 0; index < ids.length; index += 1) {
-    const url = imageUrlFor(project, ids[index]);
-    if (url) return url;
-  }
-  const refs = (shot && shot.reference) || [];
-  for (let index = 0; index < refs.length; index += 1) {
-    if (refs[index] && refs[index].url) return String(refs[index].url);
-  }
-  if (shot && looksLikeMediaUrl(shot.end_image)) return String(shot.end_image);
-  return shot ? imageUrlFor(project, shot.id) : "";
-}
-
 function renderContractTag(info, mode) {
   const tag = document.createElement("span");
   tag.className = "contract-tag" + (info.empty ? " empty" : (mode ? " mode" : ""));
@@ -4026,7 +4012,6 @@ function shotStripSignature(project) {
     officialShotDuration(shot),
     shot.duration,
     (shot.images || []).join(","),
-    shotThumbUrl(project, shot),
     clipUrlFor(project, shot.id) ? "1" : "",
     ShotContractView.contractSig(shot),
   ].join(":")).join("|");
@@ -4041,18 +4026,9 @@ function shotChip(shot) {
   const selected = film ? !previewShotId : previewShotId === shot.id;
   button.classList.toggle("on", selected && centerView === "preview");
   button.classList.toggle("is-contract", !film && !!shot.id && contractShotId === shot.id);
-  const url = film || !current ? "" : shotThumbUrl(current, shot);
-  if (url) {
-    const img = document.createElement("img");
-    img.src = url;
-    img.alt = shot.id || "";
-    img.draggable = false;
-    button.append(img);
-  } else {
-    const hold = document.createElement("span");
-    hold.className = "shot-hold";
-    button.append(hold);
-  }
+  const hold = document.createElement("span");
+  hold.className = "shot-hold";
+  button.append(hold);
   const name = document.createElement("b");
   name.textContent = film ? "成片" : (shot.id || "镜头");
   button.append(name);
