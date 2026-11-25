@@ -3474,6 +3474,8 @@ def run_local_pipeline(
                     previous,
                     unit_index=shot_index - 1 if shot_index else None,
                 )
+                if tail_url:
+                    tail_url = get_image_store().refresh_url(tail_url) or tail_url
 
             def url_for(asset_id):
                 info = images.get(asset_id) or _saved_image(ctx, asset_id)
