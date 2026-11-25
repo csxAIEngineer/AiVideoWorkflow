@@ -440,11 +440,13 @@ def note_local_image(work_dir, project_id, asset_id, public_url=None):
         step = steps.get(asset_id) or blank_step("image")
         if step.get("remote_task_id") and step.get("status") in ("running", "retrying"):
             return step
-        hosted = str(public_url or "").strip()
-        if not _http_media_url(hosted):
-            hosted = get_image_store().url(project_id, "%s.png" % asset_id)
-        hosted = get_image_store().persistent_url(hosted) or hosted
         canonical, _relative = output_paths(work_dir, asset_id, "image")
+        hosted = str(public_url or "").strip()
+        store = get_image_store()
+        if not _http_media_url(hosted):
+            source = canonical if canonical.is_file() else None
+            hosted = store.ensure_remote(project_id, "%s.png" % asset_id, source=source)
+        hosted = store.persistent_url(hosted) or hosted
         hosted, published = ensure_reference_min_side(
             work_dir, project_id, asset_id, hosted, source=canonical
         )

@@ -31,6 +31,7 @@ from end.server import (
     save_project_content,
 )
 from end.db import project_dir, read_project, write_project
+from end.image_store import get_image_store
 from http.server import ThreadingHTTPServer
 
 
@@ -168,7 +169,7 @@ class ProjectApiTest(unittest.TestCase):
         self.assertIn(b"/rpc.js", page)
         self.assertIn("Debug：只到意图解析".encode(), page)
         self.assertIn("Debug：只到提示词".encode(), page)
-        self.assertIn(b"/app.js?v=94", page)
+        self.assertIn(b"/app.js?v=96", page)
         self.assertIn(b"id=\"crew\"", page)
         status, script = self.request("GET", "/app.js")
         self.assertEqual(status, 200)
@@ -1023,7 +1024,7 @@ class ProjectApiTest(unittest.TestCase):
         self.assertEqual(shot["feed"]["unit"], "")
         self.assertIsNone(shot["feed"]["index"])
 
-    def test_projects_get_returns_cos_urls_for_clips_and_film(self):
+    def test_projects_get_returns_local_media_without_uploading_unpublished_clips(self):
         project_id = "c11d00000001"
         make_project(project_id)
         clip_dir = project_dir(project_id) / "outputs" / "clips"
@@ -1039,17 +1040,61 @@ class ProjectApiTest(unittest.TestCase):
         with patch("end.image_store.store.urllib.request.urlopen", self._cos_open(calls)):
             view = self.rpc("projects.get", {"id": project_id})["result"]
             again = self.rpc("projects.get", {"id": project_id})["result"]
+            tick = self.rpc("projects.tick", {"id": project_id})["result"]
+            listed = self.rpc("projects.list")["result"]
+            media = self.rpc("projects.media_urls", {"id": project_id})["result"]
+        clip_local = "/media/projects/%s/clips/S01.mp4" % project_id
+        film_local = "/media/projects/%s/video" % project_id
+        self.assertEqual(view["clips"][0]["url"], clip_local)
+        self.assertEqual(view["clips"][0]["download_url"], clip_local + "?download=1")
+        self.assertEqual(view["video_url"], film_local)
+        self.assertEqual(view["video_download_url"], film_local + "?download=1")
+        self.assertEqual(again["clips"][0]["url"], clip_local)
+        self.assertEqual(again["video_url"], film_local)
+        self.assertEqual(media["video_url"], film_local)
+        self.assertEqual(media["clips"][0]["url"], clip_local)
+        self.assertEqual(tick["id"], project_id)
+        self.assertEqual(listed[0]["id"], project_id)
+        put_urls = [req.full_url for req in calls if req.get_method() == "PUT"]
+        self.assertEqual(put_urls, [])
+        self.assertTrue((clip_dir / "S01.mp4").is_file())
+        self.assertTrue((project_dir(project_id) / "outputs" / "joined.mp4").is_file())
+        del domain
+
+    def test_projects_get_returns_cos_urls_after_explicit_publish_without_uploading(self):
+        project_id = "c11d00000013"
+        make_project(project_id)
+        clip_dir = project_dir(project_id) / "outputs" / "clips"
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        clip_path = clip_dir / "S01.mp4"
+        clip_path.write_bytes(b"clip-bytes")
+        film = read_project(project_id)
+        film["video_file"] = "joined.mp4"
+        write_project(film)
+        film_path = project_dir(project_id) / "outputs" / "joined.mp4"
+        film_path.write_bytes(b"film-bytes")
+        domain = self._use_cos()
+        self._quiet_view()
+        calls = []
         clip_url = "%s/projects/%s/clips/S01.mp4" % (domain, project_id)
         film_url = "%s/projects/%s/video/joined.mp4" % (domain, project_id)
+        with patch("end.image_store.store.urllib.request.urlopen", self._cos_open(calls)):
+            store = get_image_store()
+            self.assertEqual(store.ensure_clip(project_id, "S01.mp4", source=clip_path), clip_url)
+            self.assertEqual(store.ensure_video(project_id, "joined.mp4", source=film_path), film_url)
+            put_urls = [req.full_url for req in calls if req.get_method() == "PUT"]
+            self.assertEqual(set(put_urls), {clip_url, film_url})
+            self.assertEqual(len(put_urls), 2)
+            view = self.rpc("projects.get", {"id": project_id})["result"]
+            again = self.rpc("projects.get", {"id": project_id})["result"]
+            media = self.rpc("projects.media_urls", {"id": project_id})["result"]
+        later_puts = [req.full_url for req in calls if req.get_method() == "PUT"]
+        self.assertEqual(len(later_puts), 2)
         self.assertEqual(view["clips"][0]["url"], clip_url)
-        self.assertEqual(view["clips"][0]["download_url"], clip_url)
         self.assertEqual(view["video_url"], film_url)
-        self.assertEqual(view["video_download_url"], film_url)
-        self.assertEqual(again["clips"][0]["url"], clip_url)
         self.assertEqual(again["video_url"], film_url)
-        put_urls = [req.full_url for req in calls if req.get_method() == "PUT"]
-        self.assertEqual(set(put_urls), {clip_url, film_url})
-        self.assertEqual(len(put_urls), 2)
+        self.assertEqual(media["video_url"], film_url)
+        self.assertEqual(media["clips"][0]["url"], clip_url)
 
     def test_projects_list_returns_menu_summaries_without_uploading_clips(self):
         project_id = "c11d00000002"
@@ -1093,6 +1138,75 @@ class ProjectApiTest(unittest.TestCase):
             self.assertNotIn(key, item)
         put_urls = [req.full_url for req in calls if req.get_method() == "PUT"]
         self.assertEqual(put_urls, [])
+
+    def test_projects_list_orders_by_created_at_desc(self):
+        make_project("c11d00000011", status="done", created_at="2026-01-01T00:00:00+08:00", title="最早")
+        make_project("c11d00000012", status="writing", created_at="2026-01-03T00:00:00+08:00", title="最新")
+        make_project("c11d00000013", status="paused", created_at="2026-01-02T00:00:00+08:00", title="中间")
+        listed = self.rpc("projects.list")["result"]
+        self.assertEqual([item["id"] for item in listed], ["c11d00000012", "c11d00000013", "c11d00000011"])
+        self.assertEqual([item["title"] for item in listed], ["最新", "中间", "最早"])
+
+    def test_projects_list_keeps_debug_and_progress_meaning(self):
+        make_project(
+            "c11d00000021",
+            status="done",
+            stage="Debug：已停在提示词",
+            progress={
+                "percent": 76,
+                "phase": "prompt_debug",
+                "message": "已停在提示词",
+                "debug_llm": False,
+                "debug_stop": "prompts",
+            },
+        )
+        make_project(
+            "c11d00000022",
+            status="done",
+            stage="Debug：已生成图片",
+            progress={
+                "percent": 100,
+                "phase": "image_debug",
+                "message": "已停在生图",
+                "debug_llm": True,
+            },
+        )
+        listed = {item["id"]: item for item in self.rpc("projects.list")["result"]}
+        prompts = listed["c11d00000021"]
+        self.assertEqual(prompts["debug_stop"], "prompts")
+        self.assertFalse(prompts["debug_llm"])
+        self.assertEqual(prompts["progress"]["phase"], "prompt_debug")
+        self.assertEqual(prompts["progress"]["percent"], 76)
+        self.assertIn("crew", prompts["progress"])
+        images = listed["c11d00000022"]
+        self.assertTrue(images["debug_llm"])
+        self.assertEqual(images["progress"]["phase"], "image_debug")
+
+    def test_projects_list_compatible_with_large_script_and_messages(self):
+        heavy_script = "镜头" * 20000
+        heavy_messages = [{"role": "assistant", "content": "对白" * 8000}]
+        make_project(
+            "c11d00000031",
+            status="writing",
+            script=heavy_script,
+            storyboard="分镜" * 8000,
+            image_prompts="提示" * 8000,
+            messages=heavy_messages,
+        )
+        listed = self.rpc("projects.list")["result"]
+        self.assertEqual(len(listed), 1)
+        item = listed[0]
+        self.assertEqual(item["id"], "c11d00000031")
+        self.assertEqual(item["title"], "雨夜")
+        self.assertEqual(item["brief"], "雨夜")
+        self.assertEqual(item["status"], "writing")
+        self.assertEqual(item["stage"], "正在写剧本")
+        self.assertNotIn("script", item)
+        self.assertNotIn("messages", item)
+        self.assertNotIn("storyboard", item)
+        stored = read_project("c11d00000031")
+        self.assertEqual(stored["script"], heavy_script)
+        self.assertEqual(stored["messages"], heavy_messages)
 
 
 if __name__ == "__main__":

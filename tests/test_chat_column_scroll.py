@@ -82,7 +82,7 @@ class ChatColumnScrollTest(unittest.TestCase):
         self.assertNotIn("position: fixed", composer)
 
         index = INDEX.read_text(encoding="utf-8")
-        self.assertIn("/app.js?v=94", index)
+        self.assertIn("/app.js?v=96", index)
         self.assertIn("/styles.css?v=59", index)
 
     def test_workflow_dialog_keeps_the_previous_column_layout(self):

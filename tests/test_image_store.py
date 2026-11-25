@@ -662,5 +662,100 @@ class ImageStoreTest(unittest.TestCase):
 
 
 
+    def test_access_clip_does_not_upload_without_a_marker(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = CosImageStore(
+            bucket="demo-1250000000",
+            domain="https://demo-1250000000.cos.ap-guangzhou.myqcloud.com",
+            root=root,
+        )
+        path = root / "65d271c72399" / "outputs" / "clips" / "S01.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"clip-bytes")
+        calls = []
+
+        class _Response(object):
+            status = 200
+
+            def read(self, _limit=0):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(request, timeout=None):
+            calls.append(request.full_url)
+            return _Response()
+
+        with patch("end.image_store.store.urllib.request.urlopen", fake_open):
+            url = store.access_clip("65d271c72399", "S01.mp4", source=path)
+        self.assertEqual(url, "")
+        self.assertEqual(calls, [])
+        self.assertTrue(path.is_file())
+
+    def test_same_name_replace_invalidates_marker_and_upload_failure_keeps_local(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = self._oss_store(root)
+        path = root / "65d271c72399" / "outputs" / "clips" / "S01.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"first-clip-bytes")
+        calls = []
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            first = store.ensure_clip("65d271c72399", "S01.mp4", source=path)
+            reused = store.access_clip("65d271c72399", "S01.mp4", source=path)
+        self.assertEqual(store.persistent_url(first), store.persistent_url(reused))
+        self.assertEqual(len(calls), 1)
+        path.write_bytes(b"second-clip-bytes-replaced")
+        os.utime(path, (path.stat().st_mtime + 5, path.stat().st_mtime + 5))
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            stale = store.access_clip("65d271c72399", "S01.mp4", source=path)
+        self.assertEqual(stale, "")
+        self.assertEqual(len(calls), 1)
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            refreshed = store.ensure_clip("65d271c72399", "S01.mp4", source=path)
+        self.assertTrue(refreshed)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(path.read_bytes(), b"second-clip-bytes-replaced")
+
+        failed = root / "65d271c72399" / "outputs" / "clips" / "S02.mp4"
+        failed.write_bytes(b"will-stay-local")
+
+        def boom(request, timeout=None):
+            raise OSError("simulated upload failure")
+
+        with patch("end.image_store.store.urllib.request.urlopen", boom):
+            with self.assertRaises(Exception):
+                store.ensure_clip("65d271c72399", "S02.mp4", source=failed)
+        self.assertEqual(failed.read_bytes(), b"will-stay-local")
+        self.assertFalse(failed.with_name(failed.name + ".oss.json").is_file())
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            self.assertEqual(store.access_clip("65d271c72399", "S02.mp4", source=failed), "")
+
+    def test_url_does_not_upload_an_unpublished_image(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = self._oss_store(root)
+        path = root / "fffdd6d6b188" / "outputs" / "images" / "U1.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x89PNG-still")
+        calls = []
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            with self.assertRaises(ImageStoreError):
+                store.url("fffdd6d6b188", "U1.png")
+            hosted = store.access_image("fffdd6d6b188", "U1.png")
+        self.assertEqual(hosted, "")
+        self.assertEqual(calls, [])
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            published = store.publish("fffdd6d6b188", "U1.png", path.read_bytes())
+            again = store.url("fffdd6d6b188", "U1.png")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(store.persistent_url(again), store.persistent_url(published))
+
+
 if __name__ == "__main__":
     unittest.main()

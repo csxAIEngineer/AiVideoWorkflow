@@ -7,6 +7,9 @@ AI is a separate process: LangGraph, the agent, and the provider clients.
 
 import base64
 import contextvars
+import email.utils
+import gzip
+import hashlib
 import json
 import mimetypes
 import os
@@ -19,6 +22,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -53,7 +57,7 @@ from end.ai_client import (
     write as ai_write,
 )
 from end.crew import attach_crew
-from end.db import DATA, connect, delete_project, list_projects, project_dir, read_project, write_project
+from end.db import DATA, connect, content_revision_from_project, delete_project, list_project_summaries, list_projects, project_dir, read_project, read_project_tick, write_project
 from end.image_store import get_image_store
 from end.render_loop import (
     _ffmpeg_bin,
@@ -174,6 +178,76 @@ def load_spec(project_id):
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def apply_spec_shots(spec):
+    """Fill placeholder shots in memory. Does not write the spec file."""
+    if not isinstance(spec, dict):
+        return spec, False
+    from end.board_shots import apply_storyboard_shots
+
+    filled = apply_storyboard_shots(spec)
+    if filled.get("shots") == spec.get("shots"):
+        return spec, False
+    return filled, True
+
+
+def persist_spec_shots_for_render(project_id, spec=None):
+    """Fill placeholder shots at the explicit render boundary and persist if needed."""
+    spec = spec if spec is not None else load_spec(project_id)
+    filled, changed = apply_spec_shots(spec)
+    if not changed:
+        return filled
+    folder = project_dir(project_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "spec.json").write_text(
+        json.dumps(filled, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return filled
+
+
+_MEDIA_STAT_LIMIT = 200
+
+
+def media_revision(project_id, video_file=""):
+    """Identity of spec and output media from name, size, and mtime. Not a directory mtime."""
+    folder = project_dir(project_id)
+    items = []
+
+    def add(path, rel):
+        try:
+            stat = path.stat()
+        except OSError:
+            return
+        if not path.is_file():
+            return
+        mtime = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9))
+        items.append("%s:%s:%s" % (rel, stat.st_size, mtime))
+
+    add(folder / "spec.json", "spec.json")
+    name = str(video_file or "")
+    if name and name == Path(name).name:
+        add(folder / "outputs" / name, "outputs/%s" % name)
+    for parts in (("outputs", "images"), ("outputs", "clips")):
+        directory = folder.joinpath(*parts)
+        if not directory.is_dir():
+            continue
+        try:
+            children = sorted(directory.iterdir(), key=lambda path: path.name)
+        except OSError:
+            continue
+        for path in children[:_MEDIA_STAT_LIMIT]:
+            add(path, "/".join(parts + (path.name,)))
+    items.sort()
+    return hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()
+
+
+def compose_content_revision(project_id, project=None):
+    project = project or {}
+    token = project.get("content_revision") or content_revision_from_project(project)
+    media = media_revision(project_id, project.get("video_file") or "")
+    return hashlib.sha256(("%s:%s" % (token, media)).encode("utf-8")).hexdigest()
 
 
 def _phase(project):
@@ -428,16 +502,7 @@ def public_view(project):
     spec = load_spec(project["id"])
     assets, shots = ([], [])
     if spec:
-        from end.board_shots import apply_storyboard_shots
-
-        filled = apply_storyboard_shots(spec)
-        if filled.get("shots") != spec.get("shots"):
-            spec = filled
-            folder.mkdir(parents=True, exist_ok=True)
-            (folder / "spec.json").write_text(
-                json.dumps(spec, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+        spec, _changed = apply_spec_shots(spec)
         from end.shot_contract import annotate_shots
         from end.workflow_from_spec import assemble_steps
 
@@ -505,6 +570,7 @@ def public_view(project):
         "render_recovery": "projects.render" if _explicit_render_recovery(project) else "",
         "option_effects": _option_effects(project),
         "deliverables": list_deliverables(folder),
+        "content_revision": compose_content_revision(project["id"], project),
     }
 
 
@@ -2294,9 +2360,13 @@ def list_output_clips(project_id):
 def _public_clip_url(store, project_id, path):
     fallback = "/media/projects/%s/clips/%s" % (project_id, path.name)
     try:
-        return store.ensure_clip(project_id, path.name, source=path) or fallback
+        access = getattr(store, "access_clip", None)
+        url = access(project_id, path.name, source=path) if access else ""
+        if url and str(url).startswith("http"):
+            return url
     except Exception:
-        return fallback
+        pass
+    return fallback
 
 
 def _public_film_urls(project):
@@ -2308,10 +2378,12 @@ def _public_film_urls(project):
     local = "/media/projects/%s/video" % project_id
     local_download = local + "?download=1"
     try:
-        url = get_image_store().ensure_video(project_id, name, source=video)
+        store = get_image_store()
+        access = getattr(store, "access_video", None)
+        url = access(project_id, name, source=video) if access else ""
     except Exception:
         url = ""
-    if url and url.startswith("http"):
+    if url and str(url).startswith("http"):
         return url, url
     return local, local_download
 
@@ -2356,6 +2428,7 @@ def _execute_render(project_id, project=None, video_submit_mode="generate"):
     spec = load_spec(project_id)
     if not isinstance(spec, dict):
         raise RuntimeError("没有 spec，不能出片")
+    spec = persist_spec_shots_for_render(project_id, spec)
     images_only = project_debug_llm(project)
     if not project.get("tasks"):
         project["tasks"] = task_plan(spec, soundtrack=project_soundtrack(project), locks=read_locks(folder))
@@ -3181,11 +3254,72 @@ def rpc_config(_params):
 
 
 def rpc_list_projects(_params):
-    return [menu_view(item) for item in list_projects()]
+    return [menu_view(item) for item in list_project_summaries()]
 
 
 def rpc_get_project(params):
     return public_view(_request_project(params))
+
+
+def rpc_tick_project(params):
+    """Lightweight progress poll. Does not assemble the canvas or publish media."""
+    project_id = str((params or {}).get("id") or "")
+    if not valid_id(project_id):
+        raise RpcError(404, "没有这个项目")
+    project = read_project_tick(project_id)
+    if project is None:
+        raise RpcError(404, "没有这个项目")
+    folder = project_dir(project_id)
+    video_name = str(project.get("video_file") or "")
+    has_video = (
+        bool(video_name)
+        and video_name == Path(video_name).name
+        and (folder / "outputs" / video_name).is_file()
+    )
+    return {
+        "id": project["id"],
+        "brief": project.get("brief", ""),
+        "title": project.get("title") or project.get("brief", "")[:24],
+        "status": project.get("status"),
+        "stage": project.get("stage", ""),
+        "error": project.get("error"),
+        "events": project.get("events") or [],
+        "tasks": project.get("tasks") or [],
+        "created_at": project.get("created_at"),
+        "started_at": project.get("started_at") or project.get("created_at"),
+        "updated_at": project.get("updated_at"),
+        "finished_at": project.get("finished_at"),
+        "prompt_id": project.get("prompt_id") or "",
+        "video_file": video_name,
+        "has_video": has_video,
+        "has_spec": (folder / "spec.json").is_file(),
+        "model": normalize_model(project.get("model")),
+        "model_label": model_label(project.get("model")),
+        "template": normalize_template(project.get("template")),
+        "template_label": template_label(project.get("template")),
+        "debug_llm": project_debug_llm(project),
+        "debug_stop": normalize_debug_stop((project.get("progress") or {}).get("debug_stop")),
+        "progress": attach_crew(project),
+        "can_reply": can_reply(project),
+        "question": _storyboard_question(project),
+        "generation_hold": _generation_hold(project),
+        "render_recovery": "projects.render" if _explicit_render_recovery(project) else "",
+        "option_effects": _option_effects(project),
+        "content_revision": compose_content_revision(project_id, project),
+    }
+
+
+def rpc_media_urls(params):
+    """Resign published media. Never uploads."""
+    project = _request_project(params)
+    video_url, video_download_url = _public_film_urls(project)
+    return {
+        "id": project["id"],
+        "video_url": video_url,
+        "video_download_url": video_download_url,
+        "has_video": bool(video_url),
+        "clips": list_output_clips(project["id"]),
+    }
 
 
 def _materials_from_params(params):
@@ -3748,6 +3882,10 @@ def rpc_call(method, params):
         return rpc_list_projects(params)
     if method == "projects.get":
         return rpc_get_project(params)
+    if method == "projects.tick":
+        return rpc_tick_project(params)
+    if method == "projects.media_urls":
+        return rpc_media_urls(params)
     if method == "projects.create":
         return rpc_create_project(params)
     if method == "projects.delete":
@@ -3791,6 +3929,279 @@ def rpc_call(method, params):
     raise RpcError(-32601, "没有这个接口")
 
 
+
+_COMPRESSIBLE_TYPES = frozenset(
+    {
+        "text/html",
+        "text/css",
+        "text/javascript",
+        "text/plain",
+        "text/xml",
+        "text/markdown",
+        "application/javascript",
+        "application/json",
+        "application/xml",
+        "application/xhtml+xml",
+        "image/svg+xml",
+    }
+)
+_MIN_GZIP_BYTES = 32
+_MAX_GZIP_SOURCE_BYTES = 2 * 1024 * 1024
+_GZIP_CACHE_MAX_ENTRIES = 32
+_GZIP_CACHE_MAX_BYTES = 2 * 1024 * 1024
+
+
+class _GzipBodyCache:
+    """Bounded LRU cache of gzip bodies, keyed by content digest, not the query string."""
+
+    def __init__(self, max_entries=_GZIP_CACHE_MAX_ENTRIES, max_bytes=_GZIP_CACHE_MAX_BYTES):
+        self.max_entries = max_entries
+        self.max_bytes = max_bytes
+        self._lock = threading.Lock()
+        self._items = OrderedDict()
+        self._nbytes = 0
+
+    def clear(self):
+        with self._lock:
+            self._items.clear()
+            self._nbytes = 0
+
+    def get(self, key):
+        with self._lock:
+            value = self._items.get(key)
+            if value is not None:
+                self._items.move_to_end(key)
+            return value
+
+    def put(self, key, value):
+        with self._lock:
+            existing = self._items.pop(key, None)
+            if existing is not None:
+                self._nbytes -= len(existing)
+            if len(value) > self.max_bytes:
+                return
+            while self._items and (
+                len(self._items) >= self.max_entries or self._nbytes + len(value) > self.max_bytes
+            ):
+                _, evicted = self._items.popitem(last=False)
+                self._nbytes -= len(evicted)
+            self._items[key] = value
+            self._nbytes += len(value)
+
+    def __len__(self):
+        with self._lock:
+            return len(self._items)
+
+    @property
+    def nbytes(self):
+        with self._lock:
+            return self._nbytes
+
+
+_STATIC_GZIP_CACHE = _GzipBodyCache()
+
+
+def _media_type(content_type):
+    return (content_type or "").split(";", 1)[0].strip().lower()
+
+
+def _is_compressible(content_type):
+    return _media_type(content_type) in _COMPRESSIBLE_TYPES
+
+
+def _accepts_gzip(header):
+    """Whether gzip is an acceptable content-coding, including q=0, case, and *."""
+    if header is None:
+        return False
+    text = header.strip()
+    if not text:
+        return False
+    coding_q = {}
+    for raw in text.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        parts = [part.strip() for part in item.split(";")]
+        coding = parts[0].strip().lower()
+        if not coding:
+            continue
+        q = 1.0
+        for param in parts[1:]:
+            if not param:
+                continue
+            name, _, value = param.partition("=")
+            if name.strip().lower() != "q":
+                continue
+            raw_q = value.strip()
+            if len(raw_q) >= 2 and raw_q[0] == raw_q[-1] and raw_q[0] in "\"\"'":
+                raw_q = raw_q[1:-1].strip()
+            try:
+                q = float(raw_q)
+            except ValueError:
+                q = 0.0
+            if q < 0:
+                q = 0.0
+            elif q > 1:
+                q = 1.0
+        coding_q[coding] = q
+    if "gzip" in coding_q:
+        return coding_q["gzip"] > 0
+    if "*" in coding_q:
+        return coding_q["*"] > 0
+    return False
+
+
+def _etag_for(digest, gzipped):
+    return '"%s%s"' % (digest, "-gzip" if gzipped else "")
+
+
+def _if_none_match(header, etag):
+    if not header:
+        return False
+    text = header.strip()
+    if text == "*":
+        return True
+    wanted = etag.strip()
+    for raw in text.split(","):
+        item = raw.strip()
+        if item[:2].lower() == "w/":
+            item = item[2:].strip()
+        if item == "*" or item == wanted:
+            return True
+    return False
+
+
+def _gzip_body(raw, digest):
+    cached = _STATIC_GZIP_CACHE.get(digest)
+    if cached is not None:
+        return cached
+    compressed = gzip.compress(raw, compresslevel=6)
+    _STATIC_GZIP_CACHE.put(digest, compressed)
+    return compressed
+
+
+
+_MEDIA_CHUNK = 64 * 1024
+
+
+def _file_etag(stat):
+    mtime = int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9)))
+    return '"%s-%s"' % (stat.st_size, mtime)
+
+
+def _parse_bytes_range(header, size):
+    """Parse a single byte range. Multi-range is ignored so the caller can send 200."""
+    value = str(header or "").strip()
+    if not value:
+        return "none", None
+    lowered = value.lower()
+    if not lowered.startswith("bytes="):
+        return "invalid", None
+    spec = value.split("=", 1)[1].strip()
+    if "," in spec:
+        return "multi", None
+    if "-" not in spec:
+        return "invalid", None
+    start_text, end_text = spec.split("-", 1)
+    start_text = start_text.strip()
+    end_text = end_text.strip()
+    if not start_text and not end_text:
+        return "invalid", None
+    try:
+        if not start_text:
+            suffix = int(end_text)
+            if suffix <= 0 or size <= 0:
+                return "unsatisfiable", None
+            length = min(suffix, size)
+            return "range", (size - length, size - 1)
+        start = int(start_text)
+        end = int(end_text) if end_text else size - 1
+    except ValueError:
+        return "invalid", None
+    if start < 0 or (end_text and end < start):
+        return "unsatisfiable", None
+    if size <= 0 or start >= size:
+        return "unsatisfiable", None
+    if not end_text:
+        end = size - 1
+    end = min(end, size - 1)
+    return "range", (start, end)
+
+
+def _if_range_allows(header, etag, mtime):
+    value = str(header or "").strip()
+    if not value:
+        return True
+    if value[:2].lower() == "w/":
+        return False
+    if value.startswith('"'):
+        return value == etag
+    try:
+        stamp = email.utils.parsedate_to_datetime(value)
+        if stamp is None:
+            return False
+        return int(stamp.timestamp()) >= int(mtime)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
+
+
+def _send_media_file(handler, path, mime, disposition=None, head_only=False):
+    """Stream a local media file. Never reads the whole body into memory."""
+    try:
+        stat = path.stat()
+    except OSError:
+        handler._send(404, {"error": "没有这个文件"})
+        return
+    size = stat.st_size
+    etag = _file_etag(stat)
+    last_modified = email.utils.formatdate(stat.st_mtime, usegmt=True)
+    kind, span = _parse_bytes_range(handler.headers.get("Range"), size)
+    use_range = False
+    start = 0
+    length = size
+    status = 200
+    if kind == "unsatisfiable":
+        handler.send_response(416)
+        handler.send_header("Content-Range", "bytes */%s" % size)
+        handler.send_header("Accept-Ranges", "bytes")
+        handler.send_header("ETag", etag)
+        handler.send_header("Last-Modified", last_modified)
+        handler.send_header("Content-Type", mime)
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+        return
+    if kind == "range" and _if_range_allows(handler.headers.get("If-Range"), etag, stat.st_mtime):
+        start, end = span
+        length = end - start + 1
+        use_range = True
+        status = 206
+    handler.send_response(status)
+    handler.send_header("Content-Type", mime)
+    handler.send_header("Content-Length", str(length))
+    handler.send_header("Accept-Ranges", "bytes")
+    handler.send_header("ETag", etag)
+    handler.send_header("Last-Modified", last_modified)
+    if use_range:
+        handler.send_header("Content-Range", "bytes %s-%s/%s" % (start, start + length - 1, size))
+    if disposition:
+        handler.send_header("Content-Disposition", disposition)
+    handler.end_headers()
+    if head_only or length <= 0:
+        return
+    try:
+        with path.open("rb") as handle:
+            handle.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = handle.read(min(_MEDIA_CHUNK, remaining))
+                if not chunk:
+                    break
+                handler.wfile.write(chunk)
+                remaining -= len(chunk)
+    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+        handler.close_connection = True
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("[%s] %s" % (self.log_date_time_string(), fmt % args))
@@ -3803,7 +4214,54 @@ class Handler(BaseHTTPRequestHandler):
         if disposition:
             self.send_header("Content-Disposition", disposition)
         self.end_headers()
-        self.wfile.write(data)
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(data)
+
+    def _send_static(self, file_path, content_type):
+        try:
+            raw = file_path.read_bytes()
+        except OSError:
+            self._send(404, {"error": "没有这个页面"})
+            return
+        mime = content_type or "application/octet-stream"
+        compressible = _is_compressible(mime)
+        use_gzip = (
+            compressible
+            and _accepts_gzip(self.headers.get("Accept-Encoding"))
+            and _MIN_GZIP_BYTES <= len(raw) <= _MAX_GZIP_SOURCE_BYTES
+        )
+        digest = hashlib.sha256(raw).hexdigest()
+        body = raw
+        gzipped = False
+        if use_gzip:
+            compressed = _gzip_body(raw, digest)
+            if len(compressed) < len(raw):
+                body = compressed
+                gzipped = True
+        etag = _etag_for(digest, gzipped)
+        if _if_none_match(self.headers.get("If-None-Match"), etag):
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Type", mime)
+            if compressible:
+                self.send_header("Vary", "Accept-Encoding")
+            if gzipped:
+                self.send_header("Content-Encoding", "gzip")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache")
+        if compressible:
+            self.send_header("Vary", "Accept-Encoding")
+        if gzipped:
+            self.send_header("Content-Encoding", "gzip")
+        self.end_headers()
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(body)
 
     def _read_limited(self, limit):
         length = int(self.headers.get("Content-Length") or 0)
@@ -3845,7 +4303,7 @@ class Handler(BaseHTTPRequestHandler):
             disposition = None
             if "download" in parse_qs(parsed.query):
                 disposition = 'attachment; filename="%s"' % video.name
-            self._send(200, video.read_bytes(), mime, disposition)
+            _send_media_file(self, video, mime, disposition, head_only=getattr(self, "_head_only", False))
             return
         if path.startswith("/media/projects/") and path.endswith("/workflow"):
             project_id = path.split("/")[3]
@@ -3903,7 +4361,7 @@ class Handler(BaseHTTPRequestHandler):
             disposition = None
             if "download" in parse_qs(parsed.query):
                 disposition = 'attachment; filename="%s"' % clip.name
-            self._send(200, clip.read_bytes(), mime, disposition)
+            _send_media_file(self, clip, mime, disposition, head_only=getattr(self, "_head_only", False))
             return
         if (
             len(parts) == 5
@@ -3925,7 +4383,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "没有这张图"})
                 return
             mime = mimetypes.guess_type(image.name)[0] or "application/octet-stream"
-            self._send(200, image.read_bytes(), mime)
+            _send_media_file(self, image, mime, head_only=getattr(self, "_head_only", False))
             return
         if (
             len(parts) == 5
@@ -3955,7 +4413,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "没有这个页面"})
             return
         mime = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-        self._send(200, file_path.read_bytes(), mime)
+        self._send_static(file_path, mime)
+
+    def do_HEAD(self):
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
 
     def do_POST(self):
         if urlparse(self.path).path != "/rpc":

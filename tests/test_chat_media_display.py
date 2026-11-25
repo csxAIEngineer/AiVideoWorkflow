@@ -52,7 +52,7 @@ class ChatMediaDisplayTest(unittest.TestCase):
     def test_source_keeps_the_helpers_but_does_not_mount_them_blindly(self):
         app = APP.read_text(encoding="utf-8")
         index = INDEX.read_text(encoding="utf-8")
-        self.assertIn("/app.js?v=94", index)
+        self.assertIn("/app.js?v=96", index)
         self.assertIn("function showImageGallery(", app)
         self.assertIn("function imageGallery(", app)
         self.assertIn("function showMaterialStrip(", app)

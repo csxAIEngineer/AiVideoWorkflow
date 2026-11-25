@@ -59,6 +59,19 @@ class ImageStore(object):
         del project_id, filename, payload
         raise NotImplementedError
 
+    def access_image(self, project_id, filename, source=None):
+        """Return a usable image URL if already published. Does not upload."""
+        del source
+        return self.url(project_id, filename)
+
+    def access_clip(self, project_id, filename, source=None):
+        """Return a usable clip URL if already published. Does not upload."""
+        return self.ensure_clip(project_id, filename, source=source)
+
+    def access_video(self, project_id, filename, source=None):
+        """Return a usable film URL if already published. Does not upload."""
+        return self.ensure_video(project_id, filename, source=source)
+
 
 class LocalImageStore(ImageStore):
     """Write png bytes under data/web_projects and build {base}/media/projects/..."""
@@ -124,6 +137,12 @@ class LocalImageStore(ImageStore):
     def ensure_video(self, project_id, filename, source=None):
         del filename, source
         return "/media/projects/%s/video" % _project_id(project_id)
+
+    def access_clip(self, project_id, filename, source=None):
+        return self.ensure_clip(project_id, filename, source=source)
+
+    def access_video(self, project_id, filename, source=None):
+        return self.ensure_video(project_id, filename, source=source)
 
     def _join(self, project_id, filename):
         key = "media/projects/%s/images/%s" % (project_id, filename)
@@ -206,19 +225,22 @@ class OssImageStore(ImageStore):
         return self.publish(project_id, filename, png_bytes)
 
     def url(self, project_id, filename):
-        project_id = _project_id(project_id)
-        filename = _filename(filename)
-        path = self.root() / project_id / "outputs" / "images" / filename
-        if not path.is_file():
-            raise ImageStoreError("本地没有这张图，不能上传到 OSS")
-        return self.publish(project_id, filename, path.read_bytes())
+        hosted = self.access_image(project_id, filename)
+        if hosted:
+            return hosted
+        raise ImageStoreError("这张图还没有发布到 OSS")
 
     def publish(self, project_id, filename, payload):
         project_id = _project_id(project_id)
         filename = _filename(filename)
         if not payload:
             raise ImageStoreError("没有图片")
-        return self._put(self._object_key("images", project_id, filename), payload, _content_type(filename))
+        key = self._object_key("images", project_id, filename)
+        url = self._put(key, payload, _content_type(filename))
+        path = self.root() / project_id / "outputs" / "images" / filename
+        if path.is_file():
+            write_publish_marker(path, self.persistent_url(url) or url, payload, "oss")
+        return url
 
     def clip_url(self, project_id, filename):
         project_id = _project_id(project_id)
@@ -235,14 +257,22 @@ class OssImageStore(ImageStore):
         filename = _clip_filename(filename)
         if not payload:
             raise ImageStoreError("没有这段视频")
-        return self._put(self._object_key("clips", project_id, filename), payload, _content_type(filename))
+        url = self._put(self._object_key("clips", project_id, filename), payload, _content_type(filename))
+        path = self.root() / project_id / "outputs" / "clips" / filename
+        if path.is_file():
+            write_publish_marker(path, self.persistent_url(url) or url, payload, "oss")
+        return url
 
     def publish_video(self, project_id, filename, payload):
         project_id = _project_id(project_id)
         filename = _clip_filename(filename)
         if not payload:
             raise ImageStoreError("没有这段视频")
-        return self._put(self._object_key("video", project_id, filename), payload, _content_type(filename))
+        url = self._put(self._object_key("video", project_id, filename), payload, _content_type(filename))
+        path = self.root() / project_id / "outputs" / filename
+        if path.is_file():
+            write_publish_marker(path, self.persistent_url(url) or url, payload, "oss")
+        return url
 
     def ensure_clip(self, project_id, filename, source=None):
         return self._ensure_video_object(
@@ -251,6 +281,7 @@ class OssImageStore(ImageStore):
             source=source,
             folder="clips",
             publish=self.publish_clip,
+            upload=True,
         )
 
     def ensure_video(self, project_id, filename, source=None):
@@ -260,7 +291,40 @@ class OssImageStore(ImageStore):
             source=source,
             folder="video",
             publish=self.publish_video,
+            upload=True,
         )
+
+    def access_clip(self, project_id, filename, source=None):
+        return self._ensure_video_object(
+            project_id,
+            filename,
+            source=source,
+            folder="clips",
+            publish=self.publish_clip,
+            upload=False,
+        )
+
+    def access_video(self, project_id, filename, source=None):
+        return self._ensure_video_object(
+            project_id,
+            filename,
+            source=source,
+            folder="video",
+            publish=self.publish_video,
+            upload=False,
+        )
+
+    def access_image(self, project_id, filename, source=None):
+        project_id = _project_id(project_id)
+        filename = _filename(filename)
+        path = Path(source) if source else self.root() / project_id / "outputs" / "images" / filename
+        if not path.is_file():
+            return ""
+        expected = self._canonical_url(self._object_key("images", project_id, filename))
+        data = read_publish_marker(path, "oss")
+        if not publish_marker_matches(data, path, expected, self.persistent_url):
+            return ""
+        return self._access_url(self._object_key("images", project_id, filename))
 
     def ensure_remote(self, project_id, filename, current_url="", source=None):
         current = str(current_url or "").strip()
@@ -270,7 +334,13 @@ class OssImageStore(ImageStore):
             return current
         if source and Path(source).is_file():
             return self.refresh_url(self.publish(project_id, filename, Path(source).read_bytes()))
-        return self.refresh_url(self.url(project_id, filename))
+        hosted = self.access_image(project_id, filename)
+        if hosted:
+            return self.refresh_url(hosted)
+        path = self.root() / _project_id(project_id) / "outputs" / "images" / _filename(filename)
+        if path.is_file():
+            return self.refresh_url(self.publish(project_id, filename, path.read_bytes()))
+        raise ImageStoreError("本地没有这张图，不能上传到 OSS")
 
     def refresh_url(self, url):
         key = self._key_from_url(url)
@@ -327,7 +397,7 @@ class OssImageStore(ImageStore):
         )
         return self._canonical_url(key)
 
-    def _ensure_video_object(self, project_id, filename, source, folder, publish):
+    def _ensure_video_object(self, project_id, filename, source, folder, publish, upload=True):
         project_id = _project_id(project_id)
         filename = _clip_filename(filename)
         if source:
@@ -337,35 +407,19 @@ class OssImageStore(ImageStore):
         else:
             path = self.root() / project_id / "outputs" / filename
         if not path.is_file():
-            raise ImageStoreError("本地没有这段视频，不能上传到 OSS")
+            if upload:
+                raise ImageStoreError("本地没有这段视频，不能上传到 OSS")
+            return ""
         key = self._object_key(folder, project_id, filename)
         expected = self._canonical_url(key)
-        marker = path.with_name(path.name + ".oss.json")
-        stat = path.stat()
-        if marker.is_file():
-            try:
-                data = json.loads(marker.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                data = None
-            if (
-                isinstance(data, dict)
-                and self.persistent_url(data.get("url")) == expected
-                and int(data.get("size") or -1) == stat.st_size
-                and int(data.get("mtime") or -1) == int(stat.st_mtime)
-            ):
-                return self._access_url(key)
-        url = publish(project_id, filename, path.read_bytes())
-        marker.write_text(
-            json.dumps(
-                {
-                    "url": self.persistent_url(url) or expected,
-                    "size": path.stat().st_size,
-                    "mtime": int(path.stat().st_mtime),
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+        data = read_publish_marker(path, "oss")
+        if publish_marker_matches(data, path, expected, self.persistent_url):
+            return self._access_url(key)
+        if not upload:
+            return ""
+        payload = path.read_bytes()
+        url = publish(project_id, filename, payload)
+        write_publish_marker(path, self.persistent_url(url) or expected, payload, "oss")
         return self.refresh_url(url) or self._access_url(key)
 
 
@@ -421,12 +475,10 @@ class CosImageStore(ImageStore):
         return self.publish(project_id, filename, png_bytes)
 
     def url(self, project_id, filename):
-        project_id = _project_id(project_id)
-        filename = _filename(filename)
-        path = self.root() / project_id / "outputs" / "images" / filename
-        if not path.is_file():
-            raise ImageStoreError("本地没有这张图，不能上传到 COS")
-        return self.publish(project_id, filename, path.read_bytes())
+        hosted = self.access_image(project_id, filename)
+        if hosted:
+            return hosted
+        raise ImageStoreError("这张图还没有发布到 COS")
 
     def publish(self, project_id, filename, payload):
         project_id = _project_id(project_id)
@@ -436,7 +488,11 @@ class CosImageStore(ImageStore):
         key = "projects/%s/images/%s" % (project_id, filename)
         bucket = self.bucket()
         domain = self.domain()
-        return _put_cos(domain, bucket, key, payload, _content_type(filename))
+        url = _put_cos(domain, bucket, key, payload, _content_type(filename))
+        path = self.root() / project_id / "outputs" / "images" / filename
+        if path.is_file():
+            write_publish_marker(path, url, payload, "cos")
+        return url
 
     def clip_url(self, project_id, filename):
         project_id = _project_id(project_id)
@@ -454,7 +510,13 @@ class CosImageStore(ImageStore):
         if not payload:
             raise ImageStoreError("没有这段视频")
         key = "projects/%s/clips/%s" % (project_id, filename)
-        return _put_cos(self.domain(), self.bucket(), key, payload, _content_type(filename))
+        bucket = self.bucket()
+        domain = self.domain()
+        url = _put_cos(domain, bucket, key, payload, _content_type(filename))
+        path = self.root() / project_id / "outputs" / "clips" / filename
+        if path.is_file():
+            write_publish_marker(path, url, payload, "cos")
+        return url
 
     def publish_video(self, project_id, filename, payload):
         project_id = _project_id(project_id)
@@ -462,7 +524,13 @@ class CosImageStore(ImageStore):
         if not payload:
             raise ImageStoreError("没有这段视频")
         key = "projects/%s/video/%s" % (project_id, filename)
-        return _put_cos(self.domain(), self.bucket(), key, payload, _content_type(filename))
+        bucket = self.bucket()
+        domain = self.domain()
+        url = _put_cos(domain, bucket, key, payload, _content_type(filename))
+        path = self.root() / project_id / "outputs" / filename
+        if path.is_file():
+            write_publish_marker(path, url, payload, "cos")
+        return url
 
     def ensure_clip(self, project_id, filename, source=None):
         return self._ensure_video_object(
@@ -472,6 +540,7 @@ class CosImageStore(ImageStore):
             folder="clips",
             publish=self.publish_clip,
             url_for=self.clip_url,
+            upload=True,
         )
 
     def ensure_video(self, project_id, filename, source=None):
@@ -482,9 +551,63 @@ class CosImageStore(ImageStore):
             folder="video",
             publish=self.publish_video,
             url_for=self.video_url,
+            upload=True,
         )
 
-    def _ensure_video_object(self, project_id, filename, source, folder, publish, url_for):
+    def access_clip(self, project_id, filename, source=None):
+        return self._ensure_video_object(
+            project_id,
+            filename,
+            source=source,
+            folder="clips",
+            publish=self.publish_clip,
+            url_for=self.clip_url,
+            upload=False,
+        )
+
+    def access_video(self, project_id, filename, source=None):
+        return self._ensure_video_object(
+            project_id,
+            filename,
+            source=source,
+            folder="video",
+            publish=self.publish_video,
+            url_for=self.video_url,
+            upload=False,
+        )
+
+    def access_image(self, project_id, filename, source=None):
+        project_id = _project_id(project_id)
+        filename = _filename(filename)
+        path = Path(source) if source else self.root() / project_id / "outputs" / "images" / filename
+        if not path.is_file():
+            return ""
+        expected = "projects/%s/images/%s" % (project_id, filename)
+        expected_url = _http_object_url(self.domain(), expected)
+        data = read_publish_marker(path, "cos")
+        if not publish_marker_matches(data, path, expected_url):
+            return ""
+        return expected_url
+
+    def ensure_remote(self, project_id, filename, current_url="", source=None):
+        current = str(current_url or "").strip()
+        if current and not self.owns_url(current):
+            return current
+        if current and current.startswith("http"):
+            expected = _http_object_url(self.domain(), "projects/%s/images/%s" % (_project_id(project_id), _filename(filename)))
+            if current == expected or current.startswith(expected + "?"):
+                return current
+        if source and Path(source).is_file():
+            return self.publish(project_id, filename, Path(source).read_bytes())
+        hosted = self.access_image(project_id, filename)
+        if hosted:
+            return hosted
+        path = self.root() / _project_id(project_id) / "outputs" / "images" / _filename(filename)
+        if path.is_file():
+            return self.publish(project_id, filename, path.read_bytes())
+        raise ImageStoreError("本地没有这张图，不能上传到 COS")
+
+    def _ensure_video_object(self, project_id, filename, source, folder, publish, url_for, upload=True):
         project_id = _project_id(project_id)
         filename = _clip_filename(filename)
         if source:
@@ -494,35 +617,85 @@ class CosImageStore(ImageStore):
         else:
             path = self.root() / project_id / "outputs" / filename
         if not path.is_file():
-            raise ImageStoreError("本地没有这段视频，不能上传到 COS")
+            if upload:
+                raise ImageStoreError("本地没有这段视频，不能上传到 COS")
+            return ""
         expected = url_for(project_id, filename)
-        marker = path.with_name(path.name + ".cos.json")
-        stat = path.stat()
-        if marker.is_file():
-            try:
-                data = json.loads(marker.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                data = None
-            if (
-                isinstance(data, dict)
-                and data.get("url") == expected
-                and int(data.get("size") or -1) == stat.st_size
-                and int(data.get("mtime") or -1) == int(stat.st_mtime)
-            ):
-                return expected
-        url = publish(project_id, filename, path.read_bytes())
-        marker.write_text(
-            json.dumps(
-                {
-                    "url": url,
-                    "size": path.stat().st_size,
-                    "mtime": int(path.stat().st_mtime),
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+        data = read_publish_marker(path, "cos")
+        if publish_marker_matches(data, path, expected):
+            return expected
+        if not upload:
+            return ""
+        payload = path.read_bytes()
+        url = publish(project_id, filename, payload)
+        write_publish_marker(path, url, payload, "cos")
         return url
+
+
+
+def _mtime_ns(stat):
+    return int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9)))
+
+
+def _publish_marker_path(path, kind):
+    suffix = ".oss.json" if kind == "oss" else ".cos.json"
+    return path.with_name(path.name + suffix)
+
+
+def write_publish_marker(path, url, payload, kind):
+    """Record the published object and the exact local bytes that were sent."""
+    path = Path(path)
+    try:
+        stat = path.stat()
+    except OSError:
+        return
+    marker = _publish_marker_path(path, kind)
+    body = {
+        "url": str(url or "").strip(),
+        "size": stat.st_size,
+        "mtime": int(stat.st_mtime),
+        "mtime_ns": _mtime_ns(stat),
+        "sha256": hashlib.sha256(payload or b"").hexdigest(),
+    }
+    marker.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+
+
+def read_publish_marker(path, kind):
+    marker = _publish_marker_path(path, kind)
+    if not marker.is_file():
+        return None
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def publish_marker_matches(data, path, expected_url="", canonical=None):
+    """True when the marker still describes this file and published object."""
+    if not data:
+        return False
+    path = Path(path)
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    if int(data.get("size") or -1) != stat.st_size:
+        return False
+    if data.get("mtime_ns") is not None:
+        if int(data.get("mtime_ns") or -1) != _mtime_ns(stat):
+            return False
+    elif int(data.get("mtime") or -1) != int(stat.st_mtime):
+        return False
+    stored = str(data.get("url") or "").strip()
+    if expected_url:
+        wanted = str(expected_url).strip()
+        if canonical:
+            if canonical(stored) != canonical(wanted):
+                return False
+        elif stored and stored != wanted:
+            return False
+    return True
 
 
 def get_image_store(kind=None):

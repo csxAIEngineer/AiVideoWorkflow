@@ -1,5 +1,6 @@
 """SQLite store for AiVideo web projects. Artifacts stay on disk under data/web_projects/<id>/."""
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -36,6 +37,25 @@ COLUMNS = (
     "started_at",
     "updated_at",
     "finished_at",
+    "content_revision",
+)
+
+# History menu only. Full rows still go through COLUMNS / list_projects.
+LIST_SUMMARY_COLUMNS = (
+    "id",
+    "brief",
+    "title",
+    "status",
+    "stage",
+    "error",
+    "progress_json",
+    "created_at",
+    "started_at",
+    "updated_at",
+    "finished_at",
+)
+LIST_SUMMARY_SQL = "SELECT %s FROM projects ORDER BY created_at DESC" % ", ".join(
+    LIST_SUMMARY_COLUMNS
 )
 
 
@@ -88,7 +108,8 @@ def _init_schema(conn):
             created_at TEXT NOT NULL,
             started_at TEXT,
             updated_at TEXT NOT NULL,
-            finished_at TEXT
+            finished_at TEXT,
+            content_revision TEXT NOT NULL DEFAULT ''
         )
         """
     )
@@ -110,6 +131,10 @@ def _init_schema(conn):
     if "template" not in columns:
         conn.execute(
             "ALTER TABLE projects ADD COLUMN template TEXT NOT NULL DEFAULT 'short-drama-director'"
+        )
+    if "content_revision" not in columns:
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN content_revision TEXT NOT NULL DEFAULT ''"
         )
     conn.commit()
 
@@ -156,6 +181,7 @@ def row_to_project(row):
         "started_at": data.get("started_at") or data.get("created_at"),
         "updated_at": data.get("updated_at"),
         "finished_at": data.get("finished_at"),
+        "content_revision": data.get("content_revision") or "",
     }
 
 
@@ -183,6 +209,7 @@ def _row_values(project):
         project.get("started_at"),
         project.get("updated_at") or "",
         project.get("finished_at"),
+        project.get("content_revision") or "",
     )
 
 
@@ -193,12 +220,32 @@ def read_project(project_id, conn=None):
     return row_to_project(row)
 
 
+def content_revision_from_project(project):
+    """Stable token for script, storyboard, messages, and film name. Not media files."""
+    project = project or {}
+    payload = json.dumps(
+        [
+            project.get("script") or "",
+            project.get("storyboard") or "",
+            project.get("image_prompts") or "",
+            project.get("messages") or [],
+            project.get("video_file") or "",
+            project.get("prompt_id") or "",
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def write_project(project, conn=None):
     if not project or not project.get("id"):
         raise ValueError("project.id 不能为空")
     db = conn or connect()
     folder = project_dir(project["id"])
     folder.mkdir(parents=True, exist_ok=True)
+    project["content_revision"] = content_revision_from_project(project)
     values = _row_values(project)
     placeholders = ", ".join("?" for _ in COLUMNS)
     assignments = ", ".join("%s = excluded.%s" % (name, name) for name in COLUMNS if name != "id")
@@ -213,7 +260,94 @@ def write_project(project, conn=None):
     return project
 
 
+def row_to_summary(row):
+    """Build a menu row from LIST_SUMMARY_COLUMNS. Do not use row_to_project."""
+    if row is None:
+        return None
+    data = dict(row)
+    return {
+        "id": data["id"],
+        "brief": data.get("brief") or "",
+        "title": data.get("title") or "",
+        "status": data.get("status") or "",
+        "stage": data.get("stage") or "",
+        "error": data.get("error"),
+        "progress": _loads(data.get("progress_json"), {}),
+        "created_at": data.get("created_at"),
+        "started_at": data.get("started_at") or data.get("created_at"),
+        "updated_at": data.get("updated_at"),
+        "finished_at": data.get("finished_at"),
+    }
+
+
+def list_project_summaries(conn=None):
+    """History menu rows. Does not load scripts, messages, or other heavy columns."""
+    db = conn or connect()
+    with _LOCK:
+        rows = db.execute(LIST_SUMMARY_SQL).fetchall()
+    return [row_to_summary(row) for row in rows]
+
+
+TICK_COLUMNS = (
+    "id",
+    "brief",
+    "title",
+    "status",
+    "stage",
+    "error",
+    "events_json",
+    "tasks_json",
+    "progress_json",
+    "prompt_id",
+    "video_file",
+    "model",
+    "template",
+    "created_at",
+    "started_at",
+    "updated_at",
+    "finished_at",
+    "content_revision",
+)
+TICK_SQL = "SELECT %s FROM projects WHERE id = ?" % ", ".join(TICK_COLUMNS)
+
+
+def row_to_tick(row):
+    """Lightweight project row for progress polling. Does not load script or messages."""
+    if row is None:
+        return None
+    data = dict(row)
+    return {
+        "id": data["id"],
+        "brief": data.get("brief") or "",
+        "title": data.get("title") or "",
+        "status": data.get("status") or "",
+        "stage": data.get("stage") or "",
+        "error": data.get("error"),
+        "events": _loads(data.get("events_json"), []),
+        "tasks": _loads(data.get("tasks_json"), []),
+        "progress": _loads(data.get("progress_json"), {}),
+        "prompt_id": data.get("prompt_id") or "",
+        "video_file": data.get("video_file") or "",
+        "model": data.get("model") or "qwen3.8-flash",
+        "template": data.get("template") or "short-drama-director",
+        "created_at": data.get("created_at"),
+        "started_at": data.get("started_at") or data.get("created_at"),
+        "updated_at": data.get("updated_at"),
+        "finished_at": data.get("finished_at"),
+        "content_revision": data.get("content_revision") or "",
+    }
+
+
+def read_project_tick(project_id, conn=None):
+    """Progress tick row. Does not SELECT script, storyboard, or messages."""
+    db = conn or connect()
+    with _LOCK:
+        row = db.execute(TICK_SQL, (project_id,)).fetchone()
+    return row_to_tick(row)
+
+
 def list_projects(conn=None):
+    """Full project rows for resume and other in-process work."""
     db = conn or connect()
     with _LOCK:
         rows = db.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()

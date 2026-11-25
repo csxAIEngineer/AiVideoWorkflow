@@ -226,7 +226,7 @@ class CanvasOutputStatusTest(unittest.TestCase):
         app = APP.read_text(encoding="utf-8")
         css = CSS.read_text(encoding="utf-8")
         index = INDEX.read_text(encoding="utf-8")
-        self.assertIn("/app.js?v=94", index)
+        self.assertIn("/app.js?v=96", index)
         self.assertIn("/styles.css?v=59", index)
         render_node = app.split("function renderNode(project, info)", 1)[1].split("\nfunction ", 1)[0]
         patch_canvas = app.split("function patchCanvas(project)", 1)[1].split("\nfunction ", 1)[0]

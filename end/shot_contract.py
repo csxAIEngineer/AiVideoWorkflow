@@ -361,8 +361,9 @@ def _existing_tail_url(work_dir, project_id, image_or_shot_id):
 
         try:
             store = get_image_store()
-            hosted = store.url(project_id, filename)
-            return store.refresh_url(hosted) or hosted
+            hosted = store.access_image(project_id, filename) if hasattr(store, "access_image") else ""
+            if hosted:
+                return store.refresh_url(hosted) or hosted
         except (ImageStoreError, OSError):
             pass
     try:

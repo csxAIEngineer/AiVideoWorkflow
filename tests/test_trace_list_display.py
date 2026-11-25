@@ -103,7 +103,7 @@ class TraceListDisplayTest(unittest.TestCase):
     def test_source_hides_vision_rows_in_trace_list(self):
         app = APP.read_text(encoding="utf-8")
         index = INDEX.read_text(encoding="utf-8")
-        self.assertIn("/app.js?v=94", index)
+        self.assertIn("/app.js?v=96", index)
         self.assertIn("function isVisionTrace(", app)
         self.assertIn("function visibleTraces(", app)
         body = extract_function(app, "traceList")

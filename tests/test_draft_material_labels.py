@@ -339,7 +339,7 @@ class DraftMaterialLabelTest(unittest.TestCase):
         app = APP.read_text(encoding="utf-8")
         css = CSS.read_text(encoding="utf-8")
         index = INDEX.read_text(encoding="utf-8")
-        self.assertIn("/app.js?v=94", index)
+        self.assertIn("/app.js?v=96", index)
         self.assertIn("/styles.css?v=59", index)
         self.assertIn('contenteditable="true"', index)
         self.assertIn('id="brief"', index)

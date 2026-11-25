@@ -455,7 +455,7 @@ async function replayTrace(traceId) {
   try {
     current = await rpc("projects.replay", { id: current.id, trace_id: traceId });
     const listed = projects.find((item) => item.id === current.id);
-    if (listed) Object.assign(listed, current);
+    if (listed) assignMenuFields(listed, current);
     renderHistory();
     renderThread();
     watch();
@@ -476,7 +476,7 @@ async function postControl(action) {
     if (action === "render") produceError = "";
     current = await rpc("projects." + action, { id: current.id });
     const listed = projects.find((item) => item.id === current.id);
-    if (listed) Object.assign(listed, current);
+    if (listed) assignMenuFields(listed, current);
     renderHistory();
     renderThread();
     watch();
@@ -509,6 +509,7 @@ function clipCard(title, playUrl, downloadUrl) {
   const video = document.createElement("video");
   video.controls = true;
   video.preload = "metadata";
+  video.dataset.url = playUrl;
   video.src = playUrl;
   const link = document.createElement("a");
   link.className = "download";
@@ -1838,7 +1839,7 @@ function renderThread(options) {
   syncPreview(current);
   syncContract(current);
   syncDock(current);
-  refreshLogs();
+  if (debugDockIsOpen(debugDock)) refreshLogs();
   syncComposer();
 }
 
@@ -2276,26 +2277,195 @@ function keepWatching(project) {
   return project.status !== "done" && project.status !== "error";
 }
 
+function mediaIdentity(url) {
+  if (!url) return "";
+  try {
+    const parsed = new URL(url, "http://127.0.0.1");
+    const path = parsed.pathname;
+    const version = parsed.searchParams.get("v");
+    return version ? path + "?v=" + version : path;
+  } catch (_error) {
+    const cut = String(url).split("#")[0];
+    const queryAt = cut.indexOf("?");
+    if (queryAt < 0) return cut;
+    const path = cut.slice(0, queryAt);
+    const match = /(?:^|[?&])v=([^&]*)/.exec(cut.slice(queryAt + 1));
+    return match ? path + "?v=" + decodeURIComponent(match[1]) : path;
+  }
+}
+
+function sameMediaUrl(left, right) {
+  return mediaIdentity(left) === mediaIdentity(right);
+}
+
+function mediaExpiry(url) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url, "http://127.0.0.1");
+    const raw = parsed.searchParams.get("Expires") || parsed.searchParams.get("expires");
+    if (!raw || !/^\d+$/.test(raw)) return null;
+    const value = Number(raw);
+    if (value > 1e12) return value;
+    return value * 1000;
+  } catch (_error) {
+    const match = /(?:^|[?&])[Ee]xpires=(\d+)/.exec(String(url));
+    if (!match) return null;
+    const value = Number(match[1]);
+    if (value > 1e12) return value;
+    return value * 1000;
+  }
+}
+
+function mediaUrlFresh(url, now, skewMs) {
+  const expiry = mediaExpiry(url);
+  if (expiry == null) return true;
+  now = now == null ? Date.now() : now;
+  skewMs = skewMs == null ? 60000 : skewMs;
+  return now + skewMs < expiry;
+}
+
+function refreshVideoElement(video, url, now) {
+  if (!video || !url) return "missing";
+  if (video.dataset && video.dataset.url === url) return "same";
+  if (video.dataset && video.dataset.url && sameMediaUrl(video.dataset.url, url)) {
+    if (mediaUrlFresh(video.dataset.url, now) && mediaUrlFresh(url, now)) return "same";
+    const time = video.currentTime || 0;
+    const paused = video.paused !== false;
+    video.dataset.url = url;
+    video.src = url;
+    const restore = function () {
+      try { video.currentTime = time; } catch (_error) {}
+      if (paused && video.pause) video.pause();
+      if (video.removeEventListener) video.removeEventListener("loadedmetadata", restore);
+    };
+    if (video.addEventListener) video.addEventListener("loadedmetadata", restore);
+    return "refresh";
+  }
+  return "replace";
+}
+
+function menuSnapshot(project) {
+  project = project || {};
+  return {
+    id: project.id,
+    brief: project.brief,
+    title: project.title,
+    status: project.status,
+    stage: project.stage,
+    error: project.error,
+    created_at: project.created_at,
+    started_at: project.started_at,
+    updated_at: project.updated_at,
+    finished_at: project.finished_at,
+    debug_llm: project.debug_llm,
+    debug_stop: project.debug_stop,
+    progress: project.progress,
+  };
+}
+
+function assignMenuFields(listed, source) {
+  if (!listed || !source) return listed;
+  const snap = menuSnapshot(source);
+  Object.keys(snap).forEach((key) => {
+    listed[key] = snap[key];
+  });
+  return listed;
+}
+
+const TICK_FIELDS = [
+  "brief", "title", "status", "stage", "error", "events", "tasks",
+  "created_at", "started_at", "updated_at", "finished_at", "prompt_id",
+  "video_file", "has_video", "has_spec", "model", "model_label", "template",
+  "template_label", "debug_llm", "debug_stop", "progress", "can_reply",
+  "question", "generation_hold", "render_recovery", "option_effects",
+  "content_revision",
+];
+
+function applyProjectTick(target, tick) {
+  if (!target || !tick) return target;
+  TICK_FIELDS.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(tick, key)) target[key] = tick[key];
+  });
+  return target;
+}
+
+function shouldReloadAfterTick(previous, tick) {
+  if (!previous || !tick) return false;
+  if (previous.id && tick.id && previous.id !== tick.id) return false;
+  if ((previous.content_revision || "") !== (tick.content_revision || "")) return true;
+  if (keepWatching(previous) && !keepWatching(tick)) return true;
+  return false;
+}
+
+function debugDockIsOpen(dock) {
+  return !!(dock && dock.classList && dock.classList.contains("open"));
+}
+
+function mediaRefreshAllowed(state, projectId, now, cooldownMs) {
+  state = state || {};
+  if (!projectId) return false;
+  if (state.busy) return false;
+  now = now == null ? Date.now() : now;
+  cooldownMs = cooldownMs == null ? 30000 : cooldownMs;
+  if (state.id === projectId && now - (state.at || 0) < cooldownMs) return false;
+  return true;
+}
+
 function watch() {
   clearInterval(timer);
   clearInterval(clock);
   clock = setInterval(tickElapsed, 1000);
+  watch.token = (watch.token || 0) + 1;
+  const token = watch.token;
+  const projectId = current && current.id;
+  watch.busy = false;
   if (!keepWatching(current)) return;
   timer = setInterval(async () => {
-    if (!current) return;
+    if (watch.busy) return;
+    if (token !== watch.token || !current || current.id !== projectId) return;
+    watch.busy = true;
     try {
-      const project = await rpc("projects.get", { id: current.id });
-      if (!current || current.id !== project.id) return;
-      current = project;
+      const tick = await rpc("projects.tick", { id: projectId });
+      if (token !== watch.token || !current || !tick || current.id !== tick.id) return;
+      const previous = {
+        id: current.id,
+        status: current.status,
+        can_reply: current.can_reply,
+        question: current.question,
+        content_revision: current.content_revision,
+        progress: current.progress,
+      };
+      applyProjectTick(current, tick);
+      const listed = projects.find((item) => item.id === current.id);
+      if (listed) assignMenuFields(listed, current);
+      renderHistory();
+      const reload = shouldReloadAfterTick(previous, tick);
+      if (reload) {
+        const project = await rpc("projects.get", { id: current.id });
+        if (token !== watch.token || !current || !project || current.id !== project.id) return;
+        current = project;
+        const row = projects.find((item) => item.id === current.id);
+        if (row) assignMenuFields(row, current);
+        renderHistory();
+        renderThread();
+      } else {
+        syncCrew(current);
+        syncStageLive(current);
+        syncDock(current);
+        syncControlButtons(current);
+        syncComposer();
+        if (previous.can_reply !== current.can_reply || previous.question !== current.question) {
+          paintTranscript({}, false);
+        }
+      }
+      if (debugDockIsOpen(debugDock)) refreshLogs();
+      probeRevision(current);
+      if (!keepWatching(current)) clearInterval(timer);
     } catch (_error) {
       return;
+    } finally {
+      if (token === watch.token) watch.busy = false;
     }
-    const listed = projects.find((item) => item.id === current.id);
-    if (listed) Object.assign(listed, current);
-    renderHistory();
-    renderThread();
-    probeRevision(current);
-    if (!keepWatching(current)) clearInterval(timer);
   }, 2000);
 }
 
@@ -2499,10 +2669,10 @@ function adoptProject(project, isNew) {
   otherOpen = false;
   clearDraftMaterials();
   setBriefValue("");
-  if (isNew) projects.unshift(project);
+  if (isNew) projects.unshift(menuSnapshot(project));
   else {
     const listed = projects.find((item) => item.id === project.id);
-    if (listed) Object.assign(listed, project);
+    if (listed) assignMenuFields(listed, project);
   }
   current = project;
   showProjectModel(project);
@@ -3714,6 +3884,9 @@ function makeVideo(url) {
   video.dataset.url = url;
   video.src = url;
   video.addEventListener("pointerdown", (event) => event.stopPropagation());
+  video.addEventListener("error", () => {
+    if (current) requestMediaUrlRefresh(current, { forceError: true });
+  });
   return video;
 }
 
@@ -3884,7 +4057,7 @@ function setSaveState(text) {
 function adoptQuiet(project) {
   current = project;
   const listed = projects.find((item) => item.id === project.id);
-  if (listed) Object.assign(listed, project);
+  if (listed) assignMenuFields(listed, project);
   renderHistory();
   renderThread();
 }
@@ -4585,7 +4758,7 @@ function syncContract(project) {
   const shots = project.shots || [];
   if (contractShotId && !shots.some((shot) => shot && shot.id === contractShotId)) contractShotId = "";
   const shot = shots.find((item) => item && item.id === contractShotId) || null;
-  const sig = (shot ? shot.id : "") + "\u0001" + ShotContractView.contractSig(shot) + "\u0001" + (shot ? (clipUrlFor(project, shot.id) || "") : "");
+  const sig = (shot ? shot.id : "") + "\u0001" + ShotContractView.contractSig(shot) + "\u0001" + (shot ? mediaIdentity(clipUrlFor(project, shot.id) || "") : "");
   const opened = !!shot;
   if (sig === syncContract.sig && panel.childElementCount) {
     markContractNodes();
@@ -4635,8 +4808,54 @@ function syncPreview(project) {
     return;
   }
   const existing = previewStage.querySelector("video");
-  if (existing && existing.dataset.url === url) return;
+  if (existing) {
+    const action = refreshVideoElement(existing, url);
+    if (action === "same" || action === "refresh") {
+      if (action === "same" && !mediaUrlFresh(url)) requestMediaUrlRefresh(project);
+      return;
+    }
+  }
   previewStage.replaceChildren(makeVideo(url));
+  if (!mediaUrlFresh(url)) requestMediaUrlRefresh(project);
+}
+
+function applyResignedMedia(result) {
+  if (!current || !result || result.id !== current.id) return;
+  if (result.video_url) current.video_url = result.video_url;
+  if (result.video_download_url) current.video_download_url = result.video_download_url;
+  if (Array.isArray(result.clips)) current.clips = result.clips;
+  if (result.has_video != null) current.has_video = result.has_video;
+  const videos = document.querySelectorAll("video");
+  for (let index = 0; index < videos.length; index += 1) {
+    const video = videos[index];
+    const currentSrc = (video.dataset && video.dataset.url) || video.src;
+    if (!currentSrc) continue;
+    let next = "";
+    if (current.video_url && sameMediaUrl(currentSrc, current.video_url)) next = current.video_url;
+    const clips = current.clips || [];
+    for (let clipIndex = 0; !next && clipIndex < clips.length; clipIndex += 1) {
+      const clip = clips[clipIndex];
+      if (clip && clip.url && sameMediaUrl(currentSrc, clip.url)) next = clip.url;
+    }
+    if (next) refreshVideoElement(video, next);
+  }
+}
+
+function requestMediaUrlRefresh(project, options) {
+  if (!project || !project.id || typeof rpc !== "function") return;
+  const now = Date.now();
+  const forceError = !!(options && options.forceError);
+  if (!mediaRefreshAllowed(requestMediaUrlRefresh, project.id, now, 30000)) return;
+  if (!forceError && mediaUrlFresh(previewUrl(project))) return;
+  requestMediaUrlRefresh.id = project.id;
+  requestMediaUrlRefresh.at = now;
+  requestMediaUrlRefresh.busy = true;
+  Promise.resolve(rpc("projects.media_urls", { id: project.id })).then((result) => {
+    requestMediaUrlRefresh.busy = false;
+    applyResignedMedia(result);
+  }).catch(() => {
+    requestMediaUrlRefresh.busy = false;
+  });
 }
 
 function shotStripSignature(project) {
@@ -4648,7 +4867,7 @@ function shotStripSignature(project) {
     clipUrlFor(project, shot.id) ? "1" : "",
     ShotContractView.contractSig(shot),
   ].join(":")).join("|");
-  return [project.id, project.video_url || "", shots, previewShotId, contractShotId, centerView].join("\u0001");
+  return [project.id, mediaIdentity(project.video_url || ""), shots, previewShotId, contractShotId, centerView].join("\u0001");
 }
 
 function shotChip(shot) {
@@ -5214,6 +5433,7 @@ function bindCanvas() {
     dockToggle.addEventListener("click", () => {
       debugDock.classList.toggle("open");
       dockToggle.classList.toggle("on", debugDock.classList.contains("open"));
+      if (debugDock.classList.contains("open")) refreshLogs();
     });
   }
   const projectIdNode = document.querySelector("#dock-project-id");
