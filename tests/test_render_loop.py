@@ -1474,6 +1474,249 @@ class RenderLoopTest(unittest.TestCase):
             "first_frame",
         )
 
+    def test_previous_tail_first_frame_is_submitted_with_a_refreshed_url(self):
+        """A private store must refresh the previous tail before video submit."""
+        from unittest.mock import patch
+
+        from end.image_store import get_image_store as real_get_image_store
+
+        project_id = "tailsign01"
+        spec = {
+            "title": "衔接",
+            "aspect_ratio": "9:16",
+            "assets": [{"id": "A1", "title": "闲置", "prompt": "一张桌子"}],
+            "shots": [
+                {"id": "S01", "duration": 4, "prompt": "海面慢慢亮起来", "images": [], "video_mode": "text"},
+                {
+                    "id": "S02",
+                    "duration": 4,
+                    "prompt": "接上一段",
+                    "images": [],
+                    "video_mode": "first_frame",
+                    "first_frame_source": "previous_tail",
+                },
+            ],
+            "feed_units": [
+                {"id": "S01", "video_mode": "text", "images": []},
+                {
+                    "id": "S02",
+                    "video_mode": "first_frame",
+                    "first_frame_source": "previous_tail",
+                    "images": [],
+                },
+            ],
+            "seam_ledger": {
+                "entries": [
+                    {"shot_id": "S01", "video_mode": "text", "end_image": "", "first_frame_source": "none"},
+                    {
+                        "shot_id": "S02",
+                        "video_mode": "first_frame",
+                        "end_image": "",
+                        "first_frame_source": "previous_tail",
+                    },
+                ]
+            },
+        }
+
+        def fake_tail(_clip_path, dest):
+            dest = Path(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"\xff\xd8\xff\xd9")
+            return dest
+
+        class SigningStore(object):
+            def __init__(self, inner):
+                self._inner = inner
+                self._n = 0
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def refresh_url(self, url):
+                text = str(url or "").strip()
+                self._n += 1
+                mark = "access=%s" % self._n
+                if "access=" in text:
+                    head, _sep, _rest = text.partition("access=")
+                    text = head.rstrip("?&")
+                sep = "&" if "?" in text else "?"
+                return "%s%s%s" % (text, sep, mark)
+
+        store = SigningStore(real_get_image_store())
+
+        def joiner(_clips, target):
+            Path(target).write_bytes(b"joined")
+            return target
+
+        def burner(_raw, _ass, target):
+            Path(target).write_bytes(b"burned")
+            return target
+
+        cr = FakeCR()
+        with patch("end.render_loop.get_image_store", lambda kind=None: store), patch(
+            "end.render_loop._tail_frame", fake_tail
+        ):
+            run_local_pipeline(
+                spec,
+                self.work,
+                project_id=project_id,
+                icreat=FakeICreat(),
+                cr=cr,
+                sleeper=_noop_sleep,
+                joiner=joiner,
+                burner=burner,
+            )
+        hosted = load_run_state(self.work)["steps"]["S01"]["end_image_url"]
+        self.assertIn("/S01_tail.jpg", hosted)
+        self.assertNotIn("access=", hosted)
+        self.assertGreaterEqual(len(cr.submits), 2)
+        opened = cr.submits[1]
+        self.assertEqual([item["role"] for item in opened["images"]], ["first_frame"])
+        submitted = opened["images"][0]["url"]
+        self.assertTrue(submitted.startswith(hosted))
+        self.assertIn("access=", submitted)
+        self.assertNotEqual(submitted, hosted)
+
+    def test_previous_tail_is_refreshed_again_when_video_submit_retries(self):
+        """A later submit must not reuse an earlier access URL for the same tail."""
+        from unittest.mock import patch
+
+        from end.image_store import get_image_store as real_get_image_store
+
+        project_id = "tailsign02"
+        spec = {
+            "title": "衔接",
+            "aspect_ratio": "9:16",
+            "assets": [{"id": "A1", "title": "闲置", "prompt": "一张桌子"}],
+            "shots": [
+                {"id": "S01", "duration": 4, "prompt": "海面慢慢亮起来", "images": [], "video_mode": "text"},
+                {
+                    "id": "S02",
+                    "duration": 4,
+                    "prompt": "接上一段",
+                    "images": [],
+                    "video_mode": "first_frame",
+                    "first_frame_source": "previous_tail",
+                },
+            ],
+            "feed_units": [
+                {"id": "S01", "video_mode": "text", "images": []},
+                {
+                    "id": "S02",
+                    "video_mode": "first_frame",
+                    "first_frame_source": "previous_tail",
+                    "images": [],
+                },
+            ],
+            "seam_ledger": {
+                "entries": [
+                    {"shot_id": "S01", "video_mode": "text", "end_image": "", "first_frame_source": "none"},
+                    {
+                        "shot_id": "S02",
+                        "video_mode": "first_frame",
+                        "end_image": "",
+                        "first_frame_source": "previous_tail",
+                    },
+                ]
+            },
+        }
+
+        def fake_tail(_clip_path, dest):
+            dest = Path(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"\xff\xd8\xff\xd9")
+            return dest
+
+        class SigningStore(object):
+            def __init__(self, inner):
+                self._inner = inner
+                self._n = 0
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def refresh_url(self, url):
+                text = str(url or "").strip()
+                self._n += 1
+                mark = "access=%s" % self._n
+                if "access=" in text:
+                    head, _sep, _rest = text.partition("access=")
+                    text = head.rstrip("?&")
+                sep = "&" if "?" in text else "?"
+                return "%s%s%s" % (text, sep, mark)
+
+        store = SigningStore(real_get_image_store())
+
+        def joiner(_clips, target):
+            Path(target).write_bytes(b"joined")
+            return target
+
+        def burner(_raw, _ass, target):
+            Path(target).write_bytes(b"burned")
+            return target
+
+        class FailFirstFrameOnce(FakeCR):
+            def __init__(self):
+                FakeCR.__init__(self)
+                self.fail_frames = 1
+
+            def submit_video(self, text, model="MiniMax/MiniMax-H3", duration=4, aspect_ratio="9:16", images=None, idempotency_key=None, timeout=60, mode=None):
+                first = (images or [None])[0] or {}
+                if first.get("role") == "first_frame" and self.fail_frames:
+                    self.submits.append(
+                        {
+                            "key": idempotency_key,
+                            "model": model,
+                            "duration": duration,
+                            "aspect_ratio": aspect_ratio,
+                            "images": images,
+                            "text": text,
+                            "mode": mode,
+                        }
+                    )
+                    self.fail_frames -= 1
+                    raise QwenError("千问网络错误：timed out")
+                return FakeCR.submit_video(
+                    self,
+                    text,
+                    model=model,
+                    duration=duration,
+                    aspect_ratio=aspect_ratio,
+                    images=images,
+                    idempotency_key=idempotency_key,
+                    timeout=timeout,
+                    mode=mode,
+                )
+
+        cr = FailFirstFrameOnce()
+        with patch("end.render_loop.get_image_store", lambda kind=None: store), patch(
+            "end.render_loop._tail_frame", fake_tail
+        ):
+            run_local_pipeline(
+                spec,
+                self.work,
+                project_id=project_id,
+                icreat=FakeICreat(),
+                cr=cr,
+                sleeper=_noop_sleep,
+                joiner=joiner,
+                burner=burner,
+            )
+        hosted = load_run_state(self.work)["steps"]["S01"]["end_image_url"]
+        self.assertIn("/S01_tail.jpg", hosted)
+        self.assertNotIn("access=", hosted)
+        frames = []
+        for item in cr.submits:
+            media = item.get("images") or []
+            if media and media[0].get("role") == "first_frame":
+                frames.append(media[0]["url"])
+        self.assertEqual(len(frames), 2)
+        for submitted in frames:
+            self.assertTrue(submitted.startswith(hosted))
+            self.assertIn("access=", submitted)
+            self.assertNotEqual(submitted, hosted)
+        self.assertNotEqual(frames[0], frames[1])
+
     def test_publish_failure_after_extract_is_not_a_wait(self):
         from unittest.mock import patch
 
