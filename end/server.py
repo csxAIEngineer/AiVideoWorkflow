@@ -474,9 +474,32 @@ def _shown_messages(project):
     return messages
 
 
+def worker_state_fields(project_id):
+    """Live End TaskQueue state. Does not start the pool as a side effect."""
+    queue = _AGENT_QUEUE
+    if queue is None:
+        return {"worker_state": "", "worker_kind": ""}
+    return queue.state_for(project_id)
+
+
+def worker_queue_snapshot():
+    """Every waiting or running task, so the history list can stay in sync."""
+    queue = _AGENT_QUEUE
+    if queue is None:
+        return []
+    return queue.snapshot()
+
+
+def attach_worker_state(view, project_id=None):
+    """Copy waiting/running fields onto a project view already built for the UI."""
+    view = dict(view or {})
+    view.update(worker_state_fields(project_id or view.get("id")))
+    return view
+
+
 def menu_view(project):
     """History menu row only. Does not load clips, film, or assemble the project."""
-    return {
+    return attach_worker_state({
         "id": project["id"],
         "brief": project.get("brief", ""),
         "title": project.get("title") or project.get("brief", "")[:24],
@@ -490,7 +513,7 @@ def menu_view(project):
         "debug_llm": project_debug_llm(project),
         "debug_stop": normalize_debug_stop((project.get("progress") or {}).get("debug_stop")),
         "progress": attach_crew(project),
-    }
+    }, project["id"])
 
 
 def public_view(project):
@@ -513,7 +536,7 @@ def public_view(project):
         key for key, name in DEBUG_FILES.items() if (debug_dir / name).is_file()
     ]
     debug = project_debug_llm(project)
-    return {
+    return attach_worker_state({
         "id": project["id"],
         "brief": project.get("brief", ""),
         "messages": _shown_messages(project),
@@ -571,7 +594,7 @@ def public_view(project):
         "option_effects": _option_effects(project),
         "deliverables": list_deliverables(folder),
         "content_revision": compose_content_revision(project["id"], project),
-    }
+    }, project["id"])
 
 
 _JOB_PROJECT = contextvars.ContextVar("aivideo_job_project", default="")
@@ -3276,7 +3299,7 @@ def rpc_tick_project(params):
         and video_name == Path(video_name).name
         and (folder / "outputs" / video_name).is_file()
     )
-    return {
+    return attach_worker_state({
         "id": project["id"],
         "brief": project.get("brief", ""),
         "title": project.get("title") or project.get("brief", "")[:24],
@@ -3306,7 +3329,8 @@ def rpc_tick_project(params):
         "render_recovery": "projects.render" if _explicit_render_recovery(project) else "",
         "option_effects": _option_effects(project),
         "content_revision": compose_content_revision(project_id, project),
-    }
+        "worker_queue": worker_queue_snapshot(),
+    }, project_id)
 
 
 def rpc_media_urls(params):

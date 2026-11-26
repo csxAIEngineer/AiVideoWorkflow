@@ -485,6 +485,14 @@ body {
 }
 
 .stage.auto-run,
+.job-message.worker-waiting {
+  font-weight: 500;
+}
+
+.item-row.waiting .item span {
+  opacity: 0.85;
+}
+
 .job-message.auto-run {
   font-weight: 650;
 }

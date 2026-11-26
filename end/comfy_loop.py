@@ -167,10 +167,10 @@ class CloudLoop(object):
             raise
 
     def reconnect(self):
-        self.progress("连接异常，正在重新检查 Comfy Cloud 登录", phase="reconnect")
+        self.progress("连接异常，正在重新检查出片登录", phase="reconnect")
         time.sleep(3)
         self.ensure_login()
-        self.progress("已重新连上 Comfy Cloud", phase="reconnect")
+        self.progress("已重新连上出片服务", phase="reconnect")
 
     def run_job(self, workflow_path, label, timeout=JOB_TIMEOUT_SEC):
         last_error = ""
@@ -375,7 +375,7 @@ def _join_clips(loop, clip_files):
     try:
         return _ffmpeg_join(clip_files, joined)
     except Exception as local_error:
-        loop.progress("本机拼接不可用（%s），改用 Cloud 拼接" % str(local_error)[:120], phase="join")
+        loop.progress("本机拼接不可用（%s），改用远程拼接" % str(local_error)[:120], phase="join")
         mapping = loop.upload_files(clip_files)
         names = [_cloud_name_for(mapping, path) for path in clip_files]
         workflow = build_join_workflow(names)
@@ -423,7 +423,7 @@ def run_cloud_pipeline(spec, work_dir, on_progress=None):
             mapping = loop.upload_files([parent_path])
             ref_name = _cloud_name_for(mapping, parent_path)
             loop.progress(
-                "变体 %s 使用云端参考图 %s" % (asset["id"], ref_name),
+                "变体 %s 使用远程参考图 %s" % (asset["id"], ref_name),
                 phase="images",
                 task_id=asset["id"],
                 task_state="running",

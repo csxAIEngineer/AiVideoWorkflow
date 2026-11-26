@@ -53,6 +53,34 @@ IMAGE_SUCCESS = {"SUCCEEDED"}
 IMAGE_FAILURE = {"FAILED", "NOT_FOUND"}
 VIDEO_SUCCESS = {"completed"}
 VIDEO_FAILURE = {"failed"}
+
+def remote_status_text(kind, status):
+    """User-visible poll status for the current MiniMax / Wan path.
+
+    This is not End worker-queue copy, and it does not say 云端排队中.
+    """
+    name = str(status or "").strip()
+    key = name.lower()
+    if kind == "image":
+        mapping = {
+            "pending": "排队生图",
+            "queued": "排队生图",
+            "allocated": "正在生图",
+            "running": "正在生图",
+            "executing": "正在生图",
+            "in_progress": "正在生图",
+        }
+    else:
+        mapping = {
+            "pending": "排队出片",
+            "queued": "排队出片",
+            "allocated": "正在出片",
+            "running": "正在出片",
+            "executing": "正在出片",
+            "in_progress": "正在出片",
+        }
+    return mapping.get(key) or name
+
 SUBTITLE_FONT = "Noto Sans CJK SC"
 SUBTITLE_FONTS_DIR = "/usr/share/fonts/opentype/noto"
 FRAME_WIDTH = 768
@@ -2367,7 +2395,7 @@ class RenderContext(object):
             if status and status != seen:
                 seen = status
                 self.emit(
-                    "%s：%s" % (label, status),
+                    "%s：%s" % (label, remote_status_text(kind, status)),
                     phase,
                     step_id,
                     "running",

@@ -11,14 +11,14 @@ import time
 from pathlib import Path
 
 CLOUD_STATUS = {
-    "pending": "云端排队中",
-    "queued": "云端排队中",
-    "allocated": "云端正在分配机器",
-    "running": "云端正在出片",
-    "executing": "云端正在出片",
-    "in_progress": "云端正在出片",
-    "unknown": "云端正在出片",
-    "completed": "云端已完成，正在下载成片",
+    "pending": "出片排队中",
+    "queued": "出片排队中",
+    "allocated": "正在准备出片",
+    "running": "正在出片",
+    "executing": "正在出片",
+    "in_progress": "正在出片",
+    "unknown": "正在出片",
+    "completed": "出片完成，正在下载",
 }
 
 
@@ -182,10 +182,10 @@ def run_comfy_cloud(workflow_path, output_dir, on_progress=None):
             if not text.endswith("\n"):
                 handle.write("\n")
 
-    progress("正在检查 Comfy Cloud 登录")
+    progress("正在检查出片登录")
     _require_cloud_login(comfy)
 
-    progress("正在把工作流上传到 Comfy Cloud")
+    progress("正在上传出片工作流")
     code, output = _run_comfy(
         [
             comfy,
@@ -206,7 +206,7 @@ def run_comfy_cloud(workflow_path, output_dir, on_progress=None):
     prompt_id = _prompt_id(events)
     if code != 0 or not prompt_id:
         raise RuntimeError(_comfy_error(events, output))
-    progress("已提交到云端，任务 %s" % prompt_id[:8])
+    progress("已提交出片任务 %s" % prompt_id[:8])
 
     deadline = time.time() + 3600
     last_status = ""
@@ -223,17 +223,17 @@ def run_comfy_cloud(workflow_path, output_dir, on_progress=None):
             raise RuntimeError(_comfy_error(events, output))
         if status and status != last_status:
             last_status = status
-            progress(CLOUD_STATUS.get(status, "云端状态：" + status))
+            progress(CLOUD_STATUS.get(status, "出片状态：" + status))
         if status == "completed":
             break
         if status in ("error", "cancelled", "canceled", "failed"):
             message = payload.get("error_message") or CLOUD_STATUS.get(status) or status
-            raise RuntimeError("云端出片失败：%s" % message)
+            raise RuntimeError("出片失败：%s" % message)
         time.sleep(8)
     else:
-        raise RuntimeError("云端出片超过 60 分钟还没有完成，任务 %s" % prompt_id[:8])
+        raise RuntimeError("出片超过 60 分钟还没有完成，任务 %s" % prompt_id[:8])
 
-    progress("云端已完成，正在下载成片")
+    progress("出片完成，正在下载")
     code, output = _run_comfy(
         [comfy, "--json", "download", prompt_id, "--where", "cloud", "-o", str(output_dir)],
         timeout=600,
@@ -249,7 +249,7 @@ def run_comfy_cloud(workflow_path, output_dir, on_progress=None):
             files = data["files"]
     video = _pick_video(files)
     if video is None:
-        raise RuntimeError("云端任务完成了，但没有下载到视频")
+        raise RuntimeError("出片完成了，但没有下载到视频")
     target = output_dir / video.name
     if video.resolve() != target.resolve():
         target.write_bytes(video.read_bytes())

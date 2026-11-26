@@ -15,7 +15,7 @@ HTML = ROOT / "front" / "index.html"
 def helpers():
     source = APP.read_text(encoding="utf-8")
     start = source.index("function isPromptDebug")
-    end = source.index("function continueCue")
+    end = source.index("function writeStep")
     return source[start:end]
 
 
@@ -68,6 +68,57 @@ class ScriptLoadingTest(unittest.TestCase):
             check("script-text", scriptCue && scriptCue.text, "正在写剧本…");
             check("asset-still-auto", autoRun(asset) && autoRun(asset).text, "正在自动写资产…");
             check("drilling-silent", autoRun(drilling), null);
+            process.stdout.write(JSON.stringify(cases));
+            """
+        )
+        failed = [row for row in report if not row["ok"]]
+        self.assertEqual(failed, [])
+
+    def test_waiting_worker_is_not_shown_as_already_writing(self):
+        report = run_js(
+            r"""
+            const cases = [];
+            function check(name, actual, expected) {
+              cases.push({
+                name: name,
+                ok: JSON.stringify(actual) === JSON.stringify(expected),
+                actual: actual,
+                expected: expected,
+              });
+            }
+            const waiting = {
+              status: "writing",
+              stage: "正在写剧本",
+              worker_state: "waiting",
+              worker_kind: "write",
+              progress: {
+                phase: "writing",
+                message: "正在写剧本",
+                pipeline: { current: "script", action: "write" },
+              },
+            };
+            const running = {
+              status: "writing",
+              worker_state: "running",
+              worker_kind: "write",
+              progress: {
+                phase: "writing",
+                message: "正在写剧本",
+                pipeline: { current: "script", action: "write" },
+              },
+            };
+            const idle = {
+              status: "gate",
+              worker_state: "",
+              stage: "剧本候选",
+            };
+            check("waiting-flag", workerWaiting(waiting), true);
+            check("running-not-waiting", workerWaiting(running), false);
+            check("waiting-text", workerWaitText(waiting), "等待写剧本");
+            check("waiting-status", statusText(waiting), "等待写剧本");
+            check("running-status", statusText(running), "正在写剧本…");
+            check("idle-status", statusText(idle), "剧本候选");
+            check("waiting-auto-run-still-present", !!(autoRun(waiting) && autoRun(waiting).text), true);
             process.stdout.write(JSON.stringify(cases));
             """
         )

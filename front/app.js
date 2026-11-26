@@ -163,6 +163,33 @@ function autoRun(project) {
   return { key: key, text: text, attempt: attempt };
 }
 
+function workerWaiting(project) {
+  return !!(project && project.worker_state === "waiting");
+}
+
+function workerWaitText(project) {
+  const kind = String((project && project.worker_kind) || "");
+  const stage = autoStageKey(project);
+  if (kind === "write") {
+    return ({
+      script: "等待写剧本",
+      asset: "等待写资产",
+      storyboard: "等待写分镜",
+      feed: "等待写提示词封装",
+      seam: "等待写分镜衔接",
+      check: "等待机检",
+    })[stage] || "等待中";
+  }
+  return ({
+    drill: "等待开始",
+    script_repair: "等待修订剧本",
+    script_review: "等待审查剧本",
+    opinion_revise: "等待按意见修改",
+    revise: "等待修订",
+    retouch: "等待重修",
+  })[kind] || "等待中";
+}
+
 function continueCue(text) {
   const raw = String(text || "");
   return raw.indexOf("继续才") >= 0
@@ -181,6 +208,7 @@ function liveNodeKind(project) {
 }
 
 function statusText(project) {
+  if (workerWaiting(project)) return workerWaitText(project);
   const running = autoRun(project);
   if (running) return running.text;
   if (project.status === "gate") return project.stage || "停在门上";
@@ -700,11 +728,14 @@ function progressPanel(project) {
   barWrap.append(bar, barLabel);
   panel.append(barWrap);
 
+  const waiting = workerWaiting(project);
   const message = document.createElement("p");
-  message.className = "job-message" + (running ? " auto-run" : "");
-  message.textContent = running ? running.text : (progress.message || project.stage || (project.status === "error" ? "未完成" : "处理中"));
+  message.className = "job-message" + (waiting ? " worker-waiting" : (running ? " auto-run" : ""));
+  message.textContent = waiting
+    ? workerWaitText(project)
+    : (running ? running.text : (progress.message || project.stage || (project.status === "error" ? "未完成" : "处理中")));
   panel.append(message);
-  if (!running) appendMachineReasons(panel, project);
+  if (!running && !waiting) appendMachineReasons(panel, project);
   const calls = Array.isArray(progress.calls) ? progress.calls : [];
   if (calls.length) {
     const list = document.createElement("ul");
@@ -822,7 +853,9 @@ function renderHistory() {
   history.innerHTML = "";
   projects.forEach((project) => {
     const row = document.createElement("div");
-    row.className = "item-row" + (current && current.id === project.id ? " active" : "");
+    row.className = "item-row"
+      + (current && current.id === project.id ? " active" : "")
+      + (workerWaiting(project) ? " waiting" : "");
     const button = document.createElement("button");
     button.type = "button";
     button.className = "item";
@@ -2360,6 +2393,9 @@ function menuSnapshot(project) {
     debug_llm: project.debug_llm,
     debug_stop: project.debug_stop,
     progress: project.progress,
+    worker_state: project.worker_state || "",
+    worker_kind: project.worker_kind || "",
+    worker_wait_position: project.worker_wait_position,
   };
 }
 
@@ -2378,7 +2414,7 @@ const TICK_FIELDS = [
   "video_file", "has_video", "has_spec", "model", "model_label", "template",
   "template_label", "debug_llm", "debug_stop", "progress", "can_reply",
   "question", "generation_hold", "render_recovery", "option_effects",
-  "content_revision",
+  "content_revision", "worker_state", "worker_kind", "worker_wait_position",
 ];
 
 function applyProjectTick(target, tick) {
@@ -2387,6 +2423,21 @@ function applyProjectTick(target, tick) {
     if (Object.prototype.hasOwnProperty.call(tick, key)) target[key] = tick[key];
   });
   return target;
+}
+
+function applyWorkerQueue(list, snapshot) {
+  const byId = {};
+  (snapshot || []).forEach((item) => {
+    if (item && item.id) byId[item.id] = item;
+  });
+  (list || []).forEach((project) => {
+    const live = byId[project.id];
+    project.worker_state = live ? (live.worker_state || "") : "";
+    project.worker_kind = live ? (live.worker_kind || "") : "";
+    if (live && live.worker_wait_position) project.worker_wait_position = live.worker_wait_position;
+    else delete project.worker_wait_position;
+  });
+  return list;
 }
 
 function shouldReloadAfterTick(previous, tick) {
@@ -2436,6 +2487,7 @@ function watch() {
         progress: current.progress,
       };
       applyProjectTick(current, tick);
+      applyWorkerQueue(projects, tick.worker_queue);
       const listed = projects.find((item) => item.id === current.id);
       if (listed) assignMenuFields(listed, current);
       renderHistory();

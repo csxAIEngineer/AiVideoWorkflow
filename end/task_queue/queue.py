@@ -34,6 +34,8 @@ class TaskQueue(object):
         self._queue = queue.Queue()
         self._lock = threading.Lock()
         self._pending = set()
+        self._waiting = []
+        self._running = set()
         self._threads = []
         self._stop = threading.Event()
 
@@ -58,6 +60,7 @@ class TaskQueue(object):
             if key in self._pending:
                 return False
             self._pending.add(key)
+            self._waiting.append(task)
         self.start()
         self._queue.put(task)
         return True
@@ -86,6 +89,8 @@ class TaskQueue(object):
             self._threads = [thread for thread in self._threads if thread.is_alive()]
             if not self._threads:
                 self._pending.clear()
+                self._waiting = []
+                self._running.clear()
         self._stop.clear()
 
     def _loop(self):
@@ -94,11 +99,58 @@ class TaskQueue(object):
                 task = self._queue.get(timeout=0.2)
             except queue.Empty:
                 continue
+            key = (task.kind, task.project_id)
+            with self._lock:
+                self._waiting = [item for item in self._waiting if item is not task]
+                self._running.add(key)
             try:
                 self._handler(task)
             except Exception:
                 traceback.print_exc()
             finally:
                 with self._lock:
-                    self._pending.discard((task.kind, task.project_id))
+                    self._running.discard(key)
+                    self._pending.discard(key)
                 self._queue.task_done()
+
+    def state_for(self, project_id):
+        """Live queue state for one project.
+
+        ``waiting`` means the task is submitted and no worker has started
+        the handler yet. ``running`` means a worker is in the handler.
+        An empty ``worker_state`` means this project is not in the queue.
+        ``worker_wait_position`` is 1-based among tasks still waiting, and
+        is only set when the state is waiting.
+        """
+        project_id = str(project_id or "")
+        with self._lock:
+            running = [kind for kind, item_id in self._running if item_id == project_id]
+            if running:
+                return {"worker_state": "running", "worker_kind": running[0]}
+            for index, task in enumerate(self._waiting):
+                if task.project_id == project_id:
+                    return {
+                        "worker_state": "waiting",
+                        "worker_kind": task.kind,
+                        "worker_wait_position": index + 1,
+                    }
+        return {"worker_state": "", "worker_kind": ""}
+
+    def snapshot(self):
+        """All waiting and running tasks, for list refresh. No payloads."""
+        rows = []
+        with self._lock:
+            for kind, project_id in self._running:
+                rows.append({
+                    "id": project_id,
+                    "worker_state": "running",
+                    "worker_kind": kind,
+                })
+            for index, task in enumerate(self._waiting):
+                rows.append({
+                    "id": task.project_id,
+                    "worker_state": "waiting",
+                    "worker_kind": task.kind,
+                    "worker_wait_position": index + 1,
+                })
+        return rows
