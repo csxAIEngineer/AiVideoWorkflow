@@ -354,6 +354,19 @@ class OssImageStore(ImageStore):
             return str(url or "").strip()
         return self._canonical_url(key)
 
+    def owns_url(self, url):
+        """True for any address on our own bucket, signed or not.
+
+        The bucket is private: an unsigned canonical address is NOT openable by
+        remote workers, so it must be treated as ours and refreshed (presigned)
+        before it is handed to a generation API. The base class only knows the
+        local /media host and AIVIDEO_PUBLIC_BASE, which would misread an OSS
+        canonical URL as a foreign public URL and send it unsigned (HTTP 403).
+        """
+        if "/media/projects/" in str(url or ""):
+            return True
+        return bool(self._key_from_url(url))
+
     def _object_key(self, folder, project_id, filename):
         return "projects/%s/%s/%s" % (project_id, folder, filename)
 

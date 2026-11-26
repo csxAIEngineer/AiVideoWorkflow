@@ -4477,9 +4477,9 @@ def _announce_write_stage(project, current, pipeline=None):
     project["progress"] = progress
     if not project.get("id"):
         return project
-    from end.render_loop import is_running
+    from end.render_loop import is_running, render_stopped
 
-    if not is_running(project["id"]):
+    if not is_running(project["id"]) or render_stopped(project["id"]):
         return project
     from end.db import read_project
     from end.server import remember

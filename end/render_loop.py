@@ -98,6 +98,11 @@ _GUARD = threading.Lock()
 _LOCKS = {}
 _GATES = {}
 _THREADS = {}
+_STOP_EVENTS = {}
+
+
+class RenderCancelled(RuntimeError):
+    """The project was deleted; the worker must unwind and exit without writing."""
 
 
 class PauseGate(object):
@@ -170,6 +175,50 @@ def thread_is_current(project_id):
     with _GUARD:
         thread = _THREADS.get(project_id)
     return thread is not None and thread is threading.current_thread()
+
+
+def stop_event_for(project_id):
+    with _GUARD:
+        event = _STOP_EVENTS.get(project_id)
+        if event is None:
+            event = threading.Event()
+            _STOP_EVENTS[project_id] = event
+        return event
+
+
+def request_stop(project_id):
+    """Ask the registered worker to exit, and unblock a paused gate so it can notice.
+
+    Pausing alone would block the worker forever; the stop flag makes its next
+    sleep / pause check raise RenderCancelled so the thread actually terminates.
+    """
+    stop_event_for(project_id).set()
+    gate_for(project_id).resume()
+
+
+def render_stopped(project_id):
+    with _GUARD:
+        event = _STOP_EVENTS.get(project_id)
+    return bool(event is not None and event.is_set())
+
+
+def clear_stop(project_id):
+    with _GUARD:
+        _STOP_EVENTS.pop(project_id, None)
+
+
+def wait_render_exit(project_id, timeout=10.0):
+    """Block until the registered worker thread is gone, or the timeout expires.
+
+    Returns True when no worker is alive. Callers delete files only after this,
+    so a winding-down worker cannot recreate the folder behind the delete.
+    """
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while thread_alive(project_id):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
 
 
 def normalize_video_submit_mode(value):
@@ -2071,20 +2120,28 @@ class RenderContext(object):
                 step["kind"] = kind
             return step
 
+    def _check_stopped(self):
+        if render_stopped(self.project_id):
+            raise RenderCancelled("项目已删除，停止出片")
+
     def block_while_paused(self):
+        self._check_stopped()
         if self.gate.is_running():
             return
         self.gate.wait()
+        self._check_stopped()
         with self.lock:
             self.load_locked()
 
     def sleep(self, seconds):
+        self._check_stopped()
         if self.sleeper:
             self.sleeper(seconds)
             self.block_while_paused()
             return
         deadline = time.monotonic() + max(0, float(seconds))
         while time.monotonic() < deadline:
+            self._check_stopped()
             if not self.gate.is_running():
                 self.block_while_paused()
                 return
@@ -3311,6 +3368,8 @@ def run_local_pipeline(
     )
     if project_id:
         register_thread(project_id)
+    if render_stopped(project_id):
+        raise RenderCancelled("项目已删除，停止出片")
     from end.script_review import (
         GenerationBlocked,
         authorize_image_submit,

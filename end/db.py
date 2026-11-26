@@ -12,6 +12,9 @@ DB_PATH = ROOT / "data" / "aivideo.db"
 
 _LOCK = threading.RLock()
 _CONN = None
+# Tombstones for deleted projects. A worker that is still winding down must not
+# re-INSERT a deleted row (write_project is an upsert) nor recreate its folder.
+_DELETED = set()
 
 JSON_FIELDS = ("events", "tasks", "progress")
 COLUMNS = (
@@ -239,9 +242,29 @@ def content_revision_from_project(project):
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def mark_deleted(project_id):
+    """Tombstone a project so in-flight workers cannot resurrect it."""
+    with _LOCK:
+        _DELETED.add(str(project_id))
+
+
+def clear_deleted(project_id):
+    """Drop a tombstone. Only a brand-new project id should ever need this."""
+    with _LOCK:
+        _DELETED.discard(str(project_id))
+
+
+def is_deleted(project_id):
+    with _LOCK:
+        return str(project_id) in _DELETED
+
+
 def write_project(project, conn=None):
     if not project or not project.get("id"):
         raise ValueError("project.id 不能为空")
+    if is_deleted(project["id"]):
+        # Deleted: do not upsert the row back nor recreate the folder.
+        return project
     db = conn or connect()
     folder = project_dir(project["id"])
     folder.mkdir(parents=True, exist_ok=True)
@@ -355,6 +378,8 @@ def list_projects(conn=None):
 
 
 def delete_project(project_id, conn=None):
+    # Tombstone first: a worker still winding down must not upsert the row back.
+    mark_deleted(project_id)
     db = conn or connect()
     folder = project_dir(project_id)
     with _LOCK:

@@ -60,8 +60,10 @@ from end.crew import attach_crew
 from end.db import DATA, connect, content_revision_from_project, delete_project, list_project_summaries, list_projects, project_dir, read_project, read_project_tick, write_project
 from end.image_store import get_image_store
 from end.render_loop import (
+    RenderCancelled,
     _ffmpeg_bin,
     _unlink_render_output,
+    clear_stop,
     gate_for,
     is_running,
     load_run_state,
@@ -72,12 +74,15 @@ from end.render_loop import (
     project_lock,
     register_thread,
     release_asset_for_generation,
+    render_stopped,
+    request_stop,
     reset_current_step,
     resume_paused,
     run_local_pipeline,
     save_run_state,
     should_resume_project,
     thread_alive,
+    wait_render_exit,
 )
 from end.intake import (
     MAX_MATERIALS,
@@ -1728,7 +1733,7 @@ def run_project_gated(project_id, debug_llm=False):
         _PIPELINE_HANDOFF[project_id] = "writer"
     try:
         project = read_project(project_id)
-        if project is None or not is_running(project_id):
+        if project is None or not is_running(project_id) or render_stopped(project_id):
             return
         outcome = None
         for _step in range(_AUTO_CHAIN_LIMIT):
@@ -2264,6 +2269,10 @@ def _run_project(project_id, debug_llm=False):
 
 
 def handle_agent_task(task):
+    from end.db import is_deleted
+
+    if is_deleted(task.project_id):
+        return
     if task.kind == "drill":
         run_drill(task.project_id)
         return
@@ -2484,6 +2493,10 @@ def _execute_render(project_id, project=None, video_submit_mode="generate"):
             template=project.get("template"),
             video_submit_mode=mode,
         )
+    except RenderCancelled:
+        # Project deleted mid-render: exit quietly. No fail_project, no remember,
+        # so nothing recreates the row or the folder.
+        return
     except GenerationBlocked as blocked:
         _hold_technical(read_project(project_id) or project, blocked.decision or {"reason": str(blocked), "owner": "feed", "technical": True})
         return
@@ -3389,6 +3402,12 @@ def rpc_create_project(params):
     files = _materials_from_params(params)
     created = now()
     project_id = uuid.uuid4().hex[:12]
+    from end.db import clear_deleted
+
+    # A fresh id must never inherit a tombstone or stop flag (uuid reuse is
+    # practically impossible, but keep the registries clean).
+    clear_deleted(project_id)
+    clear_stop(project_id)
     try:
         materials = store_materials(project_id, files) if files else []
     except (ValueError, RuntimeError) as error:
@@ -3441,6 +3460,17 @@ def rpc_delete_project(params):
         raise RpcError(404, "没有这个项目")
     if read_project(project_id) is None and not project_dir(project_id).is_dir():
         raise RpcError(404, "没有这个项目")
+    from end.db import mark_deleted
+
+    # Tombstone first: an in-flight worker upsert must not resurrect the row.
+    mark_deleted(project_id)
+    # Pause the gate, then signal stop and unblock it so the worker unwinds and
+    # exits instead of blocking forever on a paused gate.
+    gate_for(project_id).pause("项目已删除")
+    request_stop(project_id)
+    # Wait for the worker thread to exit before removing files, so a winding-down
+    # worker cannot recreate the folder behind the delete.
+    wait_render_exit(project_id, timeout=10.0)
     if not delete_project(project_id):
         raise RpcError(404, "没有这个项目")
     return {"ok": True, "id": project_id}

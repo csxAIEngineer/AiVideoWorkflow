@@ -67,6 +67,20 @@ class ImageStoreTest(unittest.TestCase):
             access_key_secret="demoSecret",
         )
 
+    def test_oss_owns_url_recognizes_own_bucket_unsigned_and_signed(self):
+        store = self._oss_store(Path("."))
+        canonical = "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/projects/fffdd6d6b188/images/U1.png"
+        signed = canonical + "?OSSAccessKeyId=id&Expires=1795802558&Signature=abc%3D"
+        # Private bucket: an unsigned canonical address is ours and must be presigned.
+        self.assertTrue(store.owns_url(canonical))
+        self.assertTrue(store.owns_url(signed))
+        self.assertTrue(store.owns_url("http://host/media/projects/fffdd6d6b188/images/U1.png"))
+        self.assertFalse(store.owns_url("https://example.com/other/U1.png"))
+        self.assertFalse(store.owns_url(""))
+        with patch.object(store_module, "_oss_presign_get", return_value=signed) as presign:
+            self.assertEqual(store.ensure_remote("fffdd6d6b188", "U1.png", canonical), signed)
+            presign.assert_called_once()
+
     def _fake_ok_open(self, calls):
         class _Response(object):
             status = 200
