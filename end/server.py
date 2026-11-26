@@ -26,7 +26,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlunparse
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -4080,6 +4080,126 @@ def _gzip_body(raw, digest):
     return compressed
 
 
+def negotiate_gzip(raw, content_type, accept_encoding):
+    """Return (body, gzipped, digest). Compress only when accepted, in range, and smaller."""
+    digest = hashlib.sha256(raw).hexdigest()
+    use_gzip = (
+        _is_compressible(content_type)
+        and _accepts_gzip(accept_encoding)
+        and _MIN_GZIP_BYTES <= len(raw) <= _MAX_GZIP_SOURCE_BYTES
+    )
+    if not use_gzip:
+        return raw, False, digest
+    compressed = _gzip_body(raw, digest)
+    if len(compressed) < len(raw):
+        return compressed, True, digest
+    return raw, False, digest
+
+
+_CONTENT_HASH_QUERY = "h"
+_CONTENT_HASH_LENGTH = 16
+_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+_REVALIDATE_CACHE = "no-cache"
+_HASHABLE_ASSET_SUFFIXES = (".css", ".js", ".mjs")
+_ASSET_REF_RE = re.compile(
+    r'(?P<attr>src|href)(?P<eq>\s*=\s*)(?P<quote>["\'])(?P<url>[^"\']+)(?P=quote)',
+    re.IGNORECASE,
+)
+
+
+def content_hash_for_bytes(raw):
+    """Short sha256 of the file bytes, used as the public ?h= cache token."""
+    return hashlib.sha256(raw).hexdigest()[:_CONTENT_HASH_LENGTH]
+
+
+def requested_content_hash(query):
+    """The ?h= token from a request URL, or empty if the client did not send one."""
+    values = parse_qs(query or "", keep_blank_values=True).get(_CONTENT_HASH_QUERY) or []
+    return values[0] if values else ""
+
+
+def content_hash_matches_file(query, raw):
+    """True only when ?h= is present and equals a hash of the current file bytes."""
+    token = requested_content_hash(query)
+    return bool(token) and token == content_hash_for_bytes(raw)
+
+
+def cache_control_for_static(file_path, content_type, query, raw):
+    """HTML always revalidates so a new deploy can point at new hashes.
+
+    CSS and JS may be cached immutably only when the request ?h= matches
+    the current file. Manual ?v= tokens, missing hashes, and stale hashes
+    must not be treated as immutable: the client still gets the current file.
+    """
+    if _media_type(content_type) in ("text/html", "application/xhtml+xml"):
+        return _REVALIDATE_CACHE
+    suffix = file_path.suffix.lower()
+    if suffix in _HASHABLE_ASSET_SUFFIXES and content_hash_matches_file(query, raw):
+        return _IMMUTABLE_CACHE
+    return _REVALIDATE_CACHE
+
+
+def _local_static_asset_path(url, html_dir, static_root):
+    raw_url = (url or "").strip()
+    if not raw_url or raw_url.startswith(("#", "data:", "mailto:", "javascript:")):
+        return None
+    parsed = urlparse(raw_url)
+    if parsed.scheme or parsed.netloc:
+        return None
+    path = parsed.path
+    if not path.lower().endswith(_HASHABLE_ASSET_SUFFIXES):
+        return None
+    static_root = static_root.resolve()
+    if path.startswith("/"):
+        candidate = (static_root / path.lstrip("/")).resolve()
+    else:
+        candidate = (html_dir / path).resolve()
+    try:
+        candidate.relative_to(static_root)
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+def _url_with_content_hash(url, digest):
+    parsed = urlparse(url)
+    return urlunparse(parsed._replace(query="%s=%s" % (_CONTENT_HASH_QUERY, digest)))
+
+
+def rewrite_html_asset_urls(html, html_path, static_root):
+    """Rewrite local CSS/JS refs in served HTML to ?h=<content hash>."""
+    try:
+        text = html.decode("utf-8")
+    except UnicodeDecodeError:
+        return html
+
+    html_dir = html_path.parent
+
+    def replace(match):
+        url = match.group("url")
+        resolved = _local_static_asset_path(url, html_dir, static_root)
+        if resolved is None:
+            return match.group(0)
+        try:
+            raw = resolved.read_bytes()
+        except OSError:
+            return match.group(0)
+        hashed = _url_with_content_hash(url, content_hash_for_bytes(raw))
+        return "%s%s%s%s%s" % (
+            match.group("attr"),
+            match.group("eq"),
+            match.group("quote"),
+            hashed,
+            match.group("quote"),
+        )
+
+    return _ASSET_REF_RE.sub(replace, text).encode("utf-8")
+
+
+
+
 
 _MEDIA_CHUNK = 64 * 1024
 
@@ -4208,9 +4328,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code, body, content_type="application/json; charset=utf-8", disposition=None):
         data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        gzipped = False
+        # RPC JSON can gzip; attachments and media stay on the uncompressed path.
+        json_body = (not disposition) and _media_type(content_type) == "application/json"
+        if json_body:
+            data, gzipped, _digest = negotiate_gzip(
+                data, content_type, self.headers.get("Accept-Encoding")
+            )
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        if json_body:
+            self.send_header("Vary", "Accept-Encoding")
+        if gzipped:
+            self.send_header("Content-Encoding", "gzip")
         if disposition:
             self.send_header("Content-Disposition", disposition)
         self.end_headers()
@@ -4224,25 +4355,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "没有这个页面"})
             return
         mime = content_type or "application/octet-stream"
+        if _media_type(mime) in ("text/html", "application/xhtml+xml"):
+            raw = rewrite_html_asset_urls(raw, file_path, STATIC)
+        query = urlparse(self.path).query
+        cache_control = cache_control_for_static(file_path, mime, query, raw)
         compressible = _is_compressible(mime)
-        use_gzip = (
-            compressible
-            and _accepts_gzip(self.headers.get("Accept-Encoding"))
-            and _MIN_GZIP_BYTES <= len(raw) <= _MAX_GZIP_SOURCE_BYTES
+        body, gzipped, digest = negotiate_gzip(
+            raw, mime, self.headers.get("Accept-Encoding")
         )
-        digest = hashlib.sha256(raw).hexdigest()
-        body = raw
-        gzipped = False
-        if use_gzip:
-            compressed = _gzip_body(raw, digest)
-            if len(compressed) < len(raw):
-                body = compressed
-                gzipped = True
         etag = _etag_for(digest, gzipped)
         if _if_none_match(self.headers.get("If-None-Match"), etag):
             self.send_response(304)
             self.send_header("ETag", etag)
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Cache-Control", cache_control)
             self.send_header("Content-Type", mime)
             if compressible:
                 self.send_header("Vary", "Accept-Encoding")
@@ -4254,7 +4379,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("ETag", etag)
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", cache_control)
         if compressible:
             self.send_header("Vary", "Accept-Encoding")
         if gzipped:

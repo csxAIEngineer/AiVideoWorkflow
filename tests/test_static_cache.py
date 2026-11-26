@@ -1,4 +1,4 @@
-"""Gzip, ETag, and conservative cache for public static files."""
+"""Gzip, ETag, content-hash cache, and RPC gzip for public responses."""
 
 import gzip
 import hashlib
@@ -18,9 +18,11 @@ import end.server as server
 from end.db import project_dir, write_project
 from end.server import (
     Handler,
+    _CONTENT_HASH_LENGTH,
     _GzipBodyCache,
     _STATIC_GZIP_CACHE,
     _accepts_gzip,
+    content_hash_for_bytes,
 )
 from http.server import ThreadingHTTPServer
 
@@ -245,7 +247,7 @@ class StaticCacheTest(unittest.TestCase):
         self.assertEqual(headers.get("cache-control"), "no-cache")
         self.assertTrue(headers.get("etag"))
 
-    def test_media_and_rpc_are_not_compressed_or_cached(self):
+    def test_media_and_downloads_are_not_compressed_or_cached(self):
         project_id = "a11c0de00001"
         write_project(
             {
@@ -302,17 +304,7 @@ class StaticCacheTest(unittest.TestCase):
         self.assertIsNone(spec_headers.get("content-encoding"))
         self.assertIsNone(spec_headers.get("cache-control"))
         self.assertIsNone(spec_headers.get("etag"))
-        status, rpc_headers, rpc_body = self.rpc(
-            "projects.list",
-            headers={"Accept-Encoding": "gzip"},
-        )
-        self.assertEqual(status, 200)
-        self.assertIsNone(rpc_headers.get("content-encoding"))
-        self.assertIsNone(rpc_headers.get("etag"))
-        self.assertIsNone(rpc_headers.get("cache-control"))
-        self.assertIsNone(rpc_headers.get("vary"))
-        payload = json.loads(rpc_body.decode("utf-8"))
-        self.assertIn("result", payload)
+        # RPC gzip is covered separately; media/downloads stay uncompressed.
 
     def test_gzip_cache_is_keyed_by_content_and_bounded(self):
         raw = (self.static / "app.js").read_bytes()
@@ -335,6 +327,131 @@ class StaticCacheTest(unittest.TestCase):
             self.assertLessEqual(limited.nbytes, 64 * 1024)
         finally:
             server._STATIC_GZIP_CACHE = original
+
+
+    def test_rpc_json_is_gzipped_when_accepted_and_smaller(self):
+        project_id = "a11c0de00001"
+        write_project(
+            {
+                "id": project_id,
+                "brief": "雨夜" * 40,
+                "title": "雨夜长标题" * 10,
+                "status": "done",
+                "stage": "完成",
+                "script": "剧本" * 80,
+                "messages": [],
+                "progress": {"label": "已完成"},
+                "created_at": "2026-01-01T00:00:00+08:00",
+            }
+        )
+        status, headers, body = self.rpc(
+            "projects.list",
+            headers={"Accept-Encoding": "gzip"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("content-type", "").split(";")[0].strip(), "application/json")
+        self.assertEqual(headers.get("vary"), "Accept-Encoding")
+        self.assertIsNone(headers.get("etag"))
+        self.assertIsNone(headers.get("cache-control"))
+        self.assertEqual(headers.get("content-encoding"), "gzip")
+        payload = json.loads(gzip.decompress(body).decode("utf-8"))
+        self.assertIsNone(payload.get("error"))
+        self.assertIn("result", payload)
+        self.assertEqual(len(payload["result"]), 1)
+        self.assertLess(len(body), int(headers["content-length"]) + 1)
+        self.assertEqual(int(headers["content-length"]), len(body))
+
+        status, identity, raw = self.rpc("projects.list", headers={"Accept-Encoding": "identity"})
+        self.assertEqual(status, 200)
+        self.assertIsNone(identity.get("content-encoding"))
+        self.assertEqual(identity.get("vary"), "Accept-Encoding")
+        self.assertEqual(json.loads(raw.decode("utf-8")), payload)
+        self.assertGreater(len(raw), len(body))
+
+        status, qzero, raw_q = self.rpc("projects.list", headers={"Accept-Encoding": "gzip;q=0"})
+        self.assertEqual(status, 200)
+        self.assertIsNone(qzero.get("content-encoding"))
+        self.assertEqual(json.loads(raw_q.decode("utf-8")), payload)
+
+        status, cfg, cfg_body = self.rpc("config.get", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual(status, 200)
+        self.assertEqual(cfg.get("vary"), "Accept-Encoding")
+        if cfg.get("content-encoding") == "gzip":
+            config_payload = json.loads(gzip.decompress(cfg_body).decode("utf-8"))
+        else:
+            config_payload = json.loads(cfg_body.decode("utf-8"))
+        self.assertIsNone(config_payload.get("error"))
+        self.assertIn("result", config_payload)
+
+    def test_tiny_rpc_stays_uncompressed_if_gzip_is_not_smaller(self):
+        # A short parse-error body is under the useful gzip window or does not shrink.
+        payload = b"{"
+        status, headers, body = self.request(
+            "POST",
+            "/rpc",
+            payload,
+            {"Content-Type": "application/json", "Accept-Encoding": "gzip"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIsNone(headers.get("content-encoding"))
+        self.assertEqual(headers.get("vary"), "Accept-Encoding")
+        parsed = json.loads(body.decode("utf-8"))
+        self.assertIn("error", parsed)
+
+    def test_html_rewrites_local_assets_to_content_hash_and_stays_revalidating(self):
+        (self.static / "index.html").write_text(
+            '<link rel="stylesheet" href="/styles.css?v=59">\n'
+            '<script src="/app.js?v=96"></script>\n'
+            '<script src="https://cdn.example/app.js?v=1"></script>\n',
+            encoding="utf-8",
+        )
+        app_hash = content_hash_for_bytes((self.static / "app.js").read_bytes())
+        css_hash = content_hash_for_bytes((self.static / "styles.css").read_bytes())
+        status, headers, body = self.request("GET", "/", {"Accept-Encoding": "gzip"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("cache-control"), "no-cache")
+        self.assertNotIn("immutable", (headers.get("cache-control") or "").lower())
+        html = gzip.decompress(body).decode("utf-8")
+        self.assertIn('/styles.css?h=%s' % css_hash, html)
+        self.assertIn('/app.js?h=%s' % app_hash, html)
+        self.assertNotIn("/app.js?v=96", html)
+        self.assertIn("https://cdn.example/app.js?v=1", html)
+        # HTML ETag follows the rewritten bytes, so a new script hash busts the document.
+        digest = hashlib.sha256(html.encode("utf-8")).hexdigest()
+        self.assertEqual(headers.get("etag"), '"%s-gzip"' % digest)
+
+    def test_matching_content_hash_is_immutable_and_304_keeps_that_policy(self):
+        raw = (self.static / "app.js").read_bytes()
+        token = content_hash_for_bytes(raw)
+        self.assertEqual(len(token), _CONTENT_HASH_LENGTH)
+        path = "/app.js?h=%s" % token
+        status, headers, body = self.request("GET", path, {"Accept-Encoding": "gzip"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("cache-control"), "public, max-age=31536000, immutable")
+        self.assertEqual(headers.get("content-encoding"), "gzip")
+        self.assertEqual(gzip.decompress(body), raw)
+        etag = headers["etag"]
+        status, again, empty = self.request(
+            "GET",
+            path,
+            {"Accept-Encoding": "gzip", "If-None-Match": etag},
+        )
+        self.assertEqual(status, 304)
+        self.assertEqual(empty, b"")
+        self.assertEqual(again.get("etag"), etag)
+        self.assertEqual(again.get("cache-control"), "public, max-age=31536000, immutable")
+        self.assertEqual(again.get("content-encoding"), "gzip")
+        self.assertEqual(again.get("vary"), "Accept-Encoding")
+
+    def test_missing_or_mismatched_hash_is_not_immutable_but_still_serves_the_file(self):
+        raw = (self.static / "app.js").read_bytes()
+        cases = ["/app.js", "/app.js?v=96", "/app.js?h=deadbeefdeadbeef"]
+        for path in cases:
+            status, headers, body = self.request("GET", path, {"Accept-Encoding": "gzip"})
+            self.assertEqual(status, 200, path)
+            self.assertEqual(headers.get("cache-control"), "no-cache", path)
+            self.assertNotIn("immutable", (headers.get("cache-control") or "").lower(), path)
+            self.assertEqual(gzip.decompress(body), raw, path)
 
     def test_path_traversal_is_still_rejected(self):
         secret = self.root / "secret.js"
