@@ -1,3 +1,8 @@
 # Python 3.9. Text uses the OpenAI Responses client and a LangGraph StateGraph.
 openai==1.109.1
 langgraph==0.2.76
+# Account system (phase 1): PostgreSQL store, pool, Argon2id password hashing.
+# Only active when AIVIDEO_PG_DSN is configured; SQLite mode needs none of these.
+psycopg[binary]>=3.2,<3.3
+psycopg_pool>=3.2,<3.3
+argon2-cffi>=23.1

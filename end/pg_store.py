@@ -283,3 +283,12 @@ def project_owner(project_id):
             "SELECT user_id FROM projects WHERE id = %s AND deleted_at IS NULL", (project_id,)
         ).fetchone()
     return row["user_id"] if row else None
+
+
+def user_project_ids(user_id):
+    """Id set for filtering cross-project surfaces (queue snapshot) per user."""
+    with pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT id FROM projects WHERE user_id = %s AND deleted_at IS NULL", (user_id,)
+        ).fetchall()
+    return {row["id"] for row in rows}

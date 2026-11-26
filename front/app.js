@@ -488,6 +488,7 @@ async function replayTrace(traceId) {
     renderThread();
     watch();
   } catch (error) {
+    if (redirectIfAuthError(error)) return;
     alert(error.message || "没有完成");
   } finally {
     sending = false;
@@ -509,6 +510,7 @@ async function postControl(action) {
     renderThread();
     watch();
   } catch (error) {
+    if (redirectIfAuthError(error)) return;
     const message = error.message || "没有完成";
     if (action === "render") {
       produceError = message;
@@ -840,6 +842,7 @@ async function deleteProject(id) {
   try {
     await rpc("projects.delete", { id: id });
   } catch (error) {
+    if (redirectIfAuthError(error)) return;
     alert(error.message || "删除失败");
     return;
   }
@@ -2211,7 +2214,12 @@ function paintTranscript(options, full) {
 
 async function refreshList() {
   if (window.__AIVIDEO_FIXTURE__ && window.__AIVIDEO_FIXTURE__.project) return;
-  projects = await rpc("projects.list");
+  try {
+    projects = await rpc("projects.list");
+  } catch (error) {
+    if (redirectIfAuthError(error)) return;
+    throw error;
+  }
   if (current) {
     const fresh = projects.find((item) => item.id === current.id);
     if (fresh) {
@@ -2284,6 +2292,7 @@ async function openProject(id) {
   try {
     current = await rpc("projects.get", { id: id });
   } catch (_error) {
+    redirectIfAuthError(_error);
     return;
   }
   if (switching) {
@@ -2306,6 +2315,58 @@ async function openProject(id) {
   renderThread({ scroll: current.status === "drilling" ? "bottom" : "top" });
   probeRevision(current);
   watch();
+}
+
+// WS6 账户系统：启动先问 auth.me；强制登录且没有会话（或必须改密）时去登录页。
+function authRedirectTarget(state) {
+  if (!state || typeof state !== "object") return "";
+  const user = state.user || null;
+  if (state.required && !user) return "/login.html";
+  if (user && user.must_change_password) return "/login.html";
+  return "";
+}
+
+function redirectIfAuthError(error) {
+  if (!rpcNeedsLogin(error)) return false;
+  clearInterval(timer);
+  clearInterval(clock);
+  location.href = "/login.html";
+  return true;
+}
+
+function showLogout(user) {
+  const button = document.querySelector("#logout");
+  if (!button || !user) return;
+  button.classList.remove("hidden");
+  button.title = "已登录：" + (user.username || "");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await rpc("auth.logout", {});
+    } catch (_error) {
+      /* 登出失败也回登录页，会话清理交给服务端。 */
+    }
+    clearInterval(timer);
+    clearInterval(clock);
+    location.href = "/login.html";
+  });
+}
+
+async function bootAccount() {
+  let state = null;
+  try {
+    state = await rpc("auth.me", {});
+  } catch (_error) {
+    // 账户系统未启用或网络失败：降级为现状，不阻塞启动。
+    state = null;
+  }
+  const target = authRedirectTarget(state);
+  if (target) {
+    location.href = target;
+    return false;
+  }
+  if (state && state.user) showLogout(state.user);
+  return true;
 }
 
 function keepWatching(project) {
@@ -2547,6 +2608,8 @@ function watch() {
       probeRevision(current);
       if (!keepWatching(current)) clearInterval(timer);
     } catch (_error) {
+      // 会话失效（401）：停轮询，回登录页；其余失败仍走重试提示。
+      if (redirectIfAuthError(_error)) return;
       // rpc 带超时，busy 在 finally 复位；连续失败给出可见提示，恢复后清除。
       if (token === watch.token) {
         watch.fails = (watch.fails || 0) + 1;
@@ -3413,6 +3476,7 @@ async function startBrief(text) {
     clearDraftMaterials();
     adoptProject(project, true);
   } catch (error) {
+    if (redirectIfAuthError(error)) return;
     alert(error.message || "没有开始");
   } finally {
     sending = false;
@@ -3445,6 +3509,7 @@ async function sendText(text) {
     });
     adoptProject(project, false);
   } catch (error) {
+    if (redirectIfAuthError(error)) return;
     alert(error.message || "没有发出去");
   } finally {
     sending = false;
@@ -4213,6 +4278,7 @@ async function saveField(field) {
     setSaveState("已保存");
     adoptQuiet(project);
   } catch (error) {
+    if (redirectIfAuthError(error)) return;
     setSaveState(error.message || "没有保存");
   }
 }
@@ -4231,6 +4297,7 @@ async function uploadAsset(assetId, file, mode) {
     setSaveState(chosen === "asset" ? "已换成资产图" : "已记下参考图");
     adoptQuiet(project);
   } catch (error) {
+    if (redirectIfAuthError(error)) return;
     setSaveState(error.message || "没有换上图片");
   }
 }
@@ -5446,6 +5513,7 @@ async function submitRetouch() {
     adoptQuiet(project);
     watch();
   } catch (error) {
+    if (redirectIfAuthError(error)) return;
     if (!current || current.id !== projectId) return;
     retouchLocalError = rpcMissing(error)
       ? "修片还没接到 End。需要 projects.retouch，以及 progress.retouching、prompt_diff、retouch_error。"
@@ -5478,6 +5546,7 @@ async function submitRetouchGenerate() {
     adoptQuiet(project);
     watch();
   } catch (error) {
+    if (redirectIfAuthError(error)) return;
     if (!current || current.id !== projectId) return;
     retouchLocalError = rpcMissing(error)
       ? "成片档还没接到 End。需要 projects.rerun，grade 为 generate。重修仍只自动排队预览档。"
@@ -5797,6 +5866,10 @@ function mountDurationFixture() {
   syncComposer();
 }
 
-loadConfig();
-refreshList();
-mountDurationFixture();
+// 启动引导：先过 auth.me；需要登录/改密时跳登录页并停止后续初始化。
+bootAccount().then((ready) => {
+  if (!ready) return;
+  loadConfig();
+  refreshList();
+  mountDurationFixture();
+});

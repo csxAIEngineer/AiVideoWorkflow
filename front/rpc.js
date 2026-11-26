@@ -46,3 +46,9 @@ async function rpc(method, params) {
   }
   return body.result;
 }
+
+// WS6 账户系统：强制登录开启时，未带有效会话的 projects.* 会返回 401。
+// 只认服务端明确返回的 401（rpcKnown），网络中断/超时不算，避免误跳登录页。
+function rpcNeedsLogin(error) {
+  return !!(error && error.rpcKnown && error.code === 401);
+}

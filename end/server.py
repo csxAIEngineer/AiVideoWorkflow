@@ -25,6 +25,7 @@ import traceback
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse, urlunparse
@@ -511,7 +512,14 @@ def worker_queue_snapshot():
     queue = _AGENT_QUEUE
     if queue is None:
         return []
-    return queue.snapshot()
+    rows = queue.snapshot()
+    user = _current_session("user") if _auth_active() else None
+    if user is not None:
+        from end import pg_store
+
+        allowed = pg_store.user_project_ids(user["id"])
+        rows = [row for row in rows if row.get("id") in allowed]
+    return rows
 
 
 def attach_worker_state(view, project_id=None):
@@ -1889,14 +1897,14 @@ def _run_drill(project_id):
         remember(project, "error", "没问成")
 
 
-def start_drill(project):
+def start_drill(project, user_id=None):
     progress = project.get("progress") or {}
     progress["phase"] = "drill_think"
     progress["message"] = "正在想方向"
     project["progress"] = progress
     project["status"] = "drilling"
     project["stage"] = "正在想方向"
-    write_project(project)
+    write_project(project, user_id=user_id)
     submit_agent_task(Task("drill", project["id"]))
 
 
@@ -3323,7 +3331,7 @@ def rpc_config(_params):
     from end.qwen_env import read_qwen_env
     from end.trace import trace_enabled
 
-    return {
+    result = {
         "debug_llm": env_debug_llm(),
         "debug_llm_env": "AIVIDEO_DEBUG_LLM",
         "debug_trace": trace_enabled(),
@@ -3336,10 +3344,17 @@ def rpc_config(_params):
         "template": normalize_template(None),
         "templates": template_choices(),
     }
+    if _auth_active() and _current_session("admin") is None:
+        # Internal hosts/env stay admin-only (design D8).
+        for key in ("minimax_base_url", "qwen_env", "debug_llm_env", "debug_trace_env"):
+            result.pop(key, None)
+    return result
 
 
 def rpc_list_projects(_params):
-    return [menu_view(item) for item in list_project_summaries()]
+    user = _current_session("user") if _auth_active() else None
+    rows = list_project_summaries(user_id=user["id"] if user else None)
+    return [menu_view(item) for item in rows]
 
 
 def rpc_get_project(params):
@@ -3499,7 +3514,11 @@ def rpc_create_project(params):
         "updated_at": created,
         "finished_at": None,
     }
-    start_drill(project)
+    owner = (_current_session("user") or {}).get("id") if _auth_active() else None
+    if owner is not None:
+        start_drill(project, user_id=owner)
+    else:
+        start_drill(project)
     return public_view(read_project(project["id"]))
 
 
@@ -3983,7 +4002,195 @@ def rpc_logs(params):
         raise RpcError(404, str(error))
 
 
+# --- Account system (phase 1) ---------------------------------------------
+# Sessions ride in HttpOnly cookies (user product) or a Bearer token (admin
+# BFF). Enforcement is gated by AIVIDEO_REQUIRE_AUTH=off|log|require and only
+# active when PostgreSQL is configured; SQLite mode keeps the legacy behavior.
+
+USER_COOKIE = "aivideo_user"
+ADMIN_COOKIE = "aivideo_admin"
+_REQUEST_CTX = contextvars.ContextVar("aivideo_request", default=None)
+
+
+def auth_mode():
+    mode = str(os.environ.get("AIVIDEO_REQUIRE_AUTH") or "off").strip().lower()
+    return mode if mode in ("off", "log", "require") else "off"
+
+
+def _auth_active():
+    from end import pg_store
+
+    return pg_store.enabled() and auth_mode() != "off"
+
+
+def _session_from_request(request, audience):
+    from end import auth
+
+    if not request:
+        return None
+    token = ""
+    if audience == "admin":
+        header = str(request.get("authorization") or "")
+        if header.lower().startswith("bearer "):
+            token = header[7:].strip()
+        if not token:
+            token = (request.get("cookies") or {}).get(ADMIN_COOKIE, "")
+    else:
+        token = (request.get("cookies") or {}).get(USER_COOKIE, "")
+    if not token:
+        return None
+    try:
+        return auth.session_user(token, audience)
+    except Exception:
+        return None
+
+
+def _current_session(audience="user"):
+    return _session_from_request(_REQUEST_CTX.get(), audience)
+
+
+def _check_owner(project_id, user):
+    """Owner enforcement. Legacy ownerless rows are admin-only (design D3)."""
+    if user is None or not _auth_active():
+        return
+    from end import pg_store
+
+    owner = pg_store.project_owner(project_id)
+    if owner != user["id"]:
+        raise RpcError(404, "没有这个项目")
+
+
+def _cookie_header(name, token, max_age, secure=False):
+    parts = ["%s=%s" % (name, token), "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=%d" % int(max_age)]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def _auth_rpc(method, params):
+    from end import auth, pg_store
+
+    ctx = _REQUEST_CTX.get()
+    ctx = ctx if ctx is not None else {}
+    if method == "auth.me":
+        user = _current_session("user") if pg_store.enabled() else None
+        return {"user": user, "required": bool(pg_store.enabled() and auth_mode() == "require")}
+    if not pg_store.enabled():
+        raise RpcError(503, "账户系统未启用（需要 PostgreSQL）")
+    try:
+        if method == "auth.login":
+            token, user = auth.login(
+                params.get("username"), params.get("password"),
+                audience="user", ip=ctx.get("ip", ""), user_agent=ctx.get("ua", ""),
+            )
+            ctx.setdefault("set_cookies", []).append(
+                _cookie_header(USER_COOKIE, token, auth.USER_SESSION_TTL.total_seconds(), ctx.get("secure"))
+            )
+            return user
+        if method == "auth.admin_login":
+            token, user = auth.login(
+                params.get("username"), params.get("password"),
+                audience="admin", ip=ctx.get("ip", ""), user_agent=ctx.get("ua", ""),
+            )
+            ctx.setdefault("set_cookies", []).append(
+                _cookie_header(ADMIN_COOKIE, token, auth.ADMIN_SESSION_TTL.total_seconds(), ctx.get("secure"))
+            )
+            return user
+        if method == "auth.logout":
+            auth.logout((ctx.get("cookies") or {}).get(USER_COOKIE, ""), "user")
+            ctx.setdefault("set_cookies", []).append(_cookie_header(USER_COOKIE, "", 0, ctx.get("secure")))
+            return {"ok": True}
+        if method == "auth.change_password":
+            user = _current_session("user")
+            if user is None:
+                raise RpcError(401, "需要登录")
+            auth.change_password(user["id"], params.get("old_password"), params.get("new_password"))
+            ctx.setdefault("set_cookies", []).append(_cookie_header(USER_COOKIE, "", 0, ctx.get("secure")))
+            return {"ok": True}
+    except auth.AuthError as error:
+        raise RpcError(error.code, str(error))
+    raise RpcError(-32601, "没有这个接口")
+
+
+def _admin_rpc(method, params):
+    from end import auth, pg_store
+
+    if not pg_store.enabled():
+        raise RpcError(503, "账户系统未启用（需要 PostgreSQL）")
+    admin = _current_session("admin")
+    if admin is None:
+        raise RpcError(401, "需要运营登录")
+    try:
+        if method == "admin.users.list":
+            return auth.list_users()
+        if method == "admin.users.create":
+            return auth.create_user(
+                params.get("username"), params.get("password"),
+                role=params.get("role") or "user",
+            )
+        if method == "admin.users.disable":
+            auth.set_disabled(int(params.get("id")), True)
+            return {"ok": True}
+        if method == "admin.users.enable":
+            auth.set_disabled(int(params.get("id")), False)
+            return {"ok": True}
+        if method == "admin.users.reset_password":
+            auth.reset_password(int(params.get("id")), params.get("password"))
+            return {"ok": True}
+        if method == "admin.projects.list":
+            user_id = params.get("user_id")
+            rows = list_project_summaries(user_id=int(user_id) if user_id is not None else None)
+            for row in rows:
+                row["user_id"] = pg_store.project_owner(row["id"])
+            return rows
+    except auth.AuthError as error:
+        raise RpcError(error.code, str(error))
+    except (TypeError, ValueError):
+        raise RpcError(400, "参数不对")
+    raise RpcError(-32601, "没有这个接口")
+
+
+def _build_request_ctx(handler):
+    cookies = SimpleCookie()
+    try:
+        cookies.load(handler.headers.get("Cookie") or "")
+    except Exception:
+        pass
+    return {
+        "cookies": {key: morsel.value for key, morsel in cookies.items()},
+        "authorization": handler.headers.get("Authorization") or "",
+        "ip": handler.client_address[0] if handler.client_address else "",
+        "ua": handler.headers.get("User-Agent") or "",
+        "secure": handler.headers.get("X-Forwarded-Proto") == "https"
+        or os.environ.get("AIVIDEO_SECURE_COOKIES") == "1",
+        "set_cookies": [],
+    }
+
+
 def rpc_call(method, params):
+    if method.startswith("auth."):
+        return _auth_rpc(method, params)
+    if method.startswith("admin."):
+        return _admin_rpc(method, params)
+    if _auth_active():
+        user = _current_session("user")
+        if user is None and auth_mode() == "require":
+            admin = _current_session("admin")
+            if admin is None:
+                raise RpcError(401, "需要登录")
+            # Admin sessions use admin.* for cross-user reads; the user
+            # project surface stays user-only (design §4).
+            if method.startswith("projects."):
+                raise RpcError(401, "用户接口需要用户登录")
+        # Debug/process surfaces are admin-only (design D8).
+        if method in ("projects.logs", "projects.replay") and auth_mode() == "require":
+            if _current_session("admin") is None:
+                raise RpcError(403, "仅运营可用")
+        # Central ownership gate for every id-based project method.
+        if method.startswith("projects.") and method not in ("projects.create", "projects.list"):
+            project_id = str((params or {}).get("id") or "")
+            if valid_id(project_id):
+                _check_owner(project_id, user)
     if method == "config.get":
         return rpc_config(params)
     if method == "projects.list":
@@ -4434,7 +4641,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("[%s] %s" % (self.log_date_time_string(), fmt % args))
 
-    def _send(self, code, body, content_type="application/json; charset=utf-8", disposition=None):
+    def _send(self, code, body, content_type="application/json; charset=utf-8", disposition=None, extra_headers=None):
         data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode("utf-8")
         gzipped = False
         # RPC JSON can gzip; attachments and media stay on the uncompressed path.
@@ -4452,6 +4659,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
         if disposition:
             self.send_header("Content-Disposition", disposition)
+        for header in extra_headers or []:
+            self.send_header("Set-Cookie", header)
         self.end_headers()
         if not getattr(self, "_head_only", False):
             self.wfile.write(data)
@@ -4539,6 +4748,28 @@ class Handler(BaseHTTPRequestHandler):
         hostname = urlparse(origin).hostname
         return bool(hostname) and self._host_allowed(hostname)
 
+    def _media_allowed(self, project_id, path):
+        """Session + ownership guard for /media/. Runs before any 200/304."""
+        if not _auth_active():
+            return True
+        if _current_session("admin") is not None:
+            return True
+        user = _current_session("user")
+        if user is None:
+            if auth_mode() == "require":
+                self._send(401, {"error": "需要登录"})
+                return False
+            return True
+        if "/debug/" in path:
+            self._send(403, {"error": "仅运营可用"})
+            return False
+        from end import pg_store
+
+        if pg_store.project_owner(project_id) != user["id"]:
+            self._send(404, {"error": "没有这个项目"})
+            return False
+        return True
+
     def do_GET(self):
         host_header = str(self.headers.get("Host") or "").strip()
         if host_header and not self._host_allowed(self._host_name(host_header)):
@@ -4546,6 +4777,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         path = parsed.path
+        if path.startswith("/media/projects/"):
+            # Per-request thread: set the account context for the media guard.
+            _REQUEST_CTX.set(_build_request_ctx(self))
+            parts = path.split("/")
+            project_id = parts[3] if len(parts) > 3 else ""
+            if valid_id(project_id) and not self._media_allowed(project_id, path):
+                return
         if path.startswith("/media/projects/") and path.endswith("/board"):
             project_id = path.split("/")[3]
             board = project_dir(project_id) / "board.html"
@@ -4753,21 +4991,31 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(params, dict):
             self._send(200, _rpc_body(request_id, error=RpcError(-32602, "Invalid params")))
             return
+        ctx = _build_request_ctx(self)
+        ctx_token = _REQUEST_CTX.set(ctx)
         try:
-            result = rpc_call(payload["method"], params)
-        except RpcError as error:
-            self._send(200, _rpc_body(request_id, error=error))
-            return
-        except Exception:
-            traceback.print_exc()
-            self._send(200, _rpc_body(request_id, error=RpcError(-32603, "Internal error")))
-            return
-        self._send(200, _rpc_body(request_id, result=result))
+            try:
+                result = rpc_call(payload["method"], params)
+            except RpcError as error:
+                self._send(200, _rpc_body(request_id, error=error), extra_headers=ctx["set_cookies"])
+                return
+            except Exception:
+                traceback.print_exc()
+                self._send(200, _rpc_body(request_id, error=RpcError(-32603, "Internal error")), extra_headers=ctx["set_cookies"])
+                return
+            self._send(200, _rpc_body(request_id, result=result), extra_headers=ctx["set_cookies"])
+        finally:
+            _REQUEST_CTX.reset(ctx_token)
 
 
 def main():
     from end.ai_client import endpoint
+    from end import pg_store
 
+    if auth_mode() == "require" and not pg_store.enabled():
+        raise SystemExit("AIVIDEO_REQUIRE_AUTH=require 需要配置 AIVIDEO_PG_DSN（账户系统依赖 PostgreSQL）")
+    if pg_store.enabled():
+        pg_store.pool()  # run migrations before serving
     connect()
     DATA.mkdir(parents=True, exist_ok=True)
     ai_url = endpoint()
@@ -4783,8 +5031,8 @@ def main():
     if agent_resumed:
         note += "  agent_resumed=%s" % agent_resumed
     print(
-        "AiVideo http://%s:%s  (sqlite %s)  ai=%s  agent_workers=%s%s"
-        % (HOST, PORT, ROOT / "data" / "aivideo.db", ai_url, agent_queue().workers, note)
+        "AiVideo http://%s:%s  (%s)  ai=%s  agent_workers=%s%s"
+        % (HOST, PORT, "pg" if pg_store.enabled() else "sqlite %s" % (ROOT / "data" / "aivideo.db"), ai_url, agent_queue().workers, note)
     )
     server.serve_forever()
 

@@ -66,6 +66,13 @@ def project_dir(project_id):
     return DATA / project_id
 
 
+def _pg():
+    """PostgreSQL backend when AIVIDEO_PG_DSN is configured; else None (SQLite)."""
+    from end import pg_store
+
+    return pg_store if pg_store.enabled() else None
+
+
 def connect(db_path=None):
     global _CONN
     path = Path(db_path) if db_path else DB_PATH
@@ -82,7 +89,9 @@ def connect(db_path=None):
         _init_schema(conn)
         if db_path is None:
             _CONN = conn
-            migrate_json_projects(conn)
+            # PG mode: legacy JSON auto-import must not write into the new store.
+            if _pg() is None:
+                migrate_json_projects(conn)
         return conn
 
 
@@ -217,6 +226,9 @@ def _row_values(project):
 
 
 def read_project(project_id, conn=None):
+    pg = _pg()
+    if pg is not None:
+        return pg.read_project(project_id)
     db = conn or connect()
     with _LOCK:
         row = db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
@@ -244,22 +256,36 @@ def content_revision_from_project(project):
 
 def mark_deleted(project_id):
     """Tombstone a project so in-flight workers cannot resurrect it."""
+    pg = _pg()
+    if pg is not None:
+        pg.mark_deleted(project_id)
+        return
     with _LOCK:
         _DELETED.add(str(project_id))
 
 
 def clear_deleted(project_id):
     """Drop a tombstone. Only a brand-new project id should ever need this."""
+    pg = _pg()
+    if pg is not None:
+        pg.clear_deleted(project_id)
+        return
     with _LOCK:
         _DELETED.discard(str(project_id))
 
 
 def is_deleted(project_id):
+    pg = _pg()
+    if pg is not None:
+        return pg.is_deleted(project_id)
     with _LOCK:
         return str(project_id) in _DELETED
 
 
-def write_project(project, conn=None):
+def write_project(project, conn=None, user_id=None):
+    pg = _pg()
+    if pg is not None:
+        return pg.write_project(project, user_id=user_id)
     if not project or not project.get("id"):
         raise ValueError("project.id 不能为空")
     db = conn or connect()
@@ -305,8 +331,11 @@ def row_to_summary(row):
     }
 
 
-def list_project_summaries(conn=None):
+def list_project_summaries(conn=None, user_id=None):
     """History menu rows. Does not load scripts, messages, or other heavy columns."""
+    pg = _pg()
+    if pg is not None:
+        return pg.list_project_summaries(user_id=user_id)
     db = conn or connect()
     with _LOCK:
         rows = db.execute(LIST_SUMMARY_SQL).fetchall()
@@ -365,14 +394,20 @@ def row_to_tick(row):
 
 def read_project_tick(project_id, conn=None):
     """Progress tick row. Does not SELECT script, storyboard, or messages."""
+    pg = _pg()
+    if pg is not None:
+        return pg.read_project_tick(project_id)
     db = conn or connect()
     with _LOCK:
         row = db.execute(TICK_SQL, (project_id,)).fetchone()
     return row_to_tick(row)
 
 
-def list_projects(conn=None):
+def list_projects(conn=None, user_id=None):
     """Full project rows for resume and other in-process work."""
+    pg = _pg()
+    if pg is not None:
+        return pg.list_projects(user_id=user_id)
     db = conn or connect()
     with _LOCK:
         rows = db.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
@@ -380,6 +415,9 @@ def list_projects(conn=None):
 
 
 def delete_project(project_id, conn=None):
+    pg = _pg()
+    if pg is not None:
+        return pg.delete_project(project_id)
     # Tombstone first: a worker still winding down must not upsert the row back.
     mark_deleted(project_id)
     db = conn or connect()

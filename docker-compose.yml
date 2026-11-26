@@ -47,6 +47,8 @@ services:
       PORT: "8787"
       AIVIDEO_AI_URL: "http://ai:8791"
       AIVIDEO_AI_AUTOSTART: "0"
+      # Account system: set AIVIDEO_PG_DSN in .env, then flip to log → require.
+      AIVIDEO_REQUIRE_AUTH: "${AIVIDEO_REQUIRE_AUTH:-off}"
     volumes:
       - aivideo-data:/app/data
     healthcheck:

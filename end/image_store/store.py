@@ -984,10 +984,12 @@ def _put_oss(domain, bucket, key, payload, content_type, access_key_id, access_k
 def _oss_url_expires():
     _load_dotenv()
     raw = os.environ.get("AIVIDEO_OSS_URL_EXPIRES") or ""
+    # Default 4h (design D9): presigned GETs cannot be revoked, so keep the
+    # window short and resign at play time. Override via env, clamped 60s..7d.
     try:
-        value = int(str(raw).strip() or "86400")
+        value = int(str(raw).strip() or "14400")
     except ValueError:
-        value = 86400
+        value = 14400
     return max(60, min(value, 7 * 24 * 3600))
 
 
