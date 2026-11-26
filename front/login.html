@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>登录 · AiVideo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #fbf7f1;
+      --line: #e6dfd4;
+      --text: #1f1f1f;
+      --muted: #8a8176;
+      --paper: #fffdfb;
+      --accent: #4d6bfe;
+      --danger: #c21d2e;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: var(--text); background: var(--bg);
+    }
+    body { display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .card {
+      width: min(360px, 100%);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 28px 24px;
+    }
+    h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
+    .sub { margin: 0 0 20px; font-size: 13px; color: var(--muted); }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+    input {
+      width: 100%; padding: 10px 12px;
+      border: 1px solid var(--line); border-radius: 10px;
+      background: var(--bg); color: var(--text);
+      font: inherit; outline: none;
+    }
+    input:focus { border-color: var(--accent); }
+    button {
+      width: 100%; margin-top: 20px; padding: 11px 12px;
+      border: 0; border-radius: 10px;
+      background: var(--accent); color: #fff;
+      font: inherit; font-weight: 600; cursor: pointer;
+    }
+    button:disabled { opacity: .6; cursor: default; }
+    .error { margin-top: 14px; font-size: 13px; color: var(--danger); min-height: 18px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <section id="login-view">
+      <h1>登录 AiVideo</h1>
+      <p class="sub">内测账号由运营发放；忘记密码请联系运营重置。</p>
+      <form id="login-form">
+        <label for="username">登录名</label>
+        <input id="username" name="username" autocomplete="username" required />
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+        <button id="login-btn" type="submit">登录</button>
+        <div id="login-error" class="error" role="alert"></div>
+      </form>
+    </section>
+    <section id="change-view" class="hidden">
+      <h1>设置新密码</h1>
+      <p class="sub">首次登录或密码被重置后，需要设置一个新密码（至少 10 位）。</p>
+      <form id="change-form">
+        <label for="old-password">当前密码</label>
+        <input id="old-password" type="password" autocomplete="current-password" required />
+        <label for="new-password">新密码</label>
+        <input id="new-password" type="password" autocomplete="new-password" minlength="10" required />
+        <label for="confirm-password">再输一次</label>
+        <input id="confirm-password" type="password" autocomplete="new-password" minlength="10" required />
+        <button id="change-btn" type="submit">确认修改</button>
+        <div id="change-error" class="error" role="alert"></div>
+      </form>
+    </section>
+  </main>
+  <script>
+    "use strict";
+    // 会话由服务端 HttpOnly Cookie 承载；本页只负责收集凭据与跳转。
+    let pendingPassword = "";
+
+    async function rpc(method, params) {
+      const response = await fetch("/rpc", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", method, params: params || {}, id: Date.now() }),
+      });
+      const payload = await response.json();
+      if (payload.error) {
+        const error = new Error(payload.error.message || "请求失败");
+        error.code = payload.error.code;
+        throw error;
+      }
+      return payload.result;
+    }
+
+    function showChange() {
+      document.getElementById("login-view").classList.add("hidden");
+      document.getElementById("change-view").classList.remove("hidden");
+      document.getElementById("old-password").value = pendingPassword;
+    }
+
+    document.getElementById("login-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = document.getElementById("login-btn");
+      const errorBox = document.getElementById("login-error");
+      errorBox.textContent = "";
+      button.disabled = true;
+      const password = document.getElementById("password").value;
+      try {
+        const result = await rpc("auth.login", {
+          username: document.getElementById("username").value.trim(),
+          password,
+        });
+        pendingPassword = password;
+        if (result && result.must_change_password) {
+          showChange();
+        } else {
+          location.href = "/";
+        }
+      } catch (error) {
+        errorBox.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    document.getElementById("change-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = document.getElementById("change-btn");
+      const errorBox = document.getElementById("change-error");
+      errorBox.textContent = "";
+      const next = document.getElementById("new-password").value;
+      if (next !== document.getElementById("confirm-password").value) {
+        errorBox.textContent = "两次输入的新密码不一致";
+        return;
+      }
+      button.disabled = true;
+      try {
+        await rpc("auth.change_password", {
+          old_password: document.getElementById("old-password").value,
+          new_password: next,
+        });
+        // 改密会吊销旧会话，重新登录一次。
+        const result = await rpc("auth.login", {
+          username: document.getElementById("username").value.trim(),
+          password: next,
+        });
+        if (result && result.must_change_password) {
+          errorBox.textContent = "仍需改密，请重试";
+        } else {
+          location.href = "/";
+        }
+      } catch (error) {
+        errorBox.textContent = error.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
