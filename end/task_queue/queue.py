@@ -79,14 +79,21 @@ class TaskQueue(object):
         threads = list(self._threads)
         for thread in threads:
             thread.join(timeout=2)
+        drained = []
         while True:
             try:
-                self._queue.get_nowait()
+                drained.append(self._queue.get_nowait())
             except queue.Empty:
                 break
             self._queue.task_done()
         with self._lock:
             self._threads = [thread for thread in self._threads if thread.is_alive()]
+            # Discarded tasks must release their dedup keys and waiting slots
+            # even when a handler outran the join timeout; otherwise the same
+            # (kind, project) could never be submitted again.
+            for task in drained:
+                self._pending.discard((task.kind, task.project_id))
+                self._waiting = [item for item in self._waiting if item is not task]
             if not self._threads:
                 self._pending.clear()
                 self._waiting = []

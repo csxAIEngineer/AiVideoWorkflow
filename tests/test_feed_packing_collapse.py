@@ -68,6 +68,16 @@ def _state():
     }
 
 
+def _dp_state():
+    # The ``dp-*`` fixtures encode the DP packer (c4f50d8/b8e8cb1) at the 15s
+    # Seedance 2.0 clip limit: groups [4,5,4],[3,3,4],[4,4,4],[4,4,4,2]. h3 now
+    # packs toward 30s (cc9f410), so these collapse/repair cases use the 15s lock
+    # to keep the four-unit golden scenario the fixtures record.
+    state = _state()
+    state["locks"] = {"model": "2.0", "material_mode": "M1", "track": "1"}
+    return state
+
+
 def _bind_spec(feed_name):
     state = _state()
     assets = [{"id": "图99", "title": "女主", "subject_kind": "character", "prompt": "女主"}]
@@ -88,13 +98,13 @@ class StoryboardBindingTest(unittest.TestCase):
         images = [list(shot["images"]) for shot in state["shots"]]
         self.assertEqual(len(prompts), 13)
         self.assertIn("夜晚卧室，女主坐在床边", prompts[0])
+        # h3 now packs toward 30s with the DP packer (cc9f410, c4f50d8), so the
+        # 13-shot board fills two units instead of the old greedy four.
         self.assertEqual(
             packing_membership(state["shots"]),
             [
-                ["S01", "S02", "S03"],
-                ["S04", "S05", "S06", "S07"],
-                ["S08", "S09", "S10"],
-                ["S11", "S12", "S13"],
+                ["S01", "S02", "S03", "S04", "S05", "S06"],
+                ["S07", "S08", "S09", "S10", "S11", "S12", "S13"],
             ],
         )
         for name in ("feed-attempt-3-plan.txt", "feed.md"):
@@ -156,8 +166,9 @@ class SkeletonCollapseTest(unittest.TestCase):
         )
 
     def test_collapsed_records_fail_body_subject_and_soundscape(self):
-        state = _state()
-        for name in ("feed-attempt-1-plan-3.txt", "feed.md", "feed-attempt-1-plan.txt"):
+        # dp-* fixtures match the DP packer (c4f50d8/b8e8cb1) at the 15s lock.
+        state = _dp_state()
+        for name in ("dp-collapsed-plan.txt", "dp-collapsed-late.txt", "dp-collapsed-early.txt"):
             errors = shot_skeleton_failures(_read(name), state)
             joined = "\n".join(errors)
             self.assertIn("没有正文", joined, name)
@@ -167,11 +178,13 @@ class SkeletonCollapseTest(unittest.TestCase):
             self.assertIn("镜号锁", joined, name)
 
     def test_the_complete_draft_passes_body_and_subject_gates_and_unit_4_fails_h7(self):
-        state = _state()
-        for name in ("feed-attempt-3-plan.txt", "feed-attempt-3-extract.txt"):
+        # dp-complete-* encode the DP packer (c4f50d8/b8e8cb1) at the 15s lock;
+        # the slogan unit (4) still carries the real narrator (S2) H7 error.
+        state = _dp_state()
+        for name in ("dp-complete-plan.txt", "dp-complete-extract.txt"):
             errors = shot_skeleton_failures(_read(name), state)
             self.assertEqual(errors, [], name)
-        units = _units(_read("feed-attempt-3-plan.txt"))
+        units = _units(_read("dp-complete-plan.txt"))
         self.assertEqual(len(units), 4)
         for index, block in enumerate(units, 1):
             issues, _warns, _stats = validate_h3(block)
@@ -221,9 +234,10 @@ class TargetedRepairTest(unittest.TestCase):
         self.assertNotIn("narrator (S2)", after[3])
 
     def test_history_skips_a_later_collapsed_draft(self):
-        state = _state()
-        complete = _read("feed-attempt-3-plan.txt")
-        collapsed = _read("feed-attempt-1-plan-3.txt")
+        # dp-* fixtures match the DP packer (c4f50d8/b8e8cb1) at the 15s lock.
+        state = _dp_state()
+        complete = _read("dp-complete-plan.txt")
+        collapsed = _read("dp-collapsed-plan.txt")
         state.update({
             "draft": collapsed,
             "history": [
@@ -234,8 +248,11 @@ class TargetedRepairTest(unittest.TestCase):
         self.assertEqual(last_complete_draft(state), complete)
 
     def test_generate_folds_the_repair_onto_the_last_complete_draft(self):
-        state = _state()
-        complete = _read("feed-attempt-3-plan.txt")
+        # complete uses the DP-packed dp fixture (c4f50d8/b8e8cb1, 15s lock); the
+        # collapsed extract has no cuts/durations, so the shared original is reused
+        # read-only as the grouping-independent collapsed incoming draft.
+        state = _dp_state()
+        complete = _read("dp-complete-plan.txt")
         collapsed = _read("feed-attempt-1-extract-3.txt")
         calls = {"n": 0}
 
@@ -275,11 +292,42 @@ class TargetedRepairTest(unittest.TestCase):
         self.assertNotIn("A shimmering chime plays as the camera pans", result["feed"])
         self.assertIn("Soft plastic cap-twisting friction", result["feed"])
         self.assertIn("narrator (S2)", result["feed"])
-        stored = _units(_read("feed-attempt-3-plan.txt"))
+        stored = _units(_read("dp-complete-plan.txt"))
         produced = _units(result["feed"])
         self.assertEqual(len(produced), 4)
         for index in range(3):
             self.assertEqual(produced[index], stored[index])
+
+
+class WanCompletenessTest(unittest.TestCase):
+    def test_ws4_wan_draft_is_complete_without_subject_tags(self):
+        from Agents.workers.feed.repair import draft_is_complete, repair_unit_collapsed
+
+        unit = "\n".join((
+            "## 【封装单元 1/1】",
+            "duration: 10",
+            "总体描述:",
+            "城市夜景。",
+            "分镜:",
+            "分镜1（00:00.000-00:10.000）：",
+            "他推门走进房间。",
+            "台词:",
+            '甲说："好。"',
+            "风格 / 情绪:",
+            "画面风格：冷白",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        state = {
+            "storyboard": "## S01\n时长：10",
+            "shots": [{"duration": 10}],
+            "locks": {"model": "h3"},
+        }
+        self.assertTrue(draft_is_complete(unit, state))
+        self.assertFalse(repair_unit_collapsed(unit))
+        collapsed = unit.replace("他推门走进房间。", "")
+        self.assertTrue(repair_unit_collapsed(collapsed))
+        self.assertFalse(draft_is_complete(collapsed, state))
 
 
 if __name__ == "__main__":

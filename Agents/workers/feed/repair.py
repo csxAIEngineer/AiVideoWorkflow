@@ -4,6 +4,7 @@ import re
 from end.product_names import UNIT_HEAD_LINE
 
 from Agents.workers.feed.plan import _machine_text
+from Agents.workers.feed.wan_format import is_wan_shaped
 from Agents.workers.feed.skeleton import (
     _shot_headings,
     _shot_sections,
@@ -44,19 +45,24 @@ def _unit_spans(text):
 def repair_unit_collapsed(block):
     """A repair unit that must not replace a complete one.
 
-    No ``[Shot N]`` headings, or ``subject_definitions`` with no ``<Subject N>``
-    (the style-lock line alone), is a collapse.
+    No shot headings is a collapse. On a leftover H3 draft, ``subject_definitions``
+    with no ``<Subject N>`` (the style-lock line alone) is a collapse too. A Wan
+    unit has no subjects, so its shot bodies decide instead.
     """
     if not _shot_headings(block):
         return True
+    if is_wan_shaped(block):
+        return not any(str(prose or "").strip() for _number, prose in _shot_sections(block))
     return _subject_tag_missing(block)
 
 
 def draft_is_complete(text, state):
-    """Every packed unit has ``<Subject N>`` and a body under every skeleton shot.
+    """Every packed unit has a body under every skeleton shot.
 
-    Another failure, such as H7, does not make the draft incomplete. A collapsed
-    draft is not a merge base.
+    A leftover H3 unit also needs ``<Subject N>``; a Wan unit is judged by its
+    分镜 headings being complete and every shot having a body. Another failure,
+    such as H7, does not make the draft incomplete. A collapsed draft is not a
+    merge base.
     """
     skeleton = packing_shot_skeleton(state)
     if not skeleton:
@@ -65,7 +71,10 @@ def draft_is_complete(text, state):
     if len(spans) != len(skeleton):
         return False
     for block, shots in zip(spans, skeleton):
-        if _subject_tag_missing(block):
+        wan = is_wan_shaped(block)
+        if not wan and _subject_tag_missing(block):
+            return False
+        if wan and [number for number, _tail in _shot_headings(block)] != [shot["local"] for shot in shots]:
             return False
         sections = {number: prose for number, prose in _shot_sections(block)}
         for shot in shots:

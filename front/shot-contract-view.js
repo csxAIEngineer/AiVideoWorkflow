@@ -190,6 +190,8 @@
     const resolved = resolvedOf(shot);
     return JSON.stringify({
       duration: shot.duration == null ? "" : shot.duration,
+      // 时长优先从 prompt 的 duration: 行解析，签名必须覆盖这一数据来源。
+      prompt: String(shot.prompt || ""),
       images: shot.images || [],
       end_image: shot.end_image || "",
       images_source: shot.images_source || null,

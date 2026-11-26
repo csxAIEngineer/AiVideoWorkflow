@@ -7,7 +7,7 @@
 
 用法：
   python scripts/validate_prompt.py <提示词文件.md|.txt>
-      [--model 2.5|2.0|h3] [--mode new|extend] [--track 1|2|3|4] [--combat on|off|auto]
+      [--model 2.5|2.0|h3|wan] [--mode new|extend] [--track 1|2|3|4] [--combat on|off|auto]
       [--c23 on|off|auto] [--style-source 导演名] [--aspect 16:9|9:16|21:9] [--by-segment]
       [--json] [--self-test]
 
@@ -20,7 +20,9 @@
         不跑稿件级判据——见 _looks_like_feed 注）
 
   • --model 2.5 / 2.0 → C1~C26（Seedance 侧，本文件主体；另含增量主码 C27a~d / C28a~c / C29 / C30a~d · 编号不重排）
-  • --model h3        → H1~H12（MiniMax H3 格式支线，规程见 references/h3-adapter.md）
+  • --model h3        → H1~H12（MiniMax H3 格式支线，时长 4–15s，规程见 references/h3-adapter.md）
+  • --model wan       → H1~H12 结构判据 + 万相 2–30s 时长窗（H3 格式稿走万相通道时用；
+                        万相官方公式稿的七栏机检在 end/gates.py，规程见 references/wan-adapter.md）
   • --track 1|2|3|4   → 赛道分流（〇·0 强制分流锁：1 国内剧 / 2 海外剧 / 3 解说叙事 /
                         4 其他）。默认 1。仅影响 C14 系列——赛道 3 走解说专线 C14n
                         （豁免 VO 篇幅卡口），见「C14n」段说明。
@@ -269,7 +271,7 @@
 H 系列（--model h3 · MiniMax H3 格式支线 · h3-adapter.md）：
   H1 字段集       Ref2VA 四段齐全且顺序正确（不要求 summary / retention_analysis）；基础模式三字段齐全
   H2 镜号/切点    [Shot 1] 不得带时间戳；[Shot N] 切点 MM:SS.mmm 严格递增；切镜动词须用官方绑定短语（the camera/shot cuts to…）
-  H3 时长         声明时长落在 4–30s；最后切点 ≤30s（万相 3.0）
+  H3 时长         声明时长落在 4–15s；最后切点 ≤15s（--model wan 时按万相 2–30s）
   H4 语言         正文应为英文（2026-10-02 官方复核：base-en/ref-en "Write all six rewrite sections in English"）；
                   <d> 内必须带语言标签（<d>[Chinese] …</d>），<d> 与双引号画内文字之外的正文出现中文 → WARN
   H5 参考标签     标签先定义后引用；summary 不引新标签；定义项 >9 告警；定义了却未引用 → 告警
@@ -608,7 +610,9 @@ H3_SEVEN_LEAK = ["【画幅风格】", "【场景资产】", "【核心人物】
 H3_JARGON = ["顿挫", "阻尼", "弹开", "微停顿",
              "J-cut", "L-cut", "Whip Pan", "Match Cut", "Sound Bridge"]
 H3_WORKFLOW = ["末态继承", "拼接节点", "换机位", "同机位硬接"]
-H3_MIN_DUR, H3_MAX_DUR = 4, 30
+# MiniMax H3 官方硬区间（h3-adapter.md）；万相 3.0 是另一条通道（wan-adapter.md）。
+H3_MIN_DUR, H3_MAX_DUR = 4, 15
+WAN_MIN_DUR, WAN_MAX_DUR = 2, 30
 H3_PIC_MAX = 9
 H3_VO_EVID = re.compile(r"闭合|闭口|紧闭|lips\s+(?:remain|stay)\s+(?:completely\s+)?closed")
 # H9 画外声官方固定短语（base-en §4.4；2026-10-02 官方复核新增）
@@ -686,8 +690,13 @@ def _h3_sections(text):
     return {k: "\n".join(v).strip() for k, v in out.items()}
 
 
-def validate_h3(text, mode="new"):
-    """MiniMax H3 格式支线检查（H1~H12）。规程见 references/h3-adapter.md。"""
+def validate_h3(text, mode="new", dur_range=None):
+    """MiniMax H3 格式支线检查（H1~H12）。规程见 references/h3-adapter.md。
+
+    dur_range 选择时长窗：默认 MiniMax 官方 4–15s；H3 格式稿走万相通道时
+    传 (WAN_MIN_DUR, WAN_MAX_DUR)，即 2–30s（--model wan）。
+    """
+    lo, hi = dur_range or (H3_MIN_DUR, H3_MAX_DUR)
     issues, warns = [], []
     sec = _h3_sections(text)
     order = _h3_order(text)
@@ -726,8 +735,8 @@ def validate_h3(text, mode="new"):
     for (n1, t1), (n2, t2) in zip(cuts, cuts[1:]):
         if t2 <= t1:
             issues.append(f"H2 切点未严格递增：[Shot {n1}] {t1}s -> [Shot {n2}] {t2}s")
-    if cuts and max(t for _, t in cuts) > H3_MAX_DUR + 0.001:
-        issues.append(f"H3 最后切点 {max(t for _, t in cuts)}s > {H3_MAX_DUR}s（万相 3.0 单段硬上限 {H3_MAX_DUR}s；"
+    if cuts and max(t for _, t in cuts) > hi + 0.001:
+        issues.append(f"H3 最后切点 {max(t for _, t in cuts)}s > {hi}s（单段硬上限 {hi}s；"
                       "超过上限必须再拆一刀）")
     # region agent log
     try:
@@ -763,10 +772,10 @@ def validate_h3(text, mode="new"):
         if m2:
             decl = float(m2.group(1))
     if decl is not None:
-        if not (H3_MIN_DUR - 0.01 <= decl <= H3_MAX_DUR + 0.01):
-            issues.append(f"H3 声明时长 {decl}s 越界（H3 硬区间 {H3_MIN_DUR}–{H3_MAX_DUR}s）")
+        if not (lo - 0.01 <= decl <= hi + 0.01):
+            issues.append(f"H3 声明时长 {decl}s 越界（硬区间 {lo}–{hi}s）")
     else:
-        warns.append(f"H3 未标注目标时长——H3 硬区间 {H3_MIN_DUR}–{H3_MAX_DUR}s，"
+        warns.append(f"H3 未标注目标时长——硬区间 {lo}–{hi}s，"
                      "建议在稿头或载荷标注 duration_seconds 以便校验")
 
     # H4 语言标签 + 正文语言（2026-10-02 官方复核：六段正文一律英文）
@@ -4364,10 +4373,23 @@ def _self_test():
     iss, _, _ = validate_h3(h3_ok.replace("[Shot 1] 全景确立回廊。", "[Shot 1] 在 00:00.000 处，全景确立回廊。"))
     if not any("H2" in i for i in iss):
         print("FAIL self-test: [Shot 1] 带时间戳应报 H2"); ok = 0
-    # H3 时长越界
-    iss, _, _ = validate_h3(h3_ok + '"duration_seconds": 31\n')
+    # H3 时长越界（MiniMax 官方 4–15s）
+    iss, _, _ = validate_h3(h3_ok + '"duration_seconds": 20\n')
     if not any("H3" in i and "越界" in i for i in iss):
-        print("FAIL self-test: 声明时长 31s 应报 H3"); ok = 0
+        print("FAIL self-test: 声明时长 20s 应报 H3"); ok = 0
+    # --model wan：万相 2–30s 窗口。20s 合法，2s 合法，31s 越界，1s 越界。
+    iss, _, _ = validate_h3(h3_ok + '"duration_seconds": 20\n', dur_range=(WAN_MIN_DUR, WAN_MAX_DUR))
+    if any("H3" in i and "越界" in i for i in iss):
+        print("FAIL self-test: 万相窗口下 20s 不应报 H3", iss); ok = 0
+    iss, _, _ = validate_h3(h3_ok + '"duration_seconds": 2\n', dur_range=(WAN_MIN_DUR, WAN_MAX_DUR))
+    if any("H3" in i and "越界" in i for i in iss):
+        print("FAIL self-test: 万相窗口下 2s 不应报 H3", iss); ok = 0
+    iss, _, _ = validate_h3(h3_ok + '"duration_seconds": 31\n', dur_range=(WAN_MIN_DUR, WAN_MAX_DUR))
+    if not any("H3" in i and "越界" in i for i in iss):
+        print("FAIL self-test: 万相窗口下 31s 应报 H3"); ok = 0
+    iss, _, _ = validate_h3(h3_ok + '"duration_seconds": 2\n')
+    if not any("H3" in i and "越界" in i for i in iss):
+        print("FAIL self-test: H3 窗口下 2s 应报 H3"); ok = 0
     # H4 <d> 缺语言标签
     iss, _, _ = validate_h3(h3_ok.replace("<d>[Chinese] 你迟了半刻。</d>", "<d>你迟了半刻。</d>"))
     if not any("H4" in i for i in iss):
@@ -5630,8 +5652,8 @@ def main():
     if delivery not in (None, "full-project", "agent-bundle", "feed-only"):
         print("[-] --delivery 必须 full-project/agent-bundle/feed-only"); sys.exit(2)
     model = opt("--model", "2.5")
-    if model not in ("2.5", "2.0", "h3"):
-        print("[-] --model 必须 2.5/2.0/h3"); sys.exit(2)
+    if model not in ("2.5", "2.0", "h3", "wan"):
+        print("[-] --model 必须 2.5/2.0/h3/wan"); sys.exit(2)
     track = opt("--track", "1")
     if track not in ("1", "2", "3", "4"):
         print("[-] --track 必须 1/2/3/4（〇·0 分流锁：1 国内剧 / 2 海外剧 / 3 解说叙事 / 4 其他）"); sys.exit(2)
@@ -5663,7 +5685,8 @@ def main():
     aspect = opt("--aspect")
     if aspect and not re.match(r"^\d+\s*[:：]\s*\d+$", aspect.strip()):
         print("[-] --aspect 形如 16:9 / 9:16 / 21:9（B 锁画幅一致性比对，C6b）"); sys.exit(2)
-    if model == "h3":
+    if model in ("h3", "wan"):
+        dur_range = (WAN_MIN_DUR, WAN_MAX_DUR) if model == "wan" else None
         # ---- 非稿件早退（2026-10-12 新增）：规则库/说明文档不是投喂稿，不跑稿件级判据 ----
         if not _looks_like_feed(text):
             print("[!] 该文件不具备投喂稿件形态——未识别到「时间轴镜行 / 七段式栏位 / H3 六段式字段」。")
@@ -5676,11 +5699,11 @@ def main():
         segs = _split_feed_segments(text) if "--whole" not in argv else []
         if len(segs) >= 2:
             print(f"[i] 分单元校验：识别到 {len(segs)} 个投喂段，逐段独立跑 H3 判据"
-                  "（整份合并会把各段时间码累加，误判成一段超过 30s）")
+                  f"（整份合并会把各段时间码累加，误判成一段超过 {WAN_MAX_DUR if model == 'wan' else H3_MAX_DUR}s）")
             issues, warns = [], []
             stats = {"duration_s": 0, "shots": 0, "chars": 0, "segments": len(segs)}
             for _label, _body in segs:
-                _si, _sw, _ss = validate_h3(_body, opt("--mode", "new"))
+                _si, _sw, _ss = validate_h3(_body, opt("--mode", "new"), dur_range=dur_range)
                 print(f"[i] {_label}：时长{_ss['duration_s']}s 镜头{_ss['shots']} 字符{_ss['chars']}"
                       f" | FAIL={len(_si)} WARN={len(_sw)}")
                 issues.extend(f"[{_label}] {item}" for item in _si)
@@ -5688,7 +5711,7 @@ def main():
                 for _key in ("duration_s", "shots", "chars"):
                     stats[_key] += _ss.get(_key) or 0
         else:
-            issues, warns, stats = validate_h3(text, opt("--mode", "new"))
+            issues, warns, stats = validate_h3(text, opt("--mode", "new"), dur_range=dur_range)
     else:
         if not _looks_like_feed(text):
             print("[!] 该文件不具备投喂稿件形态——未识别到「时间轴镜行 / 七段式栏位 / H3 六段式字段」。")
@@ -5709,7 +5732,7 @@ def main():
                 if not _segment_is_feed(_body):
                     _skipped.append(_label)
                     continue
-                if model != "h3" and _combat_on(_body, combat):
+                if model not in ("h3", "wan") and _combat_on(_body, combat):
                     _combat_hit = True
                 _si, _sw, _ss = validate(_body, model, opt("--mode", "new"), track, combat, c23,
                                          style_source, aspect, plugin=plugin, state_data=state_data)
@@ -5742,8 +5765,8 @@ def main():
     if "--json" in argv:
         print(json.dumps({"issues": issues, "warnings": warns, "stats": stats,
                           "track": track, "c14_exempt": track in NARR_TRACKS,
-                          "combat_checked": model != "h3" and _combat_on(text, combat),
-                          "c23_checked": model != "h3" and _c23_on(text, c23, style_source),
+                          "combat_checked": model not in ("h3", "wan") and _combat_on(text, combat),
+                          "c23_checked": model not in ("h3", "wan") and _c23_on(text, c23, style_source),
                           "style_source": style_source},
                          ensure_ascii=False, indent=2))
     else:
@@ -5753,12 +5776,12 @@ def main():
             print("[i] 赛道③ 解说叙事：C14 篇幅卡口已豁免（VO 即主体），改判 C14n 旁白-画面映射")
         if stats.get("segments") and not stats.get("combat_hit"):
             pass
-        elif model != "h3" and _combat_on(text, combat):
+        elif model not in ("h3", "wan") and _combat_on(text, combat):
             print("[i] 打戏稿：已启用 C21 激烈度硬护栏（a 位移 / b 实体接触 / c 贴身时长 / d 构图变化）"
                   " + C22 节奏负载护栏")
             print("[i] C21/C22 均为 WARN 参考·按档放行——R1 枪战/狙击/暗杀/追车/儿童向、R3 大场面/术法对轰、"
                   "群战乱斗按 combat-rhythm-and-load-guardrails.md §七 豁免；先判档再决定是否采纳（理由写进《改动复验报告》）")
-        if model != "h3" and _c23_on(text, c23, style_source):
+        if model not in ("h3", "wan") and _c23_on(text, c23, style_source):
             print("[i] 画风锁已启用：C23 段8/9 · 区间越界 · 零人名 · 题材匹配 · 单镜超载"
                   + (f"（来源：{style_source}）" if style_source else "（auto）"))
         for w in warns:

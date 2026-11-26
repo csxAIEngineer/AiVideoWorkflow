@@ -4,7 +4,7 @@ import importlib.util
 import re
 from pathlib import Path
 
-from end.product_names import DRAFT_NAME, H3_SUBJECT_SOUND_RULE, HEADING_RULE, UNIT_NAME
+from product_names import DRAFT_NAME, H3_SUBJECT_SOUND_RULE, HEADING_RULE, UNIT_NAME
 
 SKILLS = Path(__file__).resolve().parent
 SUITE = SKILLS / "manju-laoli-skill"
@@ -90,11 +90,11 @@ def locked_aspect(text):
 
 
 def locks_ready(text):
+    # 交付锁已废止（交付固定为正文+预演板），不再是 ready 的必要条件。
     raw = str(text or "")
     style = re.search(r"画风\s*[:：]\s*(\S+)", raw)
     combat = re.search(r"动作强度\s*[:：]\s*(R[1-3])", raw, re.I)
     model = re.search(r"模型\s*[:：]\s*(Seedance 2\.5|Seedance 2\.0|MiniMax H3)", raw)
-    delivery = re.search(r"交付\s*[:：]\s*[①②③]", raw)
     seam = re.search(r"段缝\s*[:：]\s*(?:[①②③④]|单段)", raw)
     return bool(
         re.search(r"赛道\s*[:：]\s*[1-4]", raw)
@@ -103,7 +103,6 @@ def locks_ready(text):
         and style
         and combat
         and model
-        and delivery
         and seam
     )
 
@@ -126,7 +125,7 @@ def json_shape(template=None, brief=""):
     if step:
         return script_json_shape(step)
     if suite_task_for(brief) == "storyboard":
-        from end.storyboard_contract import known_ids_from_brief, storyboard_instruction
+        from storyboard_contract import known_ids_from_brief, storyboard_instruction
 
         return "\n".join((
             "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",
@@ -418,10 +417,10 @@ _TASK_MARKERS = (
     ("任务：独立质检", "qc"),
     ("任务：离线看板", "board"),
 )
-from end.storyboard_contract import ASSET_FIELD_RULES
+from storyboard_contract import ASSET_FIELD_RULES
 
 def _feed_merge_shape(brief=""):
-    from end.locks import pack_limit
+    from locks import pack_limit
 
     model = parse_route(brief, "P4").get("model")
     limit = pack_limit(locks={"model": model} if model else None)
@@ -731,7 +730,7 @@ def skill_node_prompt(relative, repair=False):
 
 
 def _storyboard_merge_shape(brief=""):
-    from end.storyboard_contract import asset_field_rules, known_ids_from_brief
+    from storyboard_contract import asset_field_rules, known_ids_from_brief
 
     return "\n".join((
         "整段回复只能是一个 JSON 对象，不要 Markdown 围栏。",

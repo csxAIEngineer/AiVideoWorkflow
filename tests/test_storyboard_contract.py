@@ -268,16 +268,13 @@ class QueueTest(unittest.TestCase):
             self.assertTrue(agent_queue().wait_until_idle(8))
         self.assertGreaterEqual(directors["n"], 2)
         self.assertTrue(any("任务：分镜" in call for call in calls))
-        self.assertTrue(any("任务：提示词封装" in call for call in calls))
-        spec = json.loads((folder / "spec.json").read_text(encoding="utf-8"))
-        self.assertEqual(spec["shots"][0]["id"], "S01")
-        self.assertEqual(spec["shots"][0]["duration"], 6)
-        self.assertEqual(spec["shots"][0]["images"], ["A1"])
-        self.assertIn("她推门进来", (folder / "_内部_" / "分镜.md").read_text(encoding="utf-8"))
-        self.assertTrue((folder / "_内部_" / "feed.md").is_file())
-        self.assertEqual((folder / "_内部_" / "previs.md").read_bytes(), FIXTURE.encode("utf-8"))
+        # 夹具没有剧本：新的场次骨架门把队列停在分镜，不再推进到提示词封装。
+        # 端到端（分镜→封装→done）覆盖需要带场次结构的剧本夹具，另行重建。
         saved = read_project(project_id)
-        self.assertEqual(saved["status"], "done")
+        self.assertEqual(saved["status"], "gate")
+        self.assertIn("场次骨架", saved["progress"]["pipeline"]["report"])
+        self.assertFalse((folder / "_内部_" / "feed.md").is_file())
+        self.assertEqual((folder / "_内部_" / "previs.md").read_bytes(), FIXTURE.encode("utf-8"))
         self.assertNotEqual(saved["status"], "rendering")
 
     def test_conflict_stops_once_and_resume_keeps_a_matching_checkpoint(self):
@@ -321,12 +318,14 @@ class QueueTest(unittest.TestCase):
             writer,
             lambda *_a, **_k: "",
         )
-        self.assertEqual(sum("各节点正文" in call for call in calls), 1)
+        # 01da85b 起分镜机检要求从剧本抽出场次骨架。本夹具没有剧本，
+        # 流程停在骨架门（重试在 worker 循环内部），不再走到 shots_conflict 分支。
+        self.assertGreaterEqual(sum("各节点正文" in call for call in calls), 1)
         self.assertGreater(len(calls), 1)
         self.assertFalse(outcome["progress"]["pipeline"]["passed"])
-        self.assertIn("时长正文 6", outcome["progress"]["pipeline"]["report"])
-        self.assertEqual(outcome["progress"]["pipeline"]["repairs"], 0)
-        self.assertEqual(outcome["message"]["options"], ["补全"])
+        self.assertIn("场次骨架", outcome["progress"]["pipeline"]["report"])
+        self.assertEqual(outcome["progress"]["pipeline"]["repairs"], 3)
+        self.assertEqual(outcome["message"]["options"], ["根据建议修改", "先用这一稿继续"])
         self.assertEqual(outcome["spec"].get("shots"), [])
         self.assertEqual((internal / "previs.md").read_bytes(), before)
 

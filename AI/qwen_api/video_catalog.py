@@ -114,6 +114,19 @@ def default_profile():
     }
 
 
+def wan_default_profile():
+    """Fallback profile that matches the no-catalog Wan route.
+
+    routes() defaults to wan3.0-video when the catalog is missing, so the
+    profiles must stay legal for Wan: 480P is a Wan tier (768P is not), and
+    preset is a MiniMax-only field.
+    """
+    profile = default_profile()
+    profile["resolution"] = "480P"
+    profile.pop("preset", None)
+    return profile
+
+
 def repo_root():
     """Repository root. Delegates so tests can patch one function."""
     from AI.qwen_api.client import repo_root as root
@@ -213,14 +226,16 @@ def _check_route_value(key, value, env_name):
 
 def parameter_profiles(env_path=None):
     """Profile name -> parameter dict. No host and no model id."""
+    catalog = _load_catalog(env_path)
+    base_profile = default_profile() if catalog else wan_default_profile()
     table = {
-        "preview": default_profile(),
-        "generate": default_profile(),
+        "preview": dict(base_profile),
+        "generate": dict(base_profile),
     }
-    for name, value in _section(_load_catalog(env_path), "profiles").items():
+    for name, value in _section(catalog, "profiles").items():
         if not isinstance(value, dict):
             raise QwenError("%s 的 profiles.%s 必须是对象" % (CATALOG_LABEL, name))
-        base = dict(table.get(name) or default_profile())
+        base = dict(table.get(name) or base_profile)
         params, _route = _split_legacy(_plain(value))
         base.update(params)
         table[str(name)] = base

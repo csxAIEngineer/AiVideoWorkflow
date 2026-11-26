@@ -262,12 +262,7 @@ def is_deleted(project_id):
 def write_project(project, conn=None):
     if not project or not project.get("id"):
         raise ValueError("project.id 不能为空")
-    if is_deleted(project["id"]):
-        # Deleted: do not upsert the row back nor recreate the folder.
-        return project
     db = conn or connect()
-    folder = project_dir(project["id"])
-    folder.mkdir(parents=True, exist_ok=True)
     project["content_revision"] = content_revision_from_project(project)
     values = _row_values(project)
     placeholders = ", ".join("?" for _ in COLUMNS)
@@ -277,7 +272,14 @@ def write_project(project, conn=None):
         "ON CONFLICT(id) DO UPDATE SET %s"
         % (", ".join(COLUMNS), placeholders, assignments)
     )
+    # Tombstone re-check, folder creation and upsert share one critical section
+    # with mark_deleted/DELETE, so a winding-down worker cannot resurrect the
+    # row or the folder between the check and the write.
     with _LOCK:
+        if str(project["id"]) in _DELETED:
+            return project
+        folder = project_dir(project["id"])
+        folder.mkdir(parents=True, exist_ok=True)
         db.execute(sql, values)
         db.commit()
     return project

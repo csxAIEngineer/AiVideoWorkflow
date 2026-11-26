@@ -242,6 +242,25 @@ class QwenTextTest(unittest.TestCase):
         self.assertEqual(client.calls[0]["extra_body"], {"enable_thinking": False})
         self.assertEqual(client.calls[0]["max_output_tokens"], 32000)
 
+    def test_text_host_override_can_name_its_key_variable(self):
+        from AI.qwen_api import graph
+
+        captured = {}
+
+        class FakeOpenAI(object):
+            def __init__(self, api_key=None, base_url=None, max_retries=None):
+                captured["api_key"] = api_key
+                captured["base_url"] = base_url
+
+        with patch.dict(os.environ, {
+            "AIVIDEO_TEXT_BASE_URL": "https://prod.example.com",
+            "AIVIDEO_TEXT_API_KEY_VAR": "AIVIDEO_TEST_PROD_KEY",
+            "AIVIDEO_TEST_PROD_KEY": "prod-secret",
+        }), patch("openai.OpenAI", FakeOpenAI):
+            graph.responses_client()
+        self.assertEqual(captured["api_key"], "prod-secret")
+        self.assertEqual(captured["base_url"], "https://prod.example.com/compatible-mode/v1")
+
     def test_prompt_debug_does_not_print_the_prompt(self):
         class Responses(object):
             def __init__(self):
@@ -1080,15 +1099,43 @@ class QwenMediaTest(unittest.TestCase):
         client.submit_video("海面亮起来", duration=20, aspect_ratio="16:9", mode="generate")
         self.assertEqual(captured["body"]["model"], "wan3.0-video")
         self.assertEqual(captured["body"]["parameters"]["duration"], 20)
+        # 回退参数档必须与 Wan 模型一致：480P 是合法档位，768P/preset 是 MiniMax 专用。
+        self.assertEqual(captured["body"]["parameters"]["resolution"], "480P")
+        self.assertNotIn("preset", captured["body"]["parameters"])
         client.submit_video("海面亮起来", duration=30, aspect_ratio="16:9", mode="generate")
         self.assertEqual(captured["body"]["parameters"]["duration"], 30)
         with self.assertRaises(QwenError) as too_long:
             client.submit_video("海面亮起来", duration=31, mode="generate")
         self.assertIn("2 到 30", str(too_long.exception))
 
+    def test_missing_catalog_resolve_plan_yields_legal_wan_parameters(self):
+        from AI.qwen_api.video_catalog import resolve_plan
+        from AI.qwen_api.video import wire_parameters
+
+        env_path = self._catalog()  # 只有空 .env，没有 video_catalog.json
+        plan = resolve_plan("generate", False, "https://cloud.example.com", "fallback-key", env_path=env_path)
+        self.assertEqual(plan.model_id, "wan3.0-video")
+        self.assertEqual(plan.parameters["resolution"], "480P")
+        self.assertNotIn("preset", plan.parameters)
+        body = wire_parameters(
+            plan.parameters,
+            plan.emit_local_defaults,
+            "16:9",
+            2,
+            allowed=plan.model.get("emit"),
+            model=plan.model,
+        )
+        self.assertIn(body["resolution"], ("480P", "720P"))
+        self.assertEqual(body["duration"], 2)
+        self.assertNotIn("preset", body)
+        self.assertNotIn("watermark", body)
+
     def test_dockerfile_copies_video_catalog(self):
         dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
-        self.assertIn("COPY config ", dockerfile.read_text(encoding="utf-8"))
+        text = dockerfile.read_text(encoding="utf-8")
+        # AI-1：只拷 catalog，不把 config/qwen.json 打进镜像。
+        self.assertIn("COPY config/video_catalog.json", text)
+        self.assertNotIn("COPY config ./config", text)
 
     def test_remote_video_submit_passes_mode(self):
         from end.remote import RemoteVideoClient

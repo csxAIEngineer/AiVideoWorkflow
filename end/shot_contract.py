@@ -314,6 +314,10 @@ def _first_frame_item(shot, mode, index, shots, steps, work_dir, project_id):
             if not image_id and prev_id:
                 image_id = extracted_tail_id(prev_id)
             stored_url = _http_media_url(step.get("end_image_url")) or None
+            if stored_url:
+                from end.image_store import get_image_store
+
+                stored_url = get_image_store().refresh_url(stored_url) or stored_url
         if not image_id:
             stem, _filename = continuation_tail_name(shot.get("id"))
             image_id = stem + "_tail"

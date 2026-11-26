@@ -5,6 +5,7 @@ Image, video, and speech stay outside this graph. Polling stays in End.
 
 import contextvars
 import json
+import logging
 import operator
 import os
 import threading
@@ -82,7 +83,13 @@ class TextState(TypedDict, total=False):
 
 
 def text_base_host(base_url=None):
-    """Text host follows config/qwen.json, or AIVIDEO_TEXT_BASE_URL when set."""
+    """Text host follows config/qwen.json, or AIVIDEO_TEXT_BASE_URL when set.
+
+    Overriding the host does not switch the key environment: the key still
+    follows config/qwen.json unless AIVIDEO_TEXT_API_KEY_VAR names another
+    env var (see responses_client). Point the host at another environment
+    without setting that variable and requests carry the wrong key (401).
+    """
     from AI.qwen_api.client import normalize_host, resolve_qwen_host
 
     chosen = str(base_url if base_url is not None else os.environ.get("AIVIDEO_TEXT_BASE_URL") or "").strip()
@@ -92,7 +99,12 @@ def text_base_host(base_url=None):
 
 
 def responses_client(api_key=None, base_url=None, client=None):
-    """Text client uses the Qwen API key and host from config/qwen.json."""
+    """Text client uses the Qwen API key and host from config/qwen.json.
+
+    AIVIDEO_TEXT_BASE_URL only overrides the host. When the host points at
+    another environment, set AIVIDEO_TEXT_API_KEY_VAR to the env var holding
+    that environment's key; otherwise the key still follows config/qwen.json.
+    """
     if client is not None:
         return client
     from openai import OpenAI
@@ -100,7 +112,12 @@ def responses_client(api_key=None, base_url=None, client=None):
     from AI.qwen_api.client import QwenError, load_dotenv, qwen_api_key
 
     load_dotenv()
-    key, var = qwen_api_key(api_key=api_key)
+    key_var = str(os.environ.get("AIVIDEO_TEXT_API_KEY_VAR") or "").strip()
+    if api_key is None and key_var:
+        key = str(os.environ.get(key_var) or "").strip()
+        var = key_var
+    else:
+        key, var = qwen_api_key(api_key=api_key)
     if not key:
         raise QwenError("未配置 %s" % var)
     return OpenAI(api_key=key, base_url=text_base_host(base_url) + "/compatible-mode/v1", max_retries=0)
@@ -314,16 +331,23 @@ def prompt_text(messages):
     return "\n\n".join(parts)
 
 
+# Send fans skill nodes out in parallel; serialize whole-line appends so two
+# threads cannot interleave chunks of one JSON line in the trace file.
+_PROMPT_LOG_LOCK = threading.Lock()
+
+
 def log_prompt(messages, path=""):
     path = str(path or _TRACE_PROMPTS.get() or "")
     if not path:
         return
     body = prompt_text(messages)
+    line = json.dumps({"prompt": body}, ensure_ascii=False) + "\n"
     try:
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"prompt": body}, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
+        with _PROMPT_LOG_LOCK:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line)
+    except OSError as error:
+        logging.getLogger(__name__).warning("prompt trace write failed for %s: %s", path, error)
 
 
 def _create(client, state, effort, tools=None, tool_choice=None):

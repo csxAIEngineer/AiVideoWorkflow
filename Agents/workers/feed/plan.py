@@ -870,12 +870,15 @@ def _strip_wan_visual_d_tags(text):
             if current in _VISUAL_WAN_FIELDS and rest:
                 rest = _D_TAG.sub("", rest)
                 rest = _CHINESE_TAG.sub("", rest).strip()
-                prefix, _, _ = line.partition(match.group("name"))
-                # rebuild the header line without the tag body
-                colon = "：" if "：" in line[match.start():] else ":"
-                # Keep original punctuation by replacing only the rest after the colon.
-                head, sep, _tail = line.partition("：" if "：" in line else ":")
-                line = head + sep + ((" " + rest) if rest else "")
+                # Replace only the rest after the header's own colon. Partitioning the
+                # whole line on 「：」 would cut inside a half-width header's rest.
+                stripped = line.strip()
+                head_match = WAN_FIELD_LINE.match(stripped)
+                after_name = stripped[head_match.end("name"):]
+                colon = re.search(r"[:：]", after_name)
+                head = stripped[:head_match.end("name") + colon.start() + 1]
+                indent = line[:len(line) - len(line.lstrip())]
+                line = indent + head + ((" " + rest) if rest else "")
             out.append(line)
             continue
         if current in _VISUAL_WAN_FIELDS:
@@ -894,7 +897,7 @@ def _strip_wan_visual_d_tags(text):
     return body
 
 
-def apply_packing_plan(text, state):
+def apply_packing_plan(text, state, meta=None):
     """Unwrap an H3 blob, lock the planned units, then put spoken lines back.
 
     Durations come from the groups. A missing storyboard line is written into
@@ -904,9 +907,10 @@ def apply_packing_plan(text, state):
     again on a repair, so ``[Shot N]`` and ``At MM:SS.mmm`` match the storyboard.
     The ``资产：`` line is written last, from the storyboard 资产栏 of the shots
     in that unit, so a model list does not replace it.
-    Director JSON is folded onto that skeleton first. ``last_fold_source``
-    records ``json_fields``, ``informal_feed``, and ``materialize`` when one
-    of those paths ran.
+    Director JSON is folded onto that skeleton first. When ``meta`` is a dict,
+    ``meta["fold_source"]`` records ``json_fields``, ``informal_feed``, and
+    ``materialize`` when one of those paths ran. It is passed per call, so
+    concurrent feed loops do not share it.
     """
     runner = importlib.import_module("end.stage_runner")
     h3 = _h3_locked(state)
@@ -932,13 +936,12 @@ def apply_packing_plan(text, state):
     if is_wan_shaped(placed):
         placed = _strip_wan_visual_d_tags(placed)
     if not h3:
-        apply_packing_plan.last_fold_source = source
+        if meta is not None:
+            meta["fold_source"] = source
         return placed
     styled = inject_style_lock(placed, agreed_style(state))
     result = inject_shot_skeleton(styled, packing_shot_skeleton(state))
     result = inject_unit_assets(result, packing_unit_asset_lines(state))
-    apply_packing_plan.last_fold_source = source
+    if meta is not None:
+        meta["fold_source"] = source
     return result
-
-
-apply_packing_plan.last_fold_source = ""

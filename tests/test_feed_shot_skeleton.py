@@ -415,15 +415,14 @@ class ShotSkeletonRepairTest(unittest.TestCase):
         self.assertIn("不要沿用全集镜号", brief)
         self.assertIn("分镜1（00:00.000-00:07.000）：", brief)
         self.assertIn("分镜2（00:07.000-00:12.000）：", brief)
-        self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", brief)
+        # 万相封装只挂 SKILL.md 和 wan-adapter（288187b）；镜号锁修补点名这两个写手。
+        self.assertIn("sd-feed-engine/SKILL.md", brief)
         self.assertIn("short-drama-director/references/wan-adapter.md", brief)
-        self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", brief)
         self.assertEqual(
             packing_repair_targets(state["machine_report"], h3=True),
             [
-                "sd-feed-engine/references/feed-mode-and-gates.md",
+                "sd-feed-engine/SKILL.md",
                 "short-drama-director/references/wan-adapter.md",
-                "short-drama-director/references/prompt-feeding-checklist.md",
             ],
         )
         files = suite_files("feed", "阶段：P4\n模型：h3\n" + brief)
@@ -485,10 +484,10 @@ class ShotSkeletonRepairTest(unittest.TestCase):
         self.assertIn("分镜2（00:07.000-00:12.000）：", result["feed"])
         self.assertNotIn("[Shot 9]", result["feed"])
         self.assertIn("duration: 12", result["feed"])
-        repair = next(item for item in prompts if "镜号锁没过" in item)
-        self.assertIn("不要自己发明切点", repair)
-        self.assertIn("分镜2（00:07.000-00:12.000）：", repair)
-        self.assertIn("short-drama-director/references/wan-adapter.md", repair)
+        # 循环修补走 _repair_user（4de97e1），不再发 generator_messages 的「镜号锁没过」
+        # 简报；该简报内容由 test_the_repair_brief_tells_the_writer_to_restore_the_skeleton
+        # 覆盖。这里只校验修补结果保留了骨架（上面的断言）。
+        self.assertTrue(any("分镜2（00:07.000-00:12.000）：" in item for item in prompts))
 
 
 class UnitAssetLineTest(unittest.TestCase):
@@ -564,6 +563,20 @@ class UnitAssetLineTest(unittest.TestCase):
         self.assertIn("资产：图1，图4，图2", fixed)
         self.assertEqual(fixed.count("资产："), 1)
         self.assertEqual(apply_packing_plan(fixed, state), fixed)
+
+
+class PackingSkeletonLocksTest(unittest.TestCase):
+    def test_ws10_seedance_skeleton_uses_the_same_locks_as_packing_groups(self):
+        state = {
+            "storyboard": "",
+            "shots": [{"duration": 10} for _ in range(4)],
+            "locks": {"model": "2.0"},
+        }
+        skeleton = packing_shot_skeleton(state)
+        groups = packing_groups(state)
+        self.assertEqual(len(skeleton), len(groups))
+        self.assertEqual(len(skeleton), 4)
+        self.assertTrue(all(len(unit) == 1 for unit in skeleton))
 
 
 if __name__ == "__main__":

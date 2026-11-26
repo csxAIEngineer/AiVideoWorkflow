@@ -159,15 +159,18 @@ expand_path() {
   esac
 }
 
-sanitize_host() {
+# 本地文件名清洗：去掉路径分隔符与白名单外字符，防止写出 DEST_ROOT 之外。
+sanitize_slug() {
   printf '%s' "$1" | tr '@:/' '___' | tr -cd 'A-Za-z0-9._-'
 }
 
+sanitize_host() {
+  sanitize_slug "$1"
+}
+
+# 白名单与 store.py 的 _PROJECT_ID 对齐：拒绝控制字符、前导 -、通配符与路径段。
 is_safe_id() {
-  case "$1" in
-    ''|*/*|*".."*|*" "*|*$'\t'*) return 1 ;;
-  esac
-  return 0
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
 }
 
 load_env_file "$ROOT/scripts/dev-host.env"
@@ -302,6 +305,10 @@ case "$HOST" in
     ;;
 esac
 [ -n "$SSH_PORT" ] || SSH_PORT=22
+# 端口必须纯数字（含配置文件/环境变量来源），防止被拆成额外 ssh 选项。
+case "$SSH_PORT" in
+  ''|*[!0-9]*) fail "SSH 端口必须是纯数字: $SSH_PORT" ;;
+esac
 
 selector_count=0
 [ "${#PROJECTS[@]}" -gt 0 ] && selector_count=$((selector_count + 1))
@@ -327,10 +334,12 @@ fi
 
 # 指定私钥时才加 IdentitiesOnly，免得 ssh-agent / 默认钥匙用不了。
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -p "$SSH_PORT")
-RSH="ssh -o BatchMode=yes -o ConnectTimeout=10 -p $SSH_PORT"
+# rsync -e 按空白拆分 RSH 字符串：含空格的路径必须 printf %q 转义，
+# 否则会被分词成额外 ssh 选项（选项注入）或打错目标。
+RSH="ssh -o BatchMode=yes -o ConnectTimeout=10 -p $(printf '%q' "$SSH_PORT")"
 if [ -n "$SSH_KEY" ]; then
   SSH_OPTS+=(-o IdentitiesOnly=yes -i "$SSH_KEY")
-  RSH="$RSH -o IdentitiesOnly=yes -i $SSH_KEY"
+  RSH="$RSH -o IdentitiesOnly=yes -i $(printf '%q' "$SSH_KEY")"
 fi
 
 ssh_run() {
@@ -528,6 +537,7 @@ if [ "$ALL_PROJECTS" -eq 1 ]; then
   fi
   while IFS= read -r id || [ -n "$id" ]; do
     [ -n "$id" ] || continue
+    is_safe_id "$id" || continue
     PROJECTS+=("$id")
   done <<EOF
 $(list_remote_projects "$map_mode" 0)
@@ -540,6 +550,7 @@ elif [ -n "$LATEST_N" ]; then
   fi
   while IFS= read -r id || [ -n "$id" ]; do
     [ -n "$id" ] || continue
+    is_safe_id "$id" || continue
     PROJECTS+=("$id")
   done <<EOF
 $(list_remote_projects "$map_mode" "$LATEST_N")
@@ -658,13 +669,17 @@ pull_repo_extras() {
 
 pull_docker_logs() {
   local dest="$DEST_ROOT/_repo/docker"
+  # 容器名来自配置/命令行，先清洗再拼本地文件名，防止 ../ 写出 DEST_ROOT。
+  local container_slug
+  container_slug="$(sanitize_slug "${DOCKER_CONTAINER:-aivideo}")"
+  [ -n "$container_slug" ] || container_slug="aivideo"
   echo "-- 尝试导出 docker 容器尾部日志"
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "   dry-run: docker logs --tail 5000 $DOCKER_CONTAINER 与 aivideo-ai"
     return 0
   fi
   mkdir -p "$dest"
-  ssh_run "CONTAINER=$(printf '%q' "$DOCKER_CONTAINER") bash -s" <<'EOS' >"$dest/${DOCKER_CONTAINER:-aivideo}.log" 2>"$dest/${DOCKER_CONTAINER:-aivideo}.err" || true
+  ssh_run "CONTAINER=$(printf '%q' "$DOCKER_CONTAINER") bash -s" <<'EOS' >"$dest/$container_slug.log" 2>"$dest/$container_slug.err" || true
 if docker logs --tail 5000 "$CONTAINER" 2>/dev/null; then
   exit 0
 fi

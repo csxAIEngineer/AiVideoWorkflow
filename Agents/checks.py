@@ -7,7 +7,7 @@ an encapsulated feed. Warnings alone do not fail a gate that has no FAIL.
 import importlib
 import re
 
-from end.product_names import EMPTY_DRAFT
+from product_names import EMPTY_DRAFT
 
 
 def _stage_runner():

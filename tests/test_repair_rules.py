@@ -411,7 +411,9 @@ class RuleBeforeModelTest(unittest.TestCase):
         saved = read_project("p-rule-then-ai")
         self.assertEqual(order[0], "rules")
         self.assertNotIn("rules", order[1:])
-        self.assertGreaterEqual(order.count("ai"), 3)
+        # 返修预算仍是 3 轮（下面 repairs==3）；worker 循环会复用上一稿/按槽折账，
+        # 不再保证每轮都产生一次模型调用，故只要求规则之后确有模型返修。
+        self.assertGreaterEqual(order.count("ai"), 1)
         self.assertEqual(saved["status"], "gate")
         self.assertEqual(saved["progress"]["pipeline"]["repairs"], 3)
         self.assertEqual(saved["progress"]["pipeline"]["rule_repairs"], 1)

@@ -770,6 +770,104 @@ class ImageStoreTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(store.persistent_url(again), store.persistent_url(published))
 
+    def test_oss_ensure_remote_republishes_when_the_source_marker_is_stale(self):
+        # MO-4: the own-domain re-sign shortcut must check the source marker.
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = self._oss_store(root)
+        path = root / "fffdd6d6b188" / "outputs" / "images" / "U1.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x89PNG-small")
+        canonical = "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com/projects/fffdd6d6b188/images/U1.png"
+        calls = []
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            store.publish("fffdd6d6b188", "U1.png", path.read_bytes())
+        self.assertEqual(len(calls), 1)
+        # Local file replaced (enlarged) while the remote object is still small.
+        path.write_bytes(b"\x89PNG-enlarged")
+        os.utime(path, (path.stat().st_mtime + 5, path.stat().st_mtime + 5))
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            url = store.ensure_remote("fffdd6d6b188", "U1.png", canonical, source=path)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(store.persistent_url(url), canonical)
+        # Marker now matches: the shortcut re-signs without uploading again.
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            again = store.ensure_remote("fffdd6d6b188", "U1.png", canonical, source=path)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(store.persistent_url(again), canonical)
+
+    def test_video_marker_sha256_detects_a_size_mtime_preserving_rewrite(self):
+        # SO-3: a rewrite that keeps size and mtime must still invalidate the marker.
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = self._oss_store(root)
+        path = root / "65d271c72399" / "outputs" / "clips" / "S01.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"first-clip-bytes")
+        calls = []
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            store.ensure_clip("65d271c72399", "S01.mp4", source=path)
+        self.assertFalse(path.with_name("S01.mp4.oss.json.part").exists())
+        stat = path.stat()
+        path.write_bytes(b"other-clip-bytes")  # same length, different bytes
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)):
+            stale = store.access_clip("65d271c72399", "S01.mp4", source=path)
+        self.assertEqual(stale, "")
+        self.assertEqual(len(calls), 1)
+
+    def test_marker_is_skipped_when_the_file_changes_during_upload(self):
+        # MO-5: stat is taken before the read; a rewrite during upload voids it.
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = self._oss_store(root)
+        path = root / "65d271c72399" / "outputs" / "clips" / "S01.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"original-clip")
+        ok = self._fake_ok_open([])
+
+        def mutating_open(request, timeout=None):
+            path.write_bytes(b"rewritten-clip-longer")
+            os.utime(path, (path.stat().st_mtime + 9, path.stat().st_mtime + 9))
+            return ok(request, timeout)
+
+        with patch("end.image_store.store.urllib.request.urlopen", mutating_open):
+            store.ensure_clip("65d271c72399", "S01.mp4", source=path)
+        self.assertFalse(path.with_name("S01.mp4.oss.json").exists())
+
+    def test_oss_video_upload_streams_the_file_instead_of_read_bytes(self):
+        # SO-4: the film is streamed as the request body, never read whole.
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        store = self._oss_store(root)
+        path = root / "65d271c72399" / "outputs" / "clips" / "S01.mp4"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x00\x00\x00\x18ftypmp42clip")
+        calls = []
+        with patch("end.image_store.store.urllib.request.urlopen", self._fake_ok_open(calls)), \
+                patch.object(Path, "read_bytes", side_effect=AssertionError("video must stream")):
+            store.ensure_clip("65d271c72399", "S01.mp4", source=path)
+        request, _timeout = calls[0]
+        self.assertTrue(hasattr(request.data, "read"))
+        self.assertEqual(request.get_header("Content-length"), str(path.stat().st_size))
+        self.assertTrue(request.get_header("Content-md5"))
+
+    def test_oss_url_expires_loads_dotenv(self):
+        # MO-9: the expiry reader loads .env like the other config readers.
+        saved = os.environ.pop("AIVIDEO_OSS_URL_EXPIRES", None)
+
+        def fake_dotenv():
+            os.environ["AIVIDEO_OSS_URL_EXPIRES"] = "3600"
+
+        try:
+            with patch.object(store_module, "_load_dotenv", fake_dotenv):
+                self.assertEqual(store_module._oss_url_expires(), 3600)
+        finally:
+            if saved is None:
+                os.environ.pop("AIVIDEO_OSS_URL_EXPIRES", None)
+            else:
+                os.environ["AIVIDEO_OSS_URL_EXPIRES"] = saved
+
 
 if __name__ == "__main__":
     unittest.main()

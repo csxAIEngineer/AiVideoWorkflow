@@ -182,6 +182,17 @@ class ShotContractViewTest(unittest.TestCase):
         self.assertIn("文本模式不会附带", text_note)
         self.assertNotIn("已经实际提交的存档列表", text_note)
 
+    def test_contract_sig_covers_prompt_duration(self):
+        # 时长优先从 prompt 的 duration: 行解析；shot.duration 不变时签名也必须变。
+        base = {"id": "S01", "duration": 10, "prompt": "duration: 40\n雨巷"}
+        changed = {"id": "S01", "duration": 10, "prompt": "duration: 45\n雨巷"}
+        sig_a = view_eval("view.contractSig(shot)", base)
+        sig_b = view_eval("view.contractSig(shot)", changed)
+        self.assertNotEqual(sig_a, sig_b)
+        self.assertEqual(sig_a, view_eval("view.contractSig(shot)", dict(base)))
+        self.assertEqual(view_eval("view.durationText(shot)", base), "40 秒")
+        self.assertEqual(view_eval("view.durationText(shot)", changed), "45 秒")
+
     def test_front_wires_the_shared_inspector(self):
         app = (ROOT / "front" / "app.js").read_text(encoding="utf-8")
         html = (ROOT / "front" / "index.html").read_text(encoding="utf-8")

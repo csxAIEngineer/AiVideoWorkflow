@@ -362,15 +362,16 @@ class RpcContractTest(unittest.TestCase):
 
         with patch("AI.agent.layout.run_suite", side_effect=fake_suite):
             snap = self.rpc("drill", {"messages": [{"role": "user", "content": "雨夜"}], "model": "qwen3.8-flash"})
-        self._job_keys(snap)
-        self.assertEqual(snap["status"], "running")
-        self.assertEqual(snap["result"], None)
-        self.assertEqual(snap["nodes"][-1]["name"], "汇总")
-        done = self._wait(snap["job_id"])
-        self.assertEqual(done["status"], "succeeded")
-        self.assertEqual(done["error"], "")
-        self.assertEqual(done["result"]["phase"], "ask")
-        self.assertEqual(done["result"]["reply"], "选一个")
+            self._job_keys(snap)
+            self.assertEqual(snap["status"], "running")
+            self.assertEqual(snap["result"], None)
+            self.assertEqual(snap["nodes"][-1]["name"], "汇总")
+            # Keep the patch active until the async job finishes.
+            done = self._wait(snap["job_id"])
+            self.assertEqual(done["status"], "succeeded")
+            self.assertEqual(done["error"], "")
+            self.assertEqual(done["result"]["phase"], "ask")
+            self.assertEqual(done["result"]["reply"], "选一个")
 
     def test_write_script_stays_on_the_existing_writer(self):
         def fake_suite(*_args, **_kwargs):
@@ -383,12 +384,14 @@ class RpcContractTest(unittest.TestCase):
             "Agents.workers.asset.run_p2_asset_loop", side_effect=forbid_p2
         ):
             snap = self.rpc("write", {"brief": SCRIPT_BRIEF, "skill_pack": "", "model": "qwen3.8-flash"})
-        self.assertEqual(snap["status"], "running")
-        self.assertEqual(snap["nodes"][-1]["name"], "汇总")
-        done = self._wait(snap["job_id"])
-        self.assertEqual(done["status"], "succeeded")
-        self.assertEqual(done["result"]["script"], "正式剧本")
-        self.assertNotIn("p2", done["result"])
+            self.assertEqual(snap["status"], "running")
+            self.assertEqual(snap["nodes"][-1]["name"], "汇总")
+            # The job runs on a worker thread: the patches must stay active
+            # until it finishes, or the real model path leaks through.
+            done = self._wait(snap["job_id"])
+            self.assertEqual(done["status"], "succeeded")
+            self.assertEqual(done["result"]["script"], "正式剧本")
+            self.assertNotIn("p2", done["result"])
 
     def test_write_asset_uses_the_p2_loop_and_drops_critic_rewrites(self):
         def forbid_suite(*_args, **_kwargs):
@@ -422,10 +425,11 @@ class RpcContractTest(unittest.TestCase):
             "Agents.workers.asset.run_p2_asset_loop", side_effect=forbid_p2
         ):
             snap = self.rpc("write", {"brief": REPAIR_BRIEF})
-        self.assertEqual(snap["nodes"][-1]["id"], "merge")
-        done = self._wait(snap["job_id"])
-        self.assertEqual(done["status"], "succeeded")
-        self.assertEqual(done["result"]["repairs"][0]["id"], "图-0")
+            self.assertEqual(snap["nodes"][-1]["id"], "merge")
+            # Keep the patches active until the async job finishes.
+            done = self._wait(snap["job_id"])
+            self.assertEqual(done["status"], "succeeded")
+            self.assertEqual(done["result"]["repairs"][0]["id"], "图-0")
 
     def test_llm_status_lost(self):
         lost = self.rpc("llm.status", {"job_id": "missing-job"})

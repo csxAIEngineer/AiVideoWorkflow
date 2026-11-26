@@ -1092,7 +1092,11 @@ def check_seam_ledger(ledger, units):
             errors.append("%s 的提交参数和连续关系不一致" % shot_id)
         end_size = _size_class(entry.get("end_size"))
         start_size = _size_class(entry.get("start_size"))
-        prev_end_size = _size_class(entries[index - 1].get("end_size")) if index > 0 else ""
+        # ① reads the previous unit's end_size by aligned id, never by the
+        # model's raw entry order. A missing previous entry is already reported
+        # above; here it only leaves prev_end_size empty instead of crashing.
+        prev_entry = by_id.get(str(rows[index - 1].get("id"))) if index > 0 else None
+        prev_end_size = _size_class(prev_entry.get("end_size")) if prev_entry else ""
         if _text(entry.get("end_size")) and not end_size:
             errors.append("%s 的末镜景别不在景别阶梯上" % shot_id)
         if _text(entry.get("start_size")) and not start_size:

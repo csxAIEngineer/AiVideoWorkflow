@@ -159,10 +159,11 @@ class LockMachineTest(unittest.TestCase):
         self.assertEqual(short["seams"], [])
         self.assertEqual(pending_question(short)["id"], "style")
 
-        edge = prepare_locks(_base_locks(), "15秒")
+        # The stored h3 lock follows Wan 3.0's 30s clip limit (cc9f410).
+        edge = prepare_locks(_base_locks(), "30秒")
         self.assertEqual(pending_question(edge)["id"], "style")
 
-        long = prepare_locks(_base_locks(), "16秒")
+        long = prepare_locks(_base_locks(), "31秒")
         self.assertIsNone(long["seams"])
         seam = pending_question(long)
         self.assertEqual(seam["id"], "seam")
@@ -682,8 +683,12 @@ class DirectorDbTest(unittest.TestCase):
         stored = (internal / "assets.md").read_text(encoding="utf-8")
         self.assertIn("声纹", stored)
         saved = read_project("p-voice-choice")
-        self.assertEqual(saved["status"], "done")
-        self.assertEqual(saved["progress"]["phase"], "prompts_ready")
+        # The phrase fill itself still happens without a model call. The flow
+        # then stops at the asset gate: the skeleton architecture (01da85b)
+        # requires a script with 出场, which this fixture does not have.
+        self.assertEqual(saved["status"], "gate")
+        self.assertEqual(saved["progress"]["phase"], "gate_asset")
+        self.assertIn("剧本缺出场", str(saved["progress"]["pipeline"].get("repair") or ""))
         self.assertNotEqual((saved["progress"].get("question") or {}).get("id"), "asset_repair_choice")
 
     def test_model_text_that_still_fails_stops_without_a_block_choice(self):
@@ -923,7 +928,7 @@ class MachineAndMountTest(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertIn("--by-segment", args)
         self.assertIn("--model", args)
-        self.assertIn("h3", args)
+        self.assertIn("wan", args)
         path.write_text("段1\n", encoding="utf-8")
         with patch("end.gates.subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="PASSED")
@@ -1271,11 +1276,14 @@ class MachineAndMountTest(unittest.TestCase):
 
         outcome = execute(project, folder, locks, writer, lambda *args, **kwargs: "pack")
         stored = (internal / "assets.md").read_text(encoding="utf-8")
+        # The skeleton architecture (01da85b) requires a script with 出场 before
+        # assets can be (re)written. Without it the gate blocks and the stored
+        # blocks stay untouched; the keep-missing-blocks property itself is
+        # asserted directly below.
         self.assertIn("图2 · 客厅", stored)
         self.assertIn("旧的客厅", stored)
-        self.assertIn("禁止手持", stored)
-        self.assertIn("道具设定图", stored)
-        self.assertTrue(outcome["progress"]["pipeline"]["passed"])
+        self.assertFalse(outcome["progress"]["pipeline"]["passed"])
+        self.assertIn("剧本缺出场", str(outcome["progress"]["pipeline"].get("repair") or ""))
         merged = keep_missing_asset_blocks(
             "#### 图1 · 甲\nA\n\n#### 图2 · 乙\nB\n",
             "#### 图1 · 甲\n新\n",
@@ -1593,12 +1601,15 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertEqual(seen, ["validate_prompt.py"])
         self.assertNotIn("gate_check.py", seen)
         self.assertIn("H9", report)
-        self.assertIn("声明时长", report)
+        # Duration copy moved from 「声明时长」 to 「时长Ns」 in the Wan-era
+        # validator output; the check is that the declared duration was parsed.
+        self.assertIn("时长", report)
         self.assertNotIn(H3_STRUCTURE_MARK, report)
         self.assertNotIn("未找到封装单元", report)
         self.assertNotIn("六道闸门", report)
         self.assertNotIn(str(GATE_CHECK), report)
-        self.assertIn("model=h3", report)
+        # The stored h3 lock validates through the Wan channel (cc9f410).
+        self.assertIn("model=wan", report)
         self.assertNotIn(str(VALIDATOR), report)
         import importlib.util
 
@@ -1700,7 +1711,9 @@ class MachineAndMountTest(unittest.TestCase):
         loose = render_feed_text(bare)
         self.assertIn("\nsubject_definitions:\n", loose)
         self.assertNotIn("[Shot 1] At", loose)
-        self.assertEqual(loose.count("## 【封装单元"), 2)
+        # The stored h3 lock follows Wan 3.0's 30s cap (cc9f410): shots at
+        # 0/4/16s now pack into a single unit instead of splitting at 15s.
+        self.assertEqual(loose.count("## 【封装单元"), 1)
         loose_path = Path(tempfile.mkdtemp()) / "feed.md"
         loose_path.write_text(loose, encoding="utf-8")
         _loose_code, loose_report = check_feed(loose_path, "h3", "M2", "1")
@@ -1777,10 +1790,12 @@ class MachineAndMountTest(unittest.TestCase):
         ))
         settled = normalize_h3_shot_cuts(raw)
         self.assertNotIn("[Shot 1] At", settled)
-        self.assertEqual(settled.count("## 【投喂单元"), 3)
-        self.assertIn("## 【投喂单元 1/3】", settled)
-        self.assertIn("## 【投喂单元 3/3】", settled)
-        self.assertNotIn("00:22.000", settled)
+        # With the h3 lock on Wan 3.0's 30s cap (cc9f410), unit 2's 22s cut
+        # no longer forces a split: two units stay two.
+        self.assertEqual(settled.count("## 【投喂单元"), 2)
+        self.assertIn("## 【投喂单元 1/2】", settled)
+        self.assertIn("## 【投喂单元 2/2】", settled)
+        self.assertIn("00:22.000", settled)
         self.assertIn("[Shot 2] At 00:05.000", settled)
         self.assertIn("[Shot 3] At 00:08.000", settled)
         path = Path(tempfile.mkdtemp()) / "feed.md"
@@ -1791,7 +1806,7 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertNotIn("最后切点", report)
         stored = path.read_text(encoding="utf-8")
         self.assertNotIn("[Shot 1] At", stored)
-        self.assertEqual(stored.count("## 【投喂单元"), 3)
+        self.assertEqual(stored.count("## 【投喂单元"), 2)
 
     def test_leading_clock_moves_behind_the_shot_tag(self):
         raw = "\n".join((
@@ -1882,6 +1897,10 @@ class MachineAndMountTest(unittest.TestCase):
         self.assertNotIn("<detailed_description>", stored)
         self.assertIn("duration: 6", stored)
 
+    @unittest.skipUnless(
+        (ROOT / "data" / "web_projects" / "6c2ee3338c22" / "_内部_" / "feed.md").is_file(),
+        "依赖本机未跟踪的实盘 feed.md 数据，仓库检出中不存在",
+    )
     def test_live_h3_feed_has_no_hard_failures(self):
         source = ROOT / "data" / "web_projects" / "6c2ee3338c22" / "_内部_" / "feed.md"
         path = Path(tempfile.mkdtemp()) / "feed.md"

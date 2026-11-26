@@ -539,9 +539,13 @@ function clipCard(title, playUrl, downloadUrl) {
   video.preload = "metadata";
   video.dataset.url = playUrl;
   video.src = playUrl;
+  video.addEventListener("error", () => {
+    if (current) requestMediaUrlRefresh(current, { forceError: true });
+  });
   const link = document.createElement("a");
   link.className = "download";
   link.href = downloadUrl || playUrl;
+  link.dataset.url = link.href;
   link.textContent = "下载";
   card.append(heading, video, link);
   return card;
@@ -1591,9 +1595,9 @@ function syncComposer() {
   if (materials) materials.classList.toggle("hidden", !showBrief);
   const materialFile = document.querySelector("#material-file");
   if (materialFile) materialFile.disabled = !showBrief || sending;
-  if (showOther && isDurationAsk(current)) briefEl.placeholder = "或者直接写秒数";
-  else if (showOther) briefEl.placeholder = "写下你的方向";
-  else if (showBrief) briefEl.placeholder = "文字决定要拍成什么样：时长、广告、感觉、情节和结尾。用户没写的部分，用读图补上身份和场景。";
+  if (showOther && isDurationAsk(current)) setBriefPlaceholder("或者直接写秒数");
+  else if (showOther) setBriefPlaceholder("写下你的方向");
+  else if (showBrief) setBriefPlaceholder("文字决定要拍成什么样：时长、广告、感觉、情节和结尾。用户没写的部分，用读图补上身份和场景。");
   // The ready reply is painted while `sending` is still true, and a done project stops polling.
   if (current) syncControlButtons(current);
 }
@@ -2363,15 +2367,23 @@ function refreshVideoElement(video, url, now) {
   if (video.dataset && video.dataset.url && sameMediaUrl(video.dataset.url, url)) {
     if (mediaUrlFresh(video.dataset.url, now) && mediaUrlFresh(url, now)) return "same";
     const time = video.currentTime || 0;
-    const paused = video.paused !== false;
+    const wasPlaying = video.paused === false;
+    if (video.removeEventListener && video.mediaRestore) {
+      video.removeEventListener("loadedmetadata", video.mediaRestore);
+    }
     video.dataset.url = url;
     video.src = url;
     const restore = function () {
       try { video.currentTime = time; } catch (_error) {}
-      if (paused && video.pause) video.pause();
+      if (wasPlaying && video.play) {
+        const played = video.play();
+        if (played && played.catch) played.catch(() => {});
+      } else if (video.pause) video.pause();
       if (video.removeEventListener) video.removeEventListener("loadedmetadata", restore);
+      if (video.mediaRestore === restore) video.mediaRestore = null;
     };
-    if (video.addEventListener) video.addEventListener("loadedmetadata", restore);
+    video.mediaRestore = restore;
+    if (video.addEventListener) video.addEventListener("loadedmetadata", restore, { once: true });
     return "refresh";
   }
   return "replace";
@@ -2470,6 +2482,11 @@ function watch() {
   const token = watch.token;
   const projectId = current && current.id;
   watch.busy = false;
+  watch.fails = 0;
+  if (watch.lostNotice) {
+    watch.lostNotice = false;
+    setSaveState("");
+  }
   if (!keepWatching(current)) return;
   timer = setInterval(async () => {
     if (watch.busy) return;
@@ -2478,6 +2495,13 @@ function watch() {
     try {
       const tick = await rpc("projects.tick", { id: projectId });
       if (token !== watch.token || !current || !tick || current.id !== tick.id) return;
+      if (watch.fails || watch.lostNotice) {
+        watch.fails = 0;
+        if (watch.lostNotice) {
+          watch.lostNotice = false;
+          setSaveState("");
+        }
+      }
       const previous = {
         id: current.id,
         status: current.status,
@@ -2485,6 +2509,7 @@ function watch() {
         question: current.question,
         content_revision: current.content_revision,
         progress: current.progress,
+        tasks: current.tasks,
       };
       applyProjectTick(current, tick);
       applyWorkerQueue(projects, tick.worker_queue);
@@ -2506,14 +2531,30 @@ function watch() {
         syncDock(current);
         syncControlButtons(current);
         syncComposer();
-        if (previous.can_reply !== current.can_reply || previous.question !== current.question) {
-          paintTranscript({}, false);
+        // progress 不进 content_revision：tick 也要重绘置顶面板/进度条，
+        // transcriptKey 早退控开销；full 参数与 renderThread 的模式分支一致。
+        if (previous.can_reply !== current.can_reply
+          || JSON.stringify(previous.question || null) !== JSON.stringify(current.question || null)) {
+          paintTranscript.key = "";
+        }
+        paintTranscript({}, !workflowMode(current));
+        if (canvasNodes && workflowMode(current)
+          && JSON.stringify(previous.tasks || []) !== JSON.stringify(current.tasks || [])) {
+          patchCanvas(current);
         }
       }
       if (debugDockIsOpen(debugDock)) refreshLogs();
       probeRevision(current);
       if (!keepWatching(current)) clearInterval(timer);
     } catch (_error) {
+      // rpc 带超时，busy 在 finally 复位；连续失败给出可见提示，恢复后清除。
+      if (token === watch.token) {
+        watch.fails = (watch.fails || 0) + 1;
+        if (watch.fails >= 3 && !watch.lostNotice) {
+          watch.lostNotice = true;
+          setSaveState("连接中断，正在重试");
+        }
+      }
       return;
     } finally {
       if (token === watch.token) watch.busy = false;
@@ -2798,6 +2839,14 @@ function isBriefDisabled() {
   return !!briefEl.disabled;
 }
 
+function setBriefPlaceholder(text) {
+  if (!briefEl) return;
+  const value = String(text || "");
+  // contenteditable div 的占位符由 CSS attr(data-placeholder) 渲染。
+  if (isRichBrief()) briefEl.dataset.placeholder = value;
+  else briefEl.placeholder = value;
+}
+
 function isTitleChar(char) {
   if (" _-—".indexOf(char) >= 0) return true;
   if (char >= "\u4e00" && char <= "\u9fff") return true;
@@ -2896,8 +2945,14 @@ function syncDraftMaterialsFromEditor(root) {
   const ids = [];
   const labels = editor.querySelectorAll ? editor.querySelectorAll(".material-label") : [];
   for (let i = 0; i < labels.length; i += 1) {
-    const id = labels[i].dataset && labels[i].dataset.id;
-    if (id) ids.push(id);
+    const label = labels[i];
+    const id = label.dataset && label.dataset.id;
+    // 原生 undo 可能恢复已删除标签的 DOM，但文件条目已不在：移除孤儿，保 DOM 与数据一致。
+    if (!id || !draftMaterials.some((entry) => entry.id === id)) {
+      if (label.parentNode) label.parentNode.removeChild(label);
+      continue;
+    }
+    ids.push(id);
   }
   const keep = {};
   ids.forEach((id) => { keep[id] = true; });
@@ -3228,6 +3283,8 @@ function bindBriefComposer() {
     resizeBrief();
   });
   briefEl.addEventListener("keydown", (event) => {
+    // IME 组合态的回车是确认候选词，不能当成发送。
+    if (event.isComposing || event.keyCode === 229) return;
     if (isRichBrief() && (event.key === "Backspace" || event.key === "Delete")) {
       if (removeAdjacentMaterialLabel(event.key === "Backspace" ? -1 : 1)) {
         event.preventDefault();
@@ -3246,17 +3303,38 @@ function bindBriefComposer() {
     if (text && document.execCommand) document.execCommand("insertText", false, text);
   });
   briefEl.addEventListener("dragover", (event) => {
-    if (!draggingMaterialId) return;
+    // 外部拖拽也拦下默认行为，否则浏览器会把任意 HTML 直接插进编辑器。
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
+    event.dataTransfer.dropEffect = draggingMaterialId ? "move" : "copy";
   });
   briefEl.addEventListener("drop", (event) => {
-    if (!draggingMaterialId) return;
     event.preventDefault();
-    const label = briefEl.querySelector('.material-label[data-id="' + draggingMaterialId + '"]');
+    if (draggingMaterialId) {
+      const label = briefEl.querySelector('.material-label[data-id="' + draggingMaterialId + '"]');
+      const range = rangeFromPoint(event.clientX, event.clientY);
+      if (label && range) moveMaterialLabelToRange(label, range, briefEl);
+      draggingMaterialId = "";
+      return;
+    }
+    // 与 paste 同一净化策略：只收纯文本与图片文件，拒收 text/html。
+    const data = event.dataTransfer;
+    if (!data) return;
     const range = rangeFromPoint(event.clientX, event.clientY);
-    if (label && range) moveMaterialLabelToRange(label, range, briefEl);
-    draggingMaterialId = "";
+    if (range && window.getSelection) {
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    const files = [...(data.files || [])];
+    if (files.length) {
+      const result = acceptDraftFiles(files);
+      if (result.overflow) alert("一次最多 8 张图");
+      if (result.skipped) alert("只接受 png、jpeg、webp");
+      result.accepted.forEach((item) => insertMaterialLabelAtCaret(item, briefEl));
+      return;
+    }
+    const text = data.getData("text/plain") || "";
+    if (text && document.execCommand) document.execCommand("insertText", false, text);
   });
   syncBriefEmpty();
 }
@@ -4890,6 +4968,26 @@ function applyResignedMedia(result) {
       if (clip && clip.url && sameMediaUrl(currentSrc, clip.url)) next = clip.url;
     }
     if (next) refreshVideoElement(video, next);
+  }
+  // 下载锚点同样指向限时签名 URL，重签名后一并刷新，否则点“下载”会 403。
+  const links = document.querySelectorAll(".clip-card a.download");
+  for (let index = 0; index < links.length; index += 1) {
+    const link = links[index];
+    const currentHref = (link.dataset && link.dataset.url) || link.href;
+    if (!currentHref) continue;
+    let next = "";
+    if (current.video_url && sameMediaUrl(currentHref, current.video_url)) {
+      next = current.video_download_url || current.video_url;
+    }
+    const clips = current.clips || [];
+    for (let clipIndex = 0; !next && clipIndex < clips.length; clipIndex += 1) {
+      const clip = clips[clipIndex];
+      if (clip && clip.url && sameMediaUrl(currentHref, clip.url)) next = clip.download_url || clip.url;
+    }
+    if (next && link.href !== next) {
+      link.href = next;
+      if (link.dataset) link.dataset.url = next;
+    }
   }
 }
 

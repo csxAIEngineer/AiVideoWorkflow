@@ -2152,5 +2152,134 @@ class PackingShotAfterDialogueFoldTest(unittest.TestCase):
         self.assertFalse(any("[Shot 1] 没有正文" in item for item in failures), failures)
 
 
+class PackingFoldContentRegressionTest(unittest.TestCase):
+    """WS-1/2/3/7/8/9: feed fold must not silently drop picture or dialogue."""
+
+    def _skeleton(self, unit="1/1", duration=10, shots=("分镜1（00:00.000-00:10.000）：",)):
+        lines = [
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "不要输出 JSON，不要写 summary。",
+            "",
+            "## 【封装单元 %s】" % unit,
+            "duration: %s" % duration,
+            "总体描述:",
+            "参考素材引用:",
+            "分镜:",
+            *shots,
+            "台词:",
+            "音效 / BGM:",
+            "风格 / 情绪:",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        ]
+        return "\n".join(lines) + "\n"
+
+    def test_ws1_labeled_picture_lines_stay_in_shot_body(self):
+        skeleton = self._skeleton(shots=(
+            "分镜1（00:00.000-00:05.000）：",
+            "分镜2（00:05.000-00:10.000）：",
+        ))
+        note = "\n".join((
+            "## 【封装单元 1/1】",
+            "分镜:",
+            "分镜1（00:00.000-00:05.000）：",
+            "镜头：缓推",
+            "光线：冷色调",
+            "空镜：清晨的码头。",
+            "分镜2（00:05.000-00:10.000）：",
+            "画面：码头全景",
+            "音效：风声",
+        ))
+        draft = fold_stage_draft("feed", "任务：提示词封装\n\n" + skeleton, [note])
+        fenjing = draft.split("分镜:", 1)[1].split("台词:", 1)[0]
+        for mark in ("镜头：缓推", "光线：冷色调", "空镜：清晨的码头。", "画面：码头全景", "音效：风声"):
+            self.assertIn(mark, fenjing)
+        self.assertIn("分镜2（00:05.000-00:10.000）：", fenjing)
+
+    def test_ws2_shot_fill_keeps_dialogue_and_following_picture(self):
+        skeleton = self._skeleton()
+        note = "\n".join((
+            "## 【封装单元 1/1】",
+            "分镜:",
+            "分镜1（00:00.000-00:10.000）：",
+            '小明说："走吧。"',
+            "他转身推门，镜头跟拍。",
+        ))
+        draft = fold_stage_draft("feed", "任务：提示词封装\n\n" + skeleton, [note])
+        fenjing = draft.split("分镜:", 1)[1].split("台词:", 1)[0]
+        self.assertIn('小明说："走吧。"', fenjing)
+        self.assertIn("他转身推门，镜头跟拍。", fenjing)
+
+    def test_ws3_polluted_dialogue_keeps_specialist_new_line(self):
+        skeleton = "\n".join((
+            "万相 3.0 的封装骨架已经按封装单元写好。只填每个字段名下面的正文。",
+            "",
+            "## 【封装单元 1/1】",
+            "duration: 10",
+            "总体描述:",
+            "分镜:",
+            "分镜1（00:00.000-00:05.000）：",
+            "分镜2（00:05.000-00:10.000）：",
+            "台词:",
+            '小明说："走吧。"',
+            "分镜2（00:05.000-00:10.000）：",
+            "画面动作。",
+            "负向清单:",
+            "不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        note = "\n".join((
+            "## 【封装单元 1/1】",
+            "台词:",
+            '小红说："等等。"',
+        ))
+        draft = fold_stage_draft("feed", "任务：提示词封装\n\n" + skeleton, [note])
+        taici = draft.split("台词:", 1)[1].split("负向清单:", 1)[0]
+        self.assertIn('小明说："走吧。"', taici)
+        self.assertIn('小红说："等等。"', taici)
+
+    def test_ws7_instruction_prefix_not_leaked_into_draft(self):
+        skeleton = self._skeleton()
+        draft = fold_stage_draft("feed", "任务：提示词封装\n\n" + skeleton, [])
+        self.assertNotIn("只填每个字段名", draft)
+        self.assertNotIn("不要输出 JSON", draft)
+        self.assertTrue(draft.lstrip().startswith("## 【封装单元"), draft)
+
+    def test_ws8_multi_unit_refill_accepts_unit_label_reply(self):
+        from Agents.workers.skeleton_fold import (
+            _feed_missing_slots,
+            apply_missing_slot_refill,
+            missing_slot_refill_prompt,
+        )
+
+        skeleton = "\n\n".join((
+            "## 【封装单元 1/2】\nduration: 10\n总体描述:\n分镜:\n分镜1（00:00.000-00:10.000）：\n台词:\n负向清单:\n不要字幕、不要水印、不要复杂文字",
+            "## 【封装单元 2/2】\nduration: 10\n总体描述:\n分镜:\n分镜1（00:00.000-00:10.000）：\n台词:\n负向清单:\n不要字幕、不要水印、不要复杂文字",
+        )) + "\n"
+        missing = _feed_missing_slots(skeleton)
+        prompt = missing_slot_refill_prompt("feed", skeleton, missing)
+        self.assertIn("【封装单元 N/M】", prompt)
+        reply = "单元1 总体描述：城市夜景。\n单元2 总体描述：海边日出。"
+        folded = json.loads(apply_missing_slot_refill("feed", skeleton, reply))["feed"]
+        first, second = folded.split("## 【封装单元 2/2】", 1)
+        self.assertIn("城市夜景", first)
+        self.assertIn("海边日出", second)
+
+    def test_ws9_truncated_json_emoji_surrogate_pair_encodes(self):
+        from Agents.workers.skeleton_fold import _cards_from_truncated_json, _json_string_values
+
+        raw = '{"image_prompts":["#### 图1\\n整板：\\ud83d\\ude00 笑脸。"]}'
+        decoded = "".join(_json_string_values(raw))
+        decoded.encode("utf-8")
+        self.assertIn("\U0001f600", decoded)
+        cards = _cards_from_truncated_json(raw)
+        self.assertTrue(cards)
+        cards[0].encode("utf-8")
+        self.assertIn("\U0001f600", cards[0])
+        # A lone surrogate is replaced, not left to crash downstream UTF-8.
+        lone = "".join(_json_string_values('["\\ud83d"]'))
+        lone.encode("utf-8")
+        self.assertNotIn("\ud83d", lone)
+
+
 if __name__ == "__main__":
     unittest.main()

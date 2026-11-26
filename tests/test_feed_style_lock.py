@@ -298,17 +298,16 @@ class StyleBriefTest(unittest.TestCase):
         brief = generator_messages(state)[-1]["content"]
         self.assertIn("不要改写画风", brief)
         self.assertIn(LOCK, brief)
-        self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", brief)
+        # 万相封装只挂 SKILL.md 和 wan-adapter（288187b）；画风锁修补点名这两个写手。
+        self.assertIn("sd-feed-engine/SKILL.md", brief)
         self.assertIn("short-drama-director/references/wan-adapter.md", brief)
-        self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", brief)
         self.assertNotIn("时长或对白没过", brief)
         self.assertNotIn("请写画风", brief)
         self.assertEqual(
             packing_repair_targets(state["machine_report"], h3=True),
             [
-                "sd-feed-engine/references/feed-mode-and-gates.md",
+                "sd-feed-engine/SKILL.md",
                 "short-drama-director/references/wan-adapter.md",
-                "short-drama-director/references/prompt-feeding-checklist.md",
             ],
         )
         self.assertEqual(packing_repair_targets({"errors": ["FAIL: H1 缺段"]}, h3=True), [])

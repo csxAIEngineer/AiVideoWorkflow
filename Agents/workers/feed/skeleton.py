@@ -156,7 +156,9 @@ def packing_shot_skeleton(state, limit=None):
     if limit is None:
         limit = clip_limit(locks=(state or {}).get("locks"))
     runner = importlib.import_module("end.stage_runner")
-    groups = runner.group_shot_durations([row["duration"] for row in rows], limit)
+    groups = runner.group_shot_durations(
+        [row["duration"] for row in rows], limit, locks=(state or {}).get("locks")
+    )
     skeleton = []
     cursor = 0
     for group in groups:

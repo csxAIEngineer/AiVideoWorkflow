@@ -120,8 +120,12 @@ class DurationChoiceTest(unittest.TestCase):
         self.assertIn("isDurationAsk(current)", paint)
         self.assertIn("!isDurationAsk(current)", paint)
         self.assertIn("choiceList(choice)", paint)
-        self.assertIn("if (durationBox) wrap.append(durationBox);", paint)
-        self.assertLess(paint.index("progressPanel(current)"), paint.index("wrap.append(durationBox)"))
+        # workflow 重构后时长选项统一进 pinActions：workflow 分支置顶（fillChatPin），full 分支追加到 wrap。
+        self.assertIn("if (durationBox) pinActions.push(durationBox);", paint)
+        self.assertLess(paint.index("pinActions.push(durationBox)"), paint.index("fillChatPin("))
+        tail = source.split("const durationBox = ", 1)[1]
+        full_paint = tail.split("\nasync function ", 1)[0].split("\nfunction ", 1)[0]
+        self.assertIn("pinActions.forEach((node) => wrap.append(node));", full_paint)
         send = source.split("async function sendText", 1)[1].split("const materialFile", 1)[0]
         self.assertIn('rpc("projects.send_message"', send)
         self.assertIn("text: body", send)

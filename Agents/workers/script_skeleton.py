@@ -362,12 +362,14 @@ def _restore_lock_lines(text, locks):
     aspect = str(locks.get("aspect") or "").strip()
     style = str(locks.get("style_look") or locks.get("style") or "").strip()
     raw = str(text or "")
+    # Replacement functions keep user text out of the re.sub replacement template,
+    # so a backslash in aspect/style is literal, not a bad escape.
     if seconds not in (None, "") and _DURATION_LINE.search(raw):
-        raw = _DURATION_LINE.sub(r"\g<1>" + "%s 秒" % seconds, raw, count=1)
+        raw = _DURATION_LINE.sub(lambda m: m.group(1) + "%s 秒" % seconds, raw, count=1)
     if aspect and _ASPECT_LINE.search(raw):
-        raw = _ASPECT_LINE.sub(r"\g<1>" + aspect, raw, count=1)
+        raw = _ASPECT_LINE.sub(lambda m: m.group(1) + aspect, raw, count=1)
     if style and _STYLE_LINE.search(raw):
-        raw = _STYLE_LINE.sub(r"\g<1>" + style, raw, count=1)
+        raw = _STYLE_LINE.sub(lambda m: m.group(1) + style, raw, count=1)
     return raw
 
 

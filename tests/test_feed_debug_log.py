@@ -115,7 +115,8 @@ class FeedDebugLogTest(unittest.TestCase):
             "script": "画风：冷白",
             "locks": {"model": "h3"},
             "storyboard": "",
-            "shots": [{"duration": 10}, {"duration": 10}],
+            # h3 现在向 30s 封装（cc9f410）；20+20 超 30 仍拆两个单元，保持 planned_units=2。
+            "shots": [{"duration": 20}, {"duration": 20}],
             "partials": [],
         }
         path = write_feed_debug(

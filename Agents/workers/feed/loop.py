@@ -97,6 +97,7 @@ def generator_messages(state):
         state.get("critic_report"),
         state.get("machine_report"),
     )
+    note = packing_plan_note(state)
     if note:
         user = user + "\n\n" + note
     errors = _machine_text(state.get("machine_report"))
@@ -222,8 +223,9 @@ def compile_feed_graph(complete, checker=None):
         raw = produced.get("raw") or ""
         previous = str(state.get("draft") or "")
         extracted, extract_source = _extract_feed_source(raw, previous)
-        planned_text = apply_packing_plan(extracted, state)
-        fold_source = _join_fold_source(extract_source, apply_packing_plan.last_fold_source)
+        plan_meta = {}
+        planned_text = apply_packing_plan(extracted, state, meta=plan_meta)
+        fold_source = _join_fold_source(extract_source, plan_meta.get("fold_source", ""))
         draft = _patch_voiceover(planned_text)
         if attempt > 1:
             base = last_complete_draft(state)

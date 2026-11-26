@@ -15,6 +15,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Root-level shared constants (process-split neutral: end/AI/Agents all import it).
+COPY product_names.py locks.py storyboard_contract.py ./
+
 # Front is static, End serves it, Agents is the JSON-RPC process. AI stays on disk as its backend.
 COPY AI/__init__.py AI/script.py AI/api.py AI/server.py AI/vision.py ./AI/
 COPY AI/agent ./AI/agent
@@ -24,7 +27,9 @@ COPY AI/skills ./AI/skills
 COPY Agents ./Agents
 COPY end ./end
 COPY front ./front
-COPY config ./config
+# Only the video catalog ships in the image. config/qwen.json (env=test) must
+# not override QWEN_BASE_URL / key-var selection in container deployments.
+COPY config/video_catalog.json ./config/
 COPY deploy/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh \

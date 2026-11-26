@@ -279,18 +279,32 @@ def _h3_fields(text):
 
 def _wan_fields(text):
     """Official Wan section bodies, or None when the unit is not Wan-shaped."""
-    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, canonical_wan_name
+    from Agents.workers.feed.wan_format import WAN_FIELD_LINE, WAN_SHOT_HEADING, canonical_wan_name
 
     raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    headers = []
+    marks = []
     offset = 0
     for line in raw.splitlines(keepends=True):
         core = line[:-1] if line.endswith("\n") else line
         match = WAN_FIELD_LINE.match(core)
         name = canonical_wan_name(match.group("name")) if match else ""
         if name:
-            headers.append((name, offset, offset + len(line), (match.group("rest") or "").strip()))
+            marks.append((name, offset, offset + len(line), (match.group("rest") or "").strip()))
+        elif WAN_SHOT_HEADING.match(core):
+            marks.append(("", offset, offset + len(line), ""))
         offset += len(line)
+    headers = []
+    in_shots = False
+    for index, (name, start, end, rest) in enumerate(marks):
+        if not name:
+            continue
+        # A 台词： line left inside the 分镜 body is body text, not a new
+        # section, when a timed 分镜 heading follows it: treating it as a
+        # header would steal the later shot blocks into the 台词 section.
+        if in_shots and index + 1 < len(marks) and not marks[index + 1][0]:
+            continue
+        in_shots = name == "分镜"
+        headers.append((name, start, end, rest))
     if not headers:
         return None
     fields = {"__preamble": raw[: headers[0][1]].strip(), "__order": []}

@@ -313,5 +313,17 @@ class ScriptOfficialGateTest(unittest.TestCase):
         self.assertIn("出场", report)
 
 
+class RestoreLockLinesEscapeTest(unittest.TestCase):
+    def test_ws12_backslash_in_user_lock_text_is_literal(self):
+        from Agents.workers.script_skeleton import _restore_lock_lines
+
+        locks = {"duration_seconds": 30, "aspect": "16\\9", "style_look": "赛博\\朋克"}
+        text = "成片时长秒：99\n成片画幅：old\n画风正文：old\n"
+        restored = _restore_lock_lines(text, locks)
+        self.assertIn("成片时长秒：30 秒", restored)
+        self.assertIn("成片画幅：16\\9", restored)
+        self.assertIn("画风正文：赛博\\朋克", restored)
+
+
 if __name__ == "__main__":
     unittest.main()

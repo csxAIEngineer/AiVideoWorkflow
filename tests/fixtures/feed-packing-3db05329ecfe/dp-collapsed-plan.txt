@@ -1,0 +1,52 @@
+## 【封装单元 1/4】
+duration: 13
+资产：图1，图4，图2，图6
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+<Subject 1> The young woman (20-25 years old) with a soft, round face, large dark-brown almond eyes, slender build, black medium-length hair falling to her shoulders with light bangs, wearing a white round-neck cotton short-sleeve top and light-blue cotton shorts, barefoot, sits on the edge of a bed. Her voice is soft, worried, gentle, with a slightly trembling tone at a moderate pace.
+<Subject 2> A red spiky ball-shaped tiny monster (fist-sized, no gender) covered in short red spines with darker red tips, a small round light-orange belly patch, two short feet with three toes, two short arms with three-fingered round pads, large round pitch-black eyes, a wide W-shaped jagged mouth with tiny white fangs, no nose, two dark-red cheek patches, three upright dark-red spines on its head. Its voice is squeaky, shrill, chaotic, tiny, at a fast pace.
+<Subject 3> The bedroom at night: a single bed on the right side of the frame, a light-wood bedside table next to the bed, a window with half-drawn curtains showing a dark blue night sky on the left wall, a white wardrobe on the far wall, a light-gray round rug on the floor, warm yellow lamplight from a bedside lamp, soft dim atmosphere.
+<Subject 4> The skin surface micro-world: a vast light-pink skin surface with fine diamond grid texture, several raised red bumps of varying sizes, white flaky skin debris scattered, tiny floating blue light particles in the air, soft blue-white ambient light.
+detailed_description:
+[Shot 1]
+[Shot 2] At 00:04.000,
+[Shot 3] At 00:09.000,
+overall_soundscape:
+non_diegetic_music:
+
+## 【封装单元 2/4】
+duration: 10
+资产：图8，图4，图1，图3，图9，图2，图6
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+detailed_description:
+[Shot 1]
+[Shot 2] At 00:03.000,
+[Shot 3] At 00:06.000,
+overall_soundscape:
+non_diegetic_music:
+
+## 【封装单元 3/4】
+duration: 12
+资产：图3，图9，图2，图6，图1
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+detailed_description:
+[Shot 1]
+[Shot 2] At 00:04.000,
+[Shot 3] At 00:08.000,
+overall_soundscape:
+non_diegetic_music:
+
+## 【封装单元 4/4】
+duration: 14
+资产：图1，图4，图8，A1
+subject_definitions:
+画面风格：手绘赛璐璐 · 粗描边 · 平涂色块 · 经典动画质感
+detailed_description:
+[Shot 1]
+[Shot 2] At 00:04.000,
+[Shot 3] At 00:08.000,
+[Shot 4] At 00:12.000,
+overall_soundscape:
+non_diegetic_music:

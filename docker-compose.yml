@@ -36,7 +36,10 @@ services:
       ai:
         condition: service_healthy
     ports:
-      - "8787:8787"
+      # Loopback only: public access must go through an authenticating reverse
+      # proxy (and, once the account system lands, user sessions). The RPC and
+      # /media surfaces are not safe to expose anonymously on a public IP.
+      - "127.0.0.1:8787:8787"
     env_file:
       - .env
     environment:

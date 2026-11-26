@@ -507,6 +507,71 @@ class ShotContractTest(unittest.TestCase):
         self.assertTrue(running["first_frame"]["pending"])
         self.assertFalse(running["first_frame"]["available"])
 
+    def test_oss_first_frame_url_is_refreshed_from_the_stored_canonical(self):
+        # MO-3: end_image_url holds an unsigned OSS canonical address; the panel
+        # must hand the browser a presigned URL, not the canonical one (403).
+        spec = {
+            "assets": [{"id": "图1", "title": "女主", "prompt": "woman"}],
+            "shots": [
+                {"id": "S01", "duration": 5, "prompt": "开场", "images": ["图1"]},
+                {
+                    "id": "S02",
+                    "duration": 5,
+                    "prompt": "接上",
+                    "images": ["图1"],
+                    "video_mode": "first_frame",
+                    "first_frame_source": "previous_tail",
+                },
+            ],
+        }
+        canonical = (
+            "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com"
+            "/projects/aabbcc000007/images/S01_tail.jpg"
+        )
+        folder = self._save("aabbcc000007", spec, {
+            "steps": {
+                "S01": {
+                    "kind": "video",
+                    "status": "done",
+                    "output_file": "clips/S01.mp4",
+                    "video_mode": "reference",
+                    "end_image": "S01_tail",
+                    "end_image_url": canonical,
+                },
+            },
+        })
+        clip = folder / "outputs" / "clips" / "S01.mp4"
+        clip.parent.mkdir(parents=True)
+        clip.write_bytes(b"fake-mp4")
+        oss_env = {
+            "AIVIDEO_IMAGE_STORE": "oss",
+            "AIVIDEO_OSS_BUCKET": "demo-bucket",
+            "AIVIDEO_OSS_DOMAIN": "https://demo-bucket.oss-cn-hangzhou.aliyuncs.com",
+            "AIVIDEO_OSS_ACCESS_KEY_ID": "LTAI_DEMO_KEY",
+            "AIVIDEO_OSS_ACCESS_KEY_SECRET": "demoSecret",
+        }
+        saved = {key: os.environ.get(key) for key in oss_env}
+        os.environ.update(oss_env)
+        try:
+            with patch("end.image_store.store._put_oss", _forbid), \
+                    patch("end.image_store.store._put_cos", _forbid):
+                shot = self._view("aabbcc000007")["shots"][1]
+                from end.image_store import get_image_store
+
+                persistent = get_image_store().persistent_url(shot["first_frame"]["url"])
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        url = shot["first_frame"]["url"]
+        self.assertTrue(shot["first_frame"]["available"])
+        self.assertFalse(shot["first_frame"]["pending"])
+        self.assertIn("OSSAccessKeyId=LTAI_DEMO_KEY", url)
+        self.assertIn("Signature=", url)
+        self.assertEqual(persistent, canonical)
+
     def test_a_recorded_submit_beats_a_new_prediction(self):
         spec = {
             "assets": [{"id": "图1", "title": "女主", "prompt": "woman"}],

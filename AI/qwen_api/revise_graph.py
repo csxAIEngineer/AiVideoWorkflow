@@ -15,7 +15,7 @@ from langgraph.graph import END, START, StateGraph
 from AI.qwen_api.graph import TextState, prompt_debug_enabled
 from AI.qwen_api.suite_graph import _complete, _node_text, _object, _retry_empty
 from AI.script import normalize_model
-from end.product_names import UNIT_HEAD_ANY, UNIT_NAME, UNIT_TOKEN
+from product_names import UNIT_HEAD_ANY, UNIT_NAME, UNIT_TOKEN
 
 _TOKENS = 8000
 _RETRY_TOKENS = 8000

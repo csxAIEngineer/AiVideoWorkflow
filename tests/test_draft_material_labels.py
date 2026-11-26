@@ -448,6 +448,128 @@ class DraftMaterialLabelTest(unittest.TestCase):
         failed = [item for item in report["cases"] if not item["ok"]]
         self.assertEqual(failed, [], msg=json.dumps(failed, ensure_ascii=False, indent=2))
 
+    def test_external_drop_is_sanitized_and_ime_enter_does_not_send(self):
+        report = run_js(
+            r"""
+            const cases = [];
+            function check(name, actual, expected) {
+              cases.push({
+                name: name,
+                ok: JSON.stringify(actual) === JSON.stringify(expected),
+                actual: actual,
+                expected: expected,
+              });
+            }
+            const alerts = [];
+            const alert = (message) => { alerts.push(message); };
+            let submitted = 0;
+            const form = { requestSubmit() { submitted += 1; } };
+            briefEl = document.createElement("div");
+            briefEl.id = "brief";
+            briefEl.className = "brief-input";
+            briefEl.setAttribute("contenteditable", "true");
+            document.body.append(briefEl);
+            document.execCommand = (command, ui, text) => {
+              if (command === "insertText") briefEl.appendChild(document.createTextNode(text));
+            };
+            bindBriefComposer();
+            function keyEvent(extra) {
+              return Object.assign({
+                type: "keydown", key: "Enter", shiftKey: false, isComposing: false, keyCode: 13,
+                defaultPrevented: false, preventDefault() { this.defaultPrevented = true; },
+              }, extra);
+            }
+            briefEl.dispatchEvent(keyEvent({ isComposing: true }));
+            briefEl.dispatchEvent(keyEvent({ keyCode: 229 }));
+            check("ime-enter-not-sent", submitted, 0);
+            briefEl.dispatchEvent(keyEvent({}));
+            check("plain-enter-sent", submitted, 1);
+            function dropEvent(data) {
+              return {
+                type: "drop", clientX: 0, clientY: 0, dataTransfer: data,
+                defaultPrevented: false, preventDefault() { this.defaultPrevented = true; },
+              };
+            }
+            const htmlDrop = dropEvent({ files: [], getData: (kind) => (kind === "text/html" ? "<img src=x onerror=alert(1)>" : "") });
+            briefEl.dispatchEvent(htmlDrop);
+            check("html-drop-prevented", htmlDrop.defaultPrevented, true);
+            check("html-not-injected", briefEl.querySelectorAll("img").length, 0);
+            check("html-not-text", briefEl.textContent, "");
+            const textDrop = dropEvent({ files: [], getData: (kind) => (kind === "text/plain" ? "外部文本" : "") });
+            briefEl.dispatchEvent(textDrop);
+            check("text-drop-prevented", textDrop.defaultPrevented, true);
+            check("text-inserted", serializeComposer(briefEl).text, "外部文本");
+            const imageDrop = dropEvent({ files: [{ name: "外图.png", type: "image/png" }], getData: () => "" });
+            briefEl.dispatchEvent(imageDrop);
+            check("image-drop-prevented", imageDrop.defaultPrevented, true);
+            check("image-becomes-label", briefEl.querySelectorAll(".material-label").length, 1);
+            check("image-serialized", serializeComposer(briefEl), { text: "外部文本【U1 外图】", ids: ["m1"] });
+            const badDrop = dropEvent({ files: [{ name: "note.txt", type: "text/plain" }], getData: () => "" });
+            briefEl.dispatchEvent(badDrop);
+            check("non-image-file-rejected", briefEl.querySelectorAll(".material-label").length, 1);
+            check("non-image-alert", alerts, ["只接受 png、jpeg、webp"]);
+            console.log(JSON.stringify({ cases: cases }));
+            """
+        )
+        failed = [item for item in report["cases"] if not item["ok"]]
+        self.assertEqual(failed, [], msg=json.dumps(failed, ensure_ascii=False, indent=2))
+
+    def test_undo_orphan_label_is_removed_before_send(self):
+        report = run_js(
+            r"""
+            const cases = [];
+            function check(name, actual, expected) {
+              cases.push({
+                name: name,
+                ok: JSON.stringify(actual) === JSON.stringify(expected),
+                actual: actual,
+                expected: expected,
+              });
+            }
+            briefEl = document.createElement("div");
+            briefEl.id = "brief";
+            briefEl.className = "brief-input";
+            briefEl.setAttribute("contenteditable", "true");
+            document.body.append(briefEl);
+            briefEl.appendChild(document.createTextNode("看图："));
+            const added = acceptDraftFiles([{ name: "菜花.jpg", type: "image/jpeg" }]);
+            const label = insertMaterialLabelAtCaret(added.accepted[0], briefEl);
+            removeDraftMaterial(label.dataset.id, briefEl);
+            check("removed", briefEl.querySelectorAll(".material-label").length, 0);
+            // 原生 undo 把已删标签的 DOM 节点恢复回来，但文件条目已经不在。
+            briefEl.appendChild(label);
+            const snapshot = captureComposerSend(briefEl);
+            check("orphan-label-removed", briefEl.querySelectorAll(".material-label").length, 0);
+            check("orphan-no-token", snapshot.text, "看图：");
+            check("orphan-no-materials", snapshot.materials, []);
+            check("orphan-no-ids", snapshot.ids, []);
+            console.log(JSON.stringify({ cases: cases }));
+            """
+        )
+        failed = [item for item in report["cases"] if not item["ok"]]
+        self.assertEqual(failed, [], msg=json.dumps(failed, ensure_ascii=False, indent=2))
+
+    def test_placeholder_updates_dataset_for_contenteditable(self):
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn("function setBriefPlaceholder(", app)
+        sync = app.split("function syncComposer()", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("setBriefPlaceholder(", sync)
+        self.assertNotIn("briefEl.placeholder =", sync)
+        report = run_js(
+            r"""
+            briefEl = document.createElement("div");
+            briefEl.setAttribute("contenteditable", "true");
+            setBriefPlaceholder("或者直接写秒数");
+            const rich = briefEl.dataset.placeholder;
+            const plain = document.createElement("textarea");
+            briefEl = plain;
+            setBriefPlaceholder("写下你的方向");
+            console.log(JSON.stringify({ rich: rich, plain: plain.placeholder }));
+            """
+        )
+        self.assertEqual(report["rich"], "或者直接写秒数")
+        self.assertEqual(report["plain"], "写下你的方向")
+
     def test_material_title_matches_server(self):
         from end.intake import material_title
 

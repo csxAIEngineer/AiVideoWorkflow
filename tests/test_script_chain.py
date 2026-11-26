@@ -116,7 +116,8 @@ class ScriptChainRunTest(unittest.TestCase):
         script_calls = [call for call in calls if "任务：剧本" in call]
         self.assertGreater(len(script_calls), 1)
         self.assertTrue(any("独有的用户故事句子" in call and "用户原文" in call for call in script_calls))
-        self.assertTrue(any("各节点正文" in call and "节点正文" in call for call in script_calls))
+        # 汇总节点不再携带任务行/完整简报（generator 精简），在全部调用里找汇总。
+        self.assertTrue(any("各节点正文" in call and "节点正文" in call for call in calls))
         self.assertFalse(any(
             "# 本节点原文 sd-script-engine/references/source-registration.md" in call
             for call in calls
@@ -268,7 +269,8 @@ class ScriptReplayTest(unittest.TestCase):
         with patch("end.stage_runner.check_stage", return_value=(True, "")):
             execute(project, folder, {"duration_seconds": 60, "aspect": "16:9"}, writer, lambda *args, **kwargs: "pack")
         self.assertGreater(len(calls), 1)
-        self.assertTrue(all("任务：剧本" in call for call in calls))
+        # 专员调用带任务行；汇总调用只带短指令（各节点正文），不再带任务行。
+        self.assertTrue(all("任务：剧本" in call or "各节点正文" in call for call in calls))
         self.assertTrue(any("角色留下" in call for call in calls))
         self.assertTrue(all("独有的用户故事句子" not in call for call in calls))
         self.assertTrue(all("剧本步：1" not in call for call in calls))

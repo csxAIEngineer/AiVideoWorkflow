@@ -124,6 +124,8 @@ class ShortDramaSkillTest(unittest.TestCase):
         self.assertFalse(locks_ready("拍一支雨夜短片"))
         self.assertFalse(locks_ready("赛道：1\n素材来源：1\n画幅：16:9\n画风：冷色写实\n动作强度：R1"))
         self.assertTrue(locks_ready(LOCKED))
+        # 交付锁已废止（AI-6）：不再是 ready 的必要条件。
+        self.assertTrue(locks_ready(LOCKED.replace("交付：③\n", "")))
         shape = json_shape(brief=LOCKED)
         self.assertIn("本片画幅以简报为准：16:9", shape)
         self.assertNotIn("画幅 9:16", shape)
@@ -198,17 +200,12 @@ class PromptGateTest(unittest.TestCase):
         ) as start:
             run_project("stagewrite01")
         start.assert_not_called()
-        self.assertEqual(stages, ["P1", "P2", "P3", "P4"])
+        # 正式剧本须人工确认后才进下游（script_review 门，main 上已存在）：
+        # 写作停在 P1 剧本门，不再自动跑完 P2~P4 到看板。
+        self.assertEqual(stages, ["P1"])
         saved = read_project("stagewrite01")
-        self.assertEqual(saved["status"], "done")
-        self.assertEqual(saved["progress"]["phase"], "prompts_ready")
-        folder = project_dir("stagewrite01")
-        self.assertIn("integrated_multimodal_description", (folder / "feed.md").read_text(encoding="utf-8"))
-        self.assertTrue((folder / "project.md").is_file())
-        self.assertTrue((folder / "board.html").is_file())
-        spec = json.loads((folder / "spec.json").read_text(encoding="utf-8"))
-        self.assertEqual(spec["aspect_ratio"], "16:9")
-        self.assertEqual(spec["assets"][0]["view"], "single")
+        self.assertEqual(saved["status"], "gate")
+        self.assertEqual(saved["progress"]["phase"], "gate_script")
 
     def test_render_words_start_video_and_plain_text_does_not(self):
         project_id = "a6e1700000a1"
@@ -222,6 +219,21 @@ class PromptGateTest(unittest.TestCase):
         )
         folder = project_dir(project_id)
         (folder / "board.html").write_text("<p>board</p>", encoding="utf-8")
+        # 出图前正式剧本须语义审查通过并人工确认（script_review 门，main 上已存在）。
+        internal = folder / "_内部_"
+        internal.mkdir(exist_ok=True)
+        (internal / "剧本.md").write_text("她在站台上等车。\n", encoding="utf-8")
+        spec = _spec()
+        (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+        from end.script_review import confirm_script, review_script, set_reviewer
+
+        set_reviewer(lambda _messages: '{"issues":[]}')
+        try:
+            review_script(folder, spec=spec, brief=LOCKED)
+            confirmed, reason = confirm_script(folder, spec=spec, brief=LOCKED)
+        finally:
+            set_reviewer(None)
+        self.assertTrue(confirmed, reason)
         with patch("end.server.start_render_thread") as start, patch(
             "end.server.template_label", return_value="漫剧"
         ), patch("end.server.normalize_template", side_effect=lambda value: value or "short-drama-director"), patch(

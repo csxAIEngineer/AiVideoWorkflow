@@ -164,6 +164,36 @@ def register_thread(project_id, thread=None):
         _THREADS[project_id] = thread or threading.current_thread()
 
 
+def unregister_thread(project_id):
+    """Drop the registration when the registered worker itself unwinds.
+
+    Pool threads live for the whole process, so a registration left behind
+    would make thread_alive() forever true and wait_render_exit() useless.
+    Only the registered thread may clear its own entry.
+    """
+    if not project_id:
+        return
+    with _GUARD:
+        thread = _THREADS.get(project_id)
+        if thread is not None and thread is threading.current_thread():
+            _THREADS.pop(project_id, None)
+
+
+def forget_project(project_id):
+    """Clear every per-project registry entry after a confirmed delete.
+
+    Keeps long-running servers from accumulating gates/locks/events, and a
+    reused id (e.g. migration import) from inheriting a stale stop event.
+    """
+    if not project_id:
+        return
+    with _GUARD:
+        _LOCKS.pop(project_id, None)
+        _GATES.pop(project_id, None)
+        _THREADS.pop(project_id, None)
+        _STOP_EVENTS.pop(project_id, None)
+
+
 def thread_alive(project_id):
     with _GUARD:
         thread = _THREADS.get(project_id)
@@ -274,8 +304,22 @@ def load_run_state(work_dir):
     return state
 
 
+def _project_id_of_path(path):
+    """Project id for a path under the project data root, else ''."""
+    from end import db
+
+    try:
+        relative = Path(path).resolve().relative_to(Path(db.DATA).resolve())
+    except (ValueError, OSError):
+        return ""
+    return relative.parts[0] if relative.parts else ""
+
+
 def save_run_state(work_dir, state):
     folder = Path(work_dir)
+    if render_stopped(_project_id_of_path(folder)):
+        # Deleted project: never recreate the folder behind the delete.
+        return
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / "run_state.json"
     temporary = path.with_suffix(".json.tmp")
@@ -1156,7 +1200,7 @@ VIDEO_MODES = ("text", "first_frame", "first_last_frame", "reference")
 VIDEO_MODEL = "MiniMax/MiniMax-H3"
 VIDEO_MODE_MODELS = {mode: VIDEO_MODEL for mode in VIDEO_MODES}
 FRAME_OPENING = "从这张首帧的可见内容开始，主体、材质和构图保持一致，只做本镜写的光影和轻微运镜。"
-# Official Wan 3.0 负向清单. The three phrases are written three times.
+# Official Wan 3.0 负向清单. The three phrases are written once.
 # Spoken lines stay; this lock does not drop dialogue.
 NO_ONSCREEN_CAPTION = "负向清单：不要字幕，不要水印，不要复杂文字。"
 WAN_REFERENCE_SHEET_GUIDE = (
@@ -2338,7 +2382,9 @@ class RenderContext(object):
             step["output_file"] = relative
             step["error"] = ""
             if public_url:
-                step["public_url"] = public_url
+                # Persist the canonical address, never a time-limited presigned
+                # URL: run_state outlives signatures (same rule as images).
+                step["public_url"] = get_image_store().persistent_url(public_url) or public_url
             if generated:
                 step["local_override"] = False
                 step["asset_still"] = False
@@ -2910,6 +2956,9 @@ def _cache_bust(url, previous):
 
 
 def _append_render_log(work_dir, text):
+    if render_stopped(_project_id_of_path(work_dir)):
+        # Deleted project: do not recreate outputs/ just to log a failure.
+        return
     path = Path(work_dir) / "outputs" / "render.log"
     path.parent.mkdir(parents=True, exist_ok=True)
     line = str(text)
@@ -2926,6 +2975,8 @@ def _ffmpeg_cover_still(source, dest, width, height):
             "本机没有 ffmpeg，不能把参考图放大到 %d×%d" % (MIN_REFERENCE_SIDE, MIN_REFERENCE_SIDE)
         )
     dest = Path(dest)
+    if render_stopped(_project_id_of_path(dest)):
+        raise RenderCancelled("项目已删除，停止出片")
     dest.parent.mkdir(parents=True, exist_ok=True)
     temporary = dest.with_name(dest.stem + ".part" + dest.suffix)
     proc = subprocess.run(
@@ -3275,7 +3326,7 @@ def _publish_generated_clip(ctx, path, provider_url=""):
         _append_render_log(ctx.work_dir, "片段上传失败：%s" % error)
         return provider_url
     if hosted and hosted != provider_url:
-        _append_render_log(ctx.work_dir, "片段已写入对象存储 %s" % hosted)
+        _append_render_log(ctx.work_dir, "片段已写入对象存储 %s" % (get_image_store().persistent_url(hosted) or hosted))
     return hosted or provider_url
 
 
@@ -3289,7 +3340,7 @@ def _publish_generated_film(ctx, path):
         _append_render_log(ctx.work_dir, "成片上传失败：%s" % error)
         return ""
     if hosted:
-        _append_render_log(ctx.work_dir, "成片已写入对象存储 %s" % hosted)
+        _append_render_log(ctx.work_dir, "成片已写入对象存储 %s" % (get_image_store().persistent_url(hosted) or hosted))
     return hosted
 
 
@@ -3593,6 +3644,7 @@ def run_local_pipeline(
             ratio = ctx.aspect if mode == "text" else None
             # Shot media mode is text, frames, or reference. Parameter mode
             # is separate: a full render uses generate; a retouch rerun uses preview.
+            ctx._check_stopped()
             return cr.submit_video(
                 text,
                 model=VIDEO_MODE_MODELS[mode],
@@ -3613,6 +3665,7 @@ def run_local_pipeline(
         def download(task, path):
             temporary = Path(str(path) + ".part")
             cr.download_video(task, temporary)
+            ctx._check_stopped()
             if temporary.is_file():
                 temporary.replace(path)
             provider_url = getattr(task, "url", "") or ""

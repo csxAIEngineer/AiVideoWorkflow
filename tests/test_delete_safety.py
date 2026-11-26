@@ -157,6 +157,64 @@ class DeleteRpcTest(_Isolated):
         self.assertFalse(db.project_dir(PID).exists())
 
 
+class StopProtocolTest(_Isolated):
+    def test_unregister_clears_only_own_registration(self):
+        rl.register_thread(PID)
+        self.assertTrue(rl.thread_alive(PID))
+        rl.unregister_thread(PID)
+        self.assertFalse(rl.thread_alive(PID))
+        # A different thread's registration must survive another thread's unregister.
+        other = threading.Thread(target=lambda: None)
+        rl.register_thread(PID, other)
+        rl.unregister_thread(PID)
+        self.assertIs(rl._THREADS.get(PID), other)
+        rl._THREADS.pop(PID, None)
+
+    def test_delete_waits_for_queue_and_retries(self):
+        db.write_project(self._project())
+        busy = {"worker_state": "running", "worker_kind": "write"}
+        with patch.object(server, "agent_queue") as queue:
+            queue.return_value.state_for.return_value = busy
+            with self.assertRaises(server.RpcError) as caught:
+                server.rpc_delete_project({"id": PID})
+        self.assertEqual(caught.exception.code, 409)
+        # Tombstone stays; files stay; a retry after the queue drains completes.
+        self.assertTrue(db.is_deleted(PID))
+        self.assertTrue(db.project_dir(PID).is_dir())
+        with patch.object(server, "agent_queue") as queue:
+            queue.return_value.state_for.return_value = {"worker_state": "", "worker_kind": ""}
+            result = server.rpc_delete_project({"id": PID})
+        self.assertEqual(result, {"ok": True, "id": PID})
+        self.assertFalse(db.project_dir(PID).exists())
+
+    def test_forget_project_clears_registries(self):
+        rl.stop_event_for(PID).set()
+        rl.gate_for(PID)
+        rl.project_lock(PID)
+        rl.register_thread(PID)
+        rl.forget_project(PID)
+        self.assertFalse(rl.render_stopped(PID))
+        self.assertNotIn(PID, rl._GATES)
+        self.assertNotIn(PID, rl._LOCKS)
+        self.assertNotIn(PID, rl._THREADS)
+
+    def test_save_run_state_and_log_skip_deleted_project(self):
+        db.write_project(self._project())
+        folder = db.project_dir(PID)
+        db.mark_deleted(PID)
+        rl.request_stop(PID)
+        rl.save_run_state(folder, {"phase": "done"})
+        rl._append_render_log(folder, "late failure")
+        self.assertFalse((folder / "run_state.json").exists())
+        self.assertFalse((folder / "outputs" / "render.log").exists())
+
+    def test_fail_project_does_not_recreate_deleted_folder(self):
+        db.write_project(self._project())
+        db.delete_project(PID)
+        server.fail_project(PID, RuntimeError("late"))
+        self.assertFalse(db.project_dir(PID).exists())
+
+
 class ReferenceUrlPresignTest(_Isolated):
     def test_publish_step_url_presigns_own_canonical_reference(self):
         store = OssImageStore(

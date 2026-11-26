@@ -259,7 +259,11 @@ def check_prompt(path, model, track):
         text = ""
     if (model or "h3") == "h3" and "subject_definitions" in text:
         text = _prepare_h3_feed(path, text)
-    args = [str(path), "--model", model or "h3", "--track", str(track or "1")]
+    # The stored h3 lock follows the Wan 3.0 video path (cc9f410): H-series
+    # structure checks with the Wan 2-30s window. MiniMax's official 4-15s
+    # stays on --model h3 in the standalone validator only.
+    validator_model = "wan" if (model or "h3") in ("h3", "wan", "wan3") else (model or "h3")
+    args = [str(path), "--model", validator_model, "--track", str(track or "1")]
     if segment_count(text) >= 2:
         args.append("--by-segment")
     return _drop_hidden_c31(*run_script(VALIDATOR, args))

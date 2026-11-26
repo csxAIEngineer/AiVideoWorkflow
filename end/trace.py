@@ -57,13 +57,23 @@ _ACTIVE = {}
 
 def trace_enabled():
     """True when writes should be stored under debug/trace."""
-    try:
-        from AI.qwen_api.client import load_dotenv
-
-        load_dotenv()
-    except ImportError:
-        pass
     import os
+    from pathlib import Path
+
+    if "AIVIDEO_DEBUG_TRACE" not in os.environ:
+        # end must not import AI: read only this key from .env locally.
+        env_path = Path(__file__).resolve().parents[1] / ".env"
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                if key.strip() == "AIVIDEO_DEBUG_TRACE":
+                    os.environ[key.strip()] = value.strip().strip('"').strip("'")
+                    break
+        except OSError:
+            pass
 
     flag = (os.environ.get("AIVIDEO_DEBUG_TRACE") or "").strip().lower()
     return flag in ("1", "true", "yes", "on")

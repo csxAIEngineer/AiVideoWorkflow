@@ -178,13 +178,23 @@ def _json_string_values(text):
                 continue
             if esc == "u" and i + 5 < n:
                 try:
-                    chunks.append(chr(int(raw[i + 2:i + 6], 16)))
+                    code = int(raw[i + 2:i + 6], 16)
                 except ValueError:
                     break
                 i += 6
+                if 0xD800 <= code <= 0xDBFF and raw[i:i + 2] == "\\u" and i + 5 < n:
+                    try:
+                        low = int(raw[i + 2:i + 6], 16)
+                    except ValueError:
+                        low = -1
+                    if 0xDC00 <= low <= 0xDFFF:
+                        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                        i += 6
+                chunks.append(chr(code))
                 continue
             break
-        found.append("".join(chunks))
+        value = re.sub(r"[\ud800-\udfff]", "\ufffd", "".join(chunks))
+        found.append(value)
         if not closed:
             break
     return found
@@ -712,6 +722,13 @@ def missing_slot_refill_prompt(task, folded, missing, leftovers=None):
     blocks = ["漏掉的槽："]
     for unit, field in missing or []:
         blocks.append("%s %s" % (unit, field))
+    unit_labels = {str(unit).strip() for unit, _field in missing or []}
+    if len(unit_labels) > 1 and all(label.startswith("单元") for label in unit_labels):
+        blocks.extend([
+            "",
+            "涉及多个单元时，按【封装单元 N/M】标题分段返回，每段只写该单元漏掉的栏；"
+            "也可写成「单元N 栏名：正文」。不要只回第一个单元。",
+        ])
     blocks.extend([
         "",
         "只返回漏掉的内容，不要重写已经盖上的栏。",
@@ -748,6 +765,14 @@ def apply_missing_slot_refill(task, folded, refill_raw):
         draft = _stamp_storyboard_missing_slots(folded, refill_text)
         return folded_merge_output(task, draft)
     if task == "feed":
+        from Agents.workers.feed.wan_format import is_wan_shaped
+        from Agents.workers.feed.extract import _has_official_field_line
+
+        if not is_wan_shaped(refill_text) and (
+            _json_object(refill_text) is not None or _has_official_field_line(refill_text)
+        ):
+            # Leftover H3 or bare-JSON refill bodies stay intact for apply_packing_plan.
+            return refill_raw
         draft = _fold_feed(folded, [refill_text])
         return folded_merge_output(task, draft or folded)
     return folded
@@ -935,6 +960,9 @@ def _fill_empty_storyboard_slots(folded, merge_text):
 _FEED_UNIT_HEAD = re.compile(
     r"^#{0,6}\s*【封装单元\s*(\d+)\s*/\s*(\d+)】(?:\s*·\s*段\S+)?\s*$"
 )
+# Refill replies may echo the missing-slot label 「单元N 栏名：正文」 instead of
+# the official 【封装单元 N/M】 heading.
+_FEED_UNIT_LABEL = re.compile(r"^单元\s*(\d+)\s*(.*)$")
 _FEED_SKELETON_MARKS = (
     "万相 3.0 的封装骨架已经按",
     "当前骨架如下。",
@@ -985,10 +1013,8 @@ def _locked_feed_skeleton(text):
         if unit["index"] != kept[-1]["index"] + 1:
             break
         kept.append(unit)
+    # The brief's instruction header is not part of the draft; keep only units.
     parts = []
-    prefix = kept[0].get("prefix") or ""
-    if prefix.strip():
-        parts.append(prefix.rstrip())
     for unit in kept:
         parts.append("\n".join(unit["lines"]).rstrip())
     return "\n\n".join(part for part in parts if part) + "\n"
@@ -1000,9 +1026,6 @@ def _fold_feed(skeleton, notes):
         return ""
     fills = _feed_fills(notes, default_unit=units[0]["index"] if len(units) == 1 else None)
     parts = []
-    prefix = units[0].get("prefix") or ""
-    if prefix.strip():
-        parts.append(prefix.rstrip())
     for unit in units:
         parts.append(_render_feed_unit(unit, fills).rstrip())
     return "\n\n".join(part for part in parts if part) + "\n"
@@ -1132,12 +1155,8 @@ def _split_leaked_shots_from_dialogue(text):
         for line in current.pop("body_lines"):
             if _is_dialogue_line(line):
                 dialogue.append(line.strip())
-                current["ended"] = True
                 continue
-            if current.get("ended"):
-                if str(line or "").strip():
-                    dialogue.append(line.strip())
-                continue
+            # Pure picture lines stay in the shot body even after a dialogue line.
             picture.append(line)
         current["body"] = "\n".join(picture).strip("\n").strip()
         shots.append(current)
@@ -1249,6 +1268,20 @@ def _feed_fills(notes, default_unit=None):
                 current_field = None
                 body = []
                 continue
+            label = _FEED_UNIT_LABEL.match(line.strip())
+            if label:
+                tail = label.group(2).strip()
+                field = WAN_FIELD_LINE.match(tail) if tail else None
+                if not tail or field:
+                    store(current_unit, current_field, body)
+                    current_unit = int(label.group(1))
+                    current_field = None
+                    body = []
+                    if field:
+                        current_field = canonical_wan_name(field.group("name"))
+                        rest = field.group("rest") or ""
+                        body = [rest] if rest.strip() else []
+                    continue
             match = WAN_FIELD_LINE.match(line.strip())
             if match:
                 store(current_unit, current_field, body)
@@ -1258,7 +1291,9 @@ def _feed_fills(notes, default_unit=None):
                 if current_unit is None:
                     current_unit = default_unit
                 continue
-            if current_field is not None and _foreign_field_header(line):
+            # 分镜 bodies carry labeled picture lines (镜头：/光线：/空镜：…); only an
+            # official Wan field line ends the fill, not any short 「名：值」 line.
+            if current_field is not None and current_field != "分镜" and _foreign_field_header(line):
                 store(current_unit, current_field, body)
                 current_field = None
                 body = []
@@ -1388,21 +1423,15 @@ def _normalize_wan_shot_field(skeleton_body, current_body=None, fill=None, apply
 
 
 def _merge_shot_sources(*texts):
-    """First nonempty body wins for each shot number; heading-less prose is kept if no shots."""
+    """First nonempty body wins for each shot number; heading-less prose is kept if no shots.
+
+    分镜 sources keep their whole body (picture and dialogue under the heading);
+    the dialogue-leak splitter is only for 台词 content, not for shot fills.
+    """
     shots = {}
     prose = ""
     for text in texts:
         if not str(text or "").strip():
-            continue
-        leaked, _dialogue = _split_leaked_shots_from_dialogue(text)
-        if leaked:
-            for number, shot in leaked.items():
-                body = str(shot.get("body") or "").strip()
-                current = shots.get(number)
-                if current is None:
-                    shots[number] = shot
-                elif body and not str(current.get("body") or "").strip():
-                    shots[number] = shot
             continue
         leading, parsed = _parse_wan_shot_blocks(text)
         if parsed:
@@ -1445,6 +1474,16 @@ def _render_feed_unit(unit, fills):
             if current == "台词":
                 leaked, cleaned = _split_leaked_shots_from_dialogue(body)
                 if leaked:
+                    # A polluted skeleton must not drop the specialist's new dialogue.
+                    spoken = str(fill or "").strip()
+                    if spoken:
+                        seen = {item.strip() for item in cleaned.splitlines() if item.strip()}
+                        extra = [
+                            item.strip()
+                            for item in spoken.splitlines()
+                            if item.strip() and item.strip() not in seen
+                        ]
+                        cleaned = "\n".join(([cleaned] if cleaned else []) + extra)
                     out.append(_with_field_body(_wan_header_only(line), cleaned) if cleaned else _wan_header_only(line))
                     skip_body_of.add(current)
                     continue

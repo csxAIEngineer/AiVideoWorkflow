@@ -646,10 +646,18 @@ def _run_repair_story(folder, requirements, complete, model, before, issues, ide
     except Exception as error:
         state = {"status": "error", "reason": str(error), "calls": []}
     next_text = str(state.get("candidate") or "").strip()
-    if not next_text and keep_if_empty:
+    errored = str(state.get("status") or "") == "error"
+    if not next_text and keep_if_empty and not errored:
         return keep_if_empty
     first = keep_if_empty or {}
     row = _candidate_from_state(folder, requirements, before, issues, identity, attempts, state, model)
+    if errored:
+        # A failed graph run must surface this error and consume the budget,
+        # not silently return the previous row. Keep the prior text for follow.
+        carried = str(first.get("rejected_text") or first.get("candidate") or "")
+        if carried:
+            row = _save_candidate(folder, dict(row, rejected_text=carried))
+        return row
     if row.get("status") != "passed" and first.get("status") == "passed" and str(first.get("candidate") or "").strip():
         return _save_candidate(folder, dict(first, attempts=attempts))
     return row

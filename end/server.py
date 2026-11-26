@@ -10,6 +10,7 @@ import contextvars
 import email.utils
 import gzip
 import hashlib
+import ipaddress
 import json
 import mimetypes
 import os
@@ -82,6 +83,8 @@ from end.render_loop import (
     save_run_state,
     should_resume_project,
     thread_alive,
+    unregister_thread,
+    forget_project,
     wait_render_exit,
 )
 from end.intake import (
@@ -242,6 +245,22 @@ def media_revision(project_id, video_file=""):
             children = sorted(directory.iterdir(), key=lambda path: path.name)
         except OSError:
             continue
+        # Cheap whole-directory fingerprint: any add/remove/modify beyond the
+        # per-file stat limit must still change the revision (large projects).
+        count = 0
+        total_size = 0
+        max_mtime = 0
+        for path in children:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            count += 1
+            total_size += stat.st_size
+            mtime = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1e9))
+            if mtime > max_mtime:
+                max_mtime = mtime
+        items.append("%s:#%d:%d:%d" % ("/".join(parts), count, total_size, max_mtime))
         for path in children[:_MEDIA_STAT_LIMIT]:
             add(path, "/".join(parts + (path.name,)))
     items.sort()
@@ -1737,7 +1756,7 @@ def run_project_gated(project_id, debug_llm=False):
             return
         outcome = None
         for _step in range(_AUTO_CHAIN_LIMIT):
-            if project is None or not is_running(project_id):
+            if project is None or not is_running(project_id) or render_stopped(project_id):
                 return
             folder = project_dir(project_id)
             locks = read_locks(folder)
@@ -1748,15 +1767,20 @@ def run_project_gated(project_id, debug_llm=False):
                 write_model=call_deepseek,
                 load_pack=load_skill_pack,
             )
+            if render_stopped(project_id):
+                return
             absorb_model_output(folder, outcome.get("spec") or {})
             if outcome.get("spec"):
                 saved = _save_written_spec(project_id, outcome["spec"])
                 if saved is None or not is_running(project_id):
                     return
                 project = saved
-            if not is_running(project_id):
+            if not is_running(project_id) or render_stopped(project_id):
                 return
-            project = read_project(project_id) or project
+            # A deleted row must end the loop, not fall back to the stale dict.
+            project = read_project(project_id)
+            if project is None:
+                return
             if outcome.get("terminal") == "ready":
                 _settle_writer_outcome(project, outcome)
                 return
@@ -1768,10 +1792,13 @@ def run_project_gated(project_id, debug_llm=False):
                 return
             project = follow
         if outcome is not None:
-            _settle_writer_outcome(read_project(project_id) or project, outcome)
+            fresh = read_project(project_id)
+            if fresh is not None:
+                _settle_writer_outcome(fresh, outcome)
     except Exception as error:
         fail_project(project_id, error)
     finally:
+        unregister_thread(project_id)
         with project_lock(project_id):
             if _PIPELINE_HANDOFF.get(project_id) == "writer":
                 _PIPELINE_HANDOFF[project_id] = "yielded"
@@ -1875,6 +1902,10 @@ def start_drill(project):
 
 def _save_written_spec(project_id, spec):
     """Persist the script the model just returned without touching pause state."""
+    from end.db import is_deleted
+
+    if is_deleted(project_id) or render_stopped(project_id):
+        return None
     folder = project_dir(project_id)
     folder.mkdir(parents=True, exist_ok=True)
     items = load_intake(folder)
@@ -1895,6 +1926,8 @@ def _save_written_spec(project_id, spec):
     if aspect:
         spec = dict(spec)
         spec["aspect_ratio"] = aspect
+    if is_deleted(project_id) or render_stopped(project_id):
+        return None
     (folder / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
     with project_lock(project_id):
         fresh = read_project(project_id)
@@ -2263,6 +2296,7 @@ def _run_project(project_id, debug_llm=False):
     except Exception as error:
         fail_project(project_id, error)
     finally:
+        unregister_thread(project_id)
         with project_lock(project_id):
             if _PIPELINE_HANDOFF.get(project_id) == "writer":
                 _PIPELINE_HANDOFF[project_id] = "yielded"
@@ -2321,6 +2355,11 @@ def start_agent_workers():
 
 
 def fail_project(project_id, error):
+    from end.db import is_deleted
+
+    if is_deleted(project_id):
+        # Deleted: do not recreate the folder just to write an error log.
+        return
     project = read_project(project_id)
     if project is None:
         return
@@ -2532,6 +2571,8 @@ def start_render_thread(project_id, replace=False, video_submit_mode="generate")
             execute_render(project_id, video_submit_mode=mode)
         except Exception as error:
             fail_project(project_id, error)
+        finally:
+            unregister_thread(project_id)
 
     with project_lock(project_id):
         if thread_alive(project_id) and not replace:
@@ -3098,8 +3139,12 @@ def _present_stale_manual_review(project):
 
 def resume_agent_tasks():
     """Put interrupted drill and script calls back on the queue after a restart."""
+    from end.db import is_deleted
+
     started = 0
     for project in list_projects():
+        if is_deleted(project["id"]):
+            continue
         status = project.get("status")
         phase = (project.get("progress") or {}).get("phase") or ""
         if status == "drilling" and phase == "drill_think":
@@ -3171,8 +3216,12 @@ def resume_agent_tasks():
 
 
 def resume_rendering_projects():
+    from end.db import is_deleted
+
     started = 0
     for project in list_projects():
+        if is_deleted(project["id"]):
+            continue
         folder = project_dir(project["id"])
         from end.storyboard_contract import rendering_conflict
 
@@ -3468,11 +3517,16 @@ def rpc_delete_project(params):
     # exits instead of blocking forever on a paused gate.
     gate_for(project_id).pause("项目已删除")
     request_stop(project_id)
-    # Wait for the worker thread to exit before removing files, so a winding-down
-    # worker cannot recreate the folder behind the delete.
-    wait_render_exit(project_id, timeout=10.0)
+    # Wait for the worker thread to exit AND the queue to drain this project
+    # before removing files. A timeout must not rmtree under a live worker:
+    # keep the tombstone and ask the caller to retry shortly.
+    exited = wait_render_exit(project_id, timeout=10.0)
+    queued = agent_queue().state_for(project_id).get("worker_state")
+    if not exited or queued:
+        raise RpcError(409, "项目正在停止出片，请稍后重试删除")
     if not delete_project(project_id):
         raise RpcError(404, "没有这个项目")
+    forget_project(project_id)
     return {"ok": True, "id": project_id}
 
 
@@ -4451,7 +4505,45 @@ class Handler(BaseHTTPRequestHandler):
             return b""
         return self.rfile.read(length)
 
+    @staticmethod
+    def _host_name(value):
+        value = str(value or "").strip()
+        if value.startswith("["):
+            return value[1:value.find("]")] if "]" in value else ""
+        return value.rsplit(":", 1)[0] if ":" in value else value
+
+    def _host_allowed(self, hostname):
+        """Loopback and IP-literal hosts are always fine; named hosts need an
+        explicit AIVIDEO_ALLOWED_HOSTS entry. Blocks DNS-rebinding reads."""
+        host = str(hostname or "").strip().lower().rstrip(".")
+        if not host:
+            return False
+        if host in ("localhost", "127.0.0.1", "::1"):
+            return True
+        try:
+            ipaddress.ip_address(host)
+            return True
+        except ValueError:
+            pass
+        allowed = os.environ.get("AIVIDEO_ALLOWED_HOSTS", "")
+        return host in {item.strip().lower() for item in allowed.split(",") if item.strip()}
+
+    def _request_origin_allowed(self):
+        host_header = str(self.headers.get("Host") or "").strip()
+        # HTTP/1.0-style clients without Host cannot drive DNS rebinding.
+        if host_header and not self._host_allowed(self._host_name(host_header)):
+            return False
+        origin = str(self.headers.get("Origin") or "").strip()
+        if not origin:
+            return True
+        hostname = urlparse(origin).hostname
+        return bool(hostname) and self._host_allowed(hostname)
+
     def do_GET(self):
+        host_header = str(self.headers.get("Host") or "").strip()
+        if host_header and not self._host_allowed(self._host_name(host_header)):
+            self._send(403, {"error": "来源不被允许"})
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         if path.startswith("/media/projects/") and path.endswith("/board"):
@@ -4588,7 +4680,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         relative = "index.html" if path in ("/", "") else path.lstrip("/")
         file_path = (STATIC / relative).resolve()
-        if not str(file_path).startswith(str(STATIC.resolve())) or not file_path.is_file():
+        try:
+            file_path.relative_to(STATIC.resolve())
+        except ValueError:
+            self._send(404, {"error": "没有这个页面"})
+            return
+        if not file_path.is_file():
             self._send(404, {"error": "没有这个页面"})
             return
         mime = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
@@ -4609,6 +4706,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_rpc(self):
         request_id = None
+        # Interim hardening before the account system: require a JSON
+        # Content-Type (blocks no-cors text/plain CSRF) and reject foreign
+        # Origin / non-allowlisted Host (blocks DNS rebinding).
+        ctype = str(self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            self._send(200, _rpc_body(None, error=RpcError(415, "需要 application/json")))
+            return
+        if not self._request_origin_allowed():
+            self._send(200, _rpc_body(None, error=RpcError(403, "来源不被允许")))
+            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:

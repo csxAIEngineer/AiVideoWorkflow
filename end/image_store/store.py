@@ -252,7 +252,7 @@ class OssImageStore(ImageStore):
         filename = _clip_filename(filename)
         return self._access_url(self._object_key("video", project_id, filename))
 
-    def publish_clip(self, project_id, filename, payload):
+    def publish_clip(self, project_id, filename, payload, before=None):
         project_id = _project_id(project_id)
         filename = _clip_filename(filename)
         if not payload:
@@ -260,10 +260,10 @@ class OssImageStore(ImageStore):
         url = self._put(self._object_key("clips", project_id, filename), payload, _content_type(filename))
         path = self.root() / project_id / "outputs" / "clips" / filename
         if path.is_file():
-            write_publish_marker(path, self.persistent_url(url) or url, payload, "oss")
+            write_publish_marker(path, self.persistent_url(url) or url, payload, "oss", before=before)
         return url
 
-    def publish_video(self, project_id, filename, payload):
+    def publish_video(self, project_id, filename, payload, before=None):
         project_id = _project_id(project_id)
         filename = _clip_filename(filename)
         if not payload:
@@ -271,7 +271,7 @@ class OssImageStore(ImageStore):
         url = self._put(self._object_key("video", project_id, filename), payload, _content_type(filename))
         path = self.root() / project_id / "outputs" / filename
         if path.is_file():
-            write_publish_marker(path, self.persistent_url(url) or url, payload, "oss")
+            write_publish_marker(path, self.persistent_url(url) or url, payload, "oss", before=before)
         return url
 
     def ensure_clip(self, project_id, filename, source=None):
@@ -329,8 +329,21 @@ class OssImageStore(ImageStore):
     def ensure_remote(self, project_id, filename, current_url="", source=None):
         current = str(current_url or "").strip()
         if current and self._key_from_url(current):
-            return self.refresh_url(current)
-        if current and not self.owns_url(current):
+            expected = self._canonical_url(
+                self._object_key("images", _project_id(project_id), _filename(filename))
+            )
+            # The re-sign shortcut must not vouch for stale remote bytes. It
+            # only applies to this object's key, and when a local source exists
+            # its publish marker has to match; otherwise publish the source again.
+            if self.persistent_url(current) == expected:
+                if source and Path(source).is_file():
+                    path = Path(source)
+                    data = read_publish_marker(path, "oss")
+                    if publish_marker_matches(data, path, expected, self.persistent_url):
+                        return self.refresh_url(current)
+                else:
+                    return self.refresh_url(current)
+        elif current and not self.owns_url(current):
             return current
         if source and Path(source).is_file():
             return self.refresh_url(self.publish(project_id, filename, Path(source).read_bytes()))
@@ -426,13 +439,19 @@ class OssImageStore(ImageStore):
         key = self._object_key(folder, project_id, filename)
         expected = self._canonical_url(key)
         data = read_publish_marker(path, "oss")
-        if publish_marker_matches(data, path, expected, self.persistent_url):
+        if publish_marker_matches(data, path, expected, self.persistent_url, verify_sha256=True):
             return self._access_url(key)
         if not upload:
             return ""
-        payload = path.read_bytes()
-        url = publish(project_id, filename, payload)
-        write_publish_marker(path, self.persistent_url(url) or expected, payload, "oss")
+        before = path.stat()
+        if before.st_size <= 0:
+            raise ImageStoreError("没有这段视频")
+        # Stream the file instead of read_bytes: a film must not sit whole in
+        # memory. The marker is guarded by the pre-upload stat, so a rewrite
+        # during the upload does not get a "published" voucher.
+        with path.open("rb") as handle:
+            url = publish(project_id, filename, handle, before=before)
+            write_publish_marker(path, self.persistent_url(url) or expected, handle, "oss", before=before)
         return self.refresh_url(url) or self._access_url(key)
 
 
@@ -655,12 +674,40 @@ def _publish_marker_path(path, kind):
     return path.with_name(path.name + suffix)
 
 
-def write_publish_marker(path, url, payload, kind):
-    """Record the published object and the exact local bytes that were sent."""
+def _hash_chunks(handle, digest):
+    """Feed a file object to a hash in chunks. Returns the byte count read."""
+    size = 0
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+        size += len(chunk)
+    return size
+
+
+def _payload_sha256(payload):
+    if hasattr(payload, "read"):
+        payload.seek(0)
+        digest = hashlib.sha256()
+        _hash_chunks(payload, digest)
+        payload.seek(0)
+        return digest.hexdigest()
+    return hashlib.sha256(payload or b"").hexdigest()
+
+
+def write_publish_marker(path, url, payload, kind, before=None):
+    """Record the published object and the exact local bytes that were sent.
+
+    ``before`` is the stat taken before the payload was read. When the file
+    changed during the upload the marker is not written, so a later access
+    never vouches for bytes that were not sent. The marker lands atomically.
+    """
     path = Path(path)
     try:
         stat = path.stat()
     except OSError:
+        return
+    if before is not None and (
+        stat.st_size != before.st_size or _mtime_ns(stat) != _mtime_ns(before)
+    ):
         return
     marker = _publish_marker_path(path, kind)
     body = {
@@ -668,9 +715,11 @@ def write_publish_marker(path, url, payload, kind):
         "size": stat.st_size,
         "mtime": int(stat.st_mtime),
         "mtime_ns": _mtime_ns(stat),
-        "sha256": hashlib.sha256(payload or b"").hexdigest(),
+        "sha256": _payload_sha256(payload),
     }
-    marker.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    temporary = marker.with_name(marker.name + ".part")
+    temporary.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(marker)
 
 
 def read_publish_marker(path, kind):
@@ -684,8 +733,12 @@ def read_publish_marker(path, kind):
     return data if isinstance(data, dict) else None
 
 
-def publish_marker_matches(data, path, expected_url="", canonical=None):
-    """True when the marker still describes this file and published object."""
+def publish_marker_matches(data, path, expected_url="", canonical=None, verify_sha256=False):
+    """True when the marker still describes this file and published object.
+
+    ``verify_sha256`` re-hashes the file after size/mtime hit, so a rewrite
+    that kept size and mtime (cp -p, a restore) still invalidates the marker.
+    """
     if not data:
         return False
     path = Path(path)
@@ -700,6 +753,15 @@ def publish_marker_matches(data, path, expected_url="", canonical=None):
             return False
     elif int(data.get("mtime") or -1) != int(stat.st_mtime):
         return False
+    if verify_sha256 and data.get("sha256"):
+        try:
+            with path.open("rb") as handle:
+                digest = hashlib.sha256()
+                _hash_chunks(handle, digest)
+        except OSError:
+            return False
+        if digest.hexdigest() != str(data.get("sha256")):
+            return False
     stored = str(data.get("url") or "").strip()
     if expected_url:
         wanted = str(expected_url).strip()
@@ -920,6 +982,7 @@ def _put_oss(domain, bucket, key, payload, content_type, access_key_id, access_k
 
 
 def _oss_url_expires():
+    _load_dotenv()
     raw = os.environ.get("AIVIDEO_OSS_URL_EXPIRES") or ""
     try:
         value = int(str(raw).strip() or "86400")
@@ -955,7 +1018,18 @@ def _oss_presign_get(domain, bucket, key, access_key_id, access_key_secret, expi
 
 
 def _put_oss_once(domain, bucket, key, payload, content_type, access_key_id, access_key_secret):
-    digest = base64.b64encode(hashlib.md5(payload).digest()).decode("ascii")
+    stream = hasattr(payload, "read")
+    length = None
+    if stream:
+        # V1 signing carries Content-MD5, so hash the file in a chunked
+        # pre-pass, then stream the same bytes as the body. No whole-file read.
+        payload.seek(0)
+        md5 = hashlib.md5()
+        length = _hash_chunks(payload, md5)
+        payload.seek(0)
+        digest = base64.b64encode(md5.digest()).decode("ascii")
+    else:
+        digest = base64.b64encode(hashlib.md5(payload).digest()).decode("ascii")
     date = email.utils.formatdate(usegmt=True)
     resource = _oss_canonical_resource(bucket, key)
     authorization = _oss_authorization(
@@ -970,6 +1044,8 @@ def _put_oss_once(domain, bucket, key, payload, content_type, access_key_id, acc
     )
     target = _http_object_url(domain, key)
     request = urllib.request.Request(target, data=payload, method="PUT")
+    if stream:
+        request.add_header("Content-Length", str(length))
     request.add_header("Content-Type", content_type)
     request.add_header("Content-MD5", digest)
     request.add_header("Date", date)

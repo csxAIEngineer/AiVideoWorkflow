@@ -284,7 +284,8 @@ class PackingPlanTest(unittest.TestCase):
         self.assertIn("任务：建议修补", repair)
         self.assertIn("4+6+7+5+6=28", repair)
         self.assertIn(LINE, repair)
-        self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", repair)
+        # 万相封装只挂 SKILL.md 和 wan-adapter（288187b），时长修补点名这两个写手。
+        self.assertIn("sd-feed-engine/SKILL.md", repair)
         self.assertIn("short-drama-director/references/wan-adapter.md", repair)
 
     def test_h3_brief_locks_headings_durations_and_section_lines(self):
@@ -587,10 +588,10 @@ class PackingPlanTest(unittest.TestCase):
         files = suite_files("feed", "阶段：P4\n模型：h3\n任务：提示词封装\n" + duration_brief)
         previous = [{"skill": relative, "text": "旧节点"} for relative in files]
         duration_nodes = select_nodes(files, duration_brief, previous)
-        self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", duration_nodes)
-        self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", duration_nodes)
+        # 万相封装只挂 SKILL.md 和 wan-adapter（288187b）；h3 时长修补点名这两个写手。
         self.assertIn("short-drama-director/references/wan-adapter.md", duration_nodes)
-        self.assertNotIn("sd-feed-engine/SKILL.md", duration_nodes)
+        self.assertIn("sd-feed-engine/SKILL.md", duration_nodes)
+        self.assertNotIn("sd-feed-engine/references/feed-mode-and-gates.md", duration_nodes)
         self.assertNotIn("sd-feed-engine/references/asset-mapping-and-rules.md", duration_nodes)
         self.assertNotIn("short-drama-director/references/segment-splicing.md", duration_nodes)
 
@@ -601,9 +602,9 @@ class PackingPlanTest(unittest.TestCase):
         dialogue_brief = generator_messages(dialogue_state)[-1]["content"]
         dialogue_nodes = select_nodes(files, dialogue_brief, previous)
         self.assertIn("sd-feed-engine/SKILL.md", dialogue_nodes)
-        self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", dialogue_nodes)
+        self.assertIn("short-drama-director/references/wan-adapter.md", dialogue_nodes)
         self.assertNotIn("sd-feed-engine/references/feed-mode-and-gates.md", dialogue_nodes)
-        self.assertNotIn("short-drama-director/references/wan-adapter.md", dialogue_nodes)
+        self.assertNotIn("short-drama-director/references/prompt-feeding-checklist.md", dialogue_nodes)
         self.assertEqual(
             packing_repair_targets(dialogue_state["machine_report"], h3=False),
             [
@@ -691,12 +692,8 @@ class PackingPlanTest(unittest.TestCase):
         first_critic = calls.index("critic")
         repair = calls[first_critic + 1:]
         repair_nodes = [item for item in repair[: repair.index("critic")] if item != "director"]
-        self.assertIn("sd-feed-engine/references/feed-mode-and-gates.md", repair_nodes)
-        self.assertIn("sd-feed-engine/SKILL.md", repair_nodes)
-        self.assertIn("short-drama-director/references/prompt-feeding-checklist.md", repair_nodes)
-        self.assertIn("short-drama-director/references/wan-adapter.md", repair_nodes)
-        self.assertNotIn("sd-feed-engine/references/asset-mapping-and-rules.md", repair_nodes)
-        self.assertNotIn("short-drama-director/references/segment-splicing.md", repair_nodes)
+        # 循环修补改为导演按上一稿补槽（4de97e1），不再重跑点名专员节点。
+        self.assertEqual(repair_nodes, [])
         self.assertEqual(repair.count("director"), 1)
 
     def test_apply_packing_plan_does_not_dump_extra_wan_units_into_the_last_segment(self):
@@ -875,7 +872,8 @@ class SkeletonFoldTest(unittest.TestCase):
         extracted = extract_feed(raw)
         self.assertFalse(extracted.lstrip().startswith("{"), extracted)
         self.assertNotIn('"subject_definitions"', extracted)
-        folded = apply_packing_plan(raw, state)
+        meta = {}
+        folded = apply_packing_plan(raw, state, meta=meta)
         chunks = _unit_chunks(folded)
         self.assertEqual(len(chunks), 3, folded)
         self.assertIn("官方主体甲", chunks[0])
@@ -892,8 +890,8 @@ class SkeletonFoldTest(unittest.TestCase):
             self.assertTrue(
                 "风格 / 情绪:" in chunk and LOCK in chunk.split("风格 / 情绪:", 1)[1].split("负向清单:", 1)[0]
             )
-        self.assertIn("json_fields", apply_packing_plan.last_fold_source)
-        self.assertIn("informal_feed", apply_packing_plan.last_fold_source)
+        self.assertIn("json_fields", meta["fold_source"])
+        self.assertIn("informal_feed", meta["fold_source"])
 
     def test_a_single_official_object_fills_unit_one_and_leaves_skeleton_slots(self):
         state = _three_state()
@@ -906,7 +904,8 @@ class SkeletonFoldTest(unittest.TestCase):
         extracted = extract_feed(raw)
         self.assertFalse(extracted.lstrip().startswith("{"))
         self.assertTrue("subject_definitions:" in extracted or "参考素材引用:" in extracted, extracted)
-        folded = apply_packing_plan(raw, state)
+        meta = {}
+        folded = apply_packing_plan(raw, state, meta=meta)
         chunks = _unit_chunks(folded)
         self.assertEqual(len(chunks), 3, folded)
         self.assertIn("the woman in unit one.", chunks[0])
@@ -924,8 +923,8 @@ class SkeletonFoldTest(unittest.TestCase):
             self.assertNotIn("She wipes", chunk)
             description = chunk.split("\n分镜:\n", 1)[1].split("\n台词:", 1)[0]
             self.assertTrue(description.strip().startswith("分镜1（"), description)
-        self.assertIn("json_fields", apply_packing_plan.last_fold_source)
-        self.assertIn("materialize", apply_packing_plan.last_fold_source)
+        self.assertIn("json_fields", meta["fold_source"])
+        self.assertIn("materialize", meta["fold_source"])
 
     def test_an_official_markdown_feed_keeps_its_prose(self):
         state = _three_state()
@@ -946,8 +945,9 @@ class SkeletonFoldTest(unittest.TestCase):
         self.assertIn("She leaves.", folded)
         self.assertNotIn("别用这段替换正文", folded)
         self.assertNotIn("别用这段替换画面", folded)
-        self.assertEqual(apply_packing_plan(folded, state), folded)
-        self.assertEqual(apply_packing_plan.last_fold_source, "")
+        meta = {}
+        self.assertEqual(apply_packing_plan(folded, state, meta=meta), folded)
+        self.assertEqual(meta["fold_source"], "")
 
     def test_a_materialized_unit_is_not_a_dialogue_shell(self):
         state = _three_state()
@@ -956,7 +956,8 @@ class SkeletonFoldTest(unittest.TestCase):
             "duration: 16",
             "<d>[Chinese] 别改了。</d>",
         ))
-        folded = apply_packing_plan(draft, state)
+        meta = {}
+        folded = apply_packing_plan(draft, state, meta=meta)
         chunks = _unit_chunks(folded)
         self.assertEqual(len(chunks), 3, folded)
         for chunk in chunks:
@@ -967,7 +968,7 @@ class SkeletonFoldTest(unittest.TestCase):
                 "风格 / 情绪:" in chunk and LOCK in chunk.split("风格 / 情绪:", 1)[1].split("负向清单:", 1)[0]
             )
             self.assertIn("分镜1", chunk)
-        self.assertIn("materialize", apply_packing_plan.last_fold_source)
+        self.assertIn("materialize", meta["fold_source"])
         description = chunks[2].split("\n分镜:\n", 1)[1].split("\n台词:", 1)[0]
         self.assertNotIn("别改了", description)
         self.assertTrue(description.strip().startswith("分镜1（"), description)
@@ -1033,3 +1034,17 @@ class SkeletonFoldTest(unittest.TestCase):
         self.assertNotIn("{", result["feed"][:1])
         record = json.loads((folder / "debug" / "feed-debug.jsonl").read_text(encoding="utf-8").splitlines()[-1])
         self.assertIn("json_fields", record["apply_packing_plan"].get("fold_source", ""))
+
+
+class StripWanVisualHeaderTest(unittest.TestCase):
+    def test_ws5_half_width_header_with_full_width_colon_rest(self):
+        from Agents.workers.feed.plan import _strip_wan_visual_d_tags
+
+        self.assertEqual(
+            _strip_wan_visual_d_tags("总体描述: 风格：写实都市\n"),
+            "总体描述: 风格：写实都市\n",
+        )
+        self.assertEqual(
+            _strip_wan_visual_d_tags("分镜: <d>旁白：你好</d>画面继续\n"),
+            "分镜: 画面继续\n",
+        )

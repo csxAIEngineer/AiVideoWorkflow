@@ -47,9 +47,19 @@ def read_minimax_video(root=None):
 def local_base_url():
     """Host the page shows for local H3. The AI client applies the same default."""
     if "MINIMAX_H3_BASE_URL" not in os.environ:
-        from AI.qwen_api.client import load_dotenv
-
-        load_dotenv()
+        # end must not import AI: read only this key from .env locally.
+        env_path = Path(__file__).resolve().parents[1] / ".env"
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                if key.strip() == "MINIMAX_H3_BASE_URL":
+                    os.environ[key.strip()] = value.strip().strip('"').strip("'")
+                    break
+        except OSError:
+            pass
     explicit = str(os.environ.get("MINIMAX_H3_BASE_URL") or "").strip().rstrip("/")
     if not explicit:
         return DEFAULT_LOCAL_BASE_URL

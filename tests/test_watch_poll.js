@@ -64,6 +64,99 @@ function testMediaIdentity() {
   assert.strictEqual(mediaRefreshAllowed({ id: "p1", at: now - 31000 }, "p1", now, 30000), true);
 }
 
+function testVideoRefreshRestore() {
+  const now = 1700000000000;
+  const expired = "https://cdn.example/buckets/film.mp4?OSSAccessKeyId=ak&Expires=1000&Signature=old";
+  const soon = "https://cdn.example/buckets/film.mp4?OSSAccessKeyId=ak&Expires=1700000010&Signature=soon";
+  const fresh = "https://cdn.example/buckets/film.mp4?OSSAccessKeyId=ak&Expires=1700003600&Signature=new";
+  function makeVideo(paused) {
+    return {
+      dataset: { url: expired }, src: expired, currentTime: 7, paused: paused,
+      listeners: [], plays: 0,
+      addEventListener(name, fn, opts) { this.listeners.push([name, fn, opts]); },
+      removeEventListener(name, fn) { this.listeners = this.listeners.filter((row) => !(row[0] === name && row[1] === fn)); },
+      play() { this.plays += 1; this.paused = false; return Promise.reject(new Error("autoplay blocked")); },
+      pause() { this.paused = true; },
+    };
+  }
+  const playing = makeVideo(false);
+  assert.strictEqual(refreshVideoElement(playing, soon, now), "refresh");
+  assert.strictEqual(playing.listeners.length, 1);
+  assert.strictEqual(playing.listeners[0][2].once, true);
+  // 上一次 restore 未触发就再刷新：旧监听器被移除，不累积。
+  assert.strictEqual(refreshVideoElement(playing, fresh, now), "refresh");
+  assert.strictEqual(playing.listeners.length, 1);
+  playing.listeners[0][1]();
+  assert.strictEqual(playing.currentTime, 7);
+  assert.strictEqual(playing.plays, 1);
+  assert.strictEqual(playing.listeners.length, 0);
+  const paused = makeVideo(true);
+  assert.strictEqual(refreshVideoElement(paused, fresh, now), "refresh");
+  paused.listeners[0][1]();
+  assert.strictEqual(paused.currentTime, 7);
+  assert.strictEqual(paused.plays, 0);
+  assert.strictEqual(paused.paused, true);
+}
+
+function testWatchTickBranch() {
+  const watchSource = source.slice(source.indexOf("\nfunction watch()"), source.indexOf("newChat.addEventListener"));
+  assert.ok(watchSource.length > 0, "could not find watch() body");
+  // 非重载分支无条件重绘（transcriptKey 早退控开销），full 参数按模式区分。
+  assert.ok(watchSource.includes("paintTranscript({}, !workflowMode(current));"));
+  assert.ok(watchSource.includes("JSON.stringify(previous.question || null) !== JSON.stringify(current.question || null)"));
+  assert.ok(watchSource.includes("tasks: current.tasks,"));
+  assert.ok(watchSource.includes("patchCanvas(current);"));
+  // 连续失败提示与恢复清除。
+  assert.ok(watchSource.includes("watch.fails >= 3"));
+  assert.ok(watchSource.includes("连接中断，正在重试"));
+}
+
+function testResignedDownloadLinks() {
+  const start = source.indexOf("function applyResignedMedia(result)");
+  const end = source.indexOf("\nfunction ", start + 1);
+  assert.ok(start >= 0 && end > start, "could not find applyResignedMedia");
+  const context = {
+    Object, Array, String, URL, decodeURIComponent, Number, Date, Math,
+    sameMediaUrl, mediaIdentity,
+    refreshVideoElement() { return "same"; },
+    current: null, document: null,
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  const oldPlay = "https://cdn.example/buckets/film.mp4?OSSAccessKeyId=ak&Expires=1000&Signature=old";
+  const newPlay = "https://cdn.example/buckets/film.mp4?OSSAccessKeyId=ak&Expires=1700003600&Signature=new";
+  const oldDownload = oldPlay + "&download=1";
+  const newDownload = newPlay + "&download=1";
+  const clipOld = "https://cdn.example/buckets/S01.mp4?OSSAccessKeyId=ak&Expires=1000&Signature=old";
+  const clipNew = "https://cdn.example/buckets/S01.mp4?OSSAccessKeyId=ak&Expires=1700003600&Signature=new";
+  const filmLink = { dataset: { url: oldDownload }, href: oldDownload };
+  const clipLink = { dataset: { url: clipOld }, href: clipOld };
+  const boardLink = { dataset: {}, href: "/media/projects/p1/board" };
+  context.current = { id: "p1", video_url: oldPlay, clips: [{ id: "S01", url: clipOld }] };
+  context.document = {
+    querySelectorAll(sel) {
+      if (sel === "video") return [];
+      if (sel === ".clip-card a.download") return [filmLink, clipLink, boardLink];
+      return [];
+    },
+  };
+  context.applyResignedMedia({
+    id: "p1",
+    video_url: newPlay,
+    video_download_url: newDownload,
+    clips: [{ id: "S01", url: clipNew, download_url: clipNew + "&download=1" }],
+  });
+  assert.strictEqual(filmLink.href, newDownload);
+  assert.strictEqual(filmLink.dataset.url, newDownload);
+  assert.strictEqual(clipLink.href, clipNew + "&download=1");
+  assert.strictEqual(boardLink.href, "/media/projects/p1/board");
+  const cardStart = source.indexOf("function clipCard(");
+  const cardSource = source.slice(cardStart, source.indexOf("\nfunction ", cardStart + 1));
+  assert.ok(cardSource.includes('video.addEventListener("error"'));
+  assert.ok(cardSource.includes("requestMediaUrlRefresh(current, { forceError: true })"));
+  assert.ok(cardSource.includes("link.dataset.url = link.href;"));
+}
+
 function testHistorySnapshot() {
   const listed = { id: "p1", title: "旧", status: "writing" };
   const full = { id: "p1", title: "新", status: "rendering", script: "剧本", shots: [{ id: "S01" }], messages: [1, 2], progress: { percent: 40 } };
@@ -128,9 +221,52 @@ function testDockAndWatching() {
   assert.strictEqual(keepWatching({ status: "error" }), false);
 }
 
-testMediaIdentity();
-testHistorySnapshot();
-testReloadAndProgress();
-testRetryAndSwitch();
-testDockAndWatching();
-console.log("ok 5 test_watch_poll checks");
+async function testRpcTimeout() {
+  const rpcSource = fs.readFileSync(path.join(__dirname, "..", "front", "rpc.js"), "utf8");
+  const context = {
+    JSON, Error, Promise, Object, AbortController,
+    setTimeout: (fn) => { fn(); return 1; },
+    clearTimeout: () => {},
+    fetch: (url, opts) => new Promise((resolve, reject) => {
+      if (opts.signal.aborted) { reject(new Error("aborted")); return; }
+      opts.signal.addEventListener("abort", () => reject(new Error("aborted")));
+    }),
+  };
+  vm.createContext(context);
+  vm.runInContext(rpcSource, context);
+  let failed = null;
+  try {
+    await context.rpc("projects.tick", {});
+    failed = "expected timeout";
+  } catch (error) {
+    assert.strictEqual(error.rpcTimeout, true);
+    assert.strictEqual(error.rpcKnown, false);
+    assert.strictEqual(error.message, "连接中断：请求超时");
+  }
+  assert.strictEqual(failed, null);
+  context.setTimeout = () => 1;
+  context.fetch = async () => ({ json: async () => ({ result: { ok: 1 } }) });
+  assert.deepStrictEqual(await context.rpc("projects.tick", {}), { ok: 1 });
+  context.fetch = async () => ({ json: async () => ({ error: { code: 409, message: "冲突" } }) });
+  try {
+    await context.rpc("projects.render", {});
+    failed = "expected rpc error";
+  } catch (error) {
+    assert.strictEqual(error.rpcKnown, true);
+    assert.strictEqual(error.message, "冲突");
+  }
+  assert.strictEqual(failed, null);
+}
+
+(async () => {
+  testMediaIdentity();
+  testVideoRefreshRestore();
+  testWatchTickBranch();
+  testResignedDownloadLinks();
+  testHistorySnapshot();
+  testReloadAndProgress();
+  testRetryAndSwitch();
+  testDockAndWatching();
+  await testRpcTimeout();
+  console.log("ok 9 test_watch_poll checks");
+})().catch((error) => { console.error(error); process.exit(1); });

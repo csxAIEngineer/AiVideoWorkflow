@@ -995,6 +995,13 @@ def carried_text(folder, stage):
 def _write_internal(folder, name, text):
     if not str(text or "").strip():
         return None
+    from end.db import is_deleted
+    from end.render_loop import render_stopped
+
+    project_id = Path(folder).name
+    if is_deleted(project_id) or render_stopped(project_id):
+        # Deleted project: a winding-down writer must not recreate files.
+        return None
     path = internal_dir(folder) / name
     path.write_text(str(text).strip() + "\n", encoding="utf-8")
     return path
@@ -1415,7 +1422,7 @@ def check_stage(folder, stage, locks, title=""):
             return False, "没看见图，却写了%s" % claim
         code, report = check_feed(path, locks.get("model") or "h3", mode, locks.get("track") or "1")
         spec_now = _load_spec(folder)
-        extras = feed_duration_failures(text, _read(internal / "分镜.md"), spec_now.get("shots"))
+        extras = feed_duration_failures(text, _read(internal / "分镜.md"), spec_now.get("shots"), locks=locks)
         if str((locks or {}).get("model") or "h3").strip().lower() == "h3":
             from Agents.workers.feed import (
                 agreed_style,

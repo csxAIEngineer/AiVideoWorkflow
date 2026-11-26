@@ -201,6 +201,31 @@ class MachineCheckTest(unittest.TestCase):
         self.assertIn("同档", report["report"])
         self.assertIn("S02", report["report"])
 
+    def test_out_of_order_entries_check_previous_end_by_aligned_id(self):
+        # MO-1: entries keep the model's raw order; ① must read the previous
+        # unit's end_size by id, not by entries[index - 1].
+        shots = [_shot("S01", ["图1"]), _shot("S02", ["图1"]), _shot("S03", ["图2"])]
+        aligned = apply_submit_params([
+            _entry("S01", "", "none", end_size="中近景"),
+            _entry("S02", "S01", "1", start_size="中近景", end_size="近景"),
+            _entry("S03", "S02", "2"),
+        ], shots)
+        shuffled = [aligned[2], aligned[0], aligned[1]]
+        report = check_seam_ledger({"entries": shuffled}, shots)
+        self.assertTrue(report["ok"], report["report"])
+        self.assertNotIn("同档", report["report"])
+
+    def test_short_entries_report_missing_rows_without_crashing(self):
+        # MO-1: 3 units but only the last has an entry. The gate must report
+        # the missing rows and the ① size mismatch, not raise IndexError.
+        shots = [_shot("S01", ["图1"]), _shot("S02", ["图1"]), _shot("S03", ["图2"])]
+        only_last = [_entry("S03", "S02", "1", start_size="中景")]
+        report = check_seam_ledger({"entries": only_last}, shots)
+        self.assertFalse(report["ok"])
+        self.assertIn("S01 没有段缝", report["report"])
+        self.assertIn("S02 没有段缝", report["report"])
+        self.assertIn("同档", report["report"])
+
     def test_hard_cut_freeze_words_and_reference_mix_fail(self):
         shots = [_shot("S01", ["图1"]), _shot("S02", ["图1"])]
         frozen = apply_submit_params([

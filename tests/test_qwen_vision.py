@@ -288,7 +288,7 @@ class QwenVisionTests(unittest.TestCase):
         script = (ROOT / "front" / "app.js").read_text(encoding="utf-8")
         self.assertIn(HINT, html)
         self.assertIn(HINT, script)
-        self.assertIn('briefEl.placeholder = "写下你的方向"', script)
+        self.assertIn('setBriefPlaceholder("写下你的方向")', script)
         self.assertNotIn("写下这段片子的背景", html)
         self.assertNotIn("写下这段片子的背景", script)
         self.assertNotIn("写下另一条片子的背景", script)
