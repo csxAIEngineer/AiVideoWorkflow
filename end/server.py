@@ -4100,6 +4100,10 @@ def _auth_rpc(method, params):
             auth.logout((ctx.get("cookies") or {}).get(USER_COOKIE, ""), "user")
             ctx.setdefault("set_cookies", []).append(_cookie_header(USER_COOKIE, "", 0, ctx.get("secure")))
             return {"ok": True}
+        if method == "auth.admin_logout":
+            auth.logout((ctx.get("cookies") or {}).get(ADMIN_COOKIE, ""), "admin")
+            ctx.setdefault("set_cookies", []).append(_cookie_header(ADMIN_COOKIE, "", 0, ctx.get("secure")))
+            return {"ok": True}
         if method == "auth.change_password":
             user = _current_session("user")
             if user is None:

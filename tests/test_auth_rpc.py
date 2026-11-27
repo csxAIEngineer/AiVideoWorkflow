@@ -161,6 +161,12 @@ class AuthRpcTest(unittest.TestCase):
         # projects.* requires a user session; admin uses admin.projects.list.
         payload, _ = self._call("projects.get", {"id": pid}, cookie=admin_cookie)
         self.assertEqual(payload["error"]["code"], 401)
+        # Admin logout revokes the admin session.
+        payload, cookies = self._call("auth.admin_logout", cookie=admin_cookie)
+        self.assertNotIn("error", payload)
+        self.assertIn("Max-Age=0", cookies)
+        payload, _ = self._call("admin.users.list", cookie=admin_cookie)
+        self.assertEqual(payload["error"]["code"], 401)
 
     def test_config_sanitized_for_user(self):
         cookie = self._login(self.alice, "alice-pass-123")
