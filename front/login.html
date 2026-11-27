@@ -1,19 +1,39 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>登录 · AiVideo</title>
+  <script>
+    // 与产品共用主题偏好（aivideo.theme）；默认深色。
+    try {
+      if (localStorage.getItem("aivideo.theme") === "light") document.documentElement.dataset.theme = "light";
+    } catch (_error) {}
+  </script>
   <style>
     :root {
+      color-scheme: dark;
+      --bg: #171512;
+      --paper: #201d19;
+      --line: #35302a;
+      --text: #ece7df;
+      --muted: #9a9186;
+      --accent: #6d86ff;
+      --accent-2: #9b6bff;
+      --danger: #ff6b7a;
+      --field: #171512;
+    }
+    html[data-theme="light"] {
       color-scheme: light;
       --bg: #fbf7f1;
+      --paper: #fffdfb;
       --line: #e6dfd4;
       --text: #1f1f1f;
       --muted: #8a8176;
-      --paper: #fffdfb;
       --accent: #4d6bfe;
+      --accent-2: #8a5cf6;
       --danger: #c21d2e;
+      --field: #fbf7f1;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -22,45 +42,73 @@
       color: var(--text); background: var(--bg);
     }
     body { display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .theme-toggle {
+      position: fixed; top: 14px; right: 16px;
+      padding: 6px 12px; border-radius: 999px;
+      border: 1px solid var(--line); background: var(--paper); color: var(--muted);
+      font: inherit; font-size: 12px; cursor: pointer;
+    }
+    .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
     .card {
-      width: min(360px, 100%);
+      width: min(380px, 100%);
       background: var(--paper);
       border: 1px solid var(--line);
       border-radius: 16px;
       padding: 28px 24px;
     }
-    h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
+    .logo { display: block; margin: 0 0 14px; }
+    h1 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
     .sub { margin: 0 0 20px; font-size: 13px; color: var(--muted); }
     label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
     input {
       width: 100%; padding: 10px 12px;
       border: 1px solid var(--line); border-radius: 10px;
-      background: var(--bg); color: var(--text);
+      background: var(--field); color: var(--text);
       font: inherit; outline: none;
     }
     input:focus { border-color: var(--accent); }
-    button {
+    button.primary {
       width: 100%; margin-top: 20px; padding: 11px 12px;
       border: 0; border-radius: 10px;
       background: var(--accent); color: #fff;
       font: inherit; font-weight: 600; cursor: pointer;
     }
-    button:disabled { opacity: .6; cursor: default; }
+    button.primary:disabled { opacity: .6; cursor: default; }
     .error { margin-top: 14px; font-size: 13px; color: var(--danger); min-height: 18px; }
     .hidden { display: none; }
+    .foot { margin-top: 18px; font-size: 12px; color: var(--muted); text-align: center; }
   </style>
 </head>
 <body>
+  <button id="theme-toggle" class="theme-toggle" type="button">浅色</button>
   <main class="card">
+    <!-- Logo：胶片框 + 播放三角 + AI 星光 + 内测徽章（随主题变色） -->
+    <svg class="logo" viewBox="0 0 232 48" width="232" height="48" role="img" aria-label="AiVideo 内测">
+      <rect x="4" y="8" width="40" height="32" rx="9" fill="var(--accent)" fill-opacity="0.14" stroke="var(--accent)" stroke-width="1.6"/>
+      <g fill="var(--accent)" fill-opacity="0.55">
+        <rect x="8.5" y="13" width="3" height="4" rx="1"/>
+        <rect x="8.5" y="22" width="3" height="4" rx="1"/>
+        <rect x="8.5" y="31" width="3" height="4" rx="1"/>
+        <rect x="36.5" y="13" width="3" height="4" rx="1"/>
+        <rect x="36.5" y="22" width="3" height="4" rx="1"/>
+        <rect x="36.5" y="31" width="3" height="4" rx="1"/>
+      </g>
+      <path d="M20 16.5 L33.5 24 L20 31.5 Z" fill="var(--accent)"/>
+      <path d="M41 4 l1.3 3.2 3.2 1.3 -3.2 1.3 -1.3 3.2 -1.3 -3.2 -3.2 -1.3 3.2 -1.3 Z" fill="var(--accent-2)"/>
+      <text x="58" y="32" font-family="'Segoe UI','PingFang SC','Hiragino Sans GB',sans-serif" font-size="24" font-weight="700" fill="var(--text)">Ai<tspan fill="var(--accent)">Video</tspan></text>
+      <rect x="158" y="13" width="52" height="22" rx="11" fill="var(--accent)" fill-opacity="0.16" stroke="var(--accent)" stroke-width="1.2"/>
+      <text x="184" y="28.5" text-anchor="middle" font-family="'Segoe UI','PingFang SC','Hiragino Sans GB',sans-serif" font-size="12.5" font-weight="600" fill="var(--accent)">内测</text>
+    </svg>
+
     <section id="login-view">
-      <h1>登录 AiVideo</h1>
+      <h1>登录</h1>
       <p class="sub">内测账号由运营发放；忘记密码请联系运营重置。</p>
       <form id="login-form">
         <label for="username">登录名</label>
         <input id="username" name="username" autocomplete="username" required />
         <label for="password">密码</label>
         <input id="password" name="password" type="password" autocomplete="current-password" required />
-        <button id="login-btn" type="submit">登录</button>
+        <button id="login-btn" class="primary" type="submit">登录</button>
         <div id="login-error" class="error" role="alert"></div>
       </form>
     </section>
@@ -74,15 +122,30 @@
         <input id="new-password" type="password" autocomplete="new-password" minlength="10" required />
         <label for="confirm-password">再输一次</label>
         <input id="confirm-password" type="password" autocomplete="new-password" minlength="10" required />
-        <button id="change-btn" type="submit">确认修改</button>
+        <button id="change-btn" class="primary" type="submit">确认修改</button>
         <div id="change-error" class="error" role="alert"></div>
       </form>
     </section>
+    <div class="foot">AiVideo · 短剧 AI 视频管线 · 内测版</div>
   </main>
   <script>
     "use strict";
     // 会话由服务端 HttpOnly Cookie 承载；本页只负责收集凭据与跳转。
     let pendingPassword = "";
+
+    // 主题切换：与产品共用 aivideo.theme，默认深色。
+    const themeToggle = document.getElementById("theme-toggle");
+    function paintTheme() {
+      const dark = document.documentElement.dataset.theme !== "light";
+      themeToggle.textContent = dark ? "浅色" : "深色";
+    }
+    themeToggle.addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem("aivideo.theme", next); } catch (_error) {}
+      paintTheme();
+    });
+    paintTheme();
 
     async function rpc(method, params) {
       const response = await fetch("/rpc", {
