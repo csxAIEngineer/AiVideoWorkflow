@@ -5008,10 +5008,30 @@ class Handler(BaseHTTPRequestHandler):
             _REQUEST_CTX.reset(ctx_token)
 
 
+def _load_env_file():
+    """Local runs (nohup/restart.sh) don't get .env injected like compose does.
+    Load it once at startup without overriding real environment variables."""
+    path = ROOT / ".env"
+    if not path.is_file():
+        return
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value.strip().strip('"').strip("'")
+    except OSError:
+        pass
+
+
 def main():
     from end.ai_client import endpoint
     from end import pg_store
 
+    _load_env_file()
     if auth_mode() == "require" and not pg_store.enabled():
         raise SystemExit("AIVIDEO_REQUIRE_AUTH=require 需要配置 AIVIDEO_PG_DSN（账户系统依赖 PostgreSQL）")
     if pg_store.enabled():
