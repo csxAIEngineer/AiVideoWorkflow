@@ -168,6 +168,20 @@ class AuthRpcTest(unittest.TestCase):
         payload, _ = self._call("admin.users.list", cookie=admin_cookie)
         self.assertEqual(payload["error"]["code"], 401)
 
+    def test_admin_change_password(self):
+        admin_cookie = self._login(self.admin, "admin-pass-123", method="auth.admin_login")
+        payload, _ = self._call("auth.admin_me", cookie=admin_cookie)
+        self.assertEqual(payload["result"]["user"]["username"], self.admin["username"])
+        payload, _ = self._call("auth.admin_change_password", {
+            "old_password": "admin-pass-123", "new_password": "admin-new-456",
+        }, cookie=admin_cookie)
+        self.assertNotIn("error", payload)
+        payload, _ = self._call("admin.users.list", cookie=admin_cookie)
+        self.assertEqual(payload["error"]["code"], 401)
+        cookie2 = self._login(self.admin, "admin-new-456", method="auth.admin_login")
+        payload, _ = self._call("admin.users.list", cookie=cookie2)
+        self.assertNotIn("error", payload)
+
     def test_config_sanitized_for_user(self):
         cookie = self._login(self.alice, "alice-pass-123")
         payload, _ = self._call("config.get", cookie=cookie)

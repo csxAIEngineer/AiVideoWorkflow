@@ -4075,6 +4075,8 @@ def _auth_rpc(method, params):
     if method == "auth.me":
         user = _current_session("user") if pg_store.enabled() else None
         return {"user": user, "required": bool(pg_store.enabled() and auth_mode() == "require")}
+    if method == "auth.admin_me":
+        return {"user": _current_session("admin") if pg_store.enabled() else None}
     if not pg_store.enabled():
         raise RpcError(503, "账户系统未启用（需要 PostgreSQL）")
     try:
@@ -4102,6 +4104,13 @@ def _auth_rpc(method, params):
             return {"ok": True}
         if method == "auth.admin_logout":
             auth.logout((ctx.get("cookies") or {}).get(ADMIN_COOKIE, ""), "admin")
+            ctx.setdefault("set_cookies", []).append(_cookie_header(ADMIN_COOKIE, "", 0, ctx.get("secure")))
+            return {"ok": True}
+        if method == "auth.admin_change_password":
+            admin = _current_session("admin")
+            if admin is None:
+                raise RpcError(401, "需要运营登录")
+            auth.change_password(admin["id"], params.get("old_password"), params.get("new_password"))
             ctx.setdefault("set_cookies", []).append(_cookie_header(ADMIN_COOKIE, "", 0, ctx.get("secure")))
             return {"ok": True}
         if method == "auth.change_password":
