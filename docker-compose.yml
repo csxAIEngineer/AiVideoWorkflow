@@ -58,5 +58,27 @@ services:
       retries: 3
       start_period: 20s
 
+  # 账户系统主库（决策 A：同机容器）。profile 隔离：
+  #   docker compose --profile pg up -d   才启动；本地 nohup/restart.sh 不受影响。
+  # end 经 compose 网络以主机名 db 访问；密码只放服务器 .env（AIVIDEO_PG_PASSWORD）。
+  db:
+    image: postgres:16-alpine
+    profiles: ["pg"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aivideo
+      POSTGRES_PASSWORD: ${AIVIDEO_PG_PASSWORD:-}
+      POSTGRES_DB: aivideo
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - aivideo-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aivideo -d aivideo"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   aivideo-data:
+  aivideo-pgdata:
